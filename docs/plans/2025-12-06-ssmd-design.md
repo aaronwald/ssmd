@@ -44,6 +44,7 @@ ssmd is a homelab-friendly market data system built in Zig. It captures live cry
 
 | Component | Language | Purpose |
 |-----------|----------|---------|
+| ssmd-cli | Zig | Environment definition management |
 | ssmd-connector | Zig | Kraken websocket ingestion + raw capture |
 | ssmd-archiver | Zig | JetStream → Garage tiering |
 | ssmd-gateway | Zig | WebSocket + REST API for agents |
@@ -58,6 +59,147 @@ ssmd is a homelab-friendly market data system built in Zig. It captures live cry
 | Garage | S3-compatible object storage (open source) |
 | SQLite | Entitlements and audit data |
 | ArgoCD | GitOps deployment automation |
+
+## Environment Definitions
+
+A single source of truth for trading environment configuration. Removes operator error by validating everything before apply.
+
+### Environment Spec
+
+```yaml
+# environments/prod.yaml
+apiVersion: ssmd/v1
+kind: Environment
+metadata:
+  name: prod
+
+spec:
+  feeds:
+    kraken:
+      enabled: true
+      symbols:
+        - name: BTC/USD
+          internal: BTCUSD
+          depth: l2
+        - name: ETH/USD
+          internal: ETHUSD
+          depth: l2
+        - name: SOL/USD
+          internal: SOLUSD
+          depth: l1
+
+  storage:
+    raw:
+      bucket: ssmd-prod-raw
+      retention_days: -1  # Forever
+    normalized:
+      bucket: ssmd-prod-normalized
+      retention_days: 365
+
+  jetstream:
+    retention_hours: 24
+    max_bytes: 10GB
+
+  entitlements:
+    - client_id: trading-bot-1
+      name: "Main Trading Bot"
+      type: trading
+      feeds: [kraken]
+      symbols: [BTCUSD, ETHUSD]
+
+    - client_id: research-agent
+      name: "Research Agent"
+      type: non-display
+      feeds: [kraken]
+      symbols: ["*"]
+```
+
+### Multi-Environment Support
+
+```
+environments/
+├── dev.yaml        # 2 symbols, 7-day retention, relaxed entitlements
+├── staging.yaml    # 10 symbols, 30-day retention, prod-like entitlements
+└── prod.yaml       # 50+ symbols, forever retention, strict entitlements
+```
+
+### CLI Tool (ssmd-cli)
+
+**Environment management:**
+```bash
+ssmd env create dev --from-template minimal
+ssmd env validate prod              # Check for errors before apply
+ssmd env apply prod                 # Generate Helm values, commit to git
+ssmd env diff dev prod              # Compare environments
+ssmd env promote dev --to staging   # Copy with adjustments
+ssmd env status prod                # Show what's deployed vs defined
+```
+
+**Feed management:**
+```bash
+ssmd feed list --env prod
+ssmd feed add kraken AVAX/USD --depth l1 --env dev
+ssmd feed remove kraken AVAX/USD --env dev
+ssmd feed enable coinbase --env staging
+```
+
+**Symbol mapping:**
+```bash
+ssmd symbol map "BTC/USD" BTCUSD --feed kraken --env prod
+ssmd symbol list --env prod
+ssmd symbol validate --env prod     # Check all mappings resolve
+```
+
+**Client/entitlement management:**
+```bash
+ssmd client add research-bot --type non-display --env prod
+ssmd client entitle research-bot --feed kraken --symbols "BTC*" --env prod
+ssmd client revoke research-bot --feed kraken --env prod
+ssmd client list --env prod
+```
+
+**Validation examples:**
+```bash
+$ ssmd env validate prod
+✓ Feed 'kraken' configuration valid
+✓ All symbol mappings resolve
+✓ Storage buckets defined
+✓ Entitlements reference valid clients
+✓ No circular dependencies
+Environment 'prod' is valid.
+
+$ ssmd env validate broken
+✗ Symbol 'XYZ/USD' not available on feed 'kraken'
+✗ Client 'ghost-bot' referenced in entitlements but not defined
+✗ Storage bucket 'ssmd-typo-raw' does not match naming convention
+Environment 'broken' has 3 errors.
+```
+
+### GitOps Integration
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  ssmd-cli   │────▶│    Git      │────▶│   ArgoCD    │
+│  (validate  │     │  (commit    │     │  (apply to  │
+│   + generate)│     │   values)   │     │   cluster)  │
+└─────────────┘     └─────────────┘     └─────────────┘
+```
+
+**Workflow:**
+1. Operator runs `ssmd env apply prod`
+2. CLI validates environment definition
+3. CLI generates Helm values from environment spec
+4. CLI commits to git (or outputs for manual commit)
+5. ArgoCD detects change, syncs to cluster
+
+**Generated files:**
+```
+charts/ssmd/
+├── values.yaml                 # Defaults
+├── values-dev.yaml             # Generated from environments/dev.yaml
+├── values-staging.yaml         # Generated from environments/staging.yaml
+└── values-prod.yaml            # Generated from environments/prod.yaml
+```
 
 ## Data Schema (Cap'n Proto)
 
@@ -394,11 +536,17 @@ Terminal interface for operating ssmd:
 ```
 ssmd/
 ├── src/                             # Zig source code
+│   ├── cli/
 │   ├── connector/
 │   ├── archiver/
 │   ├── gateway/
+│   ├── reprocessor/
 │   └── tui/
 ├── proto/                           # Cap'n Proto schemas
+├── environments/                    # Environment definitions
+│   ├── dev.yaml
+│   ├── staging.yaml
+│   └── prod.yaml
 ├── charts/
 │   └── ssmd/
 │       ├── Chart.yaml
@@ -512,12 +660,25 @@ loki:
 
 ## Implementation Phases
 
+### Phase 0: CLI & Environment Definitions (Build First)
+
+Metadata support must come first. Remove chance of operator error.
+
+- Build ssmd-cli skeleton in Zig
+- Define environment YAML schema
+- Implement `ssmd env create`, `validate`, `apply`
+- Implement `ssmd feed add/remove/list`
+- Implement `ssmd symbol map/list/validate`
+- Generate Helm values from environment spec
+- Validate: can create dev environment, generate valid Helm values
+
 ### Phase 1: Foundation
 
 - Set up k3s cluster on homelab
 - Deploy NATS + JetStream via Helm
 - Deploy Garage via Helm
 - Deploy ArgoCD, connect to repo
+- Use ssmd-cli to create and apply dev environment
 - Validate: publish/subscribe to NATS, write to Garage
 
 ### Phase 2: Core Ingestion
@@ -525,18 +686,21 @@ loki:
 - Build Kraken connector in Zig
 - Define Cap'n Proto schemas
 - Implement websocket client + raw capture
+- Connector reads symbol config from environment
 - Publish normalized data to NATS
 - Validate: see live data via `nats sub`
 
 ### Phase 3: Archival
 
 - Build archiver (JetStream → Garage)
-- Validate: data in Garage buckets, can read back
+- Build reprocessor for data quality iteration
+- Validate: data in Garage buckets, can read back, can reprocess
 
 ### Phase 4: Agent Access
 
 - Build gateway (WebSocket + REST)
 - Add entitlements (SQLite, API key validation)
+- Implement `ssmd client add/entitle/revoke`
 - Validate: Python notebook can subscribe, receive JSON
 
 ### Phase 5: Operations
@@ -550,6 +714,7 @@ loki:
 
 - Audit reporting endpoints
 - Documentation
+- Implement `ssmd env promote` for staging→prod workflow
 - Add second exchange to validate normalization layer
 
 ## Resource Estimates (Homelab)
