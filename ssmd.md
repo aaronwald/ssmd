@@ -4,11 +4,30 @@
 1. You suck is as good as it gets
 1. All trading needs it in some form
 
+## Goals
+
+1. Big design decision is what you want service you offer to your PMs. Leads to efficiencies and problems.
+1. Shared platform? (Operations)
+1. Libraries?
+1. Data?
+1. Tickerplant?
+
+## Network design matters
+1. Where the multicast or firewall rules exist can impact where and how fast you can deplot new kit
+1. Understadning the shape of data is important. Can you reshard to different plans. Are you publishing more or less data then the exchange.
+1. Do you have tools like netflow to understand what your switches are doing.
+1. Is your networking kit observable?
+
 ## Data
 1. Feeds generally into different buckets
 1. Stateless (no recovery)
 1. Orderbook - sharded by some schema (symbol, underlying etc)
 1. All events for a session for a sequenced stream which you can play back to build the correct state at a given time.
+
+## MetaData
+1. Need exchange calendar (with as-of date support)
+1. Need description of each exchange as a time series so we know protocols and sources of data available on what dates.
+1. Need to track what dates we have data for and when we have failures.
 
 ## Sources of data
 1. Direct exchange (generally multicast) with binary protocols
@@ -28,6 +47,8 @@
 1. Goes up the latency spectrum from there depending on type of trading or forecasting you want to do.
 1. Very latency sensitive trading is impacted by queue position in matching engine and always a quest to eliminate market data latency (some places do predictive trading off bits and not even full packets)
 1. Signals and forecasting can be just as valuable as low latency trading (HFT)
+1. Do you monitor latency with something like corvil?
+1. Do you track latency regression in software?
 
 ## Distribution
 1. Once data is ingested and normalized it needs to be internally distributed.
@@ -43,6 +64,7 @@
 1. Can buy pcap recording devices.
 1. Need to have very good clocks for best understanding your latency
 1. Can do hardware timestamping.
+1. Keep raw logs. Keep pcap when possible.
 
 ## Correctness
 1. Market data foramts should be stable over time.
@@ -51,6 +73,7 @@
 
 ## Playback
 1. Nice to have the ability to playback for backtesting.
+1. Can you select streams or instruments quickly.
 
 ## Artifacts
 1. All recorded data should be turned into artifacts you can digest
@@ -58,12 +81,39 @@
 1. Can look at cloud solutions for event searching
 1. Want to be able to get data into formats like arrow now where we can leverage cloud tech (big table/big query etc...)
 1. Want to be able to understand you data quality and iterate to fix this rapidly
+1. Open formats have probably caught up to proprietary
+1. Understand time series query vs event query. Outside of order book state a lot can can be done on query for improving data.
+1. How do you shard artifacts for reserach - How do you trade? Portfolio? Single stock? Related instruments.
 
 ## SDLC
 1. Generally when we want to share market data libraries we have to think carefully about the SDLC processes for consistency.
 1. Expensive builds penalize everyone.
 
+## DevOps
+1. Great devops can allow you to redeploy and reconfigure quick
+1. Great git ops is important
+1. Infrastructure as Code (terraform/opentofu) solutions are key to improving data quality over time. Kit should be commodity for data at scale.
+
+## Data Quality
+1. Do not want manual QA. Want everything in code so we can iterate (and now AI)
+
+
 ## Observability
 1. Want to be able to observe health of system at lots of levels to prevent trading loss or data loss
 1. Highest rick on busiest days - most trading opp
 1. Any latency generates a queue somewhere - general poorly understood outside of the systems space.
+1. Incident management improves trust.
+
+## Entitlements
+1. How do you manage entitlements?
+1. How do you report usage?
+1. Do you do display vs non-display?
+1. How do you respond to audits?
+
+## Market Data as a Service
+1. Cloud native offerings.
+1. Requires entitlements
+1. Conflation needs to be done to take some load off (may be changing with more modern rust/zig impls in cloud - more clever designs that dont need multicast)
+
+## Team Structure
+1. How close are dev and production?

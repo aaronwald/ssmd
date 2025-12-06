@@ -1,14 +1,24 @@
+# stupid simple market data
 
-
+## Context
+Expert system based on ssmd.md
 Market data so simple you can install on homelab
+So simple you can admin via tui
+So simple claude can talk to it easily. Easy to define new skills.
 
-want to quiclky scale capture/archive processes
+## Notes
+Are we building tickerplant? No
+Are we building a shared library? No (We would want client libraries)
+Are we building a cloud first service? Yes
+Are we building a platform createing quality data? Yes
 
-DQ Agents to run against the datasets we build
-- How do they work
-- What would they suggest? Code ? Lua scripts? product features
- *Opportunity* Agentic DQ could be a new field - would let quants off load diagnosing issues
+## Features
+GitOps to deploy, test, scale.
+Capture raw market data to block storage/archive off to s3 object storage
+We want to stream data via websocket
+We want to stream data via nats and jetstream
+We want to integrate with systems like chronicle and aeron (https://aeron.io/)
+We want to build a system that agents can easily access and reason about
 
-AI will most likely increase data rates as people deploy more and more algos
-
-Prioritization of features and changes should be better with agents
+## Instructions
+Create a proposal for a stupid simple market data system we can build on our homelab.
