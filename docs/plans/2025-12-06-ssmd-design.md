@@ -56,6 +56,21 @@ ssmd is a homelab-friendly market data system built in Zig. It captures live cry
 - **Go for tooling** - Better ecosystem for CLI (cobra), YAML parsing, rapid iteration
 - **Zig for data path** - Performance, small binaries, no GC pauses
 
+**Existing assets:**
+- `libechidna` - C++ library with io_uring, SSL/TLS, WebSocket, HTTP/2
+- `olalla` - C++ io_uring-based Kraken connector using libechidna
+
+**Open decision: Connector implementation**
+
+| Option | Pros | Cons |
+|--------|------|------|
+| Use existing C++ (olalla/libechidna) | Already working, battle-tested io_uring | Mixed language codebase |
+| Wrap C++ from Zig | Zig ergonomics + proven io_uring impl | FFI complexity |
+| Port to Zig | Pure Zig, simpler build | Rewriting working code |
+| C++ connector, Zig elsewhere | Best of both, isolate C++ to hot path | Two build systems |
+
+Decision can be deferred. Zig has direct syscall access (`std.os.linux.io_uring`), so porting is feasible if desired.
+
 **Dependencies:**
 
 | Service | Purpose |
@@ -473,6 +488,87 @@ WS: {"subscribe": "BTCUSD", "transform": "customer-abc"}
 5. Remove Lua version after code ships
 
 **Implementation:** Go + gopher-lua (embedded Lua VM)
+
+### 5. Agent Feedback API
+
+Agents can report data quality issues and feature requests programmatically.
+
+**Structured feedback (known issue types):**
+```bash
+POST /api/v1/feedback
+{
+  "type": "data_quality",
+  "subtype": "bad_tick",
+  "feed": "kraken",
+  "symbol": "BTCUSD",
+  "timestamp": "2025-12-06T14:23:00Z",
+  "evidence": {
+    "price": 150000,
+    "prev_price": 50000,
+    "jump_pct": 200
+  },
+  "description": "Price jumped 200% in 1 tick"
+}
+```
+
+**Natural language (novel issues):**
+```bash
+POST /api/v1/feedback
+{
+  "type": "unknown",
+  "description": "Order book depth seems inconsistent with trade volume. Seeing 10x more trades than available liquidity suggests.",
+  "context": {
+    "agent": "liquidity-analyzer",
+    "task": "market-making-signal",
+    "data_window": "2025-12-06T14:00:00Z/2025-12-06T15:00:00Z"
+  }
+}
+```
+
+**Known issue types:**
+| Type | Subtype | Description |
+|------|---------|-------------|
+| data_quality | bad_tick | Obvious erroneous price |
+| data_quality | gap | Missing data in sequence |
+| data_quality | duplicate | Same record multiple times |
+| data_quality | stale | Data not updating |
+| data_quality | schema | Unexpected field/format |
+| feature_request | - | Agent needs new capability |
+| bug | - | System not behaving as documented |
+| unknown | - | Agent can't categorize |
+
+**Feedback flow:**
+```
+Agent submits feedback
+        │
+        ▼
+┌─────────────────┐
+│   Validation    │ Deduplicate, check if known issue
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    │         │
+    ▼         ▼
+Known?    Novel?
+    │         │
+    ▼         ▼
+Aggregate   Create
++ alert     Linear issue
+```
+
+**CLI for reviewing feedback:**
+```bash
+ssmd feedback list --status open
+ssmd feedback resolve FB-123 --action fixed --release v1.2
+ssmd feedback stats --days 30  # Trends
+```
+
+**Metrics:**
+```
+ssmd_feedback_total{type="data_quality", subtype="bad_tick"}
+ssmd_feedback_resolved_total{action="fixed"}
+ssmd_feedback_time_to_resolve_seconds
+```
 
 ## Entitlements System
 
