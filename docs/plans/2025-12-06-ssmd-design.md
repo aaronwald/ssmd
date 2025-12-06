@@ -2,7 +2,9 @@
 
 ## Overview
 
-ssmd is a homelab-friendly market data system built in Zig. It captures live crypto data, streams it for real-time consumption, and archives it for backtesting.
+ssmd is a homelab-friendly market data system. It captures live crypto data, streams it for real-time consumption, and archives it for backtesting.
+
+**Language strategy:** Go for tooling (CLI, TUI, Temporal workers), Zig or C++ for data path (connector, archiver, gateway).
 
 **Goals:**
 - Simple enough to run on a homelab
@@ -20,18 +22,18 @@ ssmd is a homelab-friendly market data system built in Zig. It captures live cry
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │   Kraken    │────▶│  Connector  │────▶│    NATS     │
-│  WebSocket  │     │    (Zig)    │     │  JetStream  │
+│  WebSocket  │     │  (Zig/C++)  │     │  JetStream  │
 └──────┬──────┘     └─────────────┘     └──────┬──────┘
        │                                       │
        │            ┌─────────────┐            │
        └───────────▶│ Raw Capture │            │
-                    │    (Zig)    │            │
+                    │  (Zig/C++)  │            │
                     └──────┬──────┘            │
                            │                   │
                            ▼                   │
                     ┌─────────────┐     ┌──────┴──────┐
                     │   Garage    │     │  Archiver   │
-                    │  /raw/...   │     │   (Zig)     │
+                    │  /raw/...   │     │  (Zig/C++)  │
                     └─────────────┘     └──────┬──────┘
                                                │
                     ┌─────────────┐            │
@@ -46,11 +48,11 @@ ssmd is a homelab-friendly market data system built in Zig. It captures live cry
 |-----------|----------|---------|
 | ssmd-cli | Go | Environment definition management |
 | ssmd-tui | Go | Terminal admin interface |
-| ssmd-worker | Go | Temporal workflow worker |
-| ssmd-connector | Zig | Kraken websocket ingestion + raw capture |
-| ssmd-archiver | Zig | JetStream → Garage tiering |
-| ssmd-gateway | Zig | WebSocket + REST API for agents |
-| ssmd-reprocessor | Zig | Rebuild normalized data from raw |
+| ssmd-worker | Go | Temporal workflow worker + Lua transforms |
+| ssmd-connector | Zig/C++ | Kraken websocket ingestion + raw capture |
+| ssmd-archiver | Zig/C++ | JetStream → Garage tiering |
+| ssmd-gateway | Zig/C++ | WebSocket + REST API for agents |
+| ssmd-reprocessor | Zig/C++ | Rebuild normalized data from raw |
 
 **Language split rationale:**
 - **Go for tooling** - Better ecosystem for CLI (cobra), YAML parsing, rapid iteration
@@ -222,6 +224,33 @@ charts/ssmd/
 └── values-prod.yaml            # Generated from environments/prod.yaml
 ```
 
+### Configuration Hot-Reload
+
+Add/remove symbols without restarts:
+
+1. **Config stored in NATS KV** - Environment spec synced to NATS key-value store
+2. **Components watch for changes** - Connector subscribes to config changes
+3. **Apply without restart** - Add symbol = subscribe to new websocket channel
+
+```
+ssmd env apply prod
+       │
+       ▼
+┌─────────────────┐     ┌─────────────────┐
+│  Generate Helm  │────▶│  NATS KV Store  │
+│  values + sync  │     │  (config.prod)  │
+└─────────────────┘     └────────┬────────┘
+                                 │
+                                 ▼
+                        ┌─────────────────┐
+                        │  Connector      │
+                        │  watches config │
+                        │  adds symbols   │
+                        └─────────────────┘
+```
+
+Some changes (e.g., new exchange, schema version) still require deployment.
+
 ## Data Schema (Cap'n Proto)
 
 ```capnp
@@ -349,12 +378,14 @@ The Archiver moves normalized data from JetStream to Garage:
 
 **Normalized storage format:**
 ```
-/normalized/kraken/trade/BTCUSD/
+/normalized/v1/kraken/trade/BTCUSD/
   └── 2025/12/06/
       ├── 14-00.capnp.zst
       ├── 14-01.capnp.zst
       └── ...
 ```
+
+Version prefix (`v1`, `v2`, etc.) allows reprocessing to create new versions without overwriting.
 
 **JetStream retention:**
 - Keep 24 hours in JetStream for live replay
@@ -483,11 +514,11 @@ WS: {"subscribe": "BTCUSD", "transform": "customer-abc"}
 **Lifecycle:**
 1. Customer requests custom format
 2. Create Lua transform, test with real data
-3. Deploy to gateway (stored in environment spec)
+3. Deploy (stored in environment spec)
 4. Once stable, promote to first-class code in next release
 5. Remove Lua version after code ships
 
-**Implementation:** Go + gopher-lua (embedded Lua VM)
+**Implementation:** Transforms run in ssmd-worker (Go + gopher-lua). Gateway routes transform requests to worker via NATS. This keeps the hot path (gateway) in Zig/C++ while allowing flexible Lua scripting in Go.
 
 ### 5. Agent Feedback API
 
@@ -1135,9 +1166,9 @@ Metadata support must come first. Remove chance of operator error.
 
 ### Phase 2: Core Ingestion
 
-- Build Kraken connector in Zig
+- Decide: port olalla/libechidna to Zig or use existing C++
 - Define Cap'n Proto schemas
-- Implement websocket client + raw capture
+- Implement/adapt websocket client + raw capture
 - Connector reads symbol config from environment
 - Publish normalized data to NATS
 - Validate: see live data via `nats sub`
@@ -1179,19 +1210,21 @@ Metadata support must come first. Remove chance of operator error.
 
 | Component | CPU | Memory | Notes |
 |-----------|-----|--------|-------|
-| ssmd-connector | 0.1 core | 64 MB | Zig binary, minimal footprint |
+| ssmd-connector | 0.1 core | 64 MB | Minimal footprint |
 | ssmd-archiver | 0.1 core | 128 MB | Batch writes, mostly idle |
 | ssmd-gateway | 0.2 core | 128 MB | Scales with connected clients |
+| ssmd-worker | 0.2 core | 256 MB | Temporal workflows + Lua transforms |
 | NATS + JetStream | 0.5 core | 512 MB | Depends on message volume |
+| Temporal | 0.5 core | 512 MB | Workflow orchestration |
 | Garage (3-node min) | 0.3 core × 3 | 256 MB × 3 | Distributed, needs 3 nodes |
 | ArgoCD | 0.3 core | 512 MB | Can share with other workloads |
 | Prometheus | 0.2 core | 512 MB | Depends on retention |
 | Grafana | 0.1 core | 256 MB | Mostly idle |
 | Loki | 0.2 core | 256 MB | Depends on log volume |
 
-**Minimum total:** ~2 cores, 3 GB RAM (tight, single-node k3s)
+**Minimum total:** ~3 cores, 4 GB RAM (tight, single-node k3s)
 
-**Recommended:** 4 cores, 8 GB RAM (comfortable headroom)
+**Recommended:** 4-6 cores, 8-16 GB RAM (comfortable headroom)
 
 ### Storage
 
@@ -1238,7 +1271,7 @@ Metadata support must come first. Remove chance of operator error.
 | Concern | Choice |
 |---------|--------|
 | Tooling Language | Go |
-| Data Path Language | Zig |
+| Data Path Language | Zig or C++ (TBD) |
 | Serialization | Cap'n Proto |
 | Messaging | NATS + JetStream |
 | Object Storage | Garage |
@@ -1294,3 +1327,16 @@ Metadata support must come first. Remove chance of operator error.
 - No runbooks longer than 10 steps
 - No manual certificate management
 - No downtime for config changes
+
+## Open Decisions
+
+| Decision | Options | Notes |
+|----------|---------|-------|
+| Connector language | Zig (port) vs C++ (existing olalla/libechidna) | Existing C++ has battle-tested io_uring |
+| Garage single-node | Run Garage with 1 node for homelab? | Officially needs 3 nodes, but 1 may work |
+
+## Document History
+
+| Date | Changes |
+|------|---------|
+| 2025-12-06 | Initial design covering architecture, data schema, connectors, archival, agent access, entitlements, TUI, deployment, observability, QA, Linear integration, Temporal scheduling, simplicity metrics |
