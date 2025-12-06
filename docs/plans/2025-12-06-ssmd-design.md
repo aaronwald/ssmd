@@ -44,12 +44,16 @@ ssmd is a homelab-friendly market data system built in Zig. It captures live cry
 
 | Component | Language | Purpose |
 |-----------|----------|---------|
-| ssmd-cli | Zig | Environment definition management |
+| ssmd-cli | Go | Environment definition management |
+| ssmd-tui | Go | Terminal admin interface |
 | ssmd-connector | Zig | Kraken websocket ingestion + raw capture |
 | ssmd-archiver | Zig | JetStream → Garage tiering |
 | ssmd-gateway | Zig | WebSocket + REST API for agents |
 | ssmd-reprocessor | Zig | Rebuild normalized data from raw |
-| ssmd-tui | Zig | Terminal admin interface |
+
+**Language split rationale:**
+- **Go for tooling** - Better ecosystem for CLI (cobra), YAML parsing, rapid iteration
+- **Zig for data path** - Performance, small binaries, no GC pauses
 
 **Dependencies:**
 
@@ -527,7 +531,7 @@ Terminal interface for operating ssmd:
 - Manage entitlements (add/revoke clients)
 - Trigger manual archival or replay
 
-**Built with:** Zig + libvaxis
+**Built with:** Go + bubbletea/lipgloss
 
 ## Deployment & GitOps
 
@@ -535,13 +539,17 @@ Terminal interface for operating ssmd:
 
 ```
 ssmd/
-├── src/                             # Zig source code
-│   ├── cli/
+├── cmd/                             # Go tooling
+│   ├── ssmd-cli/
+│   └── ssmd-tui/
+├── pkg/                             # Go shared packages
+│   ├── config/
+│   └── client/
+├── src/                             # Zig data path
 │   ├── connector/
 │   ├── archiver/
 │   ├── gateway/
-│   ├── reprocessor/
-│   └── tui/
+│   └── reprocessor/
 ├── proto/                           # Cap'n Proto schemas
 ├── environments/                    # Environment definitions
 │   ├── dev.yaml
@@ -664,7 +672,7 @@ loki:
 
 Metadata support must come first. Remove chance of operator error.
 
-- Build ssmd-cli skeleton in Zig
+- Build ssmd-cli skeleton in Go (cobra)
 - Define environment YAML schema
 - Implement `ssmd env create`, `validate`, `apply`
 - Implement `ssmd feed add/remove/list`
@@ -781,7 +789,8 @@ Metadata support must come first. Remove chance of operator error.
 
 | Concern | Choice |
 |---------|--------|
-| Language | Zig |
+| Tooling Language | Go |
+| Data Path Language | Zig |
 | Serialization | Cap'n Proto |
 | Messaging | NATS + JetStream |
 | Object Storage | Garage |
@@ -790,7 +799,8 @@ Metadata support must come first. Remove chance of operator error.
 | Package Management | Helm |
 | GitOps | ArgoCD |
 | Monitoring | Prometheus + Grafana + Loki |
-| TUI Framework | libvaxis |
+| CLI Framework | Go + cobra |
+| TUI Framework | Go + bubbletea |
 | Initial Exchange | Kraken |
 
 ## Simplicity Metrics
