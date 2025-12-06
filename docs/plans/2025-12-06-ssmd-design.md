@@ -47,6 +47,7 @@ ssmd is a homelab-friendly market data system built in Zig. It captures live cry
 | ssmd-connector | Zig | Kraken websocket ingestion + raw capture |
 | ssmd-archiver | Zig | JetStream → Garage tiering |
 | ssmd-gateway | Zig | WebSocket + REST API for agents |
+| ssmd-reprocessor | Zig | Rebuild normalized data from raw |
 | ssmd-tui | Zig | Terminal admin interface |
 
 **Dependencies:**
@@ -199,7 +200,53 @@ The Archiver moves normalized data from JetStream to Garage:
 
 **Garage buckets:**
 - `ssmd-raw` - Raw websocket data (keep forever)
-- `ssmd-normalized` - Cap'n Proto files (keep forever)
+- `ssmd-normalized` - Cap'n Proto files (versioned, keep forever)
+
+## Reprocessor (Data Quality Iteration)
+
+The Reprocessor rebuilds normalized data from raw when mappings change:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     Reprocessor                         │
+│                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│  │  Raw Reader  │─▶│  Normalizer  │─▶│ Garage Writer│  │
+│  │   (Garage)   │  │  (new logic) │  │   (versioned)│  │
+│  └──────────────┘  └──────────────┘  └──────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Why this matters:**
+- Raw data is immutable truth
+- Normalization logic will have bugs, edge cases, improvements
+- Must be able to regenerate any historical period with new logic
+
+**Versioned output:**
+```
+/normalized/v1/kraken/trade/BTCUSD/2025/12/06/...   # Original
+/normalized/v2/kraken/trade/BTCUSD/2025/12/06/...   # After mapping fix
+```
+
+**Workflow:**
+1. Fix normalizer bug or improve mapping
+2. Deploy new connector (live data uses new logic immediately)
+3. Run reprocessor for affected date range
+4. Validate new output vs old (diff sampling)
+5. Update gateway to serve from new version
+6. Prune old version after validation
+
+**CLI interface:**
+```bash
+# Reprocess one day
+ssmd-reprocessor --feed kraken --start 2025-12-01 --end 2025-12-01 --version v2
+
+# Reprocess with parallelism
+ssmd-reprocessor --feed kraken --start 2025-11-01 --end 2025-12-01 --version v2 --parallel 4
+
+# Dry run (validate only, no write)
+ssmd-reprocessor --feed kraken --start 2025-12-01 --end 2025-12-01 --version v2 --dry-run
+```
 
 ## Agent Access
 
@@ -580,3 +627,44 @@ loki:
 | Monitoring | Prometheus + Grafana + Loki |
 | TUI Framework | libvaxis |
 | Initial Exchange | Kraken |
+
+## Simplicity Metrics
+
+"Simple" must be measurable. These are the operational simplicity targets for ssmd:
+
+### Operational Targets
+
+| Metric | Target | How to Measure |
+|--------|--------|----------------|
+| Deploy from zero | ≤ 5 commands | Count commands in quickstart |
+| Add new symbol | 1 config change, 0 restarts | Hot reload via NATS |
+| Add new exchange | 1 new file + config | Connector per exchange |
+| Recover from pod crash | Automatic, < 60s | k8s restart, verify with chaos testing |
+| Recover from node failure | Automatic, < 5 min | Test by killing node |
+| Upgrade component | Git push only | ArgoCD auto-sync |
+| Rollback | Git revert only | ArgoCD auto-sync |
+| Debug live issue | TUI + 2 commands max | `ssmd-tui` + `nats sub` |
+| Check system health | 1 glance | TUI dashboard or Grafana |
+| Backup/restore | ≤ 3 commands | Garage bucket sync |
+| Access logs | 1 command | `kubectl logs` or Loki query |
+| Cert rotation | Automatic | cert-manager |
+
+### Data Quality Iteration Targets
+
+| Metric | Target | How to Measure |
+|--------|--------|----------------|
+| Deploy new normalizer | < 5 min from merge | ArgoCD sync time |
+| Reprocess 1 day of raw data | < 1 hour | Time reprocessor run |
+| Reprocess 1 month of raw data | < 24 hours | Parallelizable by day |
+| Validate mapping change | < 5 min | Diff sample output old vs new |
+| A/B test normalizer | 1 config flag | Run old + new in parallel |
+| Rollback bad mapping | Git revert | Same as any rollback |
+
+### Anti-Targets (Things We Refuse to Require)
+
+- No SSH into nodes for normal operations
+- No manual database migrations
+- No coordination between component deploys
+- No runbooks longer than 10 steps
+- No manual certificate management
+- No downtime for config changes
