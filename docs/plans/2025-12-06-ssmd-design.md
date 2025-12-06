@@ -435,6 +435,45 @@ GET /api/v1/symbols
 
 Single gateway binary handles both WebSocket and REST.
 
+### 4. Customer Transforms (Lua)
+
+Customers may need data in different formats. Gateway supports Lua transforms:
+
+```lua
+-- transforms/customer-abc.lua
+function transform(msg)
+  return {
+    ticker = msg.symbol:gsub("/", "-"),
+    px = msg.price,
+    sz = msg.size,
+    ts = msg.timestamp.epochNanos / 1e9,
+    src = msg.exchange:upper()
+  }
+end
+```
+
+**Registration:**
+```bash
+ssmd transform add customer-abc --file transforms/customer-abc.lua --env prod
+ssmd transform test customer-abc --feed kraken --symbol BTCUSD  # Test with live data
+ssmd transform list --env prod
+```
+
+**Usage:**
+```
+GET /api/v1/trades?symbol=BTCUSD&transform=customer-abc
+WS: {"subscribe": "BTCUSD", "transform": "customer-abc"}
+```
+
+**Lifecycle:**
+1. Customer requests custom format
+2. Create Lua transform, test with real data
+3. Deploy to gateway (stored in environment spec)
+4. Once stable, promote to first-class code in next release
+5. Remove Lua version after code ships
+
+**Implementation:** Go + gopher-lua (embedded Lua VM)
+
 ## Entitlements System
 
 Exchange-compliant entitlements for future-proofing:
@@ -563,6 +602,12 @@ ssmd/
 │   ├── crypto.yaml
 │   ├── us-equity.yaml
 │   └── kraken.yaml
+├── transforms/                      # Customer Lua transforms
+│   └── customer-abc.lua
+├── qa/                              # Data quality check definitions
+│   └── kraken-checks.yaml
+├── alerts/                          # Alert rules + Linear integration
+│   └── linear-integration.yaml
 ├── charts/
 │   └── ssmd/
 │       ├── Chart.yaml
@@ -672,6 +717,162 @@ prometheus:
   enabled: true
 loki:
   enabled: true
+```
+
+## Automated Quality Assurance
+
+No QA team. All testing is automated and reproducible.
+
+### Version Comparison Environments
+
+Spin up ephemeral environments to compare versions:
+
+```bash
+# Compare current vs new normalizer
+ssmd env compare \
+  --baseline prod \
+  --candidate pr-123 \
+  --feed kraken \
+  --date 2025-12-05 \
+  --output diff-report.json
+```
+
+**How it works:**
+1. Spin up ephemeral k8s namespace with candidate version
+2. Replay raw data from specified date through both versions
+3. Compare normalized output (schema, values, counts)
+4. Generate diff report
+5. Tear down ephemeral environment
+
+**CI/CD integration:**
+```yaml
+# .github/workflows/compare.yml
+on: pull_request
+jobs:
+  compare:
+    runs-on: self-hosted  # Needs cluster access
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare with production
+        run: |
+          ssmd env compare \
+            --baseline prod \
+            --candidate ${{ github.sha }} \
+            --feed kraken \
+            --date $(date -d yesterday +%Y-%m-%d) \
+            --output diff-report.json
+      - name: Post diff summary
+        run: ssmd report post-github --file diff-report.json
+```
+
+**Diff report includes:**
+- Record count differences
+- Schema changes
+- Value distribution changes
+- Timing differences
+- Sample mismatches for inspection
+
+### Data Quality Checks
+
+Automated checks run via Temporal on every archive:
+
+```yaml
+# qa/kraken-checks.yaml
+feed: kraken
+checks:
+  - name: no-gaps
+    type: sequence
+    max_gap_seconds: 60
+
+  - name: price-sanity
+    type: range
+    field: price
+    min: 0
+    max: 1000000
+
+  - name: symbol-coverage
+    type: presence
+    symbols: [BTCUSD, ETHUSD]
+    min_records_per_hour: 100
+
+  - name: timestamp-order
+    type: monotonic
+    field: timestamp
+```
+
+**Results:**
+- Stored in Garage (`/qa/kraken/2025/12/05/results.json`)
+- Failures create alerts
+- Historical trends visible in Grafana
+
+## Linear Integration
+
+No large support team. Customer issues flow directly into development.
+
+### Issue Flow
+
+```
+Customer reports issue
+        │
+        ▼
+┌─────────────────┐
+│    Linear       │◀─── Observability alerts also create issues
+│  (issue inbox)  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   Triage        │ Weekly review, prioritize
+│   (label/rank)  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   Roadmap       │ Scheduled for sprint
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   Development   │ PR links to Linear issue
+└─────────────────┘
+```
+
+### Auto-Created Issues
+
+Observability → Linear integration:
+
+```yaml
+# alerts/linear-integration.yaml
+alerts:
+  - name: connector-down
+    condition: ssmd_connector_up == 0
+    for: 5m
+    linear:
+      team: platform
+      priority: urgent
+      template: |
+        **Connector Down**
+        Feed: {{ $labels.feed }}
+        Duration: {{ $value }}m
+
+  - name: data-quality-failure
+    condition: ssmd_qa_check_failed > 0
+    linear:
+      team: data-quality
+      priority: high
+      template: |
+        **QA Check Failed**
+        Feed: {{ $labels.feed }}
+        Check: {{ $labels.check }}
+        Date: {{ $labels.date }}
+```
+
+### CLI Integration
+
+```bash
+ssmd issue list                          # Show open issues from Linear
+ssmd issue link LIN-123 --pr 456         # Link Linear issue to PR
+ssmd issue close LIN-123 --release v1.2  # Close with release note
 ```
 
 ## Job Scheduling (Temporal)
@@ -951,6 +1152,8 @@ Metadata support must come first. Remove chance of operator error.
 | Package Management | Helm |
 | GitOps | ArgoCD |
 | Monitoring | Prometheus + Grafana + Loki |
+| Issue Tracking | Linear |
+| Customer Transforms | Lua (gopher-lua) |
 | CLI Framework | Go + cobra |
 | TUI Framework | Go + bubbletea |
 | Initial Exchange | Kraken |
