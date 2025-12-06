@@ -18,6 +18,9 @@
 1. Do you have tools like netflow to understand what your switches are doing.
 1. Is your networking kit observable?
 
+## Job Scheduling
+1. Assume exists.
+
 ## Data
 1. Feeds generally into different buckets
 1. Stateless (no recovery)
@@ -58,6 +61,7 @@
 1. Need to understand requirements. Some people want guaranteed orderbooks (then never lose a msg, have to pay a penalty)
 1. Tickerplant architecture forms hub and spoke (lets you redistribute data internally for a latency penalty)
 1. Shared memory generally a common approach to single host solutions. Lots of cores but then lots of memory contention.
+1. Think about how you shard - Fan in/fan out. Fast but flexible.
 
 ## Recording
 1. Should record everyhting as close to the edge as you can
@@ -84,6 +88,11 @@
 1. Open formats have probably caught up to proprietary
 1. Understand time series query vs event query. Outside of order book state a lot can can be done on query for improving data.
 1. How do you shard artifacts for reserach - How do you trade? Portfolio? Single stock? Related instruments.
+
+## Transport
+1. Reliability if needed
+1. Slow consumers
+1. Scaling and sharding
 
 ## SDLC
 1. Generally when we want to share market data libraries we have to think carefully about the SDLC processes for consistency.
