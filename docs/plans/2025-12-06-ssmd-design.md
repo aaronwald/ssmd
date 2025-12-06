@@ -46,6 +46,7 @@ ssmd is a homelab-friendly market data system built in Zig. It captures live cry
 |-----------|----------|---------|
 | ssmd-cli | Go | Environment definition management |
 | ssmd-tui | Go | Terminal admin interface |
+| ssmd-worker | Go | Temporal workflow worker |
 | ssmd-connector | Zig | Kraken websocket ingestion + raw capture |
 | ssmd-archiver | Zig | JetStream → Garage tiering |
 | ssmd-gateway | Zig | WebSocket + REST API for agents |
@@ -63,6 +64,7 @@ ssmd is a homelab-friendly market data system built in Zig. It captures live cry
 | Garage | S3-compatible object storage (open source) |
 | SQLite | Entitlements and audit data |
 | ArgoCD | GitOps deployment automation |
+| Temporal | Job scheduling with market calendars |
 
 ## Environment Definitions
 
@@ -541,10 +543,12 @@ Terminal interface for operating ssmd:
 ssmd/
 ├── cmd/                             # Go tooling
 │   ├── ssmd-cli/
-│   └── ssmd-tui/
+│   ├── ssmd-tui/
+│   └── ssmd-worker/                 # Temporal worker
 ├── pkg/                             # Go shared packages
 │   ├── config/
-│   └── client/
+│   ├── client/
+│   └── workflows/                   # Temporal workflow definitions
 ├── src/                             # Zig data path
 │   ├── connector/
 │   ├── archiver/
@@ -555,6 +559,10 @@ ssmd/
 │   ├── dev.yaml
 │   ├── staging.yaml
 │   └── prod.yaml
+├── calendars/                       # Market calendars
+│   ├── crypto.yaml
+│   ├── us-equity.yaml
+│   └── kraken.yaml
 ├── charts/
 │   └── ssmd/
 │       ├── Chart.yaml
@@ -666,6 +674,143 @@ loki:
   enabled: true
 ```
 
+## Job Scheduling (Temporal)
+
+Temporal handles all scheduled and long-running jobs with market calendar awareness.
+
+### Why Temporal
+
+- **Durable execution** - Jobs survive restarts, automatic retries
+- **Custom calendars** - Schedule on trading days only, skip holidays
+- **Visibility** - Web UI shows job history, failures, retries
+- **Workflow orchestration** - Multi-step jobs with dependencies
+
+### Market Calendars
+
+```yaml
+# calendars/us-equity.yaml
+name: us-equity
+timezone: America/New_York
+trading_days:
+  - weekdays: [mon, tue, wed, thu, fri]
+trading_hours:
+  open: "09:30"
+  close: "16:00"
+holidays:
+  - 2025-01-01  # New Year's Day
+  - 2025-01-20  # MLK Day
+  - 2025-02-17  # Presidents Day
+  - 2025-04-18  # Good Friday
+  - 2025-05-26  # Memorial Day
+  - 2025-06-19  # Juneteenth
+  - 2025-07-04  # Independence Day
+  - 2025-09-01  # Labor Day
+  - 2025-11-27  # Thanksgiving
+  - 2025-12-25  # Christmas
+
+# calendars/crypto.yaml
+name: crypto
+timezone: UTC
+trading_days:
+  - weekdays: [mon, tue, wed, thu, fri, sat, sun]  # 24/7
+trading_hours:
+  open: "00:00"
+  close: "23:59"
+holidays: []  # Never closed
+```
+
+### Job Types
+
+**Scheduled jobs:**
+
+| Job | Schedule | Calendar | Description |
+|-----|----------|----------|-------------|
+| daily-archive | 06:00 | per-exchange | Archive previous day's JetStream to Garage |
+| daily-qa | 07:00 | per-exchange | Run data quality checks on yesterday's data |
+| weekly-cleanup | Sun 02:00 | none | Prune old normalized versions |
+| monthly-audit | 1st 08:00 | none | Generate usage/entitlement reports |
+
+**On-demand jobs:**
+
+| Job | Trigger | Description |
+|-----|---------|-------------|
+| reprocess | CLI / API | Rebuild normalized data for date range |
+| backfill | CLI / API | Fill gaps in raw data (if source supports) |
+| export | CLI / API | Export data to external format (Parquet, etc.) |
+
+### Workflow Examples
+
+**Daily archive workflow:**
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Wait for   │────▶│  Archive    │────▶│  Verify     │
+│  market     │     │  JetStream  │     │  integrity  │
+│  close      │     │  → Garage   │     │             │
+└─────────────┘     └─────────────┘     └──────┬──────┘
+                                               │
+                                               ▼
+                                        ┌─────────────┐
+                                        │  Notify on  │
+                                        │  failure    │
+                                        └─────────────┘
+```
+
+**Reprocess workflow:**
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Validate   │────▶│  Process    │────▶│  Compare    │
+│  date range │     │  each day   │     │  old vs new │
+│             │     │  (parallel) │     │             │
+└─────────────┘     └─────────────┘     └──────┬──────┘
+                                               │
+                                               ▼
+                                        ┌─────────────┐
+                                        │  Promote    │
+                                        │  version    │
+                                        └─────────────┘
+```
+
+### CLI Integration
+
+```bash
+# Calendar management
+ssmd calendar list
+ssmd calendar add us-equity --from-file calendars/us-equity.yaml
+ssmd calendar holidays us-equity --year 2025
+
+# Job management
+ssmd job list
+ssmd job run reprocess --feed kraken --start 2025-12-01 --end 2025-12-05
+ssmd job status <job-id>
+ssmd job cancel <job-id>
+
+# Schedule management
+ssmd schedule list
+ssmd schedule pause daily-archive
+ssmd schedule resume daily-archive
+```
+
+### Temporal Deployment
+
+```yaml
+# In Helm chart
+temporal:
+  enabled: true
+  server:
+    replicas: 1  # Homelab scale
+  ui:
+    enabled: true
+  persistence:
+    default:
+      driver: sqlite  # Homelab, upgrade to postgres for prod
+```
+
+**Temporal UI** available at `http://temporal.ssmd.local` for:
+- Viewing workflow history
+- Inspecting failed jobs
+- Manual retry/cancel
+- Schedule management
+
 ## Implementation Phases
 
 ### Phase 0: CLI & Environment Definitions (Build First)
@@ -685,9 +830,11 @@ Metadata support must come first. Remove chance of operator error.
 - Set up k3s cluster on homelab
 - Deploy NATS + JetStream via Helm
 - Deploy Garage via Helm
+- Deploy Temporal via Helm
 - Deploy ArgoCD, connect to repo
 - Use ssmd-cli to create and apply dev environment
-- Validate: publish/subscribe to NATS, write to Garage
+- Define crypto calendar (24/7)
+- Validate: publish/subscribe to NATS, write to Garage, Temporal UI accessible
 
 ### Phase 2: Core Ingestion
 
@@ -698,11 +845,15 @@ Metadata support must come first. Remove chance of operator error.
 - Publish normalized data to NATS
 - Validate: see live data via `nats sub`
 
-### Phase 3: Archival
+### Phase 3: Archival & Scheduling
 
 - Build archiver (JetStream → Garage)
 - Build reprocessor for data quality iteration
-- Validate: data in Garage buckets, can read back, can reprocess
+- Build ssmd-worker (Temporal workflows)
+- Implement daily-archive workflow
+- Implement reprocess workflow
+- Implement `ssmd calendar` and `ssmd job` CLI commands
+- Validate: data in Garage buckets, scheduled jobs run, can trigger reprocess
 
 ### Phase 4: Agent Access
 
@@ -795,6 +946,7 @@ Metadata support must come first. Remove chance of operator error.
 | Messaging | NATS + JetStream |
 | Object Storage | Garage |
 | Entitlements DB | SQLite |
+| Job Scheduling | Temporal |
 | Container Orchestration | Kubernetes (k3s) |
 | Package Management | Helm |
 | GitOps | ArgoCD |
