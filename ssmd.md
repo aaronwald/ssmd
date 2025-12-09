@@ -27,6 +27,10 @@
 1. Orderbook - sharded by some schema (symbol, underlying etc)
 1. All events for a session for a sequenced stream which you can play back to build the correct state at a given time.
 
+## Schema
+1. A common data schema is needed.
+1. Managing the schema across groups is tricky. Too rigid and new users may suffer. Too flexible then we can easily introduce regression.
+
 ## MetaData
 1. Need exchange calendar (with as-of date support)
 1. Need description of each exchange as a time series so we know protocols and sources of data available on what dates.
