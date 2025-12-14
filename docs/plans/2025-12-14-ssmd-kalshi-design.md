@@ -19,6 +19,401 @@ ssmd is a homelab-friendly market data system. It captures live market data, str
 - Multiple markets (Polymarket, Kraken come later)
 - Complex routing or tickerplant functionality
 
+## Metadata System
+
+Metadata is the foundation for operator safety. The system is self-describing: every feed, symbol, schema version, and data file is tracked. Operators cannot misconfigure what they can query.
+
+### Design Principles
+
+1. **Query before act** - CLI validates against metadata before any operation
+2. **No implicit state** - All configuration is explicit and versioned
+3. **Fail fast** - Invalid references fail at config time, not runtime
+4. **Time-travel** - All metadata is temporal; query state as-of any date
+
+### Metadata Domains
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      METADATA REGISTRY                          │
+├─────────────────┬─────────────────┬─────────────────────────────┤
+│  Feed Registry  │  Data Inventory │  Schema Registry            │
+│  - Exchanges    │  - Coverage     │  - Versions                 │
+│  - Protocols    │  - Gaps         │  - Migrations               │
+│  - Credentials  │  - Quality      │  - Compatibility            │
+├─────────────────┴─────────────────┴─────────────────────────────┤
+│                    System Configuration                          │
+│  - Environments  - Deployments  - Audit Log                     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 1. Feed Registry
+
+Defines what data sources exist and how to connect to them.
+
+```sql
+CREATE TABLE feeds (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(64) UNIQUE NOT NULL,      -- 'kalshi', 'polymarket', 'kraken'
+  display_name VARCHAR(128),
+  feed_type VARCHAR(32) NOT NULL,        -- 'websocket', 'rest', 'multicast'
+  status VARCHAR(16) DEFAULT 'active',   -- 'active', 'deprecated', 'disabled'
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE feed_versions (
+  id SERIAL PRIMARY KEY,
+  feed_id INTEGER REFERENCES feeds(id),
+  version VARCHAR(32) NOT NULL,          -- 'v1', 'v2'
+  effective_from DATE NOT NULL,
+  effective_to DATE,                     -- NULL = current
+
+  -- Connection details
+  protocol VARCHAR(32) NOT NULL,         -- 'wss', 'https', 'multicast'
+  endpoint_template TEXT NOT NULL,       -- 'wss://api.kalshi.com/trade-api/ws/v2'
+  auth_method VARCHAR(32),               -- 'api_key', 'oauth', 'mtls'
+  secret_ref VARCHAR(128),               -- 'sealed-secret/kalshi-creds'
+
+  -- Capabilities
+  supports_orderbook BOOLEAN DEFAULT false,
+  supports_trades BOOLEAN DEFAULT true,
+  supports_historical BOOLEAN DEFAULT false,
+  max_symbols_per_connection INTEGER,
+  rate_limit_per_second INTEGER,
+
+  -- Parser configuration
+  parser_config JSONB,                   -- Feed-specific parsing rules
+
+  UNIQUE(feed_id, effective_from)
+);
+
+CREATE TABLE feed_calendars (
+  id SERIAL PRIMARY KEY,
+  feed_id INTEGER REFERENCES feeds(id),
+  effective_from DATE NOT NULL,
+  effective_to DATE,
+
+  -- Trading hours (NULL = 24/7)
+  timezone VARCHAR(64),
+  open_time TIME,
+  close_time TIME,
+
+  -- Holiday calendar reference
+  holiday_calendar VARCHAR(64),          -- 'us_equity', 'crypto_247', 'custom'
+
+  UNIQUE(feed_id, effective_from)
+);
+```
+
+**Example: Adding a new feed**
+
+```bash
+# CLI validates feed definition before insert
+ssmd feed create polymarket \
+  --type websocket \
+  --protocol wss \
+  --endpoint 'wss://ws-subscriptions-clob.polymarket.com/ws/market' \
+  --auth-method api_key \
+  --secret sealed-secret/polymarket-creds
+
+# Show feed configuration as-of a date
+ssmd feed show kalshi --as-of 2025-12-01
+
+# List all active feeds
+ssmd feed list --status active
+```
+
+### 2. Data Inventory
+
+Tracks what data exists, where it lives, and its quality status.
+
+```sql
+CREATE TABLE data_inventory (
+  id SERIAL PRIMARY KEY,
+  feed_id INTEGER REFERENCES feeds(id),
+  data_type VARCHAR(32) NOT NULL,        -- 'raw', 'normalized'
+  date DATE NOT NULL,
+
+  -- Location
+  storage_path TEXT NOT NULL,            -- 's3://ssmd-raw/kalshi/2025/12/14/'
+  schema_version VARCHAR(32),            -- 'v1' (for normalized)
+
+  -- Coverage
+  symbol_count INTEGER,
+  record_count BIGINT,
+  byte_size BIGINT,
+  first_timestamp TIMESTAMPTZ,
+  last_timestamp TIMESTAMPTZ,
+
+  -- Quality
+  status VARCHAR(16) NOT NULL,           -- 'complete', 'partial', 'failed', 'processing'
+  gap_count INTEGER DEFAULT 0,
+  quality_score DECIMAL(3,2),            -- 0.00 to 1.00
+
+  -- Provenance
+  connector_version VARCHAR(32),
+  processor_version VARCHAR(32),
+  processed_at TIMESTAMPTZ,
+
+  UNIQUE(feed_id, data_type, date, schema_version)
+);
+
+CREATE TABLE data_gaps (
+  id SERIAL PRIMARY KEY,
+  inventory_id INTEGER REFERENCES data_inventory(id),
+  gap_start TIMESTAMPTZ NOT NULL,
+  gap_end TIMESTAMPTZ NOT NULL,
+  gap_type VARCHAR(32),                  -- 'connection_lost', 'rate_limited', 'exchange_outage'
+  resolved BOOLEAN DEFAULT false,
+  resolved_at TIMESTAMPTZ,
+  notes TEXT
+);
+
+CREATE TABLE data_quality_issues (
+  id SERIAL PRIMARY KEY,
+  inventory_id INTEGER REFERENCES data_inventory(id),
+  issue_type VARCHAR(32) NOT NULL,       -- 'duplicate', 'out_of_order', 'missing_field', 'parse_error'
+  severity VARCHAR(16) NOT NULL,         -- 'error', 'warning', 'info'
+  count INTEGER DEFAULT 1,
+  sample_data JSONB,
+  detected_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**Example: Querying data inventory**
+
+```bash
+# What data do we have for a date range?
+ssmd data inventory --feed kalshi --from 2025-12-01 --to 2025-12-14
+
+# Show gaps for a specific date
+ssmd data gaps --feed kalshi --date 2025-12-14
+
+# Data quality report
+ssmd data quality --feed kalshi --date 2025-12-14
+
+# Find dates with incomplete data
+ssmd data inventory --feed kalshi --status partial
+```
+
+**Inventory output example:**
+
+```
+Feed: kalshi
+Date Range: 2025-12-01 to 2025-12-14
+
+Date        Raw     Normalized  Status     Quality  Gaps
+2025-12-01  523MB   312MB       complete   0.99     0
+2025-12-02  518MB   308MB       complete   1.00     0
+2025-12-03  531MB   319MB       partial    0.95     2
+...
+2025-12-14  -       -           processing -        -
+```
+
+### 3. Schema Registry
+
+Tracks schema versions for normalized data. Ensures you can always reprocess with the correct schema.
+
+```sql
+CREATE TABLE schema_versions (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(64) NOT NULL,             -- 'trade', 'orderbook', 'market_status'
+  version VARCHAR(32) NOT NULL,
+
+  -- Schema definition
+  format VARCHAR(32) NOT NULL,           -- 'capnp', 'protobuf', 'json_schema'
+  schema_definition TEXT NOT NULL,       -- Actual schema content
+  schema_hash VARCHAR(64) NOT NULL,      -- SHA256 for integrity
+
+  -- Lifecycle
+  status VARCHAR(16) DEFAULT 'active',   -- 'draft', 'active', 'deprecated'
+  effective_from DATE NOT NULL,
+  deprecated_at DATE,
+
+  -- Compatibility
+  compatible_with JSONB,                 -- ['v1', 'v2'] - can read these versions
+  breaking_changes TEXT,                 -- Description of what changed
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+
+  UNIQUE(name, version)
+);
+
+CREATE TABLE schema_migrations (
+  id SERIAL PRIMARY KEY,
+  from_version_id INTEGER REFERENCES schema_versions(id),
+  to_version_id INTEGER REFERENCES schema_versions(id),
+
+  -- Migration script
+  migration_type VARCHAR(32),            -- 'automatic', 'manual', 'reprocess'
+  migration_script TEXT,
+
+  -- Execution tracking
+  executed_at TIMESTAMPTZ,
+  executed_by VARCHAR(64),
+  status VARCHAR(16),                    -- 'pending', 'running', 'completed', 'failed'
+
+  UNIQUE(from_version_id, to_version_id)
+);
+```
+
+**Example: Schema operations**
+
+```bash
+# List schema versions
+ssmd schema list
+
+# Show schema for a specific version
+ssmd schema show trade --version v1
+
+# Check compatibility
+ssmd schema compat trade --from v1 --to v2
+
+# What schema was used on a date?
+ssmd schema used --feed kalshi --date 2025-12-14
+```
+
+### 4. System Configuration
+
+The environment definition itself is versioned metadata.
+
+```sql
+CREATE TABLE environments (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(64) UNIQUE NOT NULL,      -- 'kalshi-prod', 'kalshi-dev'
+  description TEXT,
+  status VARCHAR(16) DEFAULT 'active',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE environment_versions (
+  id SERIAL PRIMARY KEY,
+  environment_id INTEGER REFERENCES environments(id),
+  version INTEGER NOT NULL,
+
+  -- Configuration snapshot
+  config_yaml TEXT NOT NULL,
+  config_hash VARCHAR(64) NOT NULL,
+
+  -- Deployment tracking
+  deployed_at TIMESTAMPTZ,
+  deployed_by VARCHAR(64),
+  git_commit VARCHAR(40),
+
+  -- Validity
+  valid_from TIMESTAMPTZ,
+  valid_to TIMESTAMPTZ,                  -- NULL = current
+
+  UNIQUE(environment_id, version)
+);
+
+CREATE TABLE deployment_log (
+  id SERIAL PRIMARY KEY,
+  environment_version_id INTEGER REFERENCES environment_versions(id),
+  action VARCHAR(32) NOT NULL,           -- 'deploy', 'teardown', 'rollback'
+  status VARCHAR(16) NOT NULL,           -- 'started', 'completed', 'failed'
+  started_at TIMESTAMPTZ DEFAULT NOW(),
+  completed_at TIMESTAMPTZ,
+  error_message TEXT,
+
+  -- What triggered this
+  trigger VARCHAR(32),                   -- 'scheduled', 'manual', 'gitops'
+  triggered_by VARCHAR(64)
+);
+```
+
+**Example: Environment operations**
+
+```bash
+# Show current environment configuration
+ssmd env show kalshi-prod
+
+# Show environment as it was deployed on a date
+ssmd env show kalshi-prod --as-of 2025-12-10
+
+# Diff two versions
+ssmd env diff kalshi-prod --v1 3 --v2 4
+
+# Deployment history
+ssmd env history kalshi-prod
+
+# Validate before deploy (queries all metadata)
+ssmd env validate environments/kalshi.yaml
+```
+
+### Validation: Removing Operator Error
+
+Every CLI command validates against metadata before acting:
+
+```bash
+$ ssmd connector start --feed polymarket --symbols BTC-WINNER
+
+Error: Validation failed
+  - Feed 'polymarket' not found in feed registry
+  - Did you mean 'kalshi'?
+
+Available feeds:
+  kalshi (active) - Prediction market
+
+$ ssmd data replay --feed kalshi --date 2025-12-20
+
+Error: Validation failed
+  - No data inventory for kalshi on 2025-12-20
+  - Latest available: 2025-12-14
+
+$ ssmd env apply environments/kalshi.yaml
+
+Validating environment...
+  ✓ Feed 'kalshi' exists and is active
+  ✓ Schema 'trade:v1' exists and is active
+  ✓ Secret 'sealed-secret/kalshi-creds' exists
+  ✓ Storage bucket 'ssmd-raw' accessible
+  ✓ NATS stream 'ssmd-kalshi' exists
+
+Ready to deploy. Proceed? [y/N]
+```
+
+### Metadata API
+
+All metadata is queryable via REST for agents and tooling:
+
+```
+GET /v1/meta/feeds                       # List feeds
+GET /v1/meta/feeds/{name}                # Feed details
+GET /v1/meta/feeds/{name}/calendar       # Trading calendar
+
+GET /v1/meta/inventory                   # Data inventory
+GET /v1/meta/inventory/{feed}/{date}     # Specific date
+GET /v1/meta/gaps/{feed}                 # Data gaps
+
+GET /v1/meta/schemas                     # Schema versions
+GET /v1/meta/schemas/{name}/{version}    # Specific schema
+
+GET /v1/meta/environments                # Environments
+GET /v1/meta/environments/{name}/history # Deployment history
+```
+
+### Temporal Queries (As-Of)
+
+All metadata supports temporal queries:
+
+```sql
+-- What was the Kalshi endpoint on Dec 1st?
+SELECT * FROM feed_versions
+WHERE feed_id = (SELECT id FROM feeds WHERE name = 'kalshi')
+  AND effective_from <= '2025-12-01'
+  AND (effective_to IS NULL OR effective_to > '2025-12-01');
+
+-- What schema version was used to process Dec 14th data?
+SELECT sv.* FROM schema_versions sv
+JOIN data_inventory di ON di.schema_version = sv.version
+WHERE di.feed_id = (SELECT id FROM feeds WHERE name = 'kalshi')
+  AND di.date = '2025-12-14'
+  AND di.data_type = 'normalized';
+```
+
+This enables reproducible backtesting: replay Dec 1st data with the exact configuration and schema that was active on Dec 1st.
+
 ## Architecture
 
 ```
@@ -136,7 +531,7 @@ enum Status {
 
 ## Security Master
 
-PostgreSQL stores all market metadata. Essential for prediction markets where contracts expire.
+Part of the Metadata System. Stores market/instrument metadata for each feed. Essential for prediction markets where contracts expire.
 
 ### Schema
 
@@ -473,43 +868,88 @@ Structured JSON to stdout, collected with Loki:
 
 ## Implementation Phases
 
-### Phase 1: Foundation (Week 1)
+### Phase 1: Metadata Foundation (Week 1)
 
+Metadata first - the system must know what it's managing before managing it.
+
+**Database schema:**
+- [ ] PostgreSQL metadata schema (feeds, feed_versions, feed_calendars)
+- [ ] Data inventory schema (data_inventory, data_gaps, data_quality_issues)
+- [ ] Schema registry tables (schema_versions, schema_migrations)
+- [ ] Environment/deployment tables (environments, environment_versions, deployment_log)
+- [ ] Security master tables (markets, market_history)
+
+**CLI foundation (Go):**
+- [ ] `ssmd feed create/list/show` - feed registry management
+- [ ] `ssmd schema register/list/show` - schema registry
+- [ ] `ssmd env validate` - environment validation against metadata
+- [ ] Validation framework: all commands query metadata before acting
+
+**Bootstrap data:**
+- [ ] Register Kalshi feed in feed_versions
+- [ ] Register Cap'n Proto schemas (trade, orderbook, market_status)
+- [ ] Create initial environment definition
+
+**Deliverable:** Can run `ssmd feed list` and see Kalshi. `ssmd env validate` checks all references.
+
+### Phase 2: Connector + Streaming (Week 2)
+
+**Rust connector:**
 - [ ] Rust project setup (cargo workspace)
-- [ ] Cap'n Proto schema definition
+- [ ] Cap'n Proto schema definition (.capnp files)
 - [ ] Kalshi WebSocket client (tokio + tungstenite)
-- [ ] Basic NATS publisher
-- [ ] PostgreSQL secmaster schema
+- [ ] Connector reads feed config from metadata DB
+- [ ] Basic NATS publisher (Cap'n Proto)
 
-**Deliverable:** Connector prints Kalshi trades to stdout.
-
-### Phase 2: Streaming (Week 2)
-
-- [ ] Connector publishes to NATS (Cap'n Proto)
+**Gateway:**
 - [ ] Gateway subscribes to NATS
-- [ ] Gateway serves WebSocket (JSON)
-- [ ] Basic CLI (Go) for operations
+- [ ] Gateway serves WebSocket (JSON translation)
+- [ ] Metadata API endpoints (`/v1/meta/feeds`, `/v1/meta/schemas`)
 
-**Deliverable:** Can connect via WebSocket and see live trades.
+**Deliverable:** Live trades visible via WebSocket. Metadata queryable via REST.
 
-### Phase 3: Persistence (Week 3)
+### Phase 3: Persistence + Inventory (Week 3)
 
+**Archival:**
 - [ ] Raw archiver (JSONL to S3)
 - [ ] Normalized archiver (Cap'n Proto to S3)
-- [ ] Secmaster sync from Kalshi API
-- [ ] Temporal workflows for startup/teardown
+- [ ] Archiver writes to data_inventory on completion
+- [ ] Gap detection: archiver records disconnections to data_gaps
 
-**Deliverable:** Data persists across restarts.
+**Security master sync:**
+- [ ] Temporal workflow: sync markets from Kalshi API
+- [ ] Record changes in market_history
+- [ ] Publish change events to NATS
 
-### Phase 4: Operations (Week 4)
+**Data inventory CLI:**
+- [ ] `ssmd data inventory --feed kalshi` - show what data exists
+- [ ] `ssmd data gaps --feed kalshi --date DATE` - show gaps
+- [ ] `ssmd data quality --feed kalshi --date DATE` - quality report
 
+**Deliverable:** Data persists. Can query `ssmd data inventory` to see coverage.
+
+### Phase 4: Operations + Scheduling (Week 4)
+
+**Temporal workflows:**
+- [ ] Daily startup workflow (sync metadata → start connector → start archiver → start gateway)
+- [ ] Daily teardown workflow (drain → flush → stop → verify)
+- [ ] Workflow writes to deployment_log
+
+**Secrets + deployment:**
 - [ ] Sealed Secrets integration
-- [ ] Full CLI implementation
-- [ ] Prometheus metrics
 - [ ] ArgoCD manifests
-- [ ] Documentation
+- [ ] Environment versioning: `ssmd env apply` creates environment_version record
 
-**Deliverable:** Production-ready deployment.
+**Observability:**
+- [ ] Prometheus metrics
+- [ ] Metadata-aware alerts (e.g., gap detected → alert)
+
+**CLI completion:**
+- [ ] `ssmd env apply/diff/history`
+- [ ] `ssmd ops start/stop/status`
+- [ ] `ssmd data replay --date DATE`
+
+**Deliverable:** Production-ready. Daily cycle automated. Full audit trail in metadata.
 
 ## Dependencies
 
