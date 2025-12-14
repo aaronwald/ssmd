@@ -16,7 +16,7 @@ ssmd is a homelab-friendly market data system. It captures live market data, str
 ## Non-Goals
 
 - Ultra-low-latency (Kalshi is WebSocket, not binary multicast)
-- Complex routing or tickerplant functionality
+- Custom tickerplant (stateful order book routing) - defer state to edge, use transport layer for routing
 
 ## First Milestone Scope
 
