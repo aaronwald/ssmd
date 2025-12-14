@@ -1297,6 +1297,1310 @@ GET /v1/markets/{ticker}/trades    # Recent trades
 GET /v1/health                     # System health
 ```
 
+## Error Handling Strategy
+
+Errors are categorized, handled consistently, and surfaced appropriately. The system fails fast on configuration errors and recovers gracefully from transient failures.
+
+### Error Categories
+
+| Category | Examples | Response |
+|----------|----------|----------|
+| **Configuration** | Invalid YAML, missing secret, unknown feed | Fail fast at startup, don't retry |
+| **Transient** | Network timeout, rate limit, connection lost | Retry with backoff, then escalate |
+| **Data Quality** | Parse error, unexpected schema, missing field | Log, record in inventory, continue |
+| **Fatal** | Out of memory, disk full, auth revoked | Shutdown gracefully, alert |
+
+### Retry Policy
+
+Transient errors use exponential backoff with jitter:
+
+```rust
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub initial_delay: Duration,
+    pub max_delay: Duration,
+    pub multiplier: f64,
+    pub jitter: f64,  // 0.0 to 1.0
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 5,
+            initial_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(30),
+            multiplier: 2.0,
+            jitter: 0.1,
+        }
+    }
+}
+
+pub async fn retry_with_policy<F, T, E>(
+    policy: &RetryPolicy,
+    operation: F,
+) -> Result<T, E>
+where
+    F: Fn() -> Future<Output = Result<T, E>>,
+    E: IsTransient,
+{
+    let mut attempt = 0;
+    let mut delay = policy.initial_delay;
+
+    loop {
+        match operation().await {
+            Ok(result) => return Ok(result),
+            Err(e) if e.is_transient() && attempt < policy.max_attempts => {
+                attempt += 1;
+                let jittered = add_jitter(delay, policy.jitter);
+                tokio::time::sleep(jittered).await;
+                delay = (delay.mul_f64(policy.multiplier)).min(policy.max_delay);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+```
+
+### Dead Letter Queue
+
+Messages that fail after all retries go to a dead letter queue for inspection:
+
+```rust
+pub struct DeadLetter {
+    pub original_subject: String,
+    pub payload: Bytes,
+    pub error: String,
+    pub attempts: u32,
+    pub first_attempt: u64,
+    pub last_attempt: u64,
+    pub component: String,  // "connector", "archiver", etc.
+}
+```
+
+Dead letters are:
+1. Published to `ssmd.dlq.{component}` NATS subject
+2. Recorded in `data_quality_issues` table
+3. Visible via `ssmd dlq list` and TUI
+
+```bash
+# View dead letters
+ssmd dlq list --component connector --since 1h
+
+# Replay a dead letter (after fixing the issue)
+ssmd dlq replay --id <dlq-id>
+
+# Purge old dead letters
+ssmd dlq purge --older-than 7d
+```
+
+### Circuit Breaker
+
+Prevents cascade failures when downstream is unhealthy:
+
+```rust
+pub struct CircuitBreaker {
+    state: AtomicU8,  // Closed=0, Open=1, HalfOpen=2
+    failure_count: AtomicU32,
+    success_count: AtomicU32,
+    last_failure: AtomicU64,
+
+    // Configuration
+    failure_threshold: u32,      // Open after N failures
+    success_threshold: u32,      // Close after N successes in half-open
+    timeout: Duration,           // Time before half-open
+}
+
+impl CircuitBreaker {
+    pub async fn call<F, T, E>(&self, operation: F) -> Result<T, CircuitError<E>>
+    where
+        F: Future<Output = Result<T, E>>,
+    {
+        match self.state() {
+            State::Open => {
+                if self.should_try_half_open() {
+                    self.set_state(State::HalfOpen);
+                } else {
+                    return Err(CircuitError::Open);
+                }
+            }
+            _ => {}
+        }
+
+        match operation.await {
+            Ok(result) => {
+                self.record_success();
+                Ok(result)
+            }
+            Err(e) => {
+                self.record_failure();
+                Err(CircuitError::Failed(e))
+            }
+        }
+    }
+}
+```
+
+Circuit breakers wrap:
+- Exchange WebSocket connections
+- NATS publish operations
+- S3 storage operations
+- PostgreSQL queries
+
+### Error Propagation
+
+Errors include context for debugging:
+
+```rust
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum ConnectorError {
+    #[error("WebSocket connection failed: {source}")]
+    WebSocket {
+        #[source]
+        source: tungstenite::Error,
+        endpoint: String,
+        attempt: u32,
+    },
+
+    #[error("Failed to parse message: {source}")]
+    Parse {
+        #[source]
+        source: serde_json::Error,
+        raw_message: String,
+        symbol: Option<String>,
+    },
+
+    #[error("Transport publish failed: {source}")]
+    Transport {
+        #[source]
+        source: TransportError,
+        subject: String,
+    },
+
+    #[error("Configuration error: {message}")]
+    Config { message: String },
+}
+
+impl ConnectorError {
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::WebSocket { .. } | Self::Transport { .. })
+    }
+}
+```
+
+### Graceful Degradation
+
+When non-critical components fail:
+
+| Component Failure | Degradation |
+|-------------------|-------------|
+| Cache unavailable | Bypass cache, query DB directly (slower) |
+| Archiver behind | Continue streaming, archiver catches up |
+| Metadata API down | Use cached metadata, warn on stale |
+| One symbol fails | Continue other symbols, log gap |
+
+### Alerting Integration
+
+Errors surface as metrics and alerts:
+
+```yaml
+# Error rate alert
+- alert: HighErrorRate
+  expr: rate(ssmd_errors_total[5m]) > 0.1
+  for: 2m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High error rate in {{ $labels.component }}"
+
+# Circuit breaker open
+- alert: CircuitBreakerOpen
+  expr: ssmd_circuit_breaker_state == 1
+  for: 1m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Circuit breaker open for {{ $labels.target }}"
+
+# Dead letters accumulating
+- alert: DeadLettersAccumulating
+  expr: increase(ssmd_dead_letters_total[1h]) > 100
+  labels:
+    severity: warning
+```
+
+## Backpressure & Slow Consumers
+
+The system handles consumers that can't keep up without losing data or blocking producers.
+
+### Design Principles
+
+1. **Never block producers** - Connector must keep ingesting exchange data
+2. **Bound memory** - Per-client buffers have limits
+3. **Detect early** - Identify slow consumers before they cause problems
+4. **Degrade gracefully** - Slow consumers get dropped, not crashed
+
+### Architecture
+
+```
+                                    ┌─────────────────┐
+                                    │  Fast Client A  │◀── Full stream
+                                    └─────────────────┘
+┌───────────┐     ┌──────────┐     ┌─────────────────┐
+│ Connector │────▶│   NATS   │────▶│  Slow Client B  │◀── Buffered, then dropped
+└───────────┘     │ JetStream│     └─────────────────┘
+                  └──────────┘     ┌─────────────────┐
+                                   │  Client C (sub) │◀── Conflated snapshots
+                                   └─────────────────┘
+```
+
+### NATS JetStream Configuration
+
+JetStream provides durable streams with configurable consumer policies:
+
+```yaml
+# Stream configuration
+streams:
+  ssmd-kalshi:
+    subjects:
+      - "kalshi.>"
+    retention: limits
+    max_bytes: 10GB           # Bound total stream size
+    max_age: 24h              # Auto-expire old messages
+    max_msg_size: 1MB
+    discard: old              # Drop oldest when full (not new)
+    duplicate_window: 2m      # Dedup window
+
+# Consumer configuration (per client type)
+consumers:
+  realtime:
+    ack_policy: none          # Fire and forget for speed
+    max_deliver: 1
+    flow_control: true
+    idle_heartbeat: 30s
+
+  durable:
+    ack_policy: explicit      # Guaranteed delivery
+    max_deliver: 5
+    ack_wait: 30s
+    max_ack_pending: 1000     # Backpressure threshold
+```
+
+### Gateway Client Management
+
+Each WebSocket client has a bounded buffer:
+
+```rust
+pub struct ClientConnection {
+    id: ClientId,
+    socket: WebSocketSender,
+    buffer: BoundedBuffer,
+    subscriptions: HashSet<String>,
+    stats: ClientStats,
+    state: ClientState,
+}
+
+pub struct BoundedBuffer {
+    queue: VecDeque<Message>,
+    max_size: usize,           // Max messages
+    max_bytes: usize,          // Max total bytes
+    current_bytes: usize,
+    drop_policy: DropPolicy,
+}
+
+pub enum DropPolicy {
+    DropOldest,                // Drop head of queue
+    DropNewest,                // Drop incoming message
+    Disconnect,                // Terminate slow client
+}
+
+pub struct ClientStats {
+    connected_at: Instant,
+    messages_sent: u64,
+    messages_dropped: u64,
+    bytes_sent: u64,
+    last_message_at: Instant,
+    lag_ms: AtomicU64,
+}
+
+pub enum ClientState {
+    Healthy,
+    Lagging { since: Instant },
+    Dropping { dropped: u64 },
+    Disconnecting { reason: String },
+}
+```
+
+### Slow Consumer Detection
+
+Detect slow consumers before buffers fill:
+
+```rust
+impl Gateway {
+    async fn monitor_clients(&self) {
+        loop {
+            for client in self.clients.iter() {
+                let stats = client.stats();
+                let buffer_pct = client.buffer.utilization();
+
+                // Update lag metric
+                if let Some(last_seq) = client.last_ack_sequence {
+                    let current_seq = self.stream.last_sequence();
+                    let lag = current_seq - last_seq;
+                    client.stats.lag_ms.store(lag * AVG_MSG_INTERVAL_MS, Ordering::Relaxed);
+                }
+
+                // State transitions
+                match client.state {
+                    ClientState::Healthy if buffer_pct > 0.7 => {
+                        client.set_state(ClientState::Lagging { since: Instant::now() });
+                        self.metrics.slow_consumers.inc();
+                        warn!(client_id = %client.id, buffer_pct, "Client lagging");
+                    }
+                    ClientState::Lagging { since } if buffer_pct > 0.9 => {
+                        client.set_state(ClientState::Dropping { dropped: 0 });
+                        warn!(client_id = %client.id, "Client buffer full, dropping messages");
+                    }
+                    ClientState::Dropping { dropped } if dropped > 1000 => {
+                        client.set_state(ClientState::Disconnecting {
+                            reason: "Too many dropped messages".into()
+                        });
+                        warn!(client_id = %client.id, dropped, "Disconnecting slow client");
+                    }
+                    ClientState::Lagging { .. } if buffer_pct < 0.5 => {
+                        client.set_state(ClientState::Healthy);
+                        info!(client_id = %client.id, "Client recovered");
+                    }
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+}
+```
+
+### Conflation for Slow Consumers
+
+Optionally, slow consumers can receive conflated snapshots instead of every tick:
+
+```rust
+pub enum SubscriptionMode {
+    /// Every message, drop if slow
+    Realtime,
+
+    /// Periodic snapshots, never drop
+    Conflated { interval: Duration },
+
+    /// Latest value only, overwrite on each update
+    Latest,
+}
+
+pub struct ConflatedState {
+    last_trade: HashMap<String, Trade>,
+    orderbook: HashMap<String, OrderBook>,
+    last_sent: Instant,
+}
+
+impl Gateway {
+    async fn send_to_client(&self, client: &mut ClientConnection, msg: Message) {
+        match client.subscription_mode {
+            SubscriptionMode::Realtime => {
+                if client.buffer.try_push(msg).is_err() {
+                    client.stats.messages_dropped += 1;
+                }
+            }
+            SubscriptionMode::Conflated { interval } => {
+                // Update conflated state
+                client.conflated.update(&msg);
+
+                // Send snapshot on interval
+                if client.conflated.last_sent.elapsed() >= interval {
+                    let snapshot = client.conflated.snapshot();
+                    client.socket.send(snapshot).await;
+                    client.conflated.last_sent = Instant::now();
+                }
+            }
+            SubscriptionMode::Latest => {
+                client.conflated.update(&msg);
+                // Only send on explicit request
+            }
+        }
+    }
+}
+```
+
+### Client Subscription API
+
+Clients choose their mode:
+
+```json
+// Realtime (default)
+{"action": "subscribe", "symbols": ["BTCUSD"], "mode": "realtime"}
+
+// Conflated every 100ms
+{"action": "subscribe", "symbols": ["BTCUSD"], "mode": "conflated", "interval_ms": 100}
+
+// Latest only (poll-based)
+{"action": "subscribe", "symbols": ["BTCUSD"], "mode": "latest"}
+
+// Get current snapshot
+{"action": "snapshot", "symbols": ["BTCUSD"]}
+```
+
+### Metrics
+
+```prometheus
+# Per-client buffer utilization
+ssmd_gateway_client_buffer_utilization{client_id="abc123"} 0.45
+
+# Slow consumer count
+ssmd_gateway_slow_consumers 2
+
+# Messages dropped due to backpressure
+ssmd_gateway_messages_dropped_total{reason="buffer_full"} 1523
+
+# Client lag in milliseconds
+ssmd_gateway_client_lag_ms{client_id="abc123"} 250
+
+# Disconnections due to slow consumption
+ssmd_gateway_disconnections_total{reason="slow_consumer"} 5
+```
+
+### CLI for Client Management
+
+```bash
+# List connected clients
+ssmd client list
+# ID          STATE    BUFFER  LAG     SUBSCRIPTIONS
+# abc123      healthy  12%     50ms    BTCUSD, ETHUSD
+# def456      lagging  78%     2500ms  *
+# ghi789      dropping 95%     8000ms  BTCUSD
+
+# Get client details
+ssmd client show abc123
+
+# Force disconnect a client
+ssmd client disconnect def456 --reason "manual intervention"
+
+# Set client to conflated mode
+ssmd client set-mode ghi789 --mode conflated --interval 500ms
+```
+
+## Agent Integration
+
+AI agents (Claude, custom bots) interact with ssmd through structured APIs. The system is designed to be agent-friendly: queryable, explainable, and actionable.
+
+### Integration Points
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           AI AGENT                                   │
+│  (Claude Code, Custom Bot, Notebook)                                │
+└───────────┬──────────────────┬──────────────────┬───────────────────┘
+            │                  │                  │
+            ▼                  ▼                  ▼
+     ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+     │  MCP Server │   │   REST API  │   │  WebSocket  │
+     │  (tools)    │   │  (queries)  │   │  (stream)   │
+     └──────┬──────┘   └──────┬──────┘   └──────┬──────┘
+            │                 │                 │
+            └────────────────┼─────────────────┘
+                             │
+                      ┌──────▼──────┐
+                      │   Gateway   │
+                      └─────────────┘
+```
+
+### MCP Server (ssmd-mcp)
+
+Model Context Protocol server exposes ssmd as tools for Claude:
+
+```go
+// ssmd-mcp implements MCP server protocol
+type SSMDServer struct {
+    gateway  *GatewayClient
+    metadata *MetadataClient
+}
+
+// Tools exposed to Claude
+var Tools = []mcp.Tool{
+    {
+        Name:        "ssmd_list_markets",
+        Description: "List available markets with optional filters",
+        InputSchema: schema.Object{
+            "feed":     schema.String{Description: "Filter by feed (kalshi, polymarket)"},
+            "status":   schema.String{Description: "Filter by status (active, expired)"},
+            "category": schema.String{Description: "Filter by category"},
+        },
+    },
+    {
+        Name:        "ssmd_get_market",
+        Description: "Get details for a specific market including current price",
+        InputSchema: schema.Object{
+            "ticker": schema.String{Required: true, Description: "Market ticker"},
+        },
+    },
+    {
+        Name:        "ssmd_get_trades",
+        Description: "Get recent trades for a market",
+        InputSchema: schema.Object{
+            "ticker": schema.String{Required: true},
+            "limit":  schema.Integer{Default: 100, Max: 1000},
+            "since":  schema.String{Description: "ISO timestamp"},
+        },
+    },
+    {
+        Name:        "ssmd_get_orderbook",
+        Description: "Get current orderbook for a market",
+        InputSchema: schema.Object{
+            "ticker": schema.String{Required: true},
+            "depth":  schema.Integer{Default: 10, Max: 50},
+        },
+    },
+    {
+        Name:        "ssmd_query_historical",
+        Description: "Query historical data for backtesting",
+        InputSchema: schema.Object{
+            "ticker":     schema.String{Required: true},
+            "start_date": schema.String{Required: true, Description: "YYYY-MM-DD"},
+            "end_date":   schema.String{Required: true, Description: "YYYY-MM-DD"},
+            "interval":   schema.String{Default: "1m", Description: "1m, 5m, 1h, 1d"},
+        },
+    },
+    {
+        Name:        "ssmd_report_issue",
+        Description: "Report a data quality issue for investigation",
+        InputSchema: schema.Object{
+            "ticker":      schema.String{Required: true},
+            "issue_type":  schema.String{Required: true, Enum: []string{"missing_data", "incorrect_price", "duplicate", "other"}},
+            "description": schema.String{Required: true},
+            "timestamp":   schema.String{Description: "When the issue occurred"},
+            "evidence":    schema.String{Description: "Supporting data or observations"},
+        },
+    },
+    {
+        Name:        "ssmd_system_status",
+        Description: "Get current system health and data coverage",
+        InputSchema: schema.Object{},
+    },
+    {
+        Name:        "ssmd_data_inventory",
+        Description: "Check what data is available for a date range",
+        InputSchema: schema.Object{
+            "feed":       schema.String{Required: true},
+            "start_date": schema.String{Required: true},
+            "end_date":   schema.String{Required: true},
+        },
+    },
+}
+```
+
+### Agent-Friendly Responses
+
+Responses include context that helps agents understand and act:
+
+```json
+// Response to ssmd_get_market
+{
+  "ticker": "INXD-25-B4000",
+  "title": "Will S&P 500 close above 4000 on Dec 31, 2025?",
+  "feed": "kalshi",
+  "status": "active",
+  "current_price": {
+    "yes": 0.45,
+    "no": 0.55,
+    "last_trade": 0.45,
+    "last_trade_time": "2025-12-14T10:30:00Z"
+  },
+  "orderbook_summary": {
+    "best_bid": 0.44,
+    "best_ask": 0.46,
+    "spread": 0.02,
+    "bid_depth": 1500,
+    "ask_depth": 2000
+  },
+  "contract": {
+    "expiration": "2025-12-31T23:59:59Z",
+    "settlement": "2026-01-01T12:00:00Z",
+    "days_to_expiry": 17
+  },
+  "data_quality": {
+    "status": "healthy",
+    "last_update": "2025-12-14T10:30:01Z",
+    "gaps_today": 0
+  },
+  "_links": {
+    "trades": "/v1/markets/INXD-25-B4000/trades",
+    "orderbook": "/v1/markets/INXD-25-B4000/orderbook",
+    "historical": "/v1/markets/INXD-25-B4000/history"
+  },
+  "_hints": {
+    "price_interpretation": "0.45 yes price implies 45% probability of S&P > 4000",
+    "suggested_actions": [
+      "Use ssmd_get_trades to see recent activity",
+      "Use ssmd_query_historical for trend analysis"
+    ]
+  }
+}
+```
+
+### Agent Feedback Loop
+
+Agents can report data quality issues that feed back into the system:
+
+```sql
+CREATE TABLE agent_feedback (
+  id SERIAL PRIMARY KEY,
+  agent_id VARCHAR(64),            -- MCP client identifier
+  ticker VARCHAR(64),
+  issue_type VARCHAR(32) NOT NULL,
+  description TEXT NOT NULL,
+  timestamp TIMESTAMPTZ,
+  evidence JSONB,
+
+  -- Triage
+  status VARCHAR(16) DEFAULT 'open',  -- open, investigating, resolved, invalid
+  priority VARCHAR(16),
+  assigned_to VARCHAR(64),
+
+  -- Resolution
+  resolution TEXT,
+  resolved_at TIMESTAMPTZ,
+
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_agent_feedback_status ON agent_feedback(status);
+CREATE INDEX idx_agent_feedback_ticker ON agent_feedback(ticker);
+```
+
+Feedback workflow:
+
+```
+Agent reports issue
+       │
+       ▼
+┌─────────────────┐
+│ Create feedback │
+│ record (open)   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐     ┌─────────────────┐
+│ Auto-triage:    │────▶│ Link to existing│
+│ duplicate?      │ yes │ issue           │
+└────────┬────────┘     └─────────────────┘
+         │ no
+         ▼
+┌─────────────────┐     ┌─────────────────┐
+│ Auto-validate:  │────▶│ Mark invalid,   │
+│ data exists?    │ no  │ notify agent    │
+└────────┬────────┘     └─────────────────┘
+         │ yes
+         ▼
+┌─────────────────┐
+│ Create Linear   │
+│ issue (if high  │
+│ priority)       │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Investigate &   │
+│ resolve         │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Update agent    │
+│ via webhook     │
+└─────────────────┘
+```
+
+### Natural Language Queries
+
+Gateway supports natural language queries that get translated to structured queries:
+
+```json
+// Agent sends
+{
+  "action": "query",
+  "natural_language": "What prediction markets about Bitcoin are trading today?"
+}
+
+// Gateway translates to
+{
+  "action": "list_markets",
+  "filters": {
+    "category": "crypto",
+    "underlying": "BTC",
+    "status": "active"
+  }
+}
+
+// And returns
+{
+  "interpretation": "Searching for active markets related to Bitcoin",
+  "results": [...],
+  "suggestions": [
+    "To narrow down: 'Bitcoin price markets expiring this week'",
+    "For specific market: 'ssmd_get_market KXBTC-25DEC31'"
+  ]
+}
+```
+
+### Rate Limiting for Agents
+
+Agents have separate rate limits from real-time streaming:
+
+```yaml
+rate_limits:
+  agents:
+    requests_per_minute: 60
+    requests_per_hour: 1000
+    burst: 10
+
+  # Higher limits for feedback (we want bug reports)
+  feedback:
+    requests_per_minute: 10
+    requests_per_hour: 100
+```
+
+### Claude Code Integration
+
+Example Claude Code session:
+
+```
+Human: What's the current price of the S&P 4000 prediction market on Kalshi?
+
+Claude: I'll check the current market data.
+
+[Calls ssmd_get_market with ticker pattern matching "S&P 4000"]
+
+The S&P 500 above 4000 market (INXD-25-B4000) is currently trading at:
+- Yes: $0.45 (45% implied probability)
+- No: $0.55
+- Spread: $0.02
+
+The market expires on Dec 31, 2025 (17 days). Last trade was 2 minutes ago.
+```
+
+## Testing Strategy
+
+Testing ensures correctness without a QA team. The system tests itself through automation, replay, and comparison.
+
+### Testing Layers
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        PRODUCTION                                    │
+│   Real feeds, real data, real users                                 │
+└─────────────────────────────────────────────────────────────────────┘
+                              ▲
+┌─────────────────────────────────────────────────────────────────────┐
+│                     REPLAY TESTING                                   │
+│   Historical data, production code, automated comparison            │
+└─────────────────────────────────────────────────────────────────────┘
+                              ▲
+┌─────────────────────────────────────────────────────────────────────┐
+│                   INTEGRATION TESTING                                │
+│   In-memory middleware, real components, docker-compose             │
+└─────────────────────────────────────────────────────────────────────┘
+                              ▲
+┌─────────────────────────────────────────────────────────────────────┐
+│                      UNIT TESTING                                    │
+│   Isolated functions, mocked dependencies, fast feedback            │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Unit Tests
+
+Fast, isolated tests for individual functions:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_kalshi_trade() {
+        let raw = r#"{"type":"trade","ticker":"INXD-25-B4000","price":0.45,"count":10}"#;
+        let trade = parse_kalshi_message(raw).unwrap();
+
+        assert!(matches!(trade, KalshiMessage::Trade(_)));
+        if let KalshiMessage::Trade(t) = trade {
+            assert_eq!(t.ticker, "INXD-25-B4000");
+            assert_eq!(t.price, 0.45);
+        }
+    }
+
+    #[test]
+    fn test_capnp_roundtrip() {
+        let trade = Trade {
+            timestamp: 1702540800000,
+            ticker: "BTCUSD".into(),
+            price: 45000.0,
+            size: 100,
+            side: Side::Buy,
+            trade_id: "abc123".into(),
+        };
+
+        let encoded = trade.to_capnp();
+        let decoded = Trade::from_capnp(&encoded).unwrap();
+
+        assert_eq!(trade, decoded);
+    }
+
+    #[test]
+    fn test_retry_policy_backoff() {
+        let policy = RetryPolicy::default();
+        let delays: Vec<_> = (0..5).map(|i| policy.delay_for_attempt(i)).collect();
+
+        // Should be exponential with jitter
+        assert!(delays[1] > delays[0]);
+        assert!(delays[2] > delays[1]);
+        assert!(delays[4] <= policy.max_delay);
+    }
+
+    #[test]
+    fn test_bounded_buffer_drop_oldest() {
+        let mut buffer = BoundedBuffer::new(3, DropPolicy::DropOldest);
+
+        buffer.push(msg(1));
+        buffer.push(msg(2));
+        buffer.push(msg(3));
+        buffer.push(msg(4));  // Should drop msg(1)
+
+        assert_eq!(buffer.len(), 3);
+        assert_eq!(buffer.pop().unwrap().sequence, 2);
+    }
+}
+```
+
+### Integration Tests
+
+Tests with real components but in-memory middleware:
+
+```rust
+#[tokio::test]
+async fn test_connector_to_gateway_flow() {
+    // Setup in-memory middleware
+    let transport = Arc::new(InMemoryTransport::new());
+    let storage = Arc::new(InMemoryStorage::new());
+
+    // Create components
+    let connector = Connector::new(
+        MockKalshiClient::new(sample_messages()),
+        transport.clone(),
+    );
+    let gateway = Gateway::new(transport.clone());
+
+    // Start components
+    let connector_handle = tokio::spawn(connector.run());
+    let gateway_handle = tokio::spawn(gateway.run());
+
+    // Connect a test client
+    let mut client = gateway.connect_test_client().await;
+    client.subscribe(&["INXD-25-B4000"]).await;
+
+    // Wait for messages to flow
+    let msg = timeout(Duration::from_secs(5), client.next()).await.unwrap();
+
+    assert!(matches!(msg, GatewayMessage::Trade(_)));
+
+    // Cleanup
+    connector_handle.abort();
+    gateway_handle.abort();
+}
+
+#[tokio::test]
+async fn test_archiver_writes_to_storage() {
+    let transport = Arc::new(InMemoryTransport::new());
+    let storage = Arc::new(InMemoryStorage::new());
+
+    // Publish test messages
+    for i in 0..100 {
+        transport.publish("kalshi.trade.BTCUSD", sample_trade(i)).await;
+    }
+
+    // Run archiver
+    let archiver = Archiver::new(transport.clone(), storage.clone());
+    archiver.flush().await;
+
+    // Verify storage
+    let files = storage.list("ssmd-raw", "kalshi/").await.unwrap();
+    assert!(!files.is_empty());
+
+    let content = storage.get("ssmd-raw", &files[0].key).await.unwrap();
+    assert!(content.len() > 0);
+}
+```
+
+### Docker Compose for Local Integration
+
+```yaml
+# docker-compose.test.yaml
+version: '3.8'
+
+services:
+  nats:
+    image: nats:2.10
+    command: ["--jetstream"]
+    ports:
+      - "4222:4222"
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ssmd_test
+      POSTGRES_USER: ssmd
+      POSTGRES_PASSWORD: test
+    ports:
+      - "5432:5432"
+
+  minio:
+    image: minio/minio
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+```
+
+```bash
+# Run integration tests
+docker-compose -f docker-compose.test.yaml up -d
+cargo test --features integration
+docker-compose -f docker-compose.test.yaml down
+```
+
+### Replay Testing
+
+Compare new code against recorded production data:
+
+```rust
+pub struct ReplayTest {
+    date: NaiveDate,
+    feed: String,
+    baseline_version: String,
+    candidate_version: String,
+}
+
+impl ReplayTest {
+    pub async fn run(&self) -> ReplayReport {
+        // Load raw data from storage
+        let raw_data = self.load_raw_data().await;
+
+        // Process with baseline version
+        let baseline_output = self.process_with_version(&self.baseline_version, &raw_data).await;
+
+        // Process with candidate version
+        let candidate_output = self.process_with_version(&self.candidate_version, &raw_data).await;
+
+        // Compare outputs
+        let diff = self.compare_outputs(&baseline_output, &candidate_output);
+
+        ReplayReport {
+            date: self.date,
+            feed: self.feed.clone(),
+            baseline_count: baseline_output.len(),
+            candidate_count: candidate_output.len(),
+            differences: diff,
+            passed: diff.is_empty(),
+        }
+    }
+
+    fn compare_outputs(&self, baseline: &[NormalizedMessage], candidate: &[NormalizedMessage]) -> Vec<Difference> {
+        let mut diffs = Vec::new();
+
+        // Check count
+        if baseline.len() != candidate.len() {
+            diffs.push(Difference::CountMismatch {
+                baseline: baseline.len(),
+                candidate: candidate.len(),
+            });
+        }
+
+        // Check content (allowing for timestamp tolerance)
+        for (b, c) in baseline.iter().zip(candidate.iter()) {
+            if !messages_equal(b, c, Duration::from_millis(1)) {
+                diffs.push(Difference::ContentMismatch {
+                    baseline: b.clone(),
+                    candidate: c.clone(),
+                });
+            }
+        }
+
+        diffs
+    }
+}
+```
+
+CLI for replay testing:
+
+```bash
+# Replay single day
+ssmd test replay --feed kalshi --date 2025-12-14 \
+  --baseline v1.2.3 --candidate v1.2.4
+
+# Replay date range
+ssmd test replay --feed kalshi \
+  --from 2025-12-01 --to 2025-12-14 \
+  --baseline v1.2.3 --candidate v1.2.4
+
+# Output
+Replay Test Report
+==================
+Feed: kalshi
+Date Range: 2025-12-01 to 2025-12-14
+Baseline: v1.2.3
+Candidate: v1.2.4
+
+Date        Baseline    Candidate   Status
+2025-12-01  1,234,567   1,234,567   PASS
+2025-12-02  1,245,678   1,245,678   PASS
+2025-12-03  1,256,789   1,256,792   FAIL (3 diffs)
+...
+
+Failures:
+2025-12-03:
+  - Message #45678: price 0.450 vs 0.451 (rounding change?)
+  - Message #45679: missing in candidate
+  - Message #45680: missing in candidate
+```
+
+### Automated QA Pipeline
+
+GitHub Actions workflow for continuous testing:
+
+```yaml
+# .github/workflows/test.yaml
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --lib
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      nats:
+        image: nats:2.10
+        options: --entrypoint "nats-server --jetstream"
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ssmd_test
+          POSTGRES_USER: ssmd
+          POSTGRES_PASSWORD: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --features integration
+
+  replay:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Download sample data from S3
+      - name: Download test data
+        run: |
+          aws s3 sync s3://ssmd-test-data/replay ./test-data
+
+      # Run replay against last 7 days
+      - name: Replay test
+        run: |
+          cargo run --release -- test replay \
+            --feed kalshi \
+            --from $(date -d '7 days ago' +%Y-%m-%d) \
+            --to $(date +%Y-%m-%d) \
+            --baseline ${{ github.base_ref }} \
+            --candidate ${{ github.head_ref }}
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
+```
+
+### Property-Based Testing
+
+Use proptest for edge cases:
+
+```rust
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn test_capnp_roundtrip_any_trade(
+        timestamp in 0u64..u64::MAX,
+        ticker in "[A-Z]{3,10}",
+        price in 0.0f64..1000000.0,
+        size in 0u32..u32::MAX,
+    ) {
+        let trade = Trade {
+            timestamp,
+            ticker,
+            price,
+            size,
+            side: Side::Buy,
+            trade_id: "test".into(),
+        };
+
+        let encoded = trade.to_capnp();
+        let decoded = Trade::from_capnp(&encoded).unwrap();
+
+        prop_assert_eq!(trade.timestamp, decoded.timestamp);
+        prop_assert_eq!(trade.ticker, decoded.ticker);
+        prop_assert!((trade.price - decoded.price).abs() < 0.0001);
+        prop_assert_eq!(trade.size, decoded.size);
+    }
+
+    #[test]
+    fn test_bounded_buffer_never_exceeds_capacity(
+        ops in prop::collection::vec(0u8..2, 0..1000),
+        capacity in 1usize..100,
+    ) {
+        let mut buffer = BoundedBuffer::new(capacity, DropPolicy::DropOldest);
+
+        for op in ops {
+            match op {
+                0 => { buffer.push(Message::default()); }
+                1 => { buffer.pop(); }
+                _ => {}
+            }
+            prop_assert!(buffer.len() <= capacity);
+        }
+    }
+}
+```
+
+### Chaos Testing
+
+Inject failures to verify resilience:
+
+```rust
+pub struct ChaosConfig {
+    pub network_failure_rate: f64,      // 0.0 to 1.0
+    pub latency_injection_ms: u64,
+    pub message_corruption_rate: f64,
+    pub connection_drop_interval: Duration,
+}
+
+pub struct ChaosTransport {
+    inner: Arc<dyn Transport>,
+    config: ChaosConfig,
+}
+
+#[async_trait]
+impl Transport for ChaosTransport {
+    async fn publish(&self, subject: &str, payload: Bytes) -> Result<(), TransportError> {
+        // Random failure
+        if rand::random::<f64>() < self.config.network_failure_rate {
+            return Err(TransportError::NetworkFailure);
+        }
+
+        // Latency injection
+        if self.config.latency_injection_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(
+                rand::thread_rng().gen_range(0..self.config.latency_injection_ms)
+            )).await;
+        }
+
+        self.inner.publish(subject, payload).await
+    }
+}
+```
+
+```bash
+# Run with chaos enabled
+SSMD_CHAOS_NETWORK_FAILURE=0.05 \
+SSMD_CHAOS_LATENCY_MS=100 \
+cargo test --features chaos
+```
+
+### Test Data Management
+
+Fixtures and sample data:
+
+```
+test-data/
+├── fixtures/
+│   ├── kalshi/
+│   │   ├── trade.json
+│   │   ├── orderbook.json
+│   │   └── market_status.json
+│   └── schemas/
+│       └── trade_v1.capnp
+├── replay/
+│   └── kalshi/
+│       └── 2025-12-14/
+│           ├── raw.jsonl.zst
+│           └── expected.capnp.zst
+└── golden/
+    └── kalshi/
+        └── trade_normalization.json
+```
+
+Golden tests for output stability:
+
+```rust
+#[test]
+fn test_trade_normalization_golden() {
+    let input = include_str!("../test-data/fixtures/kalshi/trade.json");
+    let expected = include_str!("../test-data/golden/kalshi/trade_normalization.json");
+
+    let result = normalize_kalshi_trade(input).unwrap();
+    let result_json = serde_json::to_string_pretty(&result).unwrap();
+
+    assert_eq!(result_json, expected);
+}
+```
+
+### Coverage Requirements
+
+```toml
+# .cargo/config.toml
+[build]
+rustflags = ["-C", "instrument-coverage"]
+
+# Minimum coverage thresholds
+[coverage]
+line = 80
+branch = 70
+function = 90
+```
+
+```bash
+# Generate coverage report
+cargo llvm-cov --html --output-dir coverage/
+```
+
 ## CLI
 
 ```bash
