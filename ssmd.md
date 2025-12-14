@@ -31,7 +31,7 @@
 1. A common data schema is needed.
 1. Managing the schema across groups is tricky. Too rigid and new users may suffer. Too flexible then we can easily introduce regression.
 
-## MetaData
+## MetaData - Market Data Model
 1. Need exchange calendar (with as-of date support)
 1. Need description of each exchange as a time series so we know protocols and sources of data available on what dates.
 1. Need to track what dates we have data for and when we have failures.
@@ -109,7 +109,6 @@
 
 ## Data Quality
 1. Do not want manual QA. Want everything in code so we can iterate (and now AI)
-
 
 ## Observability
 1. Want to be able to observe health of system at lots of levels to prevent trading loss or data loss
