@@ -16,8 +16,11 @@ ssmd is a homelab-friendly market data system. It captures live market data, str
 ## Non-Goals
 
 - Ultra-low-latency (Kalshi is WebSocket, not binary multicast)
-- Multiple markets (Polymarket, Kraken come later)
 - Complex routing or tickerplant functionality
+
+## First Milestone Scope
+
+Kalshi only. Polymarket and Kraken follow after the foundation is proven.
 
 ## Key Management
 
