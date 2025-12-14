@@ -25,6 +25,7 @@ We want to build a system that agents can easily access and reason about
 Need to have meta data support built first. A key feature to simplicity will be to remove the chance of error for the operator.
 We need to have a simple cli tool that we can script to create and modify the trading environmeents definition.
 Customers may think about data differently so we will need to support different transforms on raw data.
+Key all keys in store so we can support rapid interation with tear down/build up
 
 ## Technical descisions
 Rust/Go (Zig is an option but we need to figure that out)
