@@ -1477,89 +1477,430 @@ Temporal workflow syncs markets from Kalshi API daily (and on startup):
 3. Record changes in market_history
 4. Publish change events to NATS for downstream consumers
 
-## Daily Operations
+## Trading Day Management
 
-### Teardown/Startup Cycle
+Trading day is a first-class concept. Data is partitioned by it, operations are scheduled around it, and the system state is tied to it.
 
-The system tears down at end of day and starts fresh. This ensures:
-- No accumulated state drift
-- Clean recovery from any issues
-- Forced validation of startup procedures
+### Trading Day Concept
 
-**Schedule (UTC):**
 ```
-00:00 - Teardown begins
-00:05 - All pods terminated
-00:10 - Startup begins
-00:15 - System healthy, streaming resumes
+                    Trading Day 2025-12-14 (UTC)
+    ┌─────────────────────────────────────────────────────────┐
+    │                                                         │
+00:10                                                      00:00
+START ──────────────────────────────────────────────────▶ END
+    │                                                         │
+    │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐   │
+    │  │ Sync    │  │Capture  │  │ Stream  │  │ Archive │   │
+    │  │SecMaster│─▶│  Data   │─▶│Clients  │─▶│   EOD   │   │
+    │  └─────────┘  └─────────┘  └─────────┘  └─────────┘   │
+    │                                                         │
+    └─────────────────────────────────────────────────────────┘
+                              │
+                              ▼ ROLL
+    ┌─────────────────────────────────────────────────────────┐
+    │              Trading Day 2025-12-15 (UTC)               │
+    └─────────────────────────────────────────────────────────┘
+```
+
+### Trading Day States
+
+```
+         ┌──────────────────────────────────────────────────────────┐
+         │                                                          │
+         ▼                                                          │
+    ┌─────────┐     ┌─────────┐     ┌─────────┐     ┌─────────┐   │
+    │ PENDING │────▶│ STARTING│────▶│  ACTIVE │────▶│ ENDING  │───┘
+    └─────────┘     └─────────┘     └─────────┘     └─────────┘
+         │               │               │               │
+         │               │               │               ▼
+         │               │               │          ┌─────────┐
+         │               ▼               ▼          │ COMPLETE│
+         │          ┌─────────┐    ┌─────────┐     └─────────┘
+         └─────────▶│  FAILED │◀───│  ERROR  │
+                    └─────────┘    └─────────┘
+```
+
+| State | Description |
+|-------|-------------|
+| `PENDING` | Day defined but not started |
+| `STARTING` | Startup workflow running (sync, connect, health check) |
+| `ACTIVE` | Day is live, data flowing |
+| `ENDING` | Teardown workflow running (drain, flush, verify) |
+| `COMPLETE` | Day ended successfully, data archived |
+| `ERROR` | Error during active day (can retry) |
+| `FAILED` | Startup/teardown failed (needs intervention) |
+
+### CLI Commands
+
+```bash
+# View current trading day status
+ssmd day status
+# Environment: kalshi-prod
+# Trading Day: 2025-12-14
+# State: ACTIVE
+# Started: 2025-12-14T00:10:00Z (14h 30m ago)
+# Messages: 1,234,567
+# Gaps: 0
+
+# Start a new trading day
+ssmd day start kalshi-prod
+# Starting trading day 2025-12-14...
+#   ✓ Syncing security master
+#   ✓ Starting connector
+#   ✓ Starting archiver
+#   ✓ Starting gateway
+#   ✓ Health check passed
+# Trading day 2025-12-14 is ACTIVE
+
+# Start a specific date (for replay/backfill)
+ssmd day start kalshi-prod --date 2025-12-10
+
+# End the current trading day
+ssmd day end kalshi-prod
+# Ending trading day 2025-12-14...
+#   ✓ Draining gateway connections
+#   ✓ Flushing archiver buffers
+#   ✓ Stopping connector
+#   ✓ Verifying archive completeness
+#   ✓ Recording day completion
+# Trading day 2025-12-14 is COMPLETE
+
+# Roll to next day (end current + start next)
+ssmd day roll kalshi-prod
+# Rolling from 2025-12-14 to 2025-12-15...
+#   Ending 2025-12-14...
+#   ✓ Day 2025-12-14 COMPLETE
+#   Starting 2025-12-15...
+#   ✓ Day 2025-12-15 ACTIVE
+# Roll complete
+
+# Force end (skip verification, for emergencies)
+ssmd day end kalshi-prod --force
+
+# View trading day history
+ssmd day history kalshi-prod --limit 7
+# DATE        STATE     START               END                 MSGS       GAPS
+# 2025-12-14  ACTIVE    2025-12-14T00:10   -                   1,234,567  0
+# 2025-12-13  COMPLETE  2025-12-13T00:10   2025-12-14T00:00    2,345,678  0
+# 2025-12-12  COMPLETE  2025-12-12T00:10   2025-12-13T00:00    1,987,654  2
+# 2025-12-11  COMPLETE  2025-12-11T00:10   2025-12-12T00:00    2,123,456  0
+
+# View specific day details
+ssmd day show kalshi-prod 2025-12-12
+# Trading Day: 2025-12-12
+# Environment: kalshi-prod
+# State: COMPLETE
+# Started: 2025-12-12T00:10:00Z
+# Ended: 2025-12-13T00:00:00Z
+# Duration: 23h 50m
+# Messages: 1,987,654
+# Gaps: 2
+#   - 14:30:00 - 14:32:15 (connection_lost)
+#   - 18:45:30 - 18:45:45 (rate_limited)
+# Archive: s3://ssmd-raw/kalshi/2025/12/12/
+```
+
+### Metadata Schema
+
+```sql
+CREATE TABLE trading_days (
+  id SERIAL PRIMARY KEY,
+  environment_id INTEGER REFERENCES environments(id),
+  date DATE NOT NULL,
+  state VARCHAR(16) NOT NULL DEFAULT 'pending',
+
+  -- Timing
+  scheduled_start TIMESTAMPTZ,
+  actual_start TIMESTAMPTZ,
+  scheduled_end TIMESTAMPTZ,
+  actual_end TIMESTAMPTZ,
+
+  -- Stats
+  message_count BIGINT DEFAULT 0,
+  gap_count INTEGER DEFAULT 0,
+  error_count INTEGER DEFAULT 0,
+
+  -- Archive location
+  raw_archive_path TEXT,
+  normalized_archive_path TEXT,
+
+  -- Workflow tracking
+  start_workflow_id VARCHAR(128),
+  end_workflow_id VARCHAR(128),
+
+  -- Audit
+  started_by VARCHAR(64),           -- 'scheduled', 'cli:user@host', 'api'
+  ended_by VARCHAR(64),
+  notes TEXT,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+  UNIQUE(environment_id, date)
+);
+
+CREATE TABLE trading_day_events (
+  id SERIAL PRIMARY KEY,
+  trading_day_id INTEGER REFERENCES trading_days(id),
+  event_type VARCHAR(32) NOT NULL,  -- 'state_change', 'gap_detected', 'error', 'checkpoint'
+  old_state VARCHAR(16),
+  new_state VARCHAR(16),
+  details JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_trading_days_env_date ON trading_days(environment_id, date);
+CREATE INDEX idx_trading_days_state ON trading_days(state);
+CREATE INDEX idx_trading_day_events_day ON trading_day_events(trading_day_id);
 ```
 
 ### Temporal Workflows
 
 ```go
-// DailyOperations workflow
-func DailyOperations(ctx workflow.Context, date time.Time) error {
-    // 1. Sync security master from Kalshi
-    err := workflow.ExecuteActivity(ctx, SyncSecurityMaster).Get(ctx, nil)
+// StartTradingDay workflow
+func StartTradingDay(ctx workflow.Context, env string, date time.Time) error {
+    logger := workflow.GetLogger(ctx)
+    logger.Info("Starting trading day", "env", env, "date", date)
+
+    // Update state: PENDING -> STARTING
+    err := workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "starting").Get(ctx, nil)
     if err != nil {
         return err
+    }
+
+    // 1. Sync security master
+    err = workflow.ExecuteActivity(ctx, SyncSecurityMaster, env).Get(ctx, nil)
+    if err != nil {
+        workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "failed").Get(ctx, nil)
+        return fmt.Errorf("sync security master: %w", err)
     }
 
     // 2. Start connector
-    err = workflow.ExecuteActivity(ctx, StartConnector).Get(ctx, nil)
+    err = workflow.ExecuteActivity(ctx, StartConnector, env, date).Get(ctx, nil)
     if err != nil {
-        return err
+        workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "failed").Get(ctx, nil)
+        return fmt.Errorf("start connector: %w", err)
     }
 
     // 3. Start archiver
-    err = workflow.ExecuteActivity(ctx, StartArchiver).Get(ctx, nil)
+    err = workflow.ExecuteActivity(ctx, StartArchiver, env, date).Get(ctx, nil)
     if err != nil {
-        return err
+        workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "failed").Get(ctx, nil)
+        return fmt.Errorf("start archiver: %w", err)
     }
 
     // 4. Start gateway
-    err = workflow.ExecuteActivity(ctx, StartGateway).Get(ctx, nil)
+    err = workflow.ExecuteActivity(ctx, StartGateway, env).Get(ctx, nil)
     if err != nil {
-        return err
+        workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "failed").Get(ctx, nil)
+        return fmt.Errorf("start gateway: %w", err)
     }
 
     // 5. Health check
-    err = workflow.ExecuteActivity(ctx, HealthCheck).Get(ctx, nil)
+    err = workflow.ExecuteActivity(ctx, HealthCheck, env).Get(ctx, nil)
+    if err != nil {
+        workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "failed").Get(ctx, nil)
+        return fmt.Errorf("health check: %w", err)
+    }
+
+    // Update state: STARTING -> ACTIVE
+    err = workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "active").Get(ctx, nil)
     if err != nil {
         return err
     }
 
+    logger.Info("Trading day started successfully", "env", env, "date", date)
     return nil
 }
 
-// DailyTeardown workflow
-func DailyTeardown(ctx workflow.Context) error {
-    // 1. Stop accepting new connections
-    err := workflow.ExecuteActivity(ctx, DrainGateway).Get(ctx, nil)
+// EndTradingDay workflow
+func EndTradingDay(ctx workflow.Context, env string, date time.Time, force bool) error {
+    logger := workflow.GetLogger(ctx)
+    logger.Info("Ending trading day", "env", env, "date", date, "force", force)
+
+    // Update state: ACTIVE -> ENDING
+    err := workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "ending").Get(ctx, nil)
     if err != nil {
         return err
+    }
+
+    // 1. Drain gateway connections
+    err = workflow.ExecuteActivity(ctx, DrainGateway, env).Get(ctx, nil)
+    if err != nil && !force {
+        workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "error").Get(ctx, nil)
+        return fmt.Errorf("drain gateway: %w", err)
     }
 
     // 2. Flush archiver buffers
-    err = workflow.ExecuteActivity(ctx, FlushArchiver).Get(ctx, nil)
-    if err != nil {
-        return err
+    err = workflow.ExecuteActivity(ctx, FlushArchiver, env).Get(ctx, nil)
+    if err != nil && !force {
+        workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "error").Get(ctx, nil)
+        return fmt.Errorf("flush archiver: %w", err)
     }
 
     // 3. Stop connector
-    err = workflow.ExecuteActivity(ctx, StopConnector).Get(ctx, nil)
+    err = workflow.ExecuteActivity(ctx, StopConnector, env).Get(ctx, nil)
+    if err != nil && !force {
+        workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "error").Get(ctx, nil)
+        return fmt.Errorf("stop connector: %w", err)
+    }
+
+    // 4. Verify archive completeness (skip if force)
+    if !force {
+        err = workflow.ExecuteActivity(ctx, VerifyArchive, env, date).Get(ctx, nil)
+        if err != nil {
+            workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "error").Get(ctx, nil)
+            return fmt.Errorf("verify archive: %w", err)
+        }
+    }
+
+    // 5. Record completion stats
+    err = workflow.ExecuteActivity(ctx, RecordDayCompletion, env, date).Get(ctx, nil)
     if err != nil {
         return err
     }
 
-    // 4. Final archive verification
-    err = workflow.ExecuteActivity(ctx, VerifyArchive).Get(ctx, nil)
+    // Update state: ENDING -> COMPLETE
+    err = workflow.ExecuteActivity(ctx, UpdateDayState, env, date, "complete").Get(ctx, nil)
     if err != nil {
         return err
     }
 
+    logger.Info("Trading day ended successfully", "env", env, "date", date)
     return nil
 }
+
+// RollTradingDay workflow
+func RollTradingDay(ctx workflow.Context, env string) error {
+    logger := workflow.GetLogger(ctx)
+
+    // Get current day
+    var currentDate time.Time
+    err := workflow.ExecuteActivity(ctx, GetCurrentTradingDay, env).Get(ctx, &currentDate)
+    if err != nil {
+        return fmt.Errorf("get current day: %w", err)
+    }
+
+    nextDate := currentDate.AddDate(0, 0, 1)
+    logger.Info("Rolling trading day", "env", env, "from", currentDate, "to", nextDate)
+
+    // End current day
+    err = workflow.ExecuteChildWorkflow(ctx, EndTradingDay, env, currentDate, false).Get(ctx, nil)
+    if err != nil {
+        return fmt.Errorf("end day %s: %w", currentDate, err)
+    }
+
+    // Start next day
+    err = workflow.ExecuteChildWorkflow(ctx, StartTradingDay, env, nextDate).Get(ctx, nil)
+    if err != nil {
+        return fmt.Errorf("start day %s: %w", nextDate, err)
+    }
+
+    logger.Info("Trading day roll complete", "env", env, "to", nextDate)
+    return nil
+}
+```
+
+### Scheduled Operations
+
+Trading day operations can be scheduled via Temporal:
+
+```yaml
+# Environment definition includes schedule
+spec:
+  schedule:
+    timezone: UTC
+    day_start: "00:10"      # When to start each day
+    day_end: "00:00"        # When to end each day (next calendar day)
+    auto_roll: true         # Automatically roll at day_end
+```
+
+```go
+// Schedule registration
+func RegisterSchedules(client client.Client, env Environment) error {
+    // Daily roll schedule
+    _, err := client.ScheduleClient().Create(ctx, client.ScheduleOptions{
+        ID: fmt.Sprintf("%s-daily-roll", env.Name),
+        Spec: client.ScheduleSpec{
+            CronExpressions: []string{
+                fmt.Sprintf("0 %s * * *", env.Spec.Schedule.DayEnd), // "0 0 * * *"
+            },
+            TimeZoneName: env.Spec.Schedule.Timezone,
+        },
+        Action: &client.ScheduleWorkflowAction{
+            Workflow: RollTradingDay,
+            Args:     []interface{}{env.Name},
+        },
+    })
+    return err
+}
+```
+
+### Data Partitioning
+
+All data is partitioned by trading day:
+
+```
+ssmd-raw/
+  kalshi/
+    2025/12/14/           # Trading day partition
+      trades-00.jsonl.zst
+      trades-01.jsonl.zst
+      orderbook-00.jsonl.zst
+
+ssmd-normalized/
+  kalshi/
+    v1/
+      trade/
+        2025/12/14/       # Trading day partition
+          INXD-25-B4000/
+            data.capnp.zst
+```
+
+Components receive trading day at startup:
+
+```rust
+pub struct ConnectorConfig {
+    pub environment: String,
+    pub trading_day: NaiveDate,  // Partitions data to correct location
+    pub feed: FeedConfig,
+}
+
+impl Connector {
+    pub fn archive_path(&self) -> String {
+        format!(
+            "{}/{}/{:04}/{:02}/{:02}/",
+            self.config.storage.raw_bucket,
+            self.config.feed.name,
+            self.config.trading_day.year(),
+            self.config.trading_day.month(),
+            self.config.trading_day.day()
+        )
+    }
+}
+```
+
+### Recovery Scenarios
+
+```bash
+# Day failed to start - retry
+ssmd day start kalshi-prod --date 2025-12-14
+
+# Day ended with errors - review and complete manually
+ssmd day show kalshi-prod 2025-12-14
+ssmd day end kalshi-prod --force
+
+# Missed a day - backfill
+ssmd day start kalshi-prod --date 2025-12-12 --mode replay
+ssmd day end kalshi-prod --date 2025-12-12
+
+# System crash mid-day - resume
+ssmd day status kalshi-prod
+# State: ERROR
+ssmd day recover kalshi-prod
+# Attempts to resume from last checkpoint
+```
 ```
 
 ## Secrets Management
