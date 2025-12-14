@@ -2803,6 +2803,8 @@ Metadata first - the system must know what it's managing before managing it.
 
 ## Dependencies
 
+### Rust Crates
+
 | Dependency | Version | Purpose |
 |------------|---------|---------|
 | tokio | 1.x | Async runtime |
@@ -2812,6 +2814,104 @@ Metadata first - the system must know what it's managing before managing it.
 | sqlx | 0.7 | PostgreSQL |
 | serde | 1.x | JSON serialization |
 | tracing | 0.1 | Structured logging |
+
+### Go Modules
+
+| Dependency | Purpose |
+|------------|---------|
+| github.com/spf13/cobra | CLI framework |
+| github.com/temporalio/sdk-go | Temporal workflows |
+| github.com/nats-io/nats.go | NATS client |
+| github.com/jackc/pgx/v5 | PostgreSQL driver |
+| gopkg.in/yaml.v3 | YAML parsing |
+
+## Infrastructure Requirements
+
+### Existing in varlab (ready to use)
+
+| Service | Version | Location | Notes |
+|---------|---------|----------|-------|
+| NATS + JetStream | 2.12.2 | `infrastructure/nats/` | File persistence, KALSHI_TRADES stream exists |
+| PostgreSQL | 16 | `infrastructure/authentik/` | Create `ssmd` database |
+| Redis | 8.2.1 | `infrastructure/authentik/` | May need dedicated instance for ssmd |
+| Sealed Secrets | 2.15.0+ | `infrastructure/sealed-secrets/` | Ready for ssmd secrets |
+| Traefik | 37.3.0 | `infrastructure/traefik/` | Ingress with TLS |
+| Longhorn | 1.7.2 | Storage class | Block storage for PVCs |
+| Prometheus/Grafana/Loki | - | `infrastructure/observability/` | Monitoring stack |
+
+### Needs Deployment
+
+| Service | Purpose | Priority |
+|---------|---------|----------|
+| **ArgoCD** | GitOps deployment for ssmd (separate from Flux) | Phase 0 |
+| **Temporal** | Workflow orchestration for daily startup/teardown | Phase 0 |
+
+### Deferred
+
+| Service | Purpose | Notes |
+|---------|---------|-------|
+| **Garage** | S3-compatible object storage | Deferred until Brooklyn NAS build |
+
+### Storage Strategy (Pre-Garage)
+
+Until Garage is deployed on the Brooklyn NAS:
+
+1. **Raw data**: Local PVC via Longhorn (limited retention)
+2. **Normalized data**: Local PVC via Longhorn
+3. **Backups**: Manual export to external storage
+
+The Storage trait abstraction allows seamless migration to Garage when ready:
+
+```yaml
+# Initial: Local storage
+middleware:
+  storage:
+    type: local
+    path: /var/lib/ssmd/storage
+
+# Future: Garage S3
+middleware:
+  storage:
+    type: s3
+    endpoint: http://garage.brooklyn.local:3900
+    buckets:
+      raw: ssmd-raw
+      normalized: ssmd-normalized
+```
+
+### Infrastructure Setup (Phase 0)
+
+Before application development:
+
+```bash
+# 1. Deploy ArgoCD to homelab
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# 2. Configure ArgoCD for ssmd repo
+argocd app create ssmd \
+  --repo https://github.com/your-org/ssmd.git \
+  --path k8s/overlays/prod \
+  --dest-server https://kubernetes.default.svc \
+  --dest-namespace ssmd
+
+# 3. Deploy Temporal
+helm repo add temporal https://temporal.io/helm-charts
+helm install temporal temporal/temporal \
+  --namespace temporal \
+  --create-namespace \
+  --set server.replicaCount=1 \
+  --set cassandra.enabled=false \
+  --set postgresql.enabled=true \
+  --set prometheus.enabled=true
+
+# 4. Create ssmd database in existing PostgreSQL
+kubectl exec -it postgresql-0 -n authentik -- psql -U postgres -c "CREATE DATABASE ssmd;"
+
+# 5. Create ssmd namespace and sealed secrets
+kubectl create namespace ssmd
+kubeseal --fetch-cert > ssmd-sealed-secrets-cert.pem
+```
 
 ## Open Questions
 
