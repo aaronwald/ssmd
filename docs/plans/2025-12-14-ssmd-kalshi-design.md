@@ -809,6 +809,16 @@ This enables reproducible backtesting: replay Dec 1st data with the exact config
 - Temporal SDK is mature in Go
 - Already specified in design brief
 
+### Future: Zig
+
+Zig is noted as a future option in the design brief. Potential use cases:
+
+- **Low-latency components** - Zero-overhead interop with C (libechidna)
+- **WASM builds** - Browser-based replay/visualization tools
+- **Embedded systems** - Resource-constrained edge deployments
+
+Not used in Phase 1, but the middleware abstractions keep this door open. The trait-based design means a Zig component could implement the same interfaces.
+
 ## Middleware Abstractions
 
 All infrastructure dependencies are behind traits. Implementations are selected at deployment time via environment configuration - no code changes required to swap backends.
@@ -943,6 +953,7 @@ pub enum RetentionPolicy {
 | Implementation | Crate | Use Case |
 |----------------|-------|----------|
 | `NatsTransport` | `async-nats` | Default, JetStream for durability |
+| `MqttTransport` | `rumqttc` | Message-oriented middleware, IoT-friendly |
 | `AeronTransport` | `aeron-rs` | Low-latency, reliable multicast |
 | `ChronicleTransport` | FFI | On-prem, shared memory |
 | `InMemoryTransport` | built-in | Testing |
@@ -1476,6 +1487,31 @@ Temporal workflow syncs markets from Kalshi API daily (and on startup):
 2. Upsert into PostgreSQL
 3. Record changes in market_history
 4. Publish change events to NATS for downstream consumers
+
+### Change Data Capture (Debezium)
+
+Debezium provides CDC from PostgreSQL to publish secmaster changes as a stream:
+
+```yaml
+# Debezium connector configuration
+connector:
+  name: ssmd-secmaster-cdc
+  class: io.debezium.connector.postgresql.PostgresConnector
+  config:
+    database.hostname: postgres.ssmd.local
+    database.port: 5432
+    database.user: debezium
+    database.password: ${DEBEZIUM_PASSWORD}
+    database.dbname: ssmd
+    table.include.list: public.markets,public.market_history
+    topic.prefix: ssmd.cdc
+    plugin.name: pgoutput
+```
+
+This enables:
+- Real-time propagation of secmaster changes to downstream consumers
+- Decoupling of writers (sync job) from readers (connectors, gateways)
+- Replay capability from the CDC log
 
 ## Trading Day Management
 
@@ -2335,6 +2371,44 @@ Compressed JSONL preserving original Kalshi messages:
 {"ts":1702540800000,"type":"trade","data":{"ticker":"INXD-25-B4000","price":0.45,"count":10}}
 {"ts":1702540800100,"type":"orderbook","data":{"ticker":"INXD-25-B4000","yes_bid":0.44,"yes_ask":0.46}}
 ```
+
+### Data Keying Strategy
+
+All data is keyed by environment prefix to support rapid teardown/rebuild cycles. This enables quick iteration during development and clean separation between environments.
+
+**Key Structure:**
+
+| Store | Key Pattern | Example |
+|-------|-------------|---------|
+| S3 | `{bucket}/{env}/{feed}/{date}/` | `ssmd-raw/kalshi-dev/kalshi/2025/12/14/` |
+| NATS | `{env}.{feed}.{type}.{symbol}` | `kalshi-dev.kalshi.trade.BTCUSD` |
+| Redis | `{env}:{feed}:{type}:{key}` | `kalshi-dev:kalshi:price:BTCUSD` |
+| PostgreSQL | `environment_id` FK on all tables | `WHERE environment_id = 3` |
+
+**Teardown Operations:**
+
+```bash
+# Tear down a single environment (all data)
+ssmd env teardown kalshi-dev
+#   Deleting S3 prefix: ssmd-raw/kalshi-dev/
+#   Deleting S3 prefix: ssmd-normalized/kalshi-dev/
+#   Deleting NATS streams: kalshi-dev.*
+#   Deleting Redis keys: kalshi-dev:*
+#   Deleting PostgreSQL data: environment_id = 3
+# Environment kalshi-dev torn down.
+
+# Tear down specific date only
+ssmd env teardown kalshi-dev --date 2025-12-14
+
+# Preview teardown (dry run)
+ssmd env teardown kalshi-dev --dry-run
+```
+
+**Benefits:**
+- **Isolation** - Dev/staging/prod data never mix
+- **Fast cleanup** - Single prefix delete instead of scanning
+- **Reproducibility** - Rebuild from scratch with same config
+- **Cost control** - Easy to purge old test environments
 
 ## Gateway API
 
@@ -3440,6 +3514,93 @@ Failures:
   - Message #45678: price 0.450 vs 0.451 (rounding change?)
   - Message #45679: missing in candidate
   - Message #45680: missing in candidate
+```
+
+### Non-Realtime Clock (Backtesting)
+
+For backtesting and replay, components support a non-realtime clock that can be controlled externally:
+
+```rust
+use std::sync::Arc;
+
+/// Clock abstraction for time-dependent operations
+pub trait Clock: Send + Sync {
+    fn now(&self) -> u64;  // Unix nanos
+    fn advance(&self, nanos: u64);
+}
+
+/// Real-time clock for production
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
+    }
+
+    fn advance(&self, _nanos: u64) {
+        // No-op for real clock
+    }
+}
+
+/// Controllable clock for backtesting
+pub struct SimulatedClock {
+    current: AtomicU64,
+}
+
+impl SimulatedClock {
+    pub fn new(start_time: u64) -> Self {
+        Self { current: AtomicU64::new(start_time) }
+    }
+}
+
+impl Clock for SimulatedClock {
+    fn now(&self) -> u64 {
+        self.current.load(Ordering::SeqCst)
+    }
+
+    fn advance(&self, nanos: u64) {
+        self.current.fetch_add(nanos, Ordering::SeqCst);
+    }
+}
+```
+
+Components receive the clock via dependency injection:
+
+```rust
+pub struct Connector {
+    clock: Arc<dyn Clock>,
+    // ...
+}
+
+impl Connector {
+    pub fn new(config: ConnectorConfig, clock: Arc<dyn Clock>) -> Self {
+        Self { clock, /* ... */ }
+    }
+
+    fn process_message(&self, msg: &RawMessage) -> NormalizedMessage {
+        NormalizedMessage {
+            received_at: self.clock.now(),  // Uses injected clock
+            // ...
+        }
+    }
+}
+```
+
+Backtesting workflow:
+
+```bash
+# Run backtest with simulated clock
+ssmd backtest --feed kalshi --date 2025-12-14 \
+  --strategy my_strategy.yaml \
+  --speed 10x  # 10x faster than realtime
+
+# Or step-through mode for debugging
+ssmd backtest --feed kalshi --date 2025-12-14 \
+  --strategy my_strategy.yaml \
+  --step  # Manual clock advancement
 ```
 
 ### Automated QA Pipeline

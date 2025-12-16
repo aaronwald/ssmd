@@ -26,6 +26,9 @@ Need to have meta data support built first. A key feature to simplicity will be 
 We need to have a simple cli tool that we can script to create and modify the trading environmeents definition.
 Customers may think about data differently so we will need to support different transforms on raw data.
 Key all keys in store so we can support rapid interation with tear down/build up
+Support re-runnuing normalization on historic files.
+All metadata is a timeseries. Can evolve overtime. When we rerun jobs we should always take a day (utc) as input.
+Record provenance for data.
 
 ## Technical descisions
 Rust/Go (Zig is an option but we need to figure that out)
