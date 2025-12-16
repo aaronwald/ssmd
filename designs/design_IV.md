@@ -15,6 +15,7 @@ Are we building a platform createing quality data? Yes
 
 ## Features
 GitOps to deploy, test, scale.
+No database should be needed for development of the system.
 At the end of each day we tear down the system. At the start of each day we start of the system. A day can be defined by an arbitrary schedule.
 When we deploy we decide which markets to deploy.
 Capture raw market data to block storage/archive off to s3 object storage.
@@ -53,6 +54,7 @@ Fail fast model on configuration.
 Support a non-realtime clock for back testing.
 We should support security features from the beginning.
 Want to support autoscale with temporal and jobs that run in background (these could run on separate k8s)
+We will target kubernetes infrastructures.
 
 ## Open Quwestions
 How will agents work with our system? If they find a data quality issue, how will that feed back into us?
