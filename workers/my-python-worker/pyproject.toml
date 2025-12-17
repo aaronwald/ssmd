@@ -1,0 +1,9 @@
+[project]
+name = "my-temporal-worker"
+version = "0.1.0"
+dependencies = [
+    "temporalio>=1.7.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
