@@ -3,6 +3,7 @@ import asyncio
 from datetime import timedelta
 from temporalio import activity, workflow
 from temporalio.client import Client
+from temporalio.common import RetryPolicy
 from temporalio.worker import Worker
 import os
 
@@ -21,7 +22,7 @@ class MyWorkflow:
             my_activity,
             data,
             start_to_close_timeout=timedelta(minutes=10),
-            retry_policy=workflow.RetryPolicy(
+            retry_policy=RetryPolicy(
                 initial_interval=timedelta(seconds=30),
                 backoff_coefficient=2,
                 maximum_attempts=3,
