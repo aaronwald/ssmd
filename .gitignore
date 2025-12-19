@@ -1,0 +1,9 @@
+# Binaries
+/ssmd
+*.exe
+
+# Local CLI config
+.ssmd/
+
+# Go
+vendor/
