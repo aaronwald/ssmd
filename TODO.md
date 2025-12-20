@@ -14,6 +14,19 @@
 - [x] Task 9: Validation Command - Cross-file referential integrity
 - [x] Task 10: Git Commands - diff and commit workflow
 
+### Code Review & Enhancements (2025-12-20)
+- [x] Fix staticcheck S1002 issue in environment.go
+- [x] Fix nil pointer risk in env list command
+- [x] Remove unused --quiet/--verbose flags
+- [x] Add proper error handling to directory functions
+- [x] Extract duplicate sorting logic (SortVersionsDesc)
+- [x] Fix schema version file tracking in add-version
+- [x] Add capture_locations to feeds for provenance
+- [x] Add `ssmd feed add-location` command
+- [x] Add effective_to dates for version date ranges
+- [x] Create README with Kalshi feed example
+- [x] Create PR #1 for provenance features (MERGED)
+
 ## In Progress
 
 _None_
