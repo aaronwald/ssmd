@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "dlawskillz": {
+      "source": {
+        "source": "github",
+        "repo": "aaronwald/dlawskillz"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "core@dlawskillz": true
+  }
+}
