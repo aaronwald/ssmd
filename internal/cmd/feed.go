@@ -51,17 +51,27 @@ var feedAddVersionCmd = &cobra.Command{
 	RunE:  runFeedAddVersion,
 }
 
+var feedAddLocationCmd = &cobra.Command{
+	Use:   "add-location <name>",
+	Short: "Add a capture location to a feed",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runFeedAddLocation,
+}
+
 // Flags
 var (
-	feedStatusFilter string
-	feedVersion      string
-	feedType         string
-	feedDisplayName  string
-	feedEndpoint     string
-	feedAuthMethod   string
-	feedRateLimit    int
+	feedStatusFilter  string
+	feedVersion       string
+	feedType          string
+	feedDisplayName   string
+	feedEndpoint      string
+	feedAuthMethod    string
+	feedRateLimit     int
 	feedEffectiveFrom string
-	feedCopyFrom     string
+	feedCopyFrom      string
+	feedDatacenter    string
+	feedProvider      string
+	feedRegion        string
 )
 
 func init() {
@@ -94,12 +104,19 @@ func init() {
 	feedAddVersionCmd.Flags().IntVar(&feedRateLimit, "rate-limit", 0, "Override rate limit")
 	feedAddVersionCmd.MarkFlagRequired("effective-from")
 
+	// Add-location flags
+	feedAddLocationCmd.Flags().StringVar(&feedDatacenter, "datacenter", "", "Datacenter identifier (required)")
+	feedAddLocationCmd.Flags().StringVar(&feedProvider, "provider", "", "Provider: aws, gcp, onprem, etc.")
+	feedAddLocationCmd.Flags().StringVar(&feedRegion, "region", "", "Region identifier")
+	feedAddLocationCmd.MarkFlagRequired("datacenter")
+
 	// Register subcommands
 	feedCmd.AddCommand(feedListCmd)
 	feedCmd.AddCommand(feedShowCmd)
 	feedCmd.AddCommand(feedCreateCmd)
 	feedCmd.AddCommand(feedUpdateCmd)
 	feedCmd.AddCommand(feedAddVersionCmd)
+	feedCmd.AddCommand(feedAddLocationCmd)
 }
 
 func runFeedList(cmd *cobra.Command, args []string) error {
@@ -196,6 +213,22 @@ func runFeedShow(cmd *cobra.Command, args []string) error {
 		}
 		if feed.Calendar.OpenTime != "" && feed.Calendar.CloseTime != "" {
 			fmt.Printf("  Hours:       %s - %s\n", feed.Calendar.OpenTime, feed.Calendar.CloseTime)
+		}
+	}
+
+	if len(feed.CaptureLocations) > 0 {
+		fmt.Println()
+		fmt.Println("Capture Locations:")
+		for _, loc := range feed.CaptureLocations {
+			if loc.Provider != "" {
+				fmt.Printf("  %s (%s", loc.Datacenter, loc.Provider)
+				if loc.Region != "" {
+					fmt.Printf(", %s", loc.Region)
+				}
+				fmt.Println(")")
+			} else {
+				fmt.Printf("  %s\n", loc.Datacenter)
+			}
 		}
 	}
 
@@ -397,6 +430,42 @@ func runFeedAddVersion(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Added version %s to feed '%s' (effective %s)\n", newVersionNum, name, feedEffectiveFrom)
+	return nil
+}
+
+func runFeedAddLocation(cmd *cobra.Command, args []string) error {
+	name := args[0]
+	feedsDir, err := getFeedsDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(feedsDir, name+".yaml")
+
+	feed, err := types.LoadFeed(path)
+	if err != nil {
+		return fmt.Errorf("feed '%s' not found: %w", name, err)
+	}
+
+	// Check if datacenter already exists
+	for _, loc := range feed.CaptureLocations {
+		if loc.Datacenter == feedDatacenter {
+			return fmt.Errorf("datacenter '%s' already configured for feed '%s'", feedDatacenter, name)
+		}
+	}
+
+	newLocation := types.CaptureLocation{
+		Datacenter: feedDatacenter,
+		Provider:   feedProvider,
+		Region:     feedRegion,
+	}
+
+	feed.CaptureLocations = append(feed.CaptureLocations, newLocation)
+
+	if err := types.SaveFeed(feed, path); err != nil {
+		return err
+	}
+
+	fmt.Printf("Added capture location '%s' to feed '%s'\n", feedDatacenter, name)
 	return nil
 }
 

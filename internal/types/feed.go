@@ -37,14 +37,22 @@ const (
 	AuthMethodNone   AuthMethod = "none"
 )
 
+// CaptureLocation represents a datacenter where feed data is captured
+type CaptureLocation struct {
+	Datacenter string `yaml:"datacenter"`
+	Provider   string `yaml:"provider,omitempty"`
+	Region     string `yaml:"region,omitempty"`
+}
+
 // Feed represents a market data feed configuration
 type Feed struct {
-	Name        string       `yaml:"name"`
-	DisplayName string       `yaml:"display_name,omitempty"`
-	Type        FeedType     `yaml:"type"`
-	Status      FeedStatus   `yaml:"status,omitempty"`
-	Versions    []FeedVersion `yaml:"versions"`
-	Calendar    *Calendar    `yaml:"calendar,omitempty"`
+	Name             string            `yaml:"name"`
+	DisplayName      string            `yaml:"display_name,omitempty"`
+	Type             FeedType          `yaml:"type"`
+	Status           FeedStatus        `yaml:"status,omitempty"`
+	CaptureLocations []CaptureLocation `yaml:"capture_locations,omitempty"`
+	Versions         []FeedVersion     `yaml:"versions"`
+	Calendar         *Calendar         `yaml:"calendar,omitempty"`
 }
 
 // FeedVersion represents a version of feed configuration
