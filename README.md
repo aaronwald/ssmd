@@ -62,9 +62,19 @@ Capture Locations:
 ### 4. Add a new version when the API changes
 
 ```bash
+# End the current version and add a new one
 ./ssmd feed add-version kalshi \
   --effective-from 2025-07-01 \
   --endpoint wss://trading-api.kalshi.com/trade-api/ws/v3
+```
+
+Use `--effective-to` for explicit date ranges (useful for historical data):
+
+```bash
+./ssmd feed add-version kalshi \
+  --effective-from 2025-01-01 \
+  --effective-to 2025-06-30 \
+  --endpoint wss://trading-api.kalshi.com/trade-api/ws/v2
 ```
 
 ### 5. Validate and commit
@@ -91,12 +101,14 @@ capture_locations:
     region: us-east-1
 versions:
   - version: v1
-    effective_from: "2025-12-20"
+    effective_from: "2025-01-01"
+    effective_to: "2025-06-30"
     protocol: wss
     endpoint: wss://trading-api.kalshi.com/trade-api/ws/v2
     auth_method: api_key
   - version: v2
     effective_from: "2025-07-01"
+    # no effective_to = current/open-ended
     protocol: wss
     endpoint: wss://trading-api.kalshi.com/trade-api/ws/v3
     auth_method: api_key
