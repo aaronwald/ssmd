@@ -62,13 +62,14 @@ var schemaAddVersionCmd = &cobra.Command{
 
 // Flags
 var (
-	schemaStatusFilter  string
-	schemaFile          string
-	schemaFormat        string
-	schemaEffectiveFrom string
-	schemaCompatibleWith string
+	schemaStatusFilter    string
+	schemaFile            string
+	schemaFormat          string
+	schemaEffectiveFrom   string
+	schemaEffectiveTo     string
+	schemaCompatibleWith  string
 	schemaBreakingChanges string
-	schemaHashAll       bool
+	schemaHashAll         bool
 )
 
 func init() {
@@ -88,6 +89,7 @@ func init() {
 	// Add-version flags
 	schemaAddVersionCmd.Flags().StringVar(&schemaFile, "file", "", "Path to new schema definition (required)")
 	schemaAddVersionCmd.Flags().StringVar(&schemaEffectiveFrom, "effective-from", "", "When version takes effect (required)")
+	schemaAddVersionCmd.Flags().StringVar(&schemaEffectiveTo, "effective-to", "", "When version expires (optional, empty = open-ended)")
 	schemaAddVersionCmd.Flags().StringVar(&schemaStatusFilter, "status", "draft", "Initial status")
 	schemaAddVersionCmd.Flags().StringVar(&schemaCompatibleWith, "compatible-with", "", "Comma-separated list of compatible versions")
 	schemaAddVersionCmd.Flags().StringVar(&schemaBreakingChanges, "breaking-changes", "", "Description of breaking changes")
@@ -471,6 +473,7 @@ func runSchemaAddVersion(cmd *cobra.Command, args []string) error {
 	newVersion := types.SchemaVersion{
 		Version:         newVersionNum,
 		EffectiveFrom:   schemaEffectiveFrom,
+		EffectiveTo:     schemaEffectiveTo,
 		Status:          status,
 		SchemaFile:      targetSchemaFile,
 		Hash:            hash,

@@ -68,6 +68,7 @@ var (
 	feedAuthMethod    string
 	feedRateLimit     int
 	feedEffectiveFrom string
+	feedEffectiveTo   string
 	feedCopyFrom      string
 	feedDatacenter    string
 	feedProvider      string
@@ -99,6 +100,7 @@ func init() {
 
 	// Add-version flags
 	feedAddVersionCmd.Flags().StringVar(&feedEffectiveFrom, "effective-from", "", "When version takes effect (required)")
+	feedAddVersionCmd.Flags().StringVar(&feedEffectiveTo, "effective-to", "", "When version expires (optional, empty = open-ended)")
 	feedAddVersionCmd.Flags().StringVar(&feedCopyFrom, "copy-from", "", "Copy settings from version (default: latest)")
 	feedAddVersionCmd.Flags().StringVar(&feedEndpoint, "endpoint", "", "Override endpoint")
 	feedAddVersionCmd.Flags().IntVar(&feedRateLimit, "rate-limit", 0, "Override rate limit")
@@ -400,6 +402,7 @@ func runFeedAddVersion(cmd *cobra.Command, args []string) error {
 	newVersion := types.FeedVersion{
 		Version:                 newVersionNum,
 		EffectiveFrom:           feedEffectiveFrom,
+		EffectiveTo:             feedEffectiveTo,
 		Protocol:                source.Protocol,
 		Endpoint:                source.Endpoint,
 		AuthMethod:              source.AuthMethod,

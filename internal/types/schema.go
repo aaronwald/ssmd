@@ -42,6 +42,7 @@ type Schema struct {
 type SchemaVersion struct {
 	Version         string       `yaml:"version"`
 	EffectiveFrom   string       `yaml:"effective_from"`
+	EffectiveTo     string       `yaml:"effective_to,omitempty"`
 	Status          SchemaStatus `yaml:"status"`
 	SchemaFile      string       `yaml:"schema_file,omitempty"`
 	Hash            string       `yaml:"hash"`
@@ -106,10 +107,12 @@ func (s *Schema) GetVersionForDate(date time.Time) *SchemaVersion {
 	dateStr := date.Format("2006-01-02")
 	sorted := SortVersionsDesc(s.Versions)
 
-	// Find the first active version where effective_from <= date
+	// Find the first active version where effective_from <= date and (effective_to is empty or >= date)
 	for i := range sorted {
 		if sorted[i].EffectiveFrom <= dateStr && sorted[i].Status == SchemaStatusActive {
-			return &sorted[i]
+			if sorted[i].EffectiveTo == "" || sorted[i].EffectiveTo >= dateStr {
+				return &sorted[i]
+			}
 		}
 	}
 

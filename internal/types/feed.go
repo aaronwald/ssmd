@@ -59,6 +59,7 @@ type Feed struct {
 type FeedVersion struct {
 	Version                 string            `yaml:"version"`
 	EffectiveFrom           string            `yaml:"effective_from"`
+	EffectiveTo             string            `yaml:"effective_to,omitempty"`
 	Protocol                string            `yaml:"protocol"`
 	Endpoint                string            `yaml:"endpoint"`
 	AuthMethod              AuthMethod        `yaml:"auth_method,omitempty"`
@@ -144,10 +145,12 @@ func (f *Feed) GetVersionForDate(date time.Time) *FeedVersion {
 	dateStr := date.Format("2006-01-02")
 	sorted := SortVersionsDesc(f.Versions)
 
-	// Find the first version where effective_from <= date
+	// Find the first version where effective_from <= date and (effective_to is empty or >= date)
 	for i := range sorted {
 		if sorted[i].EffectiveFrom <= dateStr {
-			return &sorted[i]
+			if sorted[i].EffectiveTo == "" || sorted[i].EffectiveTo >= dateStr {
+				return &sorted[i]
+			}
 		}
 	}
 
