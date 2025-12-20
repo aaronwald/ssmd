@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -61,6 +60,11 @@ type FeedVersion struct {
 	SupportsTrades          bool              `yaml:"supports_trades,omitempty"`
 	SupportsHistorical      bool              `yaml:"supports_historical,omitempty"`
 	ParserConfig            map[string]string `yaml:"parser_config,omitempty"`
+}
+
+// GetEffectiveFrom implements the Versioned interface
+func (v FeedVersion) GetEffectiveFrom() string {
+	return v.EffectiveFrom
 }
 
 // Calendar represents trading hours and holidays
@@ -130,13 +134,7 @@ func (f *Feed) Validate() error {
 // GetVersionForDate returns the active version for a given date
 func (f *Feed) GetVersionForDate(date time.Time) *FeedVersion {
 	dateStr := date.Format("2006-01-02")
-
-	// Sort versions by effective_from descending
-	sorted := make([]FeedVersion, len(f.Versions))
-	copy(sorted, f.Versions)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].EffectiveFrom > sorted[j].EffectiveFrom
-	})
+	sorted := SortVersionsDesc(f.Versions)
 
 	// Find the first version where effective_from <= date
 	for i := range sorted {
@@ -154,12 +152,7 @@ func (f *Feed) GetLatestVersion() *FeedVersion {
 		return nil
 	}
 
-	sorted := make([]FeedVersion, len(f.Versions))
-	copy(sorted, f.Versions)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].EffectiveFrom > sorted[j].EffectiveFrom
-	})
-
+	sorted := SortVersionsDesc(f.Versions)
 	return &sorted[0]
 }
 

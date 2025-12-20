@@ -8,11 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	quiet   bool
-	verbose bool
-)
-
 var rootCmd = &cobra.Command{
 	Use:   "ssmd",
 	Short: "Stupid Simple Market Data - configuration management",
@@ -20,8 +15,7 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Suppress non-error output")
-	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Show detailed output")
+	// TODO: Implement --quiet and --verbose flags when output abstraction is added
 
 	// Register commands
 	rootCmd.AddCommand(cmd.InitCommand())

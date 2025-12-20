@@ -103,13 +103,12 @@ func init() {
 	schemaCmd.AddCommand(schemaAddVersionCmd)
 }
 
-func getSchemasDir() string {
-	cwd, _ := os.Getwd()
-	return filepath.Join(cwd, "schemas")
-}
-
 func runSchemaList(cmd *cobra.Command, args []string) error {
-	schemas, err := types.LoadAllSchemas(getSchemasDir())
+	schemasDir, err := getSchemasDir()
+	if err != nil {
+		return err
+	}
+	schemas, err := types.LoadAllSchemas(schemasDir)
 	if err != nil {
 		return err
 	}
@@ -147,7 +146,11 @@ func runSchemaShow(cmd *cobra.Command, args []string) error {
 		version = input[idx+1:]
 	}
 
-	path := filepath.Join(getSchemasDir(), name+".yaml")
+	schemasDir, err := getSchemasDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(schemasDir, name+".yaml")
 	schema, err := types.LoadSchema(path)
 	if err != nil {
 		return fmt.Errorf("schema '%s' not found: %w", name, err)
@@ -178,7 +181,10 @@ func runSchemaShow(cmd *cobra.Command, args []string) error {
 
 func runSchemaRegister(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	schemasDir := getSchemasDir()
+	schemasDir, err := getSchemasDir()
+	if err != nil {
+		return err
+	}
 	metadataPath := filepath.Join(schemasDir, name+".yaml")
 
 	// Check if schema already exists
@@ -274,7 +280,10 @@ func runSchemaRegister(cmd *cobra.Command, args []string) error {
 }
 
 func runSchemaHash(cmd *cobra.Command, args []string) error {
-	schemasDir := getSchemasDir()
+	schemasDir, err := getSchemasDir()
+	if err != nil {
+		return err
+	}
 
 	if schemaHashAll {
 		schemas, err := types.LoadAllSchemas(schemasDir)
@@ -305,12 +314,7 @@ func runSchemaHash(cmd *cobra.Command, args []string) error {
 }
 
 func updateSchemaHash(schemasDir string, schema *types.Schema) error {
-	hash, err := types.ComputeHash(schemasDir, schema.SchemaFile)
-	if err != nil {
-		return fmt.Errorf("failed to compute hash for %s: %w", schema.Name, err)
-	}
-
-	// Update hash in latest version
+	// Find latest version
 	latestIdx := -1
 	latestDate := ""
 	for i := range schema.Versions {
@@ -320,18 +324,31 @@ func updateSchemaHash(schemasDir string, schema *types.Schema) error {
 		}
 	}
 
-	if latestIdx >= 0 {
-		oldHash := schema.Versions[latestIdx].Hash
-		if oldHash != hash {
-			schema.Versions[latestIdx].Hash = hash
-			path := filepath.Join(schemasDir, schema.Name+".yaml")
-			if err := types.SaveSchema(schema, path); err != nil {
-				return err
-			}
-			fmt.Printf("%s: hash updated\n", schema.Name)
-		} else {
-			fmt.Printf("%s: hash unchanged\n", schema.Name)
+	if latestIdx < 0 {
+		return nil
+	}
+
+	// Use version-specific file if set, otherwise fall back to schema-level file
+	schemaFile := schema.Versions[latestIdx].SchemaFile
+	if schemaFile == "" {
+		schemaFile = schema.SchemaFile
+	}
+
+	hash, err := types.ComputeHash(schemasDir, schemaFile)
+	if err != nil {
+		return fmt.Errorf("failed to compute hash for %s: %w", schema.Name, err)
+	}
+
+	oldHash := schema.Versions[latestIdx].Hash
+	if oldHash != hash {
+		schema.Versions[latestIdx].Hash = hash
+		path := filepath.Join(schemasDir, schema.Name+".yaml")
+		if err := types.SaveSchema(schema, path); err != nil {
+			return err
 		}
+		fmt.Printf("%s: hash updated\n", schema.Name)
+	} else {
+		fmt.Printf("%s: hash unchanged\n", schema.Name)
 	}
 
 	return nil
@@ -358,7 +375,10 @@ func runSchemaSetStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid status: %s (must be draft, active, or deprecated)", newStatus)
 	}
 
-	schemasDir := getSchemasDir()
+	schemasDir, err := getSchemasDir()
+	if err != nil {
+		return err
+	}
 	path := filepath.Join(schemasDir, name+".yaml")
 	schema, err := types.LoadSchema(path)
 	if err != nil {
@@ -389,7 +409,10 @@ func runSchemaSetStatus(cmd *cobra.Command, args []string) error {
 
 func runSchemaAddVersion(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	schemasDir := getSchemasDir()
+	schemasDir, err := getSchemasDir()
+	if err != nil {
+		return err
+	}
 	metadataPath := filepath.Join(schemasDir, name+".yaml")
 
 	schema, err := types.LoadSchema(metadataPath)
@@ -449,6 +472,7 @@ func runSchemaAddVersion(cmd *cobra.Command, args []string) error {
 		Version:         newVersionNum,
 		EffectiveFrom:   schemaEffectiveFrom,
 		Status:          status,
+		SchemaFile:      targetSchemaFile,
 		Hash:            hash,
 		CompatibleWith:  compatibleWith,
 		BreakingChanges: schemaBreakingChanges,

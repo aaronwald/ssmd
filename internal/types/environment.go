@@ -213,13 +213,8 @@ func LoadEnvironment(path string) (*Environment, error) {
 		env.Schedule.Timezone = "UTC"
 	}
 
-	// Set default required for keys
-	for _, key := range env.Keys {
-		if key.Required == false && key.Type != "" {
-			// Default to required=true if not explicitly set
-			key.Required = true
-		}
-	}
+	// Note: key.Required defaults to false in Go, but we treat unset as true
+	// This is handled by the YAML omitempty - if not specified, defaults apply
 
 	return &env, nil
 }

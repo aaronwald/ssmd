@@ -102,13 +102,12 @@ func init() {
 	feedCmd.AddCommand(feedAddVersionCmd)
 }
 
-func getFeedsDir() string {
-	cwd, _ := os.Getwd()
-	return filepath.Join(cwd, "feeds")
-}
-
 func runFeedList(cmd *cobra.Command, args []string) error {
-	feeds, err := types.LoadAllFeeds(getFeedsDir())
+	feedsDir, err := getFeedsDir()
+	if err != nil {
+		return err
+	}
+	feeds, err := types.LoadAllFeeds(feedsDir)
 	if err != nil {
 		return err
 	}
@@ -141,7 +140,11 @@ func runFeedList(cmd *cobra.Command, args []string) error {
 
 func runFeedShow(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	path := filepath.Join(getFeedsDir(), name+".yaml")
+	feedsDir, err := getFeedsDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(feedsDir, name+".yaml")
 
 	feed, err := types.LoadFeed(path)
 	if err != nil {
@@ -201,7 +204,11 @@ func runFeedShow(cmd *cobra.Command, args []string) error {
 
 func runFeedCreate(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	path := filepath.Join(getFeedsDir(), name+".yaml")
+	feedsDir, err := getFeedsDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(feedsDir, name+".yaml")
 
 	// Check if feed already exists
 	if _, err := os.Stat(path); err == nil {
@@ -264,7 +271,11 @@ func runFeedCreate(cmd *cobra.Command, args []string) error {
 
 func runFeedUpdate(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	path := filepath.Join(getFeedsDir(), name+".yaml")
+	feedsDir, err := getFeedsDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(feedsDir, name+".yaml")
 
 	feed, err := types.LoadFeed(path)
 	if err != nil {
@@ -322,7 +333,11 @@ func runFeedUpdate(cmd *cobra.Command, args []string) error {
 
 func runFeedAddVersion(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	path := filepath.Join(getFeedsDir(), name+".yaml")
+	feedsDir, err := getFeedsDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(feedsDir, name+".yaml")
 
 	feed, err := types.LoadFeed(path)
 	if err != nil {

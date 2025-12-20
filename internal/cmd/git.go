@@ -45,7 +45,10 @@ func init() {
 }
 
 func runDiff(cmd *cobra.Command, args []string) error {
-	cwd, _ := os.Getwd()
+	cwd, err := getBaseDir()
+	if err != nil {
+		return err
+	}
 
 	// Check if in a git repo
 	if !isGitRepo(cwd) {
@@ -94,7 +97,10 @@ func runDiff(cmd *cobra.Command, args []string) error {
 }
 
 func runCommit(cmd *cobra.Command, args []string) error {
-	cwd, _ := os.Getwd()
+	cwd, err := getBaseDir()
+	if err != nil {
+		return err
+	}
 
 	// Check if in a git repo
 	if !isGitRepo(cwd) {

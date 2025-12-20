@@ -33,7 +33,10 @@ func init() {
 }
 
 func runValidate(cmd *cobra.Command, args []string) error {
-	cwd, _ := os.Getwd()
+	cwd, err := getBaseDir()
+	if err != nil {
+		return err
+	}
 
 	var results []ValidationResult
 	var errorCount int

@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -44,9 +43,15 @@ type SchemaVersion struct {
 	Version         string       `yaml:"version"`
 	EffectiveFrom   string       `yaml:"effective_from"`
 	Status          SchemaStatus `yaml:"status"`
+	SchemaFile      string       `yaml:"schema_file,omitempty"`
 	Hash            string       `yaml:"hash"`
 	CompatibleWith  []string     `yaml:"compatible_with,omitempty"`
 	BreakingChanges string       `yaml:"breaking_changes,omitempty"`
+}
+
+// GetEffectiveFrom implements the Versioned interface
+func (v SchemaVersion) GetEffectiveFrom() string {
+	return v.EffectiveFrom
 }
 
 // Validate checks if the schema configuration is valid
@@ -99,13 +104,7 @@ func (s *Schema) Validate() error {
 // GetVersionForDate returns the active version for a given date
 func (s *Schema) GetVersionForDate(date time.Time) *SchemaVersion {
 	dateStr := date.Format("2006-01-02")
-
-	// Sort versions by effective_from descending
-	sorted := make([]SchemaVersion, len(s.Versions))
-	copy(sorted, s.Versions)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].EffectiveFrom > sorted[j].EffectiveFrom
-	})
+	sorted := SortVersionsDesc(s.Versions)
 
 	// Find the first active version where effective_from <= date
 	for i := range sorted {
@@ -123,12 +122,7 @@ func (s *Schema) GetLatestVersion() *SchemaVersion {
 		return nil
 	}
 
-	sorted := make([]SchemaVersion, len(s.Versions))
-	copy(sorted, s.Versions)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].EffectiveFrom > sorted[j].EffectiveFrom
-	})
-
+	sorted := SortVersionsDesc(s.Versions)
 	return &sorted[0]
 }
 
@@ -166,7 +160,13 @@ func (s *Schema) VerifyHash(schemaDir string, version string) (bool, string, err
 		return false, "", fmt.Errorf("version %s not found", version)
 	}
 
-	computed, err := ComputeHash(schemaDir, s.SchemaFile)
+	// Use version-specific file if set, otherwise fall back to schema-level file
+	schemaFile := v.SchemaFile
+	if schemaFile == "" {
+		schemaFile = s.SchemaFile
+	}
+
+	computed, err := ComputeHash(schemaDir, schemaFile)
 	if err != nil {
 		return false, "", err
 	}

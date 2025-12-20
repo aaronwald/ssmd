@@ -113,13 +113,12 @@ func init() {
 	envCmd.AddCommand(envAddKeyCmd)
 }
 
-func getEnvsDir() string {
-	cwd, _ := os.Getwd()
-	return filepath.Join(cwd, "environments")
-}
-
 func runEnvList(cmd *cobra.Command, args []string) error {
-	envs, err := types.LoadAllEnvironments(getEnvsDir())
+	envsDir, err := getEnvsDir()
+	if err != nil {
+		return err
+	}
+	envs, err := types.LoadAllEnvironments(envsDir)
 	if err != nil {
 		return err
 	}
@@ -132,7 +131,11 @@ func runEnvList(cmd *cobra.Command, args []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tFEED\tSCHEMA\tTRANSPORT")
 	for _, e := range envs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Name, e.Feed, e.Schema, e.Transport.Type)
+		transportType := "-"
+		if e.Transport != nil {
+			transportType = string(e.Transport.Type)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Name, e.Feed, e.Schema, transportType)
 	}
 	w.Flush()
 
@@ -141,7 +144,11 @@ func runEnvList(cmd *cobra.Command, args []string) error {
 
 func runEnvShow(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	path := filepath.Join(getEnvsDir(), name+".yaml")
+	envsDir, err := getEnvsDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(envsDir, name+".yaml")
 
 	env, err := types.LoadEnvironment(path)
 	if err != nil {
@@ -216,7 +223,11 @@ func runEnvShow(cmd *cobra.Command, args []string) error {
 
 func runEnvCreate(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	path := filepath.Join(getEnvsDir(), name+".yaml")
+	envsDir, err := getEnvsDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(envsDir, name+".yaml")
 
 	// Check if environment already exists
 	if _, err := os.Stat(path); err == nil {
@@ -282,7 +293,11 @@ func runEnvCreate(cmd *cobra.Command, args []string) error {
 
 func runEnvUpdate(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	path := filepath.Join(getEnvsDir(), name+".yaml")
+	envsDir, err := getEnvsDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(envsDir, name+".yaml")
 
 	env, err := types.LoadEnvironment(path)
 	if err != nil {
@@ -330,7 +345,11 @@ func runEnvUpdate(cmd *cobra.Command, args []string) error {
 func runEnvAddKey(cmd *cobra.Command, args []string) error {
 	envName := args[0]
 	keyName := args[1]
-	path := filepath.Join(getEnvsDir(), envName+".yaml")
+	envsDir, err := getEnvsDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(envsDir, envName+".yaml")
 
 	env, err := types.LoadEnvironment(path)
 	if err != nil {
