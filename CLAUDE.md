@@ -17,3 +17,7 @@ ssmd - Simple/Streaming Market Data system
 ## Architecture
 
 <!-- Document key architectural decisions as the project develops -->
+
+## Instructions
+
+1. All code must go through pr code review.
