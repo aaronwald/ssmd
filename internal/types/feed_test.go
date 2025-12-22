@@ -23,7 +23,11 @@ func TestFeedValidation(t *testing.T) {
 					{
 						Version:       "v1",
 						EffectiveFrom: "2025-01-01",
-						Endpoint:      "wss://api.kalshi.com/v1",
+						Protocol: Protocol{
+							Transport: TransportWSS,
+							Message:   MessageJSON,
+						},
+						Endpoint: "wss://api.kalshi.com/v1",
 					},
 				},
 			},
@@ -110,12 +114,20 @@ func TestFeedValidation(t *testing.T) {
 					{
 						Version:       "v1",
 						EffectiveFrom: "2025-01-01",
-						Endpoint:      "wss://example.com/v1",
+						Protocol: Protocol{
+							Transport: TransportWSS,
+							Message:   MessageJSON,
+						},
+						Endpoint: "wss://example.com/v1",
 					},
 					{
 						Version:       "v2",
 						EffectiveFrom: "2025-01-01",
-						Endpoint:      "wss://example.com/v2",
+						Protocol: Protocol{
+							Transport: TransportWSS,
+							Message:   MessageJSON,
+						},
+						Endpoint: "wss://example.com/v2",
 					},
 				},
 			},
@@ -211,9 +223,12 @@ func TestLoadSaveFeed(t *testing.T) {
 		Status:      FeedStatusActive,
 		Versions: []FeedVersion{
 			{
-				Version:            "v1",
-				EffectiveFrom:      "2025-01-01",
-				Protocol:           "wss",
+				Version:       "v1",
+				EffectiveFrom: "2025-01-01",
+				Protocol: Protocol{
+					Transport: TransportWSS,
+					Message:   MessageJSON,
+				},
 				Endpoint:           "wss://api.kalshi.com/v1",
 				AuthMethod:         AuthMethodAPIKey,
 				RateLimitPerSecond: 10,

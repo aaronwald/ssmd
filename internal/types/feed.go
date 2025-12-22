@@ -35,11 +35,50 @@ const (
 	AuthMethodNone   AuthMethod = "none"
 )
 
-// CaptureLocation represents a datacenter where feed data is captured
+// TransportProtocol represents the network transport
+type TransportProtocol string
+
+const (
+	TransportWSS       TransportProtocol = "wss"
+	TransportHTTPS     TransportProtocol = "https"
+	TransportMulticast TransportProtocol = "multicast"
+	TransportTCP       TransportProtocol = "tcp"
+)
+
+// MessageProtocol represents the wire format
+type MessageProtocol string
+
+const (
+	MessageJSON     MessageProtocol = "json"
+	MessageITCH     MessageProtocol = "itch"
+	MessageFIX      MessageProtocol = "fix"
+	MessageSBE      MessageProtocol = "sbe"
+	MessageProtobuf MessageProtocol = "protobuf"
+)
+
+// Protocol represents connection and message protocols
+type Protocol struct {
+	Transport TransportProtocol `yaml:"transport"`
+	Message   MessageProtocol   `yaml:"message"`
+	Version   string            `yaml:"version,omitempty"`
+}
+
+// SiteType represents the type of capture location
+type SiteType string
+
+const (
+	SiteTypeCloud  SiteType = "cloud"
+	SiteTypeColo   SiteType = "colo"
+	SiteTypeOnPrem SiteType = "on_prem"
+)
+
+// CaptureLocation represents where feed data is captured
 type CaptureLocation struct {
-	Datacenter string `yaml:"datacenter"`
-	Provider   string `yaml:"provider,omitempty"`
-	Region     string `yaml:"region,omitempty"`
+	Site     string   `yaml:"site"`
+	Type     SiteType `yaml:"type"`
+	Provider string   `yaml:"provider,omitempty"`
+	Region   string   `yaml:"region,omitempty"`
+	Clock    string   `yaml:"clock,omitempty"` // future: ptp, gps, ntp, local
 }
 
 // Feed represents a market data feed configuration
@@ -61,7 +100,7 @@ type FeedVersion struct {
 	Version                 string            `yaml:"version"`
 	EffectiveFrom           string            `yaml:"effective_from"`
 	EffectiveTo             string            `yaml:"effective_to,omitempty"`
-	Protocol                string            `yaml:"protocol"`
+	Protocol                Protocol          `yaml:"protocol"`
 	Endpoint                string            `yaml:"endpoint"`
 	AuthMethod              AuthMethod        `yaml:"auth_method,omitempty"`
 	RateLimitPerSecond      int               `yaml:"rate_limit_per_second,omitempty"`
@@ -135,6 +174,26 @@ func (f *Feed) Validate() error {
 
 		if v.Endpoint == "" {
 			return fmt.Errorf("version %s: endpoint is required", v.Version)
+		}
+
+		// Validate protocol
+		if v.Protocol.Transport == "" {
+			return fmt.Errorf("version %s: protocol.transport is required", v.Version)
+		}
+		switch v.Protocol.Transport {
+		case TransportWSS, TransportHTTPS, TransportMulticast, TransportTCP:
+			// valid
+		default:
+			return fmt.Errorf("version %s: invalid protocol.transport: %s", v.Version, v.Protocol.Transport)
+		}
+		if v.Protocol.Message == "" {
+			return fmt.Errorf("version %s: protocol.message is required", v.Version)
+		}
+		switch v.Protocol.Message {
+		case MessageJSON, MessageITCH, MessageFIX, MessageSBE, MessageProtobuf:
+			// valid
+		default:
+			return fmt.Errorf("version %s: invalid protocol.message: %s", v.Version, v.Protocol.Message)
 		}
 	}
 
