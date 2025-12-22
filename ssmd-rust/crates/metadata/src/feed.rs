@@ -57,11 +57,22 @@ pub struct Protocol {
     pub version: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteType {
+    Cloud,
+    Colo,
+    OnPrem,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureLocation {
-    pub datacenter: String,
+    pub site: String,
+    #[serde(rename = "type")]
+    pub site_type: SiteType,
     pub provider: Option<String>,
     pub region: Option<String>,
+    pub clock: Option<String>, // future: ptp, gps, ntp, local
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
