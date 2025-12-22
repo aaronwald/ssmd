@@ -2,12 +2,11 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/aaronwald/ssmd/internal/types"
+	"github.com/aaronwald/ssmd/internal/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -73,8 +72,8 @@ func runKeyList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tTYPE\tREQUIRED\tSOURCE")
+	t := utils.NewTablePrinter()
+	t.Header("NAME", "TYPE", "REQUIRED", "SOURCE")
 
 	for name, spec := range env.Keys {
 		reqStr := "yes"
@@ -89,9 +88,9 @@ func runKeyList(cmd *cobra.Command, args []string) error {
 			sourceStr = sourceStr[:37] + "..."
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, spec.Type, reqStr, sourceStr)
+		t.Row(name, string(spec.Type), reqStr, sourceStr)
 	}
-	w.Flush()
+	t.Flush()
 
 	return nil
 }

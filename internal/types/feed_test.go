@@ -169,13 +169,13 @@ func TestGetVersionForDate(t *testing.T) {
 		date        string
 		wantVersion string
 	}{
-		{"2024-12-31", ""},    // Before any version
-		{"2025-01-01", "v1"},  // Exact match v1
-		{"2025-03-15", "v1"},  // Between v1 and v2
-		{"2025-06-01", "v2"},  // Exact match v2
-		{"2025-08-20", "v2"},  // Between v2 and v3
-		{"2025-12-01", "v3"},  // Exact match v3
-		{"2026-01-01", "v3"},  // After v3
+		{"2024-12-31", ""},   // Before any version
+		{"2025-01-01", "v1"}, // Exact match v1
+		{"2025-03-15", "v1"}, // Between v1 and v2
+		{"2025-06-01", "v2"}, // Exact match v2
+		{"2025-08-20", "v2"}, // Between v2 and v3
+		{"2025-12-01", "v3"}, // Exact match v3
+		{"2026-01-01", "v3"}, // After v3
 	}
 
 	for _, tt := range tests {

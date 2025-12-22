@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/aaronwald/ssmd/internal/utils"
 )
 
 // SchemaFormat represents the schema definition format
@@ -37,6 +37,9 @@ type Schema struct {
 	SchemaFile string          `yaml:"schema_file"`
 	Versions   []SchemaVersion `yaml:"versions"`
 }
+
+// GetName returns the schema name (implements utils.Named)
+func (s *Schema) GetName() string { return s.Name }
 
 // SchemaVersion represents a version of a schema
 type SchemaVersion struct {
@@ -177,78 +180,23 @@ func (s *Schema) VerifyHash(schemaDir string, version string) (bool, string, err
 	return v.Hash == computed, computed, nil
 }
 
-// LoadSchema loads a schema from a YAML metadata file
+// LoadSchema loads a schema from a YAML file
 func LoadSchema(path string) (*Schema, error) {
-	data, err := os.ReadFile(path)
+	schema, err := utils.LoadYAML[Schema](path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read schema file: %w", err)
+		return nil, fmt.Errorf("failed to load schema: %w", err)
 	}
-
-	var schema Schema
-	if err := yaml.Unmarshal(data, &schema); err != nil {
-		return nil, fmt.Errorf("failed to parse schema YAML: %w", err)
-	}
-
-	return &schema, nil
+	return schema, nil
 }
 
-// SaveSchema saves a schema to a YAML metadata file
+// SaveSchema saves a schema to a YAML file
 func SaveSchema(schema *Schema, path string) error {
-	data, err := yaml.Marshal(schema)
-	if err != nil {
-		return fmt.Errorf("failed to marshal schema to YAML: %w", err)
-	}
-
-	// Ensure directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write schema file: %w", err)
-	}
-
-	return nil
+	return utils.SaveYAML(schema, path)
 }
 
 // LoadAllSchemas loads all schemas from a directory
 func LoadAllSchemas(dir string) ([]*Schema, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read schemas directory: %w", err)
-	}
-
-	var schemas []*Schema
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		// Only load .yaml/.yml files (skip .capnp, .proto, etc.)
-		ext := filepath.Ext(entry.Name())
-		if ext != ".yaml" && ext != ".yml" {
-			continue
-		}
-
-		path := filepath.Join(dir, entry.Name())
-		schema, err := LoadSchema(path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load %s: %w", entry.Name(), err)
-		}
-
-		// Validate that name matches filename
-		expectedName := entry.Name()[:len(entry.Name())-len(ext)]
-		if schema.Name != expectedName {
-			return nil, fmt.Errorf("%s: schema name '%s' does not match filename '%s'", entry.Name(), schema.Name, expectedName)
-		}
-
-		schemas = append(schemas, schema)
-	}
-
-	return schemas, nil
+	return utils.LoadAllYAML(dir, LoadSchema)
 }
 
 // InferFormat infers the schema format from the file extension

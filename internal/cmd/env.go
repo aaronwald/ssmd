@@ -2,12 +2,11 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/aaronwald/ssmd/internal/types"
+	"github.com/aaronwald/ssmd/internal/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -128,16 +127,16 @@ func runEnvList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tFEED\tSCHEMA\tTRANSPORT")
+	t := utils.NewTablePrinter()
+	t.Header("NAME", "FEED", "SCHEMA", "TRANSPORT")
 	for _, e := range envs {
 		transportType := "-"
 		if e.Transport != nil {
 			transportType = string(e.Transport.Type)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Name, e.Feed, e.Schema, transportType)
+		t.Row(e.Name, e.Feed, e.Schema, transportType)
 	}
-	w.Flush()
+	t.Flush()
 
 	return nil
 }
@@ -230,7 +229,7 @@ func runEnvCreate(cmd *cobra.Command, args []string) error {
 	path := filepath.Join(envsDir, name+".yaml")
 
 	// Check if environment already exists
-	if _, err := os.Stat(path); err == nil {
+	if utils.CheckFileExists(path) {
 		return fmt.Errorf("environment '%s' already exists", name)
 	}
 
