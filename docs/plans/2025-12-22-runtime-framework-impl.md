@@ -4,9 +4,9 @@
 
 **Goal:** Create `ssmd-connector` Rust binary that reads metadata configs, connects to Kalshi WebSocket, and writes raw messages to JSONL files.
 
-**Architecture:** Cargo workspace with trait-based framework. Pluggable Connector, Writer, and KeyResolver. Runner wires components together. Axum HTTP server for health/metrics.
+**Architecture:** Cargo workspace with trait-based framework. Shared `ssmd-metadata` crate mirrors Go types. Pluggable Connector, Writer, and KeyResolver. Runner wires components together. Axum HTTP server for health/metrics.
 
-**Tech Stack:** Rust 2021, tokio, tokio-tungstenite, axum, serde/serde_yaml, clap, tracing
+**Tech Stack:** Rust 2021, tokio, tokio-tungstenite, axum, serde/serde_yaml, clap, tracing, chrono
 
 ---
 
@@ -15,25 +15,25 @@
 ### Task 1: Initialize Cargo workspace
 
 **Files:**
-- Create: `ssmd-connector/Cargo.toml` (workspace root)
-- Create: `ssmd-connector/crates/connector/Cargo.toml`
-- Create: `ssmd-connector/crates/connector/src/lib.rs`
+- Create: `ssmd-rust/Cargo.toml` (workspace root)
+- Create: `ssmd-rust/crates/metadata/Cargo.toml`
+- Create: `ssmd-rust/crates/metadata/src/lib.rs`
 
 **Step 1: Create workspace directory structure**
 
 ```bash
-mkdir -p ssmd-connector/crates/connector/src
+mkdir -p ssmd-rust/crates/metadata/src
 ```
 
 **Step 2: Create workspace Cargo.toml**
 
-Create `ssmd-connector/Cargo.toml`:
+Create `ssmd-rust/Cargo.toml`:
 
 ```toml
 [workspace]
 resolver = "2"
 members = [
-    "crates/connector",
+    "crates/metadata",
 ]
 
 [workspace.package]
@@ -49,62 +49,569 @@ thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```
 
-**Step 3: Create connector crate Cargo.toml**
+**Step 3: Create metadata crate Cargo.toml**
 
-Create `ssmd-connector/crates/connector/Cargo.toml`:
+Create `ssmd-rust/crates/metadata/Cargo.toml`:
 
 ```toml
 [package]
-name = "ssmd-connector"
+name = "ssmd-metadata"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-tokio = { workspace = true }
-async-trait = { workspace = true }
-thiserror = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
 ```
 
 **Step 4: Create minimal lib.rs**
 
-Create `ssmd-connector/crates/connector/src/lib.rs`:
+Create `ssmd-rust/crates/metadata/src/lib.rs`:
 
 ```rust
-//! ssmd-connector: Core runtime library for market data collection
+//! ssmd-metadata: Shared metadata types mirroring Go types
 
-pub mod traits;
-pub mod message;
+pub mod error;
+pub mod feed;
+pub mod environment;
 ```
 
 **Step 5: Verify workspace compiles**
 
-Run: `cd ssmd-connector && cargo build`
+Run: `cd ssmd-rust && cargo build`
 Expected: Success (with warnings about empty modules)
 
 **Step 6: Commit**
 
 ```bash
-git add ssmd-connector/
-git commit -m "feat(connector): initialize Rust workspace"
+git add ssmd-rust/
+git commit -m "feat(metadata): initialize Rust workspace with metadata crate"
 ```
 
 ---
 
-### Task 2: Create core traits
+### Task 2: Create metadata types - Feed
 
 **Files:**
-- Create: `ssmd-connector/crates/connector/src/traits.rs`
-- Create: `ssmd-connector/crates/connector/src/message.rs`
-- Create: `ssmd-connector/crates/connector/src/error.rs`
-- Modify: `ssmd-connector/crates/connector/src/lib.rs`
+- Create: `ssmd-rust/crates/metadata/src/error.rs`
+- Create: `ssmd-rust/crates/metadata/src/feed.rs`
 
 **Step 1: Create error types**
+
+Create `ssmd-rust/crates/metadata/src/error.rs`:
+
+```rust
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum MetadataError {
+    #[error("failed to read file: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("failed to parse YAML: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+    #[error("validation error: {0}")]
+    Validation(String),
+}
+```
+
+**Step 2: Create Feed types (mirrors Go internal/types/feed.go)**
+
+Create `ssmd-rust/crates/metadata/src/feed.rs`:
+
+```rust
+use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::Path;
+
+use crate::error::MetadataError;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedType {
+    Websocket,
+    Rest,
+    Multicast,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedStatus {
+    Active,
+    Deprecated,
+    Disabled,
+}
+
+impl Default for FeedStatus {
+    fn default() -> Self {
+        Self::Active
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMethod {
+    ApiKey,
+    Oauth,
+    Mtls,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureLocation {
+    pub datacenter: String,
+    pub provider: Option<String>,
+    pub region: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Calendar {
+    pub timezone: Option<String>,
+    pub holiday_calendar: Option<String>,
+    pub open_time: Option<String>,
+    pub close_time: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedVersion {
+    pub version: String,
+    pub effective_from: String,
+    pub effective_to: Option<String>,
+    pub protocol: String,
+    pub endpoint: String,
+    pub auth_method: Option<AuthMethod>,
+    pub rate_limit_per_second: Option<i32>,
+    pub max_symbols_per_connection: Option<i32>,
+    pub supports_orderbook: Option<bool>,
+    pub supports_trades: Option<bool>,
+    pub supports_historical: Option<bool>,
+    pub parser_config: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Feed {
+    pub name: String,
+    pub display_name: Option<String>,
+    #[serde(rename = "type")]
+    pub feed_type: FeedType,
+    #[serde(default)]
+    pub status: Option<FeedStatus>,
+    pub capture_locations: Option<Vec<CaptureLocation>>,
+    pub versions: Vec<FeedVersion>,
+    pub calendar: Option<Calendar>,
+}
+
+impl Feed {
+    pub fn load(path: &Path) -> Result<Self, MetadataError> {
+        let content = std::fs::read_to_string(path)?;
+        let feed: Feed = serde_yaml::from_str(&content)?;
+        Ok(feed)
+    }
+
+    /// Get the version effective for a given date
+    pub fn get_version_for_date(&self, date: NaiveDate) -> Option<&FeedVersion> {
+        let date_str = date.format("%Y-%m-%d").to_string();
+
+        // Sort by effective_from descending
+        let mut versions: Vec<_> = self.versions.iter().collect();
+        versions.sort_by(|a, b| b.effective_from.cmp(&a.effective_from));
+
+        for v in versions {
+            if v.effective_from <= date_str {
+                if let Some(ref to) = v.effective_to {
+                    if to >= &date_str {
+                        return Some(v);
+                    }
+                } else {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    }
+
+    /// Get the most recent version
+    pub fn get_latest_version(&self) -> Option<&FeedVersion> {
+        self.versions
+            .iter()
+            .max_by(|a, b| a.effective_from.cmp(&b.effective_from))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_load_feed() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+name: kalshi
+display_name: Kalshi Exchange
+type: websocket
+status: active
+versions:
+  - version: v1
+    effective_from: "2025-12-22"
+    protocol: wss
+    endpoint: wss://api.kalshi.com/trade-api/ws/v2
+    auth_method: api_key
+"#
+        )
+        .unwrap();
+
+        let feed = Feed::load(file.path()).unwrap();
+        assert_eq!(feed.name, "kalshi");
+        assert_eq!(feed.feed_type, FeedType::Websocket);
+        assert!(feed.get_latest_version().is_some());
+    }
+
+    #[test]
+    fn test_version_for_date() {
+        let feed = Feed {
+            name: "test".to_string(),
+            display_name: None,
+            feed_type: FeedType::Websocket,
+            status: Some(FeedStatus::Active),
+            capture_locations: None,
+            versions: vec![
+                FeedVersion {
+                    version: "v1".to_string(),
+                    effective_from: "2025-01-01".to_string(),
+                    effective_to: Some("2025-06-30".to_string()),
+                    protocol: "wss".to_string(),
+                    endpoint: "wss://v1".to_string(),
+                    auth_method: None,
+                    rate_limit_per_second: None,
+                    max_symbols_per_connection: None,
+                    supports_orderbook: None,
+                    supports_trades: None,
+                    supports_historical: None,
+                    parser_config: None,
+                },
+                FeedVersion {
+                    version: "v2".to_string(),
+                    effective_from: "2025-07-01".to_string(),
+                    effective_to: None,
+                    protocol: "wss".to_string(),
+                    endpoint: "wss://v2".to_string(),
+                    auth_method: None,
+                    rate_limit_per_second: None,
+                    max_symbols_per_connection: None,
+                    supports_orderbook: None,
+                    supports_trades: None,
+                    supports_historical: None,
+                    parser_config: None,
+                },
+            ],
+            calendar: None,
+        };
+
+        let march = NaiveDate::from_ymd_opt(2025, 3, 15).unwrap();
+        let aug = NaiveDate::from_ymd_opt(2025, 8, 15).unwrap();
+
+        assert_eq!(feed.get_version_for_date(march).unwrap().version, "v1");
+        assert_eq!(feed.get_version_for_date(aug).unwrap().version, "v2");
+    }
+}
+```
+
+**Step 3: Add tempfile dev dependency**
+
+Add to `ssmd-rust/crates/metadata/Cargo.toml`:
+
+```toml
+[dev-dependencies]
+tempfile = "3"
+```
+
+**Step 4: Update lib.rs**
+
+Update `ssmd-rust/crates/metadata/src/lib.rs`:
+
+```rust
+//! ssmd-metadata: Shared metadata types mirroring Go types
+
+pub mod error;
+pub mod feed;
+
+pub use error::MetadataError;
+pub use feed::{Feed, FeedVersion, FeedType, FeedStatus, AuthMethod, Calendar, CaptureLocation};
+```
+
+**Step 5: Run tests**
+
+Run: `cd ssmd-rust && cargo test`
+Expected: All tests pass
+
+**Step 6: Commit**
+
+```bash
+git add ssmd-rust/
+git commit -m "feat(metadata): add Feed types mirroring Go"
+```
+
+---
+
+### Task 3: Create metadata types - Environment
+
+**Files:**
+- Create: `ssmd-rust/crates/metadata/src/environment.rs`
+- Modify: `ssmd-rust/crates/metadata/src/lib.rs`
+
+**Step 1: Create Environment types (mirrors Go internal/types/environment.go)**
+
+Create `ssmd-rust/crates/metadata/src/environment.rs`:
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::Path;
+
+use crate::error::MetadataError;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportType {
+    Nats,
+    Mqtt,
+    Memory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageType {
+    Local,
+    S3,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheType {
+    Memory,
+    Redis,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyType {
+    ApiKey,
+    Transport,
+    Storage,
+    Tls,
+    Webhook,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Schedule {
+    pub timezone: Option<String>,
+    pub day_start: Option<String>,
+    pub day_end: Option<String>,
+    pub auto_roll: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeySpec {
+    #[serde(rename = "type")]
+    pub key_type: KeyType,
+    pub description: Option<String>,
+    pub required: Option<bool>,
+    pub fields: Vec<String>,
+    pub source: Option<String>,
+    pub rotation_days: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransportConfig {
+    #[serde(rename = "type")]
+    pub transport_type: TransportType,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    #[serde(rename = "type")]
+    pub storage_type: StorageType,
+    pub path: Option<String>,
+    pub bucket: Option<String>,
+    pub region: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConfig {
+    #[serde(rename = "type")]
+    pub cache_type: CacheType,
+    pub max_size: Option<String>,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Environment {
+    pub name: String,
+    pub feed: String,
+    pub schema: String,
+    pub schedule: Option<Schedule>,
+    pub keys: Option<HashMap<String, KeySpec>>,
+    pub transport: TransportConfig,
+    pub storage: StorageConfig,
+    pub cache: Option<CacheConfig>,
+}
+
+impl Environment {
+    pub fn load(path: &Path) -> Result<Self, MetadataError> {
+        let content = std::fs::read_to_string(path)?;
+        let env: Environment = serde_yaml::from_str(&content)?;
+        Ok(env)
+    }
+
+    /// Get the schema name (before the colon)
+    pub fn get_schema_name(&self) -> &str {
+        self.schema.split(':').next().unwrap_or(&self.schema)
+    }
+
+    /// Get the schema version (after the colon)
+    pub fn get_schema_version(&self) -> &str {
+        self.schema.split(':').nth(1).unwrap_or("")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_load_environment() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+name: kalshi-dev
+feed: kalshi
+schema: trade:v1
+keys:
+  kalshi:
+    type: api_key
+    fields:
+      - api_key
+      - api_secret
+    source: env:KALSHI_API_KEY,KALSHI_API_SECRET
+transport:
+  type: memory
+storage:
+  type: local
+  path: /var/lib/ssmd/data
+"#
+        )
+        .unwrap();
+
+        let env = Environment::load(file.path()).unwrap();
+        assert_eq!(env.name, "kalshi-dev");
+        assert_eq!(env.feed, "kalshi");
+        assert_eq!(env.get_schema_name(), "trade");
+        assert_eq!(env.get_schema_version(), "v1");
+    }
+}
+```
+
+**Step 2: Update lib.rs to export Environment types**
+
+Update `ssmd-rust/crates/metadata/src/lib.rs`:
+
+```rust
+//! ssmd-metadata: Shared metadata types mirroring Go types
+
+pub mod error;
+pub mod feed;
+pub mod environment;
+
+pub use error::MetadataError;
+pub use feed::{Feed, FeedVersion, FeedType, FeedStatus, AuthMethod, Calendar, CaptureLocation};
+pub use environment::{
+    Environment, KeySpec, KeyType, Schedule,
+    TransportConfig, TransportType,
+    StorageConfig, StorageType,
+    CacheConfig, CacheType,
+};
+```
+
+**Step 3: Run tests**
+
+Run: `cd ssmd-rust && cargo test`
+Expected: All tests pass
+
+**Step 4: Commit**
+
+```bash
+git add ssmd-rust/
+git commit -m "feat(metadata): add Environment types mirroring Go"
+```
+
+---
+
+## Phase 2: Connector Crate
+
+### Task 4: Create connector crate with traits
+
+**Files:**
+- Create: `ssmd-rust/crates/connector/Cargo.toml`
+- Create: `ssmd-rust/crates/connector/src/lib.rs`
+- Create: `ssmd-rust/crates/connector/src/error.rs`
+- Create: `ssmd-rust/crates/connector/src/traits.rs`
+- Create: `ssmd-rust/crates/connector/src/message.rs`
+
+**Step 1: Create connector crate directory**
+
+```bash
+mkdir -p ssmd-rust/crates/connector/src
+```
+
+**Step 2: Add connector to workspace**
+
+Update `ssmd-rust/Cargo.toml` members:
+
+```toml
+members = [
+    "crates/metadata",
+    "crates/connector",
+]
+```
+
+**Step 3: Create connector Cargo.toml**
+
+Create `ssmd-rust/crates/connector/Cargo.toml`:
+
+```toml
+[package]
+name = "ssmd-connector-lib"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ssmd-metadata = { path = "../metadata" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+```
+
+**Step 4: Create error types**
 
 Create `ssmd-connector/crates/connector/src/error.rs`:
 
