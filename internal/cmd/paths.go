@@ -41,3 +41,4 @@ func getEnvsDir() (string, error) {
 	}
 	return filepath.Join(cwd, "exchanges", "environments"), nil
 }
+
