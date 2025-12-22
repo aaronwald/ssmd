@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/aaronwald/ssmd/internal/types"
 	"github.com/spf13/cobra"
@@ -28,8 +29,10 @@ type ValidationResult struct {
 	Errors  []string
 }
 
+var checkKeys bool
+
 func init() {
-	// No flags needed for now
+	validateCmd.Flags().BoolVar(&checkKeys, "check-keys", false, "Also verify that key sources are configured (env vars set, etc.)")
 }
 
 func runValidate(cmd *cobra.Command, args []string) error {
@@ -243,6 +246,24 @@ func validateFile(cwd, path string) ValidationResult {
 			result.Errors = append(result.Errors, fmt.Sprintf("environment name '%s' does not match filename '%s'", env.Name, expectedName))
 			return result
 		}
+		// Validate key sources format
+		keyErrors := validateKeySourceFormats(env)
+		if len(keyErrors) > 0 {
+			result.Valid = false
+			result.Message = "key source errors"
+			result.Errors = keyErrors
+			return result
+		}
+		// Optionally check keys are set
+		if checkKeys {
+			keyCheckErrors := validateKeySourcesExist(env)
+			if len(keyCheckErrors) > 0 {
+				result.Valid = false
+				result.Message = "key verification failed"
+				result.Errors = keyCheckErrors
+				return result
+			}
+		}
 		result.Message = "valid"
 
 	default:
@@ -324,6 +345,71 @@ func validateCrossReferences(cwd string) ([]ValidationResult, int) {
 	}
 
 	return results, errorCount
+}
+
+// validateKeySourceFormats checks that all key sources have valid format
+func validateKeySourceFormats(env *types.Environment) []string {
+	var errors []string
+
+	for name, spec := range env.Keys {
+		if spec.Source == "" {
+			if spec.Required {
+				errors = append(errors, fmt.Sprintf("key '%s': source is required for required keys", name))
+			}
+			continue
+		}
+
+		// Validate source format
+		if strings.HasPrefix(spec.Source, "env:") {
+			_, err := types.ParseEnvSource(spec.Source)
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("key '%s': invalid env source format: %v", name, err))
+			}
+		} else if strings.HasPrefix(spec.Source, "sealed-secret:") {
+			// Valid format: sealed-secret:namespace/name
+			parts := strings.TrimPrefix(spec.Source, "sealed-secret:")
+			if !strings.Contains(parts, "/") {
+				errors = append(errors, fmt.Sprintf("key '%s': sealed-secret source must be in format 'sealed-secret:namespace/name'", name))
+			}
+		} else if strings.HasPrefix(spec.Source, "vault:") {
+			// Valid format: vault:path
+			path := strings.TrimPrefix(spec.Source, "vault:")
+			if path == "" {
+				errors = append(errors, fmt.Sprintf("key '%s': vault source must have a path", name))
+			}
+		} else {
+			errors = append(errors, fmt.Sprintf("key '%s': unknown source type '%s' (expected env:, sealed-secret:, or vault:)", name, strings.Split(spec.Source, ":")[0]))
+		}
+	}
+
+	return errors
+}
+
+// validateKeySourcesExist checks that key sources are actually configured
+func validateKeySourcesExist(env *types.Environment) []string {
+	var errors []string
+
+	for name, spec := range env.Keys {
+		if spec.Source == "" {
+			continue
+		}
+
+		if strings.HasPrefix(spec.Source, "env:") {
+			missing, err := types.VerifyEnvSource(spec.Source)
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("key '%s': %v", name, err))
+				continue
+			}
+			for _, v := range missing {
+				if spec.Required {
+					errors = append(errors, fmt.Sprintf("key '%s': required env var '%s' is not set", name, v))
+				}
+			}
+		}
+		// Note: sealed-secret and vault verification would require external tools
+	}
+
+	return errors
 }
 
 // ValidateCommand returns the validate command for registration

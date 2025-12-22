@@ -31,10 +31,26 @@ var keyShowCmd = &cobra.Command{
 	RunE:  runKeyShow,
 }
 
+var keyVerifyCmd = &cobra.Command{
+	Use:   "verify <env-name>",
+	Short: "Verify all keys in an environment have their sources configured",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runKeyVerify,
+}
+
+var keyCheckCmd = &cobra.Command{
+	Use:   "check <env-name> <key-name>",
+	Short: "Check a single key's source is configured",
+	Args:  cobra.ExactArgs(2),
+	RunE:  runKeyCheck,
+}
+
 func init() {
 	// Register subcommands
 	keyCmd.AddCommand(keyListCmd)
 	keyCmd.AddCommand(keyShowCmd)
+	keyCmd.AddCommand(keyVerifyCmd)
+	keyCmd.AddCommand(keyCheckCmd)
 }
 
 func runKeyList(cmd *cobra.Command, args []string) error {
@@ -146,6 +162,153 @@ func runKeyShow(cmd *cobra.Command, args []string) error {
 				fmt.Printf("  %s: set\n", v)
 			}
 		}
+	} else {
+		fmt.Printf("Source type '%s' - verification not implemented\n", strings.Split(spec.Source, ":")[0])
+	}
+
+	return nil
+}
+
+func runKeyVerify(cmd *cobra.Command, args []string) error {
+	envName := args[0]
+
+	// Load environment
+	envsDir, err := getEnvsDir()
+	if err != nil {
+		return err
+	}
+	envPath := filepath.Join(envsDir, envName+".yaml")
+
+	env, err := types.LoadEnvironment(envPath)
+	if err != nil {
+		return fmt.Errorf("environment '%s' not found: %w", envName, err)
+	}
+
+	if len(env.Keys) == 0 {
+		fmt.Printf("No keys defined for environment '%s'.\n", envName)
+		return nil
+	}
+
+	fmt.Printf("Verifying keys for environment '%s'...\n", envName)
+
+	var totalMissing int
+	var requiredMissing int
+
+	for name, spec := range env.Keys {
+		fmt.Printf("\n  %s (%s)\n", name, spec.Source)
+
+		if spec.Source == "" {
+			fmt.Printf("    ! source not configured\n")
+			totalMissing++
+			if spec.Required {
+				requiredMissing++
+			}
+			continue
+		}
+
+		if strings.HasPrefix(spec.Source, "env:") {
+			missing, err := types.VerifyEnvSource(spec.Source)
+			if err != nil {
+				fmt.Printf("    ! invalid source: %v\n", err)
+				totalMissing++
+				if spec.Required {
+					requiredMissing++
+				}
+				continue
+			}
+
+			vars, _ := types.ParseEnvSource(spec.Source)
+			for _, v := range vars {
+				isMissing := false
+				for _, m := range missing {
+					if m == v {
+						isMissing = true
+						break
+					}
+				}
+				if isMissing {
+					fmt.Printf("    x %s is not set\n", v)
+					totalMissing++
+					if spec.Required {
+						requiredMissing++
+					}
+				} else {
+					fmt.Printf("    + %s is set\n", v)
+				}
+			}
+		} else {
+			fmt.Printf("    ? source type not verifiable\n")
+		}
+	}
+
+	fmt.Println()
+	if requiredMissing > 0 {
+		return fmt.Errorf("%d required key field(s) not set", requiredMissing)
+	}
+	if totalMissing > 0 {
+		fmt.Printf("Warning: %d optional key field(s) not set\n", totalMissing)
+	} else {
+		fmt.Println("All keys verified.")
+	}
+
+	return nil
+}
+
+func runKeyCheck(cmd *cobra.Command, args []string) error {
+	envName := args[0]
+	keyName := args[1]
+
+	// Load environment
+	envsDir, err := getEnvsDir()
+	if err != nil {
+		return err
+	}
+	envPath := filepath.Join(envsDir, envName+".yaml")
+
+	env, err := types.LoadEnvironment(envPath)
+	if err != nil {
+		return fmt.Errorf("environment '%s' not found: %w", envName, err)
+	}
+
+	spec, ok := env.Keys[keyName]
+	if !ok {
+		return fmt.Errorf("key '%s' not defined in environment '%s'", keyName, envName)
+	}
+
+	fmt.Printf("Checking key '%s' (source: %s)...\n", keyName, spec.Source)
+
+	if spec.Source == "" {
+		return fmt.Errorf("source not configured for key '%s'", keyName)
+	}
+
+	if strings.HasPrefix(spec.Source, "env:") {
+		missing, err := types.VerifyEnvSource(spec.Source)
+		if err != nil {
+			return fmt.Errorf("invalid source: %w", err)
+		}
+
+		vars, _ := types.ParseEnvSource(spec.Source)
+		allSet := true
+		for _, v := range vars {
+			isMissing := false
+			for _, m := range missing {
+				if m == v {
+					isMissing = true
+					break
+				}
+			}
+			if isMissing {
+				fmt.Printf("  x %s is not set\n", v)
+				allSet = false
+			} else {
+				fmt.Printf("  + %s is set\n", v)
+			}
+		}
+
+		if !allSet {
+			return fmt.Errorf("key '%s' has missing environment variables", keyName)
+		}
+		fmt.Printf("Key '%s' verified successfully.\n", keyName)
 	} else {
 		fmt.Printf("Source type '%s' - verification not implemented\n", strings.Split(spec.Source, ":")[0])
 	}

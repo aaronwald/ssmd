@@ -42,12 +42,3 @@ func getEnvsDir() (string, error) {
 	return filepath.Join(cwd, "exchanges", "environments"), nil
 }
 
-// getKeysDir returns the key metadata directory path for an environment
-func getKeysDir(envName string) (string, error) {
-	cwd, err := getBaseDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(cwd, ".ssmd", "keys", envName), nil
-}
-
