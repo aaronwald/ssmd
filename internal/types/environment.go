@@ -45,14 +45,14 @@ const (
 
 // Environment represents an environment configuration
 type Environment struct {
-	Name      string               `yaml:"name"`
-	Feed      string               `yaml:"feed"`
-	Schema    string               `yaml:"schema"`
-	Schedule  *Schedule            `yaml:"schedule,omitempty"`
-	Keys      map[string]*KeySpec  `yaml:"keys,omitempty"`
-	Transport *TransportConfig     `yaml:"transport"`
-	Storage   *StorageConfig       `yaml:"storage"`
-	Cache     *CacheConfig         `yaml:"cache,omitempty"`
+	Name      string              `yaml:"name"`
+	Feed      string              `yaml:"feed"`
+	Schema    string              `yaml:"schema"`
+	Schedule  *Schedule           `yaml:"schedule,omitempty"`
+	Keys      map[string]*KeySpec `yaml:"keys,omitempty"`
+	Transport *TransportConfig    `yaml:"transport"`
+	Storage   *StorageConfig      `yaml:"storage"`
+	Cache     *CacheConfig        `yaml:"cache,omitempty"`
 }
 
 // GetName returns the environment name (implements utils.Named)
