@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -230,7 +229,7 @@ func runEnvCreate(cmd *cobra.Command, args []string) error {
 	path := filepath.Join(envsDir, name+".yaml")
 
 	// Check if environment already exists
-	if _, err := os.Stat(path); err == nil {
+	if utils.CheckFileExists(path) {
 		return fmt.Errorf("environment '%s' already exists", name)
 	}
 

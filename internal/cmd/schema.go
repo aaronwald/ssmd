@@ -190,7 +190,7 @@ func runSchemaRegister(cmd *cobra.Command, args []string) error {
 	metadataPath := filepath.Join(schemasDir, name+".yaml")
 
 	// Check if schema already exists
-	if _, err := os.Stat(metadataPath); err == nil {
+	if utils.CheckFileExists(metadataPath) {
 		return fmt.Errorf("schema '%s' already exists", name)
 	}
 
