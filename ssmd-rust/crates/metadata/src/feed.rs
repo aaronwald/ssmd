@@ -31,6 +31,32 @@ pub enum AuthMethod {
     None,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportProtocol {
+    Wss,
+    Https,
+    Multicast,
+    Tcp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageProtocol {
+    Json,
+    Itch,
+    Fix,
+    Sbe,
+    Protobuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Protocol {
+    pub transport: TransportProtocol,
+    pub message: MessageProtocol,
+    pub version: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureLocation {
     pub datacenter: String,
@@ -51,7 +77,7 @@ pub struct FeedVersion {
     pub version: String,
     pub effective_from: String,
     pub effective_to: Option<String>,
-    pub protocol: String,
+    pub protocol: Protocol,
     pub endpoint: String,
     pub auth_method: Option<AuthMethod>,
     pub rate_limit_per_second: Option<i32>,
