@@ -16,7 +16,7 @@ var diffCmd = &cobra.Command{
 	Short: "Show uncommitted changes to ssmd files",
 	Long: `Show uncommitted changes to ssmd configuration files.
 
-Displays modified, new, and deleted files in feeds/, schemas/, and environments/.`,
+Displays modified, new, and deleted files in exchanges/.`,
 	RunE: runDiff,
 }
 
@@ -26,7 +26,7 @@ var commitCmd = &cobra.Command{
 	Long: `Validate and commit ssmd configuration changes to git.
 
 Runs validation before committing. Fails if validation errors are found.
-Stages all modified ssmd files (feeds/, schemas/, environments/) and commits.
+Stages all modified ssmd files in exchanges/ and commits.
 
 Does NOT push to remote.`,
 	RunE: runCommit,
@@ -130,7 +130,7 @@ func runCommit(cmd *cobra.Command, args []string) error {
 
 	// Stage ssmd files
 	fmt.Println("Staging files...")
-	stagePaths := []string{"feeds/", "schemas/", "environments/"}
+	stagePaths := []string{"exchanges/"}
 	for _, p := range stagePaths {
 		fullPath := filepath.Join(cwd, p)
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
@@ -179,7 +179,7 @@ func isGitRepo(dir string) bool {
 
 func getGitStatus(cwd string) (modified, added, deleted []string, err error) {
 	// Get status for ssmd directories
-	gitCmd := exec.Command("git", "status", "--porcelain", "feeds/", "schemas/", "environments/")
+	gitCmd := exec.Command("git", "status", "--porcelain", "exchanges/")
 	gitCmd.Dir = cwd
 	output, err := gitCmd.Output()
 	if err != nil {

@@ -20,7 +20,7 @@ func TestSchemaRegister(t *testing.T) {
 	defer os.Chdir(origDir)
 
 	// Create schemas directory
-	os.MkdirAll("schemas", 0755)
+	os.MkdirAll("exchanges/schemas", 0755)
 
 	// Create a test schema file
 	schemaContent := `@0xabcdef1234567890;
@@ -45,13 +45,13 @@ struct Trade {
 	}
 
 	// Verify metadata file exists
-	metadataPath := filepath.Join(tmpDir, "schemas", "trade.yaml")
+	metadataPath := filepath.Join(tmpDir, "exchanges", "schemas", "trade.yaml")
 	if _, err := os.Stat(metadataPath); err != nil {
 		t.Fatalf("metadata file not created: %v", err)
 	}
 
 	// Verify schema file was copied
-	schemaPath := filepath.Join(tmpDir, "schemas", "trade.capnp")
+	schemaPath := filepath.Join(tmpDir, "exchanges", "schemas", "trade.capnp")
 	if _, err := os.Stat(schemaPath); err != nil {
 		t.Fatalf("schema file not copied: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestSchemaList(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	schemasDir := filepath.Join(tmpDir, "schemas")
+	schemasDir := filepath.Join(tmpDir, "exchanges", "schemas")
 	os.MkdirAll(schemasDir, 0755)
 
 	// Create test schemas
@@ -136,7 +136,7 @@ func TestSchemaShow(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	schemasDir := filepath.Join(tmpDir, "schemas")
+	schemasDir := filepath.Join(tmpDir, "exchanges", "schemas")
 	os.MkdirAll(schemasDir, 0755)
 
 	schema := &types.Schema{
@@ -187,7 +187,7 @@ func TestSchemaHash(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	schemasDir := filepath.Join(tmpDir, "schemas")
+	schemasDir := filepath.Join(tmpDir, "exchanges", "schemas")
 	os.MkdirAll(schemasDir, 0755)
 
 	// Create schema file
@@ -229,7 +229,7 @@ func TestSchemaSetStatus(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	schemasDir := filepath.Join(tmpDir, "schemas")
+	schemasDir := filepath.Join(tmpDir, "exchanges", "schemas")
 	os.MkdirAll(schemasDir, 0755)
 
 	schema := &types.Schema{
@@ -266,7 +266,7 @@ func TestSchemaAddVersion(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	schemasDir := filepath.Join(tmpDir, "schemas")
+	schemasDir := filepath.Join(tmpDir, "exchanges", "schemas")
 	os.MkdirAll(schemasDir, 0755)
 
 	// Create initial schema

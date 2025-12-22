@@ -21,3 +21,4 @@ ssmd - Simple/Streaming Market Data system
 ## Instructions
 
 1. All code must go through pr code review.
+1. Use idiomatic go. See .github/instructions/go.instructions.md

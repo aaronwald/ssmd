@@ -45,7 +45,7 @@ func TestDiffNoChanges(t *testing.T) {
 	}
 
 	// Create and commit initial files
-	os.MkdirAll("feeds", 0755)
+	os.MkdirAll("exchanges/feeds", 0755)
 	feed := &types.Feed{
 		Name: "kalshi",
 		Type: types.FeedTypeWebSocket,
@@ -53,7 +53,7 @@ func TestDiffNoChanges(t *testing.T) {
 			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
 		},
 	}
-	types.SaveFeed(feed, filepath.Join(tmpDir, "feeds", "kalshi.yaml"))
+	types.SaveFeed(feed, filepath.Join(tmpDir, "exchanges", "feeds", "kalshi.yaml"))
 
 	gitAdd := exec.Command("git", "add", ".")
 	gitAdd.Dir = tmpDir
@@ -85,8 +85,8 @@ func TestDiffWithChanges(t *testing.T) {
 		t.Fatalf("failed to init git repo: %v", err)
 	}
 
-	os.MkdirAll("feeds", 0755)
-	os.MkdirAll("schemas", 0755)
+	os.MkdirAll("exchanges/feeds", 0755)
+	os.MkdirAll("exchanges/schemas", 0755)
 
 	// Create initial commit
 	feed := &types.Feed{
@@ -96,7 +96,7 @@ func TestDiffWithChanges(t *testing.T) {
 			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
 		},
 	}
-	types.SaveFeed(feed, filepath.Join(tmpDir, "feeds", "kalshi.yaml"))
+	types.SaveFeed(feed, filepath.Join(tmpDir, "exchanges", "feeds", "kalshi.yaml"))
 
 	gitAdd := exec.Command("git", "add", ".")
 	gitAdd.Dir = tmpDir
@@ -108,7 +108,7 @@ func TestDiffWithChanges(t *testing.T) {
 
 	// Make changes
 	feed.DisplayName = "Modified"
-	types.SaveFeed(feed, filepath.Join(tmpDir, "feeds", "kalshi.yaml"))
+	types.SaveFeed(feed, filepath.Join(tmpDir, "exchanges", "feeds", "kalshi.yaml"))
 
 	// Add new file
 	newFeed := &types.Feed{
@@ -118,7 +118,7 @@ func TestDiffWithChanges(t *testing.T) {
 			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://polymarket.com"},
 		},
 	}
-	types.SaveFeed(newFeed, filepath.Join(tmpDir, "feeds", "polymarket.yaml"))
+	types.SaveFeed(newFeed, filepath.Join(tmpDir, "exchanges", "feeds", "polymarket.yaml"))
 
 	// Run diff - should show changes
 	err = runDiff(nil, nil)
@@ -160,9 +160,9 @@ func TestCommitWithValidation(t *testing.T) {
 		t.Fatalf("failed to init git repo: %v", err)
 	}
 
-	os.MkdirAll("feeds", 0755)
-	os.MkdirAll("schemas", 0755)
-	os.MkdirAll("environments", 0755)
+	os.MkdirAll("exchanges/feeds", 0755)
+	os.MkdirAll("exchanges/schemas", 0755)
+	os.MkdirAll("exchanges/environments", 0755)
 
 	// Create valid configuration
 	feed := &types.Feed{
@@ -172,10 +172,10 @@ func TestCommitWithValidation(t *testing.T) {
 			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
 		},
 	}
-	types.SaveFeed(feed, filepath.Join(tmpDir, "feeds", "kalshi.yaml"))
+	types.SaveFeed(feed, filepath.Join(tmpDir, "exchanges", "feeds", "kalshi.yaml"))
 
-	os.WriteFile(filepath.Join(tmpDir, "schemas", "trade.capnp"), []byte("schema"), 0644)
-	hash, _ := types.ComputeHash(filepath.Join(tmpDir, "schemas"), "trade.capnp")
+	os.WriteFile(filepath.Join(tmpDir, "exchanges", "schemas", "trade.capnp"), []byte("schema"), 0644)
+	hash, _ := types.ComputeHash(filepath.Join(tmpDir, "exchanges", "schemas"), "trade.capnp")
 	schema := &types.Schema{
 		Name:       "trade",
 		Format:     types.SchemaFormatCapnp,
@@ -184,7 +184,7 @@ func TestCommitWithValidation(t *testing.T) {
 			{Version: "v1", EffectiveFrom: "2025-01-01", Status: types.SchemaStatusActive, Hash: hash},
 		},
 	}
-	types.SaveSchema(schema, filepath.Join(tmpDir, "schemas", "trade.yaml"))
+	types.SaveSchema(schema, filepath.Join(tmpDir, "exchanges", "schemas", "trade.yaml"))
 
 	env := &types.Environment{
 		Name:   "kalshi-dev",
@@ -198,7 +198,7 @@ func TestCommitWithValidation(t *testing.T) {
 			Path: "/data",
 		},
 	}
-	types.SaveEnvironment(env, filepath.Join(tmpDir, "environments", "kalshi-dev.yaml"))
+	types.SaveEnvironment(env, filepath.Join(tmpDir, "exchanges", "environments", "kalshi-dev.yaml"))
 
 	// Commit
 	commitMessage = "Add kalshi configuration"
@@ -232,7 +232,7 @@ func TestCommitNoValidate(t *testing.T) {
 		t.Fatalf("failed to init git repo: %v", err)
 	}
 
-	os.MkdirAll("feeds", 0755)
+	os.MkdirAll("exchanges/feeds", 0755)
 
 	// Create feed
 	feed := &types.Feed{
@@ -242,7 +242,7 @@ func TestCommitNoValidate(t *testing.T) {
 			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
 		},
 	}
-	types.SaveFeed(feed, filepath.Join(tmpDir, "feeds", "kalshi.yaml"))
+	types.SaveFeed(feed, filepath.Join(tmpDir, "exchanges", "feeds", "kalshi.yaml"))
 
 	// Commit with --no-validate
 	commitMessage = "Add feed"
@@ -268,8 +268,8 @@ func TestCommitValidationFailure(t *testing.T) {
 		t.Fatalf("failed to init git repo: %v", err)
 	}
 
-	os.MkdirAll("feeds", 0755)
-	os.MkdirAll("environments", 0755)
+	os.MkdirAll("exchanges/feeds", 0755)
+	os.MkdirAll("exchanges/environments", 0755)
 
 	// Create feed
 	feed := &types.Feed{
@@ -279,7 +279,7 @@ func TestCommitValidationFailure(t *testing.T) {
 			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
 		},
 	}
-	types.SaveFeed(feed, filepath.Join(tmpDir, "feeds", "kalshi.yaml"))
+	types.SaveFeed(feed, filepath.Join(tmpDir, "exchanges", "feeds", "kalshi.yaml"))
 
 	// Create environment with invalid reference
 	env := &types.Environment{
@@ -294,7 +294,7 @@ func TestCommitValidationFailure(t *testing.T) {
 			Path: "/data",
 		},
 	}
-	types.SaveEnvironment(env, filepath.Join(tmpDir, "environments", "test-env.yaml"))
+	types.SaveEnvironment(env, filepath.Join(tmpDir, "exchanges", "environments", "test-env.yaml"))
 
 	// Commit should fail due to validation
 	commitMessage = "Add invalid config"

@@ -22,7 +22,7 @@ func TestFeedCreate(t *testing.T) {
 	defer os.Chdir(origDir)
 
 	// Create feeds directory
-	os.MkdirAll("feeds", 0755)
+	os.MkdirAll("exchanges/feeds", 0755)
 
 	// Set flags
 	feedType = "websocket"
@@ -39,7 +39,7 @@ func TestFeedCreate(t *testing.T) {
 	}
 
 	// Verify file exists
-	path := filepath.Join(tmpDir, "feeds", "testfeed.yaml")
+	path := filepath.Join(tmpDir, "exchanges", "feeds", "testfeed.yaml")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("feed file not created: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestFeedCreateDuplicate(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	os.MkdirAll("feeds", 0755)
+	os.MkdirAll("exchanges/feeds", 0755)
 
 	// Create first feed
 	feedType = "websocket"
@@ -114,7 +114,7 @@ func TestFeedList(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	feedsDir := filepath.Join(tmpDir, "feeds")
+	feedsDir := filepath.Join(tmpDir, "exchanges", "feeds")
 	os.MkdirAll(feedsDir, 0755)
 
 	// Create two feeds
@@ -163,7 +163,7 @@ func TestFeedShow(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	feedsDir := filepath.Join(tmpDir, "feeds")
+	feedsDir := filepath.Join(tmpDir, "exchanges", "feeds")
 	os.MkdirAll(feedsDir, 0755)
 
 	feed := &types.Feed{
@@ -208,7 +208,7 @@ func TestFeedShowNotFound(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	os.MkdirAll("feeds", 0755)
+	os.MkdirAll("exchanges/feeds", 0755)
 
 	err = runFeedShow(nil, []string{"nonexistent"})
 	if err == nil {
@@ -227,7 +227,7 @@ func TestFeedUpdate(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	feedsDir := filepath.Join(tmpDir, "feeds")
+	feedsDir := filepath.Join(tmpDir, "exchanges", "feeds")
 	os.MkdirAll(feedsDir, 0755)
 
 	feed := &types.Feed{
@@ -272,7 +272,7 @@ func TestFeedAddVersion(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	feedsDir := filepath.Join(tmpDir, "feeds")
+	feedsDir := filepath.Join(tmpDir, "exchanges", "feeds")
 	os.MkdirAll(feedsDir, 0755)
 
 	feed := &types.Feed{

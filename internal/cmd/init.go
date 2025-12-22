@@ -15,10 +15,10 @@ var initCmd = &cobra.Command{
 	Long: `Initialize ssmd directory structure in the current repository.
 
 Creates:
-  feeds/         - Feed configuration files
-  schemas/       - Schema definitions and metadata
-  environments/  - Environment configurations
-  .ssmd/         - Local CLI config (gitignored)`,
+  exchanges/feeds/        - Feed configuration files
+  exchanges/schemas/      - Schema definitions and metadata
+  exchanges/environments/ - Environment configurations
+  .ssmd/                  - Local CLI config (gitignored)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -30,7 +30,12 @@ Creates:
 
 func runInit(baseDir string) error {
 	// Create directories
-	dirs := []string{"feeds", "schemas", "environments", ".ssmd"}
+	dirs := []string{
+		"exchanges/feeds",
+		"exchanges/schemas",
+		"exchanges/environments",
+		".ssmd",
+	}
 	for _, dir := range dirs {
 		path := filepath.Join(baseDir, dir)
 		if err := os.MkdirAll(path, 0755); err != nil {
