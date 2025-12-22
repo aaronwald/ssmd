@@ -22,6 +22,7 @@ func init() {
 	rootCmd.AddCommand(cmd.FeedCommand())
 	rootCmd.AddCommand(cmd.SchemaCommand())
 	rootCmd.AddCommand(cmd.EnvCommand())
+	rootCmd.AddCommand(cmd.KeyCommand())
 	rootCmd.AddCommand(cmd.ValidateCommand())
 	rootCmd.AddCommand(cmd.DiffCommand())
 	rootCmd.AddCommand(cmd.CommitCommand())
