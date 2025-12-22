@@ -41,3 +41,80 @@ func TestLoadYAML_NotFound(t *testing.T) {
 		t.Error("LoadYAML() expected error for nonexistent file")
 	}
 }
+
+func TestLoadAllYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create two test files
+	if err := os.WriteFile(filepath.Join(tmpDir, "one.yaml"), []byte("name: one\nvalue: 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "two.yaml"), []byte("name: two\nvalue: 2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Create a non-yaml file that should be ignored
+	if err := os.WriteFile(filepath.Join(tmpDir, "ignore.txt"), []byte("ignored"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := func(path string) (*testEntity, error) {
+		return LoadYAML[testEntity](path)
+	}
+
+	results, err := LoadAllYAML(tmpDir, loader)
+	if err != nil {
+		t.Fatalf("LoadAllYAML() error = %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("got %d results, want 2", len(results))
+	}
+}
+
+func TestLoadAllYAML_NameMismatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Name doesn't match filename
+	if err := os.WriteFile(filepath.Join(tmpDir, "file.yaml"), []byte("name: different\nvalue: 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := func(path string) (*testEntity, error) {
+		return LoadYAML[testEntity](path)
+	}
+
+	_, err := LoadAllYAML(tmpDir, loader)
+	if err == nil {
+		t.Error("LoadAllYAML() expected error for name mismatch")
+	}
+}
+
+func TestLoadAllYAML_EmptyDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	loader := func(path string) (*testEntity, error) {
+		return LoadYAML[testEntity](path)
+	}
+
+	results, err := LoadAllYAML(tmpDir, loader)
+	if err != nil {
+		t.Fatalf("LoadAllYAML() error = %v", err)
+	}
+	if results != nil {
+		t.Errorf("got %v, want nil for empty dir", results)
+	}
+}
+
+func TestLoadAllYAML_NonexistentDir(t *testing.T) {
+	loader := func(path string) (*testEntity, error) {
+		return LoadYAML[testEntity](path)
+	}
+
+	results, err := LoadAllYAML("/nonexistent/dir", loader)
+	if err != nil {
+		t.Fatalf("LoadAllYAML() unexpected error = %v", err)
+	}
+	if results != nil {
+		t.Errorf("got %v, want nil for nonexistent dir", results)
+	}
+}

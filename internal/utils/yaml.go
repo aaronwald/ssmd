@@ -46,3 +46,47 @@ func SaveYAML(v any, path string) error {
 
 	return nil
 }
+
+// LoadAllYAML loads all YAML files from a directory
+// Validates that each entity's name matches its filename (without extension)
+func LoadAllYAML[T any, PT interface {
+	*T
+	Named
+}](dir string, loader func(string) (PT, error)) ([]PT, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	var results []PT
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		ext := filepath.Ext(entry.Name())
+		if ext != ".yaml" && ext != ".yml" {
+			continue
+		}
+
+		path := filepath.Join(dir, entry.Name())
+		entity, err := loader(path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load %s: %w", entry.Name(), err)
+		}
+
+		// Validate name matches filename
+		expectedName := entry.Name()[:len(entry.Name())-len(ext)]
+		if entity.GetName() != expectedName {
+			return nil, fmt.Errorf("%s: name '%s' does not match filename '%s'",
+				entry.Name(), entity.GetName(), expectedName)
+		}
+
+		results = append(results, entity)
+	}
+
+	return results, nil
+}
