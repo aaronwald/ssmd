@@ -35,6 +35,34 @@ const (
 	AuthMethodNone   AuthMethod = "none"
 )
 
+// TransportProtocol represents the network transport
+type TransportProtocol string
+
+const (
+	TransportWSS       TransportProtocol = "wss"
+	TransportHTTPS     TransportProtocol = "https"
+	TransportMulticast TransportProtocol = "multicast"
+	TransportTCP       TransportProtocol = "tcp"
+)
+
+// MessageProtocol represents the wire format
+type MessageProtocol string
+
+const (
+	MessageJSON     MessageProtocol = "json"
+	MessageITCH     MessageProtocol = "itch"
+	MessageFIX      MessageProtocol = "fix"
+	MessageSBE      MessageProtocol = "sbe"
+	MessageProtobuf MessageProtocol = "protobuf"
+)
+
+// Protocol represents connection and message protocols
+type Protocol struct {
+	Transport TransportProtocol `yaml:"transport"`
+	Message   MessageProtocol   `yaml:"message"`
+	Version   string            `yaml:"version,omitempty"`
+}
+
 // CaptureLocation represents a datacenter where feed data is captured
 type CaptureLocation struct {
 	Datacenter string `yaml:"datacenter"`
@@ -61,7 +89,7 @@ type FeedVersion struct {
 	Version                 string            `yaml:"version"`
 	EffectiveFrom           string            `yaml:"effective_from"`
 	EffectiveTo             string            `yaml:"effective_to,omitempty"`
-	Protocol                string            `yaml:"protocol"`
+	Protocol                Protocol          `yaml:"protocol"`
 	Endpoint                string            `yaml:"endpoint"`
 	AuthMethod              AuthMethod        `yaml:"auth_method,omitempty"`
 	RateLimitPerSecond      int               `yaml:"rate_limit_per_second,omitempty"`
