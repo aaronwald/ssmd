@@ -2,11 +2,9 @@ package types
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/aaronwald/ssmd/internal/utils"
 )
 
 // FeedType represents the type of data feed
@@ -172,14 +170,9 @@ func (f *Feed) GetLatestVersion() *FeedVersion {
 
 // LoadFeed loads a feed from a YAML file
 func LoadFeed(path string) (*Feed, error) {
-	data, err := os.ReadFile(path)
+	feed, err := utils.LoadYAML[Feed](path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read feed file: %w", err)
-	}
-
-	var feed Feed
-	if err := yaml.Unmarshal(data, &feed); err != nil {
-		return nil, fmt.Errorf("failed to parse feed YAML: %w", err)
+		return nil, fmt.Errorf("failed to load feed: %w", err)
 	}
 
 	// Set default status
@@ -187,62 +180,15 @@ func LoadFeed(path string) (*Feed, error) {
 		feed.Status = FeedStatusActive
 	}
 
-	return &feed, nil
+	return feed, nil
 }
 
 // SaveFeed saves a feed to a YAML file
 func SaveFeed(feed *Feed, path string) error {
-	data, err := yaml.Marshal(feed)
-	if err != nil {
-		return fmt.Errorf("failed to marshal feed to YAML: %w", err)
-	}
-
-	// Ensure directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write feed file: %w", err)
-	}
-
-	return nil
+	return utils.SaveYAML(feed, path)
 }
 
 // LoadAllFeeds loads all feeds from a directory
 func LoadAllFeeds(dir string) ([]*Feed, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read feeds directory: %w", err)
-	}
-
-	var feeds []*Feed
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		if filepath.Ext(entry.Name()) != ".yaml" && filepath.Ext(entry.Name()) != ".yml" {
-			continue
-		}
-
-		path := filepath.Join(dir, entry.Name())
-		feed, err := LoadFeed(path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load %s: %w", entry.Name(), err)
-		}
-
-		// Validate that name matches filename
-		expectedName := entry.Name()[:len(entry.Name())-len(filepath.Ext(entry.Name()))]
-		if feed.Name != expectedName {
-			return nil, fmt.Errorf("%s: feed name '%s' does not match filename '%s'", entry.Name(), feed.Name, expectedName)
-		}
-
-		feeds = append(feeds, feed)
-	}
-
-	return feeds, nil
+	return utils.LoadAllYAML(dir, LoadFeed)
 }
