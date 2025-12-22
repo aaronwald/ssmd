@@ -21,7 +21,7 @@ func getFeedsDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(cwd, "feeds"), nil
+	return filepath.Join(cwd, "exchanges", "feeds"), nil
 }
 
 // getSchemasDir returns the schemas directory path
@@ -30,7 +30,7 @@ func getSchemasDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(cwd, "schemas"), nil
+	return filepath.Join(cwd, "exchanges", "schemas"), nil
 }
 
 // getEnvsDir returns the environments directory path
@@ -39,5 +39,5 @@ func getEnvsDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(cwd, "environments"), nil
+	return filepath.Join(cwd, "exchanges", "environments"), nil
 }

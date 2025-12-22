@@ -300,7 +300,7 @@ func runFeedCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Created feed '%s' in feeds/%s.yaml\n", name, name)
+	fmt.Printf("Created feed '%s' in exchanges/feeds/%s.yaml\n", name, name)
 	return nil
 }
 

@@ -1,0 +1,8 @@
+name: trade
+format: capnp
+schema_file: trade.capnp
+versions:
+    - version: v1
+      effective_from: "2025-12-22"
+      status: active
+      hash: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

@@ -14,7 +14,7 @@ var validateCmd = &cobra.Command{
 	Short: "Validate configuration files",
 	Long: `Validate configuration files for correctness and referential integrity.
 
-Without arguments, validates all files in feeds/, schemas/, and environments/.
+Without arguments, validates all files in exchanges/.
 With a path argument, validates that specific file or directory.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runValidate,
@@ -62,9 +62,9 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		// Validate all directories
-		feedsDir := filepath.Join(cwd, "feeds")
-		schemasDir := filepath.Join(cwd, "schemas")
-		envsDir := filepath.Join(cwd, "environments")
+		feedsDir := filepath.Join(cwd, "exchanges", "feeds")
+		schemasDir := filepath.Join(cwd, "exchanges", "schemas")
+		envsDir := filepath.Join(cwd, "exchanges", "environments")
 
 		for _, dir := range []string{feedsDir, schemasDir, envsDir} {
 			if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -256,9 +256,9 @@ func validateCrossReferences(cwd string) ([]ValidationResult, int) {
 	var results []ValidationResult
 	var errorCount int
 
-	feedsDir := filepath.Join(cwd, "feeds")
-	schemasDir := filepath.Join(cwd, "schemas")
-	envsDir := filepath.Join(cwd, "environments")
+	feedsDir := filepath.Join(cwd, "exchanges", "feeds")
+	schemasDir := filepath.Join(cwd, "exchanges", "schemas")
+	envsDir := filepath.Join(cwd, "exchanges", "environments")
 
 	// Load all feeds
 	feeds := make(map[string]*types.Feed)
@@ -284,7 +284,7 @@ func validateCrossReferences(cwd string) ([]ValidationResult, int) {
 
 	for _, env := range envs {
 		result := ValidationResult{
-			Path:  fmt.Sprintf("environments/%s.yaml", env.Name),
+			Path:  fmt.Sprintf("exchanges/environments/%s.yaml", env.Name),
 			Valid: true,
 		}
 

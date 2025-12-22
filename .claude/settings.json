@@ -1,4 +1,5 @@
 {
+  "enabledPlugins": {},
   "extraKnownMarketplaces": {
     "dlawskillz": {
       "source": {
@@ -6,8 +7,5 @@
         "repo": "aaronwald/dlawskillz"
       }
     }
-  },
-  "enabledPlugins": {
-    "core@dlawskillz": true
   }
 }

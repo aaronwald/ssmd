@@ -27,25 +27,26 @@
 - [x] Create README with Kalshi feed example
 - [x] Create PR #1 for provenance features (MERGED)
 
+### Cleanup & Bootstrap (2025-12-22)
+- [x] Add govulncheck to Makefile
+- [x] Bootstrap Kalshi configuration (feeds/, schemas/, environments/)
+- [x] Add end-to-end CLI workflow tests
+- [x] Reorganize docs: reference docs moved to docs/reference/
+- [x] Archive completed implementation plans
+
 ## In Progress
 
 _None_
 
 ## Pending
 
-### Phase 2: Runtime Layer
-- [ ] etcd integration for intraday configuration
-- [ ] Operational state storage
-- [ ] Trading day lifecycle management
-- [ ] Key management with sealed secrets
+### Next: Decide Direction
+The CLI tool is complete. Before adding more infrastructure, we need to decide:
+- Build a minimal Kalshi connector to prove the metadata model works?
+- Add Claude skills to document ssmd CLI usage?
+- Something else?
 
-### Phase 3: Data Collection
-- [ ] Kalshi WebSocket connector
-- [ ] Normalization pipeline
-- [ ] S3 storage integration
-- [ ] NATS JetStream publishing
-
-### Enhancements
+### Enhancements (when needed)
 - [ ] Add `ssmd version` command
 - [ ] Add JSON output format (`--output json`)
 - [ ] Shell completion scripts (bash/zsh)

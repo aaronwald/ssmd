@@ -19,7 +19,7 @@ func TestInitCreatesDirectories(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	expectedDirs := []string{"feeds", "schemas", "environments", ".ssmd"}
+	expectedDirs := []string{"exchanges/feeds", "exchanges/schemas", "exchanges/environments", ".ssmd"}
 	for _, dir := range expectedDirs {
 		path := filepath.Join(tmpDir, dir)
 		info, err := os.Stat(path)
@@ -126,7 +126,7 @@ func TestInitIsIdempotent(t *testing.T) {
 	}
 
 	// Directories should still exist
-	expectedDirs := []string{"feeds", "schemas", "environments", ".ssmd"}
+	expectedDirs := []string{"exchanges/feeds", "exchanges/schemas", "exchanges/environments", ".ssmd"}
 	for _, dir := range expectedDirs {
 		path := filepath.Join(tmpDir, dir)
 		info, err := os.Stat(path)

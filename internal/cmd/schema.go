@@ -160,7 +160,7 @@ func runSchemaShow(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Name:    %s\n", schema.Name)
 	fmt.Printf("Format:  %s\n", schema.Format)
-	fmt.Printf("File:    schemas/%s\n", schema.SchemaFile)
+	fmt.Printf("File:    exchanges/schemas/%s\n", schema.SchemaFile)
 	fmt.Println()
 	fmt.Println("Versions:")
 
@@ -277,7 +277,7 @@ func runSchemaRegister(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Registered schema '%s' in schemas/%s.yaml\n", name, name)
+	fmt.Printf("Registered schema '%s' in exchanges/schemas/%s.yaml\n", name, name)
 	return nil
 }
 
