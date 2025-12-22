@@ -48,21 +48,38 @@
 - [x] Security: ssmd never stores secrets, only validates external sources
 - [x] Create PR #6 for key management (MERGED)
 
+### Rust Runtime Framework (2025-12-22)
+- [x] Design: `docs/plans/2025-12-22-runtime-framework-design.md`
+- [x] ssmd-rust Cargo workspace structure
+- [x] ssmd-metadata crate (Feed, Schema, Environment types)
+- [x] ssmd-connector crate (Connector trait, WebSocket implementation)
+- [x] ssmd-connector binary entry point
+- [x] Makefile Rust targets (rust-build, rust-test, rust-clippy, all-*)
+- [x] Create PR #8 for Rust runtime (MERGED)
+
+### Schema Normalization (2025-12-22)
+- [x] Design: `docs/plans/2025-12-22-schema-normalization-design.md`
+- [x] Protocol normalization (TransportProtocol + MessageProtocol)
+- [x] CaptureLocation generalization (site + SiteType)
+- [x] Go types + validation + tests
+- [x] Rust types + tests
+- [x] CLI command updates
+- [x] Included in PR #8 (MERGED)
+
 ## In Progress
 
 _None_
 
 ## Pending
 
-### Next: Runtime Framework
-Build `ssmd run <env> --config-dir <path>` to prove the metadata model works end-to-end.
+### Next: Sequenced Stream Handling
+Documented in `docs/plans/2025-12-22-schema-normalization-design.md` TODO section.
 
-- [ ] Design: `docs/plans/2025-12-22-runtime-framework-design.md`
-- [ ] Implementation plan: `docs/plans/2025-12-22-runtime-framework-impl.md`
-- [ ] Framework interfaces (Connector, Writer, KeyResolver)
-- [ ] EnvResolver, FileWriter, WebSocketConnector implementations
-- [ ] HTTP health/metrics server for K8s
-- [ ] `ssmd run` command
+- [ ] Add `sequenced: bool` to Protocol struct
+- [ ] Add `sequence_field: string` to Protocol struct
+- [ ] Sequence number tracking in Rust connector
+- [ ] Gap detection and alerting
+- [ ] Recovery mechanisms (where protocol supports)
 
 ### Enhancements (when needed)
 - [ ] Add `ssmd version` command
