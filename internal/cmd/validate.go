@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/aaronwald/ssmd/internal/types"
+	"github.com/aaronwald/ssmd/internal/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -170,13 +171,10 @@ func validateFile(cwd, path string) ValidationResult {
 			result.Errors = append(result.Errors, err.Error())
 			return result
 		}
-		// Check name matches filename
-		baseName := filepath.Base(path)
-		expectedName := baseName[:len(baseName)-len(filepath.Ext(baseName))]
-		if feed.Name != expectedName {
+		if err := utils.ValidateNameMatchesFilename(feed.Name, path, "feed"); err != nil {
 			result.Valid = false
 			result.Message = "name mismatch"
-			result.Errors = append(result.Errors, fmt.Sprintf("feed name '%s' does not match filename '%s'", feed.Name, expectedName))
+			result.Errors = append(result.Errors, err.Error())
 			return result
 		}
 		result.Message = "valid"
@@ -195,13 +193,10 @@ func validateFile(cwd, path string) ValidationResult {
 			result.Errors = append(result.Errors, err.Error())
 			return result
 		}
-		// Check name matches filename
-		baseName := filepath.Base(path)
-		expectedName := baseName[:len(baseName)-len(filepath.Ext(baseName))]
-		if schema.Name != expectedName {
+		if err := utils.ValidateNameMatchesFilename(schema.Name, path, "schema"); err != nil {
 			result.Valid = false
 			result.Message = "name mismatch"
-			result.Errors = append(result.Errors, fmt.Sprintf("schema name '%s' does not match filename '%s'", schema.Name, expectedName))
+			result.Errors = append(result.Errors, err.Error())
 			return result
 		}
 		// Verify hash for latest version
@@ -237,13 +232,10 @@ func validateFile(cwd, path string) ValidationResult {
 			result.Errors = append(result.Errors, err.Error())
 			return result
 		}
-		// Check name matches filename
-		baseName := filepath.Base(path)
-		expectedName := baseName[:len(baseName)-len(filepath.Ext(baseName))]
-		if env.Name != expectedName {
+		if err := utils.ValidateNameMatchesFilename(env.Name, path, "environment"); err != nil {
 			result.Valid = false
 			result.Message = "name mismatch"
-			result.Errors = append(result.Errors, fmt.Sprintf("environment name '%s' does not match filename '%s'", env.Name, expectedName))
+			result.Errors = append(result.Errors, err.Error())
 			return result
 		}
 		// Validate key sources format
