@@ -39,9 +39,10 @@ type KeyType string
 
 const (
 	KeyTypeAPIKey    KeyType = "api_key"
-	KeyTypeDatabase  KeyType = "database"
 	KeyTypeTransport KeyType = "transport"
 	KeyTypeStorage   KeyType = "storage"
+	KeyTypeTLS       KeyType = "tls"
+	KeyTypeWebhook   KeyType = "webhook"
 )
 
 // Environment represents an environment configuration
@@ -67,9 +68,10 @@ type Schedule struct {
 // KeySpec represents a key/secret specification
 type KeySpec struct {
 	Type         KeyType  `yaml:"type"`
+	Description  string   `yaml:"description,omitempty"`
 	Required     bool     `yaml:"required,omitempty"`
 	Fields       []string `yaml:"fields"`
-	Source       string   `yaml:"source"`
+	Source       string   `yaml:"source,omitempty"`
 	RotationDays int      `yaml:"rotation_days,omitempty"`
 }
 
@@ -167,11 +169,11 @@ func (e *Environment) Validate() error {
 		if key.Type == "" {
 			return fmt.Errorf("key '%s': type is required", name)
 		}
+		if !IsValidKeyType(key.Type) {
+			return fmt.Errorf("key '%s': invalid key type '%s'", name, key.Type)
+		}
 		if len(key.Fields) == 0 {
 			return fmt.Errorf("key '%s': at least one field is required", name)
-		}
-		if key.Source == "" {
-			return fmt.Errorf("key '%s': source is required", name)
 		}
 	}
 
