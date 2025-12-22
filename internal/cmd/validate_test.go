@@ -20,9 +20,9 @@ func TestValidateAllValid(t *testing.T) {
 	defer os.Chdir(origDir)
 
 	// Create valid configuration
-	feedsDir := filepath.Join(tmpDir, "feeds")
-	schemasDir := filepath.Join(tmpDir, "schemas")
-	envsDir := filepath.Join(tmpDir, "environments")
+	feedsDir := filepath.Join(tmpDir, "exchanges", "feeds")
+	schemasDir := filepath.Join(tmpDir, "exchanges", "schemas")
+	envsDir := filepath.Join(tmpDir, "exchanges", "environments")
 	os.MkdirAll(feedsDir, 0755)
 	os.MkdirAll(schemasDir, 0755)
 	os.MkdirAll(envsDir, 0755)
@@ -83,9 +83,9 @@ func TestValidateMissingFeedReference(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	feedsDir := filepath.Join(tmpDir, "feeds")
-	schemasDir := filepath.Join(tmpDir, "schemas")
-	envsDir := filepath.Join(tmpDir, "environments")
+	feedsDir := filepath.Join(tmpDir, "exchanges", "feeds")
+	schemasDir := filepath.Join(tmpDir, "exchanges", "schemas")
+	envsDir := filepath.Join(tmpDir, "exchanges", "environments")
 	os.MkdirAll(feedsDir, 0755)
 	os.MkdirAll(schemasDir, 0755)
 	os.MkdirAll(envsDir, 0755)
@@ -136,9 +136,9 @@ func TestValidateMissingSchemaReference(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	feedsDir := filepath.Join(tmpDir, "feeds")
-	schemasDir := filepath.Join(tmpDir, "schemas")
-	envsDir := filepath.Join(tmpDir, "environments")
+	feedsDir := filepath.Join(tmpDir, "exchanges", "feeds")
+	schemasDir := filepath.Join(tmpDir, "exchanges", "schemas")
+	envsDir := filepath.Join(tmpDir, "exchanges", "environments")
 	os.MkdirAll(feedsDir, 0755)
 	os.MkdirAll(schemasDir, 0755)
 	os.MkdirAll(envsDir, 0755)
@@ -186,9 +186,9 @@ func TestValidateDraftSchemaReference(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	feedsDir := filepath.Join(tmpDir, "feeds")
-	schemasDir := filepath.Join(tmpDir, "schemas")
-	envsDir := filepath.Join(tmpDir, "environments")
+	feedsDir := filepath.Join(tmpDir, "exchanges", "feeds")
+	schemasDir := filepath.Join(tmpDir, "exchanges", "schemas")
+	envsDir := filepath.Join(tmpDir, "exchanges", "environments")
 	os.MkdirAll(feedsDir, 0755)
 	os.MkdirAll(schemasDir, 0755)
 	os.MkdirAll(envsDir, 0755)
@@ -248,7 +248,7 @@ func TestValidateHashMismatch(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	schemasDir := filepath.Join(tmpDir, "schemas")
+	schemasDir := filepath.Join(tmpDir, "exchanges", "schemas")
 	os.MkdirAll(schemasDir, 0755)
 
 	// Create schema file
@@ -283,7 +283,7 @@ func TestValidateSpecificFile(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	feedsDir := filepath.Join(tmpDir, "feeds")
+	feedsDir := filepath.Join(tmpDir, "exchanges", "feeds")
 	os.MkdirAll(feedsDir, 0755)
 
 	// Create valid feed
@@ -315,9 +315,9 @@ func TestValidateEmptyDirectories(t *testing.T) {
 	defer os.Chdir(origDir)
 
 	// Create empty directories
-	os.MkdirAll(filepath.Join(tmpDir, "feeds"), 0755)
-	os.MkdirAll(filepath.Join(tmpDir, "schemas"), 0755)
-	os.MkdirAll(filepath.Join(tmpDir, "environments"), 0755)
+	os.MkdirAll(filepath.Join(tmpDir, "exchanges", "feeds"), 0755)
+	os.MkdirAll(filepath.Join(tmpDir, "exchanges", "schemas"), 0755)
+	os.MkdirAll(filepath.Join(tmpDir, "exchanges", "environments"), 0755)
 
 	// Run validation - should pass with no files
 	err = runValidate(nil, nil)

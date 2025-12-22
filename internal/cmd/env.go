@@ -287,7 +287,7 @@ func runEnvCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Created environment '%s' in environments/%s.yaml\n", name, name)
+	fmt.Printf("Created environment '%s' in exchanges/environments/%s.yaml\n", name, name)
 	return nil
 }
 

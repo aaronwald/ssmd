@@ -1,0 +1,16 @@
+name: kalshi-dev
+feed: kalshi
+schema: trade:v1
+keys:
+    kalshi:
+        type: api_key
+        required: true
+        fields:
+            - api_key
+            - api_secret
+        source: env
+transport:
+    type: memory
+storage:
+    type: local
+    path: /var/lib/ssmd/data

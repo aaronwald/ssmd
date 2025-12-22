@@ -19,7 +19,7 @@ func TestEnvCreate(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	os.MkdirAll("environments", 0755)
+	os.MkdirAll("exchanges/environments", 0755)
 
 	// Set flags
 	envFeed = "kalshi"
@@ -40,7 +40,7 @@ func TestEnvCreate(t *testing.T) {
 	}
 
 	// Verify file exists
-	path := filepath.Join(tmpDir, "environments", "kalshi-dev.yaml")
+	path := filepath.Join(tmpDir, "exchanges", "environments", "kalshi-dev.yaml")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("environment file not created: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestEnvCreateWithDefaults(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	os.MkdirAll("environments", 0755)
+	os.MkdirAll("exchanges/environments", 0755)
 
 	// Set minimal flags - let defaults fill in
 	envFeed = "kalshi"
@@ -93,7 +93,7 @@ func TestEnvCreateWithDefaults(t *testing.T) {
 		t.Fatalf("env create failed: %v", err)
 	}
 
-	path := filepath.Join(tmpDir, "environments", "test-env.yaml")
+	path := filepath.Join(tmpDir, "exchanges", "environments", "test-env.yaml")
 	env, _ := types.LoadEnvironment(path)
 
 	// Should have memory transport by default
@@ -117,7 +117,7 @@ func TestEnvList(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	envsDir := filepath.Join(tmpDir, "environments")
+	envsDir := filepath.Join(tmpDir, "exchanges", "environments")
 	os.MkdirAll(envsDir, 0755)
 
 	// Create test environments
@@ -167,7 +167,7 @@ func TestEnvShow(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	envsDir := filepath.Join(tmpDir, "environments")
+	envsDir := filepath.Join(tmpDir, "exchanges", "environments")
 	os.MkdirAll(envsDir, 0755)
 
 	env := &types.Environment{
@@ -220,7 +220,7 @@ func TestEnvUpdate(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	envsDir := filepath.Join(tmpDir, "environments")
+	envsDir := filepath.Join(tmpDir, "exchanges", "environments")
 	os.MkdirAll(envsDir, 0755)
 
 	env := &types.Environment{
@@ -273,7 +273,7 @@ func TestEnvAddKey(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	envsDir := filepath.Join(tmpDir, "environments")
+	envsDir := filepath.Join(tmpDir, "exchanges", "environments")
 	os.MkdirAll(envsDir, 0755)
 
 	env := &types.Environment{
