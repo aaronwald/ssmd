@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/aaronwald/ssmd/internal/types"
+	"github.com/aaronwald/ssmd/internal/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -120,8 +120,8 @@ func runSchemaList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tVERSION\tFORMAT\tSTATUS\tEFFECTIVE")
+	t := utils.NewTablePrinter()
+	t.Header("NAME", "VERSION", "FORMAT", "STATUS", "EFFECTIVE")
 
 	for _, s := range schemas {
 		for _, v := range s.Versions {
@@ -129,10 +129,10 @@ func runSchemaList(cmd *cobra.Command, args []string) error {
 			if schemaStatusFilter != "" && string(v.Status) != schemaStatusFilter {
 				continue
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, v.Version, s.Format, v.Status, v.EffectiveFrom)
+			t.Row(s.Name, v.Version, string(s.Format), string(v.Status), v.EffectiveFrom)
 		}
 	}
-	w.Flush()
+	t.Flush()
 
 	return nil
 }

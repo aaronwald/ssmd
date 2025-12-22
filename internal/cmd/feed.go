@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"text/tabwriter"
 	"time"
 
 	"github.com/aaronwald/ssmd/internal/types"
+	"github.com/aaronwald/ssmd/internal/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -147,12 +147,12 @@ func runFeedList(cmd *cobra.Command, args []string) error {
 		feeds = filtered
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tTYPE\tSTATUS\tVERSIONS")
+	t := utils.NewTablePrinter()
+	t.Header("NAME", "TYPE", "STATUS", "VERSIONS")
 	for _, f := range feeds {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", f.Name, f.Type, f.Status, len(f.Versions))
+		t.Row(f.Name, string(f.Type), string(f.Status), fmt.Sprintf("%d", len(f.Versions)))
 	}
-	w.Flush()
+	t.Flush()
 
 	return nil
 }
