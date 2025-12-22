@@ -63,11 +63,22 @@ type Protocol struct {
 	Version   string            `yaml:"version,omitempty"`
 }
 
-// CaptureLocation represents a datacenter where feed data is captured
+// SiteType represents the type of capture location
+type SiteType string
+
+const (
+	SiteTypeCloud  SiteType = "cloud"
+	SiteTypeColo   SiteType = "colo"
+	SiteTypeOnPrem SiteType = "on_prem"
+)
+
+// CaptureLocation represents where feed data is captured
 type CaptureLocation struct {
-	Datacenter string `yaml:"datacenter"`
-	Provider   string `yaml:"provider,omitempty"`
-	Region     string `yaml:"region,omitempty"`
+	Site     string   `yaml:"site"`
+	Type     SiteType `yaml:"type"`
+	Provider string   `yaml:"provider,omitempty"`
+	Region   string   `yaml:"region,omitempty"`
+	Clock    string   `yaml:"clock,omitempty"` // future: ptp, gps, ntp, local
 }
 
 // Feed represents a market data feed configuration
