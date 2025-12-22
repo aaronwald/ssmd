@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/metadata",
+    "crates/connector",
+    "crates/ssmd-connector",
 ]
 
 [workspace.package]
@@ -21,3 +23,9 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
+axum = "0.7"
+tower = { version = "0.4", features = ["util"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+futures-util = "0.3"
+url = "2"
+clap = { version = "4", features = ["derive"] }

@@ -13,18 +13,13 @@ pub enum FeedType {
     Multicast,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeedStatus {
+    #[default]
     Active,
     Deprecated,
     Disabled,
-}
-
-impl Default for FeedStatus {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
