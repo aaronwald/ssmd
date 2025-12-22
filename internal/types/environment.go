@@ -2,11 +2,9 @@ package types
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/aaronwald/ssmd/internal/utils"
 )
 
 // TransportType represents the message transport type
@@ -203,14 +201,9 @@ func (e *Environment) GetSchemaVersion() string {
 
 // LoadEnvironment loads an environment from a YAML file
 func LoadEnvironment(path string) (*Environment, error) {
-	data, err := os.ReadFile(path)
+	env, err := utils.LoadYAML[Environment](path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read environment file: %w", err)
-	}
-
-	var env Environment
-	if err := yaml.Unmarshal(data, &env); err != nil {
-		return nil, fmt.Errorf("failed to parse environment YAML: %w", err)
+		return nil, fmt.Errorf("failed to load environment: %w", err)
 	}
 
 	// Set default values
@@ -218,67 +211,15 @@ func LoadEnvironment(path string) (*Environment, error) {
 		env.Schedule.Timezone = "UTC"
 	}
 
-	// Note: key.Required defaults to false in Go, but we treat unset as true
-	// This is handled by the YAML omitempty - if not specified, defaults apply
-
-	return &env, nil
+	return env, nil
 }
 
 // SaveEnvironment saves an environment to a YAML file
 func SaveEnvironment(env *Environment, path string) error {
-	data, err := yaml.Marshal(env)
-	if err != nil {
-		return fmt.Errorf("failed to marshal environment to YAML: %w", err)
-	}
-
-	// Ensure directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write environment file: %w", err)
-	}
-
-	return nil
+	return utils.SaveYAML(env, path)
 }
 
 // LoadAllEnvironments loads all environments from a directory
 func LoadAllEnvironments(dir string) ([]*Environment, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read environments directory: %w", err)
-	}
-
-	var environments []*Environment
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		ext := filepath.Ext(entry.Name())
-		if ext != ".yaml" && ext != ".yml" {
-			continue
-		}
-
-		path := filepath.Join(dir, entry.Name())
-		env, err := LoadEnvironment(path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load %s: %w", entry.Name(), err)
-		}
-
-		// Validate that name matches filename
-		expectedName := entry.Name()[:len(entry.Name())-len(ext)]
-		if env.Name != expectedName {
-			return nil, fmt.Errorf("%s: environment name '%s' does not match filename '%s'",
-				entry.Name(), env.Name, expectedName)
-		}
-
-		environments = append(environments, env)
-	}
-
-	return environments, nil
+	return utils.LoadAllYAML(dir, LoadEnvironment)
 }
