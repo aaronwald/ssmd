@@ -82,34 +82,169 @@ pub struct Message {
 ## Package Structure (Cargo Workspace)
 
 ```
-ssmd-connector/
-  Cargo.toml          # Workspace root
+ssmd-rust/
+  Cargo.toml              # Workspace root
   crates/
-    connector/        # Core runtime library
+    metadata/             # Shared metadata types (mirrors Go types)
       src/
         lib.rs
-        traits.rs     # Connector, Writer, KeyResolver traits
-        runner.rs     # Main run loop
-        config.rs     # Config loading (YAML)
-    websocket/        # WebSocket connector implementation
+        feed.rs           # Feed, FeedVersion, FeedType, FeedStatus, etc.
+        environment.rs    # Environment, KeySpec, StorageConfig, etc.
+        schema.rs         # Schema types
+        version.rs        # Version resolution helpers
+    connector/            # Core runtime library
       src/
         lib.rs
-        kalshi.rs     # Kalshi-specific WebSocket handling
-    writer/           # Writer implementations
+        traits.rs         # Connector, Writer, KeyResolver traits
+        runner.rs         # Main run loop
+        websocket.rs      # WebSocket connector implementation
+        writer.rs         # FileWriter for JSONL
+        resolver.rs       # Environment variable resolver
+        server.rs         # Health/metrics HTTP server
+    ssmd-connector/       # Binary crate
       src/
-        lib.rs
-        file.rs       # JSONL file writer
-    resolver/         # Key resolver implementations
-      src/
-        lib.rs
-        env.rs        # Environment variable resolver
-    server/           # Health/metrics HTTP server
-      src/
-        lib.rs
-        health.rs     # Health endpoints
-    ssmd-connector/   # Binary crate
-      src/
-        main.rs       # CLI entry point
+        main.rs           # CLI entry point
+```
+
+## Metadata Crate (ssmd-metadata)
+
+The `metadata` crate mirrors the Go types in `internal/types/` to ensure Rust components can read the same YAML configs.
+
+**Feed Types:**
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedType {
+    Websocket,
+    Rest,
+    Multicast,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedStatus {
+    Active,
+    Deprecated,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMethod {
+    ApiKey,
+    Oauth,
+    Mtls,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Feed {
+    pub name: String,
+    pub display_name: Option<String>,
+    #[serde(rename = "type")]
+    pub feed_type: FeedType,
+    #[serde(default)]
+    pub status: Option<FeedStatus>,
+    pub capture_locations: Option<Vec<CaptureLocation>>,
+    pub versions: Vec<FeedVersion>,
+    pub calendar: Option<Calendar>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedVersion {
+    pub version: String,
+    pub effective_from: String,
+    pub effective_to: Option<String>,
+    pub protocol: String,
+    pub endpoint: String,
+    pub auth_method: Option<AuthMethod>,
+    pub rate_limit_per_second: Option<i32>,
+    pub max_symbols_per_connection: Option<i32>,
+    pub supports_orderbook: Option<bool>,
+    pub supports_trades: Option<bool>,
+    pub supports_historical: Option<bool>,
+    pub parser_config: Option<HashMap<String, String>>,
+}
+```
+
+**Environment Types:**
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportType {
+    Nats,
+    Mqtt,
+    Memory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageType {
+    Local,
+    S3,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyType {
+    ApiKey,
+    Transport,
+    Storage,
+    Tls,
+    Webhook,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Environment {
+    pub name: String,
+    pub feed: String,
+    pub schema: String,
+    pub schedule: Option<Schedule>,
+    pub keys: Option<HashMap<String, KeySpec>>,
+    pub transport: TransportConfig,
+    pub storage: StorageConfig,
+    pub cache: Option<CacheConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeySpec {
+    #[serde(rename = "type")]
+    pub key_type: KeyType,
+    pub description: Option<String>,
+    pub required: Option<bool>,
+    pub fields: Vec<String>,
+    pub source: Option<String>,
+    pub rotation_days: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    #[serde(rename = "type")]
+    pub storage_type: StorageType,
+    pub path: Option<String>,
+    pub bucket: Option<String>,
+    pub region: Option<String>,
+}
+```
+
+**Loading Functions:**
+
+```rust
+impl Feed {
+    pub fn load(path: &Path) -> Result<Self, MetadataError>;
+    pub fn get_version_for_date(&self, date: NaiveDate) -> Option<&FeedVersion>;
+    pub fn get_latest_version(&self) -> Option<&FeedVersion>;
+}
+
+impl Environment {
+    pub fn load(path: &Path) -> Result<Self, MetadataError>;
+    pub fn get_schema_name(&self) -> &str;
+    pub fn get_schema_version(&self) -> &str;
+}
 ```
 
 ## Data Flow
@@ -218,6 +353,7 @@ spec:
 ## Phase 1 Scope
 
 **Building:**
+- `ssmd-metadata` crate - Rust types mirroring Go types for config parsing
 - `ssmd-connector --env <env> --config-dir <path>` binary (Rust)
 - Framework traits: Connector, Writer, KeyResolver
 - WebSocketConnector (for Kalshi)
