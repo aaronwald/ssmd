@@ -37,6 +37,17 @@
 - [x] Create Claude skill for ssmd CLI documentation
 - [x] Create PR #4 for exchanges restructure
 
+### Key Management (2025-12-22)
+- [x] Add key types (KeyStatus, KeyType) to internal/types
+- [x] Add tls/webhook key types, description field to KeySpec
+- [x] Implement `ssmd key list <env>` - list keys with sources
+- [x] Implement `ssmd key show <env> <key>` - show key details, verify env vars
+- [x] Implement `ssmd key verify <env>` - verify all keys in environment
+- [x] Implement `ssmd key check <env> <key>` - check single key
+- [x] Add `--check-keys` flag to `ssmd validate`
+- [x] Security: ssmd never stores secrets, only validates external sources
+- [x] Create PR #6 for key management (MERGED)
+
 ## In Progress
 
 _None_
