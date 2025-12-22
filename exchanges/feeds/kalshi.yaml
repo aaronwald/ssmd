@@ -5,7 +5,9 @@ status: active
 versions:
     - version: v1
       effective_from: "2025-12-22"
-      protocol: wss
+      protocol:
+        transport: wss
+        message: json
       endpoint: wss://api.kalshi.com/trade-api/ws/v2
       auth_method: api_key
       rate_limit_per_second: 10
