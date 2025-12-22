@@ -167,7 +167,9 @@ status: active
 versions:
   - version: v1
     effective_from: "2025-12-22"
-    protocol: wss
+    protocol:
+      transport: wss
+      message: json
     endpoint: wss://api.kalshi.com/trade-api/ws/v2
     auth_method: api_key
 "#
@@ -193,7 +195,11 @@ versions:
                     version: "v1".to_string(),
                     effective_from: "2025-01-01".to_string(),
                     effective_to: Some("2025-06-30".to_string()),
-                    protocol: "wss".to_string(),
+                    protocol: Protocol {
+                        transport: TransportProtocol::Wss,
+                        message: MessageProtocol::Json,
+                        version: None,
+                    },
                     endpoint: "wss://v1".to_string(),
                     auth_method: None,
                     rate_limit_per_second: None,
@@ -207,7 +213,11 @@ versions:
                     version: "v2".to_string(),
                     effective_from: "2025-07-01".to_string(),
                     effective_to: None,
-                    protocol: "wss".to_string(),
+                    protocol: Protocol {
+                        transport: TransportProtocol::Wss,
+                        message: MessageProtocol::Json,
+                        version: None,
+                    },
                     endpoint: "wss://v2".to_string(),
                     auth_method: None,
                     rate_limit_per_second: None,
