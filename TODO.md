@@ -29,10 +29,13 @@
 
 ### Cleanup & Bootstrap (2025-12-22)
 - [x] Add govulncheck to Makefile
-- [x] Bootstrap Kalshi configuration (feeds/, schemas/, environments/)
+- [x] Bootstrap Kalshi configuration (exchanges/feeds/, exchanges/schemas/, exchanges/environments/)
 - [x] Add end-to-end CLI workflow tests
 - [x] Reorganize docs: reference docs moved to docs/reference/
 - [x] Archive completed implementation plans
+- [x] Restructure directories: move configs under exchanges/
+- [x] Create Claude skill for ssmd CLI documentation
+- [x] Create PR #4 for exchanges restructure
 
 ## In Progress
 
@@ -43,7 +46,6 @@ _None_
 ### Next: Decide Direction
 The CLI tool is complete. Before adding more infrastructure, we need to decide:
 - Build a minimal Kalshi connector to prove the metadata model works?
-- Add Claude skills to document ssmd CLI usage?
 - Something else?
 
 ### Enhancements (when needed)
