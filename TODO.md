@@ -54,10 +54,15 @@ _None_
 
 ## Pending
 
-### Next: Decide Direction
-The CLI tool is complete. Before adding more infrastructure, we need to decide:
-- Build a minimal Kalshi connector to prove the metadata model works?
-- Something else?
+### Next: Runtime Framework
+Build `ssmd run <env> --config-dir <path>` to prove the metadata model works end-to-end.
+
+- [ ] Design: `docs/plans/2025-12-22-runtime-framework-design.md`
+- [ ] Implementation plan: `docs/plans/2025-12-22-runtime-framework-impl.md`
+- [ ] Framework interfaces (Connector, Writer, KeyResolver)
+- [ ] EnvResolver, FileWriter, WebSocketConnector implementations
+- [ ] HTTP health/metrics server for K8s
+- [ ] `ssmd run` command
 
 ### Enhancements (when needed)
 - [ ] Add `ssmd version` command
