@@ -4,11 +4,12 @@ schema: trade:v1
 keys:
     kalshi:
         type: api_key
+        description: Kalshi trading API credentials
         required: true
         fields:
             - api_key
             - api_secret
-        source: env
+        source: env:KALSHI_API_KEY,KALSHI_API_SECRET
 transport:
     type: memory
 storage:

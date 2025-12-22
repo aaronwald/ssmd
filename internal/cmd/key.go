@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/aaronwald/ssmd/internal/types"
@@ -12,8 +13,8 @@ import (
 
 var keyCmd = &cobra.Command{
 	Use:   "key",
-	Short: "Manage environment keys and secrets",
-	Long:  `List, show, set, verify, and delete keys for environments.`,
+	Short: "Manage environment keys",
+	Long:  `List, show, and verify keys for environments. Keys reference external secret sources (environment variables, secret managers) - ssmd never stores actual secrets.`,
 }
 
 var keyListCmd = &cobra.Command{
@@ -56,39 +57,23 @@ func runKeyList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Load key statuses
-	keysDir, err := getKeysDir(envName)
-	if err != nil {
-		return err
-	}
-
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tTYPE\tREQUIRED\tSTATUS\tEXPIRES")
+	fmt.Fprintln(w, "NAME\tTYPE\tREQUIRED\tSOURCE")
 
 	for name, spec := range env.Keys {
-		status := loadKeyStatusSafe(keysDir, name)
-		statusStr := "not_set"
-		expiresStr := "-"
-
-		if status != nil && status.IsSet() {
-			statusStr = "set"
-			if days := status.DaysUntilExpiry(); days >= 0 {
-				if days == 0 {
-					expiresStr = "today"
-				} else if days == 1 {
-					expiresStr = "1 day"
-				} else {
-					expiresStr = fmt.Sprintf("%d days", days)
-				}
-			}
-		}
-
 		reqStr := "yes"
 		if !spec.Required {
 			reqStr = "no"
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", name, spec.Type, reqStr, statusStr, expiresStr)
+		sourceStr := spec.Source
+		if sourceStr == "" {
+			sourceStr = "(not set)"
+		} else if len(sourceStr) > 40 {
+			sourceStr = sourceStr[:37] + "..."
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, spec.Type, reqStr, sourceStr)
 	}
 	w.Flush()
 
@@ -116,13 +101,6 @@ func runKeyShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("key '%s' not defined in environment '%s'", keyName, envName)
 	}
 
-	// Load key status
-	keysDir, err := getKeysDir(envName)
-	if err != nil {
-		return err
-	}
-	status := loadKeyStatusSafe(keysDir, keyName)
-
 	// Display key details
 	fmt.Printf("Name:        %s\n", keyName)
 	fmt.Printf("Type:        %s\n", spec.Type)
@@ -139,43 +117,40 @@ func runKeyShow(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println()
 
-	fmt.Println("Status:")
-	if status == nil || !status.IsSet() {
-		fmt.Println("  Status: not_set")
-	} else {
-		fmt.Println("  Status: set")
-		if !status.LastRotated.IsZero() {
-			fmt.Printf("  Last Rotated: %s\n", status.LastRotated.Format("2006-01-02 15:04:05"))
+	// Check source validity
+	if spec.Source == "" {
+		fmt.Println("Status: source not configured")
+		return nil
+	}
+
+	// For env sources, check if variables are set
+	if strings.HasPrefix(spec.Source, "env:") {
+		fmt.Println("Environment Variables:")
+		missing, err := types.VerifyEnvSource(spec.Source)
+		if err != nil {
+			return fmt.Errorf("invalid source format: %w", err)
 		}
-		if !status.ExpiresAt.IsZero() {
-			days := status.DaysUntilExpiry()
-			if days < 0 {
-				fmt.Printf("  Expires: %s (EXPIRED)\n", status.ExpiresAt.Format("2006-01-02"))
-			} else if days == 0 {
-				fmt.Printf("  Expires: %s (today)\n", status.ExpiresAt.Format("2006-01-02"))
+
+		vars, _ := types.ParseEnvSource(spec.Source)
+		for _, v := range vars {
+			isMissing := false
+			for _, m := range missing {
+				if m == v {
+					isMissing = true
+					break
+				}
+			}
+			if isMissing {
+				fmt.Printf("  %s: not set\n", v)
 			} else {
-				fmt.Printf("  Expires: %s (in %d days)\n", status.ExpiresAt.Format("2006-01-02"), days)
+				fmt.Printf("  %s: set\n", v)
 			}
 		}
-		if len(status.FieldsSet) > 0 {
-			fmt.Printf("  Fields Set: %v\n", status.FieldsSet)
-		}
-		if status.SealedSecretRef != "" {
-			fmt.Printf("  Sealed Secret: %s\n", status.SealedSecretRef)
-		}
+	} else {
+		fmt.Printf("Source type '%s' - verification not implemented\n", strings.Split(spec.Source, ":")[0])
 	}
 
 	return nil
-}
-
-// loadKeyStatusSafe loads key status, returning nil if not found or on error
-func loadKeyStatusSafe(keysDir, keyName string) *types.KeyStatus {
-	path := filepath.Join(keysDir, keyName+".yaml")
-	status, err := types.LoadKeyStatus(path)
-	if err != nil {
-		return nil
-	}
-	return status
 }
 
 // KeyCommand returns the key command for registration

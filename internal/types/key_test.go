@@ -7,98 +7,28 @@ import (
 	"time"
 )
 
-func TestKeyStatusIsSet(t *testing.T) {
+func TestKeyStatusIsVerified(t *testing.T) {
 	tests := []struct {
 		name   string
 		status KeyStatus
 		want   bool
 	}{
 		{
-			name:   "status set",
-			status: KeyStatus{Status: "set"},
+			name:   "verified",
+			status: KeyStatus{LastVerified: time.Now()},
 			want:   true,
 		},
 		{
-			name:   "status not_set",
-			status: KeyStatus{Status: "not_set"},
-			want:   false,
-		},
-		{
-			name:   "status empty",
-			status: KeyStatus{Status: ""},
-			want:   false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.status.IsSet(); got != tt.want {
-				t.Errorf("IsSet() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestKeyStatusIsExpired(t *testing.T) {
-	tests := []struct {
-		name   string
-		status KeyStatus
-		want   bool
-	}{
-		{
-			name:   "no expiration",
+			name:   "not verified",
 			status: KeyStatus{},
 			want:   false,
 		},
-		{
-			name:   "future expiration",
-			status: KeyStatus{ExpiresAt: time.Now().Add(24 * time.Hour)},
-			want:   false,
-		},
-		{
-			name:   "past expiration",
-			status: KeyStatus{ExpiresAt: time.Now().Add(-24 * time.Hour)},
-			want:   true,
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.status.IsExpired(); got != tt.want {
-				t.Errorf("IsExpired() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestKeyStatusDaysUntilExpiry(t *testing.T) {
-	tests := []struct {
-		name   string
-		status KeyStatus
-		want   int
-	}{
-		{
-			name:   "no expiration",
-			status: KeyStatus{},
-			want:   -1,
-		},
-		{
-			name:   "30 days out",
-			status: KeyStatus{ExpiresAt: time.Now().Add(30 * 24 * time.Hour)},
-			want:   30,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := tt.status.DaysUntilExpiry()
-			// Allow some tolerance for test execution time
-			if tt.want == -1 {
-				if got != -1 {
-					t.Errorf("DaysUntilExpiry() = %v, want -1", got)
-				}
-			} else if got < tt.want-1 || got > tt.want+1 {
-				t.Errorf("DaysUntilExpiry() = %v, want ~%v", got, tt.want)
+			if got := tt.status.IsVerified(); got != tt.want {
+				t.Errorf("IsVerified() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -127,18 +57,132 @@ func TestIsValidKeyType(t *testing.T) {
 	}
 }
 
+func TestParseEnvSource(t *testing.T) {
+	tests := []struct {
+		name    string
+		source  string
+		want    []string
+		wantErr bool
+	}{
+		{
+			name:   "single var",
+			source: "env:MY_VAR",
+			want:   []string{"MY_VAR"},
+		},
+		{
+			name:   "multiple vars",
+			source: "env:VAR1,VAR2,VAR3",
+			want:   []string{"VAR1", "VAR2", "VAR3"},
+		},
+		{
+			name:   "with spaces",
+			source: "env:VAR1, VAR2 , VAR3",
+			want:   []string{"VAR1", "VAR2", "VAR3"},
+		},
+		{
+			name:    "not env source",
+			source:  "vault:secret/path",
+			wantErr: true,
+		},
+		{
+			name:    "empty env",
+			source:  "env:",
+			wantErr: true,
+		},
+		{
+			name:    "empty var in list",
+			source:  "env:VAR1,,VAR2",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseEnvSource(tt.source)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseEnvSource() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr {
+				if len(got) != len(tt.want) {
+					t.Errorf("ParseEnvSource() = %v, want %v", got, tt.want)
+					return
+				}
+				for i := range got {
+					if got[i] != tt.want[i] {
+						t.Errorf("ParseEnvSource()[%d] = %v, want %v", i, got[i], tt.want[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestVerifyEnvSource(t *testing.T) {
+	// Set up test env vars
+	os.Setenv("TEST_VAR_SET", "value")
+	defer os.Unsetenv("TEST_VAR_SET")
+
+	tests := []struct {
+		name        string
+		source      string
+		wantMissing []string
+		wantErr     bool
+	}{
+		{
+			name:        "all set",
+			source:      "env:TEST_VAR_SET",
+			wantMissing: nil,
+		},
+		{
+			name:        "one missing",
+			source:      "env:TEST_VAR_SET,TEST_VAR_MISSING",
+			wantMissing: []string{"TEST_VAR_MISSING"},
+		},
+		{
+			name:        "all missing",
+			source:      "env:MISSING1,MISSING2",
+			wantMissing: []string{"MISSING1", "MISSING2"},
+		},
+		{
+			name:    "invalid source",
+			source:  "vault:path",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			missing, err := VerifyEnvSource(tt.source)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("VerifyEnvSource() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr {
+				if len(missing) != len(tt.wantMissing) {
+					t.Errorf("VerifyEnvSource() missing = %v, want %v", missing, tt.wantMissing)
+					return
+				}
+				for i := range missing {
+					if missing[i] != tt.wantMissing[i] {
+						t.Errorf("VerifyEnvSource() missing[%d] = %v, want %v", i, missing[i], tt.wantMissing[i])
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestKeyStatusLoadSave(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "test-key.yaml")
 
 	original := &KeyStatus{
-		Name:            "test-key",
-		Type:            KeyTypeAPIKey,
-		Status:          "set",
-		LastRotated:     time.Now().Truncate(time.Second),
-		ExpiresAt:       time.Now().Add(90 * 24 * time.Hour).Truncate(time.Second),
-		SealedSecretRef: "ssmd/test-env-test-key",
-		FieldsSet:       []string{"api_key", "api_secret"},
+		Name:         "test-key",
+		Type:         KeyTypeAPIKey,
+		Source:       "env:API_KEY,API_SECRET",
+		LastVerified: time.Now().Truncate(time.Second),
+		FieldsValid:  []string{"API_KEY", "API_SECRET"},
 	}
 
 	// Save
@@ -159,89 +203,7 @@ func TestKeyStatusLoadSave(t *testing.T) {
 	if loaded.Type != original.Type {
 		t.Errorf("Type = %v, want %v", loaded.Type, original.Type)
 	}
-	if loaded.Status != original.Status {
-		t.Errorf("Status = %v, want %v", loaded.Status, original.Status)
-	}
-	if loaded.SealedSecretRef != original.SealedSecretRef {
-		t.Errorf("SealedSecretRef = %v, want %v", loaded.SealedSecretRef, original.SealedSecretRef)
-	}
-}
-
-func TestKeyValueLoadSave(t *testing.T) {
-	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "test-value.yaml")
-
-	original := &KeyValue{
-		Name: "test-key",
-		Fields: map[string]string{
-			"api_key":    "test-api-key-123",
-			"api_secret": "test-api-secret-456",
-		},
-	}
-
-	// Save
-	if err := SaveKeyValue(original, path); err != nil {
-		t.Fatalf("SaveKeyValue() error = %v", err)
-	}
-
-	// Verify file permissions (should be 0600 for secrets)
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("Stat() error = %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("File permissions = %o, want 0600", perm)
-	}
-
-	// Load
-	loaded, err := LoadKeyValue(path)
-	if err != nil {
-		t.Fatalf("LoadKeyValue() error = %v", err)
-	}
-
-	// Compare
-	if loaded.Name != original.Name {
-		t.Errorf("Name = %v, want %v", loaded.Name, original.Name)
-	}
-	if loaded.Fields["api_key"] != original.Fields["api_key"] {
-		t.Errorf("Fields[api_key] = %v, want %v", loaded.Fields["api_key"], original.Fields["api_key"])
-	}
-}
-
-func TestDeleteKeyFiles(t *testing.T) {
-	tmpDir := t.TempDir()
-	statusPath := filepath.Join(tmpDir, "status.yaml")
-	valuePath := filepath.Join(tmpDir, "value.yaml")
-
-	// Create files
-	if err := os.WriteFile(statusPath, []byte("test"), 0644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-	if err := os.WriteFile(valuePath, []byte("test"), 0600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	// Delete
-	if err := DeleteKeyFiles(statusPath, valuePath); err != nil {
-		t.Fatalf("DeleteKeyFiles() error = %v", err)
-	}
-
-	// Verify deleted
-	if _, err := os.Stat(statusPath); !os.IsNotExist(err) {
-		t.Error("Status file still exists")
-	}
-	if _, err := os.Stat(valuePath); !os.IsNotExist(err) {
-		t.Error("Value file still exists")
-	}
-}
-
-func TestDeleteKeyFilesNonExistent(t *testing.T) {
-	tmpDir := t.TempDir()
-	statusPath := filepath.Join(tmpDir, "nonexistent-status.yaml")
-	valuePath := filepath.Join(tmpDir, "nonexistent-value.yaml")
-
-	// Should not error on non-existent files
-	if err := DeleteKeyFiles(statusPath, valuePath); err != nil {
-		t.Errorf("DeleteKeyFiles() error = %v, want nil", err)
+	if loaded.Source != original.Source {
+		t.Errorf("Source = %v, want %v", loaded.Source, original.Source)
 	}
 }
