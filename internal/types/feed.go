@@ -175,6 +175,26 @@ func (f *Feed) Validate() error {
 		if v.Endpoint == "" {
 			return fmt.Errorf("version %s: endpoint is required", v.Version)
 		}
+
+		// Validate protocol
+		if v.Protocol.Transport == "" {
+			return fmt.Errorf("version %s: protocol.transport is required", v.Version)
+		}
+		switch v.Protocol.Transport {
+		case TransportWSS, TransportHTTPS, TransportMulticast, TransportTCP:
+			// valid
+		default:
+			return fmt.Errorf("version %s: invalid protocol.transport: %s", v.Version, v.Protocol.Transport)
+		}
+		if v.Protocol.Message == "" {
+			return fmt.Errorf("version %s: protocol.message is required", v.Version)
+		}
+		switch v.Protocol.Message {
+		case MessageJSON, MessageITCH, MessageFIX, MessageSBE, MessageProtobuf:
+			// valid
+		default:
+			return fmt.Errorf("version %s: invalid protocol.message: %s", v.Version, v.Protocol.Message)
+		}
 	}
 
 	return nil
