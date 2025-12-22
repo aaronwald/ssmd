@@ -57,6 +57,9 @@ type Environment struct {
 	Cache     *CacheConfig         `yaml:"cache,omitempty"`
 }
 
+// GetName returns the environment name (implements utils.Named)
+func (e *Environment) GetName() string { return e.Name }
+
 // Schedule represents when to run collection
 type Schedule struct {
 	Timezone string `yaml:"timezone,omitempty"`

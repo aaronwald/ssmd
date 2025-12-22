@@ -55,6 +55,9 @@ type Feed struct {
 	Calendar         *Calendar         `yaml:"calendar,omitempty"`
 }
 
+// GetName returns the feed name (implements utils.Named)
+func (f *Feed) GetName() string { return f.Name }
+
 // FeedVersion represents a version of feed configuration
 type FeedVersion struct {
 	Version                 string            `yaml:"version"`

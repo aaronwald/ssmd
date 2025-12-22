@@ -38,6 +38,9 @@ type Schema struct {
 	Versions   []SchemaVersion `yaml:"versions"`
 }
 
+// GetName returns the schema name (implements utils.Named)
+func (s *Schema) GetName() string { return s.Name }
+
 // SchemaVersion represents a version of a schema
 type SchemaVersion struct {
 	Version         string       `yaml:"version"`
