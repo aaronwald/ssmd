@@ -50,7 +50,7 @@ func TestDiffNoChanges(t *testing.T) {
 		Name: "kalshi",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com", Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed, filepath.Join(tmpDir, "exchanges", "feeds", "kalshi.yaml"))
@@ -93,7 +93,7 @@ func TestDiffWithChanges(t *testing.T) {
 		Name: "kalshi",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com", Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed, filepath.Join(tmpDir, "exchanges", "feeds", "kalshi.yaml"))
@@ -115,7 +115,7 @@ func TestDiffWithChanges(t *testing.T) {
 		Name: "polymarket",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://polymarket.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://polymarket.com", Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(newFeed, filepath.Join(tmpDir, "exchanges", "feeds", "polymarket.yaml"))
@@ -169,7 +169,7 @@ func TestCommitWithValidation(t *testing.T) {
 		Name: "kalshi",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com", Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed, filepath.Join(tmpDir, "exchanges", "feeds", "kalshi.yaml"))
@@ -239,7 +239,7 @@ func TestCommitNoValidate(t *testing.T) {
 		Name: "kalshi",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com", Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed, filepath.Join(tmpDir, "exchanges", "feeds", "kalshi.yaml"))
@@ -276,7 +276,7 @@ func TestCommitValidationFailure(t *testing.T) {
 		Name: "kalshi",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com", Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed, filepath.Join(tmpDir, "exchanges", "feeds", "kalshi.yaml"))

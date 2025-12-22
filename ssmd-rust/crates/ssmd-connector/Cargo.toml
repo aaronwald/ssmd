@@ -1,0 +1,17 @@
+[package]
+name = "ssmd-connector"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ssmd-connector"
+path = "src/main.rs"
+
+[dependencies]
+ssmd-metadata = { path = "../metadata" }
+ssmd-connector-lib = { path = "../connector" }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_yaml = { workspace = true }

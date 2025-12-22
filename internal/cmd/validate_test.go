@@ -32,7 +32,7 @@ func TestValidateAllValid(t *testing.T) {
 		Name: "kalshi",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com", Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed, filepath.Join(feedsDir, "kalshi.yaml"))
@@ -148,7 +148,7 @@ func TestValidateMissingSchemaReference(t *testing.T) {
 		Name: "kalshi",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com", Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed, filepath.Join(feedsDir, "kalshi.yaml"))
@@ -198,7 +198,7 @@ func TestValidateDraftSchemaReference(t *testing.T) {
 		Name: "kalshi",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com", Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed, filepath.Join(feedsDir, "kalshi.yaml"))
@@ -291,7 +291,7 @@ func TestValidateSpecificFile(t *testing.T) {
 		Name: "kalshi",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com", Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed, filepath.Join(feedsDir, "kalshi.yaml"))
