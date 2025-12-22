@@ -118,3 +118,34 @@ func TestLoadAllYAML_NonexistentDir(t *testing.T) {
 		t.Errorf("got %v, want nil for nonexistent dir", results)
 	}
 }
+
+func TestSaveYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "subdir", "test.yaml")
+
+	entity := &testEntity{Name: "test", Value: 42}
+
+	if err := SaveYAML(entity, path); err != nil {
+		t.Fatalf("SaveYAML() error = %v", err)
+	}
+
+	// Verify file was created
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	if len(data) == 0 {
+		t.Error("SaveYAML() wrote empty file")
+	}
+
+	// Verify we can load it back
+	loaded, err := LoadYAML[testEntity](path)
+	if err != nil {
+		t.Fatalf("LoadYAML() error = %v", err)
+	}
+
+	if loaded.Name != entity.Name || loaded.Value != entity.Value {
+		t.Errorf("Round-trip failed: got %+v, want %+v", loaded, entity)
+	}
+}
