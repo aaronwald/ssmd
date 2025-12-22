@@ -123,7 +123,7 @@ func TestFeedList(t *testing.T) {
 		Type:   types.FeedTypeWebSocket,
 		Status: types.FeedStatusActive,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://kalshi.com", Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	feed2 := &types.Feed{
@@ -131,7 +131,7 @@ func TestFeedList(t *testing.T) {
 		Type:   types.FeedTypeREST,
 		Status: types.FeedStatusDeprecated,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "https://polymarket.com"},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "https://polymarket.com", Protocol: types.Protocol{Transport: types.TransportHTTPS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed1, filepath.Join(feedsDir, "kalshi.yaml"))
@@ -173,8 +173,12 @@ func TestFeedShow(t *testing.T) {
 		Status:      types.FeedStatusActive,
 		Versions: []types.FeedVersion{
 			{
-				Version:            "v1",
-				EffectiveFrom:      "2025-01-01",
+				Version:       "v1",
+				EffectiveFrom: "2025-01-01",
+				Protocol: types.Protocol{
+					Transport: types.TransportWSS,
+					Message:   types.MessageJSON,
+				},
 				Endpoint:           "wss://api.kalshi.com/v1",
 				AuthMethod:         types.AuthMethodAPIKey,
 				RateLimitPerSecond: 10,
@@ -234,7 +238,7 @@ func TestFeedUpdate(t *testing.T) {
 		Name: "testfeed",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://test.com/v1", RateLimitPerSecond: 5},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://test.com/v1", RateLimitPerSecond: 5, Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed, filepath.Join(feedsDir, "testfeed.yaml"))
@@ -279,7 +283,7 @@ func TestFeedAddVersion(t *testing.T) {
 		Name: "testfeed",
 		Type: types.FeedTypeWebSocket,
 		Versions: []types.FeedVersion{
-			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://test.com/v1", RateLimitPerSecond: 5},
+			{Version: "v1", EffectiveFrom: "2025-01-01", Endpoint: "wss://test.com/v1", RateLimitPerSecond: 5, Protocol: types.Protocol{Transport: types.TransportWSS, Message: types.MessageJSON}},
 		},
 	}
 	types.SaveFeed(feed, filepath.Join(feedsDir, "testfeed.yaml"))

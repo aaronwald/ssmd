@@ -69,7 +69,8 @@ var (
 	feedEffectiveFrom string
 	feedEffectiveTo   string
 	feedCopyFrom      string
-	feedDatacenter    string
+	feedSite          string
+	feedSiteType      string
 	feedProvider      string
 	feedRegion        string
 )
@@ -106,10 +107,12 @@ func init() {
 	feedAddVersionCmd.MarkFlagRequired("effective-from")
 
 	// Add-location flags
-	feedAddLocationCmd.Flags().StringVar(&feedDatacenter, "datacenter", "", "Datacenter identifier (required)")
-	feedAddLocationCmd.Flags().StringVar(&feedProvider, "provider", "", "Provider: aws, gcp, onprem, etc.")
+	feedAddLocationCmd.Flags().StringVar(&feedSite, "site", "", "Site identifier (required)")
+	feedAddLocationCmd.Flags().StringVar(&feedSiteType, "type", "", "Site type: cloud, colo, on_prem (required)")
+	feedAddLocationCmd.Flags().StringVar(&feedProvider, "provider", "", "Provider: aws, gcp, equinix, etc.")
 	feedAddLocationCmd.Flags().StringVar(&feedRegion, "region", "", "Region identifier")
-	feedAddLocationCmd.MarkFlagRequired("datacenter")
+	feedAddLocationCmd.MarkFlagRequired("site")
+	feedAddLocationCmd.MarkFlagRequired("type")
 
 	// Register subcommands
 	feedCmd.AddCommand(feedListCmd)
@@ -222,13 +225,13 @@ func runFeedShow(cmd *cobra.Command, args []string) error {
 		fmt.Println("Capture Locations:")
 		for _, loc := range feed.CaptureLocations {
 			if loc.Provider != "" {
-				fmt.Printf("  %s (%s", loc.Datacenter, loc.Provider)
+				fmt.Printf("  %s [%s] (%s", loc.Site, loc.Type, loc.Provider)
 				if loc.Region != "" {
 					fmt.Printf(", %s", loc.Region)
 				}
 				fmt.Println(")")
 			} else {
-				fmt.Printf("  %s\n", loc.Datacenter)
+				fmt.Printf("  %s [%s]\n", loc.Site, loc.Type)
 			}
 		}
 	}
@@ -281,9 +284,12 @@ func runFeedCreate(cmd *cobra.Command, args []string) error {
 		Status:      types.FeedStatusActive,
 		Versions: []types.FeedVersion{
 			{
-				Version:            "v1",
-				EffectiveFrom:      effectiveFrom,
-				Protocol:           "wss",
+				Version:       "v1",
+				EffectiveFrom: effectiveFrom,
+				Protocol: types.Protocol{
+					Transport: types.TransportWSS,
+					Message:   types.MessageJSON,
+				},
 				Endpoint:           endpoint,
 				AuthMethod:         types.AuthMethod(feedAuthMethod),
 				RateLimitPerSecond: feedRateLimit,
@@ -448,17 +454,31 @@ func runFeedAddLocation(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("feed '%s' not found: %w", name, err)
 	}
 
-	// Check if datacenter already exists
+	// Check if site already exists
 	for _, loc := range feed.CaptureLocations {
-		if loc.Datacenter == feedDatacenter {
-			return fmt.Errorf("datacenter '%s' already configured for feed '%s'", feedDatacenter, name)
+		if loc.Site == feedSite {
+			return fmt.Errorf("site '%s' already configured for feed '%s'", feedSite, name)
 		}
 	}
 
+	// Parse site type
+	var siteType types.SiteType
+	switch feedSiteType {
+	case "cloud":
+		siteType = types.SiteTypeCloud
+	case "colo":
+		siteType = types.SiteTypeColo
+	case "on_prem":
+		siteType = types.SiteTypeOnPrem
+	default:
+		return fmt.Errorf("invalid site type: %s (must be cloud, colo, or on_prem)", feedSiteType)
+	}
+
 	newLocation := types.CaptureLocation{
-		Datacenter: feedDatacenter,
-		Provider:   feedProvider,
-		Region:     feedRegion,
+		Site:     feedSite,
+		Type:     siteType,
+		Provider: feedProvider,
+		Region:   feedRegion,
 	}
 
 	feed.CaptureLocations = append(feed.CaptureLocations, newLocation)
@@ -467,7 +487,7 @@ func runFeedAddLocation(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Added capture location '%s' to feed '%s'\n", feedDatacenter, name)
+	fmt.Printf("Added capture location '%s' [%s] to feed '%s'\n", feedSite, feedSiteType, name)
 	return nil
 }
 
