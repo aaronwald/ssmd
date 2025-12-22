@@ -217,3 +217,36 @@ pub struct CaptureLocation {
 | `internal/types/feed.go` | Add Protocol struct, update CaptureLocation, add enums |
 | `ssmd-rust/crates/metadata/src/feed.rs` | Add Protocol struct, update CaptureLocation, add enums |
 | `configs/exchanges/kalshi/feeds/*.yaml` | Migrate to new format (if any exist) |
+
+---
+
+## TODO / Future Work
+
+### Sequenced Stream Handling
+
+Many market data protocols (ITCH, SBE, multicast feeds) use sequence numbers for gap detection and recovery. We need to:
+
+1. **Distinguish sequenced vs unsequenced streams** in the protocol metadata
+   - Add `sequenced: bool` to Protocol struct
+   - Or infer from message protocol (ITCH is always sequenced, JSON often isn't)
+
+2. **Sequence number checking** at the connector level
+   - Track last seen sequence number per stream
+   - Detect gaps (missing sequence numbers)
+   - Support gap-fill requests where protocol allows
+   - Log/alert on sequence gaps
+
+3. **Recovery mechanisms**
+   - Request retransmission (if supported)
+   - Snapshot + replay for order book recovery
+   - Mark data as potentially incomplete when gaps detected
+
+Example schema addition:
+```yaml
+protocol:
+  transport: multicast
+  message: itch
+  version: "5.0"
+  sequenced: true
+  sequence_field: "seq_num"  # field name in message
+```
