@@ -701,6 +701,49 @@ Agents are developed against replayed data, but deploy as TypeScript that runs w
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Request/Reply vs Streaming
+
+Chatbots use **request/reply** for queries; **streaming** is for production runtime only.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Interaction Patterns                           │
+│                                                                             │
+│  REQUEST/REPLY (chatbot tools)         STREAMING (production runtime)       │
+│  ─────────────────────────────         ─────────────────────────────        │
+│                                                                             │
+│  Chatbot ──request──▶ NATS             NATS ──continuous──▶ Signal Runtime  │
+│          ◀──reply────                       ──messages────▶                 │
+│                                                                             │
+│  Used for:                             Used for:                            │
+│  • get_orderbook()                     • State Builder subscriptions        │
+│  • list_signals()                      • Signal Runtime evaluation          │
+│  • replay_test()                       • Action Agent triggers              │
+│  • live_test() (bounded)                                                    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+Even live testing is wrapped as request/reply from the chatbot's perspective:
+
+```typescript
+// Live test tool - subscribes to stream internally, returns result
+const liveTest = tool(
+  async ({ signalPath, durationSec }: { signalPath: string; durationSec: number }) => {
+    const results = await runLiveTest(signalPath, durationSec);  // streaming internally
+    return { fireCount: results.length, fires: results };        // reply to chatbot
+  },
+  {
+    name: "live_test",
+    description: "Test signal against live data for N seconds",
+    schema: z.object({
+      signalPath: z.string(),
+      durationSec: z.number().default(60),
+    }),
+  }
+);
+```
+
 ### Replay Mode
 
 Replay historical data for development and testing:
