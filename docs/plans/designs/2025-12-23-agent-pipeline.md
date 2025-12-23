@@ -185,13 +185,93 @@ s3://ssmd-data/signals/2025/12/23/spread-alert/events.jsonl.gz
 LangGraph.js graph for creating signals from natural language:
 
 ```typescript
-const graph = new StateGraph<AgentState>()
-  .addNode("understand", understandIntent)    // parse user request
-  .addNode("generate", generateSignalCode)    // LLM generates TS
-  .addNode("validate", validateSignal)        // type-check, lint
-  .addNode("confirm", confirmWithUser)        // show code, ask approval
-  .addNode("deploy", deploySignal)            // write to signals/, reload
+import { StateGraph, END } from "@langchain/langgraph";
+import { ChatAnthropic } from "@langchain/anthropic";
+
+// State flowing through the graph
+interface DefinitionState {
+  messages: BaseMessage[];
+  userRequest: string;
+  signalSpec: {
+    id: string;
+    name: string;
+    requires: string[];      // state builders needed
+    condition: string;       // natural language condition
+  } | null;
+  generatedCode: string | null;
+  validationErrors: string[];
+  approved: boolean;
+}
+
+// Nodes
+async function understand(state: DefinitionState): Promise<Partial<DefinitionState>> {
+  const llm = new ChatAnthropic({ model: "claude-sonnet-4-20250514" });
+  const response = await llm.invoke([
+    { role: "system", content: UNDERSTAND_PROMPT },
+    { role: "user", content: state.userRequest },
+  ]);
+  return { signalSpec: parseSignalSpec(response.content) };
+}
+
+async function generate(state: DefinitionState): Promise<Partial<DefinitionState>> {
+  const llm = new ChatAnthropic({ model: "claude-sonnet-4-20250514" });
+  const response = await llm.invoke([
+    { role: "system", content: GENERATE_PROMPT },
+    { role: "user", content: JSON.stringify(state.signalSpec) },
+  ]);
+  return { generatedCode: response.content };
+}
+
+async function validate(state: DefinitionState): Promise<Partial<DefinitionState>> {
+  // Type-check with Deno
+  const result = await Deno.command("deno", {
+    args: ["check", "--quiet", "-"],
+    stdin: "piped",
+  }).output();
+  // ... write code to stdin, collect errors
+  return { validationErrors: parseErrors(result.stderr) };
+}
+
+async function deploy(state: DefinitionState): Promise<Partial<DefinitionState>> {
+  const path = `signals/${state.signalSpec!.id}.ts`;
+  await Deno.writeTextFile(path, state.generatedCode!);
+  await gitCommit(path, `signal: add ${state.signalSpec!.id}`);
+  await notifyReload();  // publish to NATS for signal runtime to reload
+  return {};
+}
+
+// Routing
+function shouldRetry(state: DefinitionState): string {
+  return state.validationErrors.length > 0 ? "generate" : "confirm";
+}
+
+function shouldDeploy(state: DefinitionState): string {
+  return state.approved ? "deploy" : END;
+}
+
+// Graph
+const definitionGraph = new StateGraph<DefinitionState>()
+  .addNode("understand", understand)
+  .addNode("generate", generate)
+  .addNode("validate", validate)
+  .addNode("confirm", confirmWithUser)  // human-in-the-loop
+  .addNode("deploy", deploy)
+  .addEdge("understand", "generate")
+  .addEdge("generate", "validate")
+  .addConditionalEdges("validate", shouldRetry, ["generate", "confirm"])
+  .addConditionalEdges("confirm", shouldDeploy, ["deploy", END])
+  .addEdge("deploy", END)
   .compile();
+
+// Usage
+const result = await definitionGraph.invoke({
+  userRequest: "Alert me when the spread exceeds 5% on any INXD market",
+  messages: [],
+  signalSpec: null,
+  generatedCode: null,
+  validationErrors: [],
+  approved: false,
+});
 ```
 
 Generated code is committed to git for version control and auditability.
@@ -200,10 +280,92 @@ Generated code is committed to git for version control and auditability.
 
 LangGraph.js graph invoked when signals fire:
 
-- Receives SignalEvent with full context
-- Interprets why the signal fired
-- Decides action: alert, log, webhook, or trade signal
-- Publishes SignalEvent to NATS for persistence
+```typescript
+import { StateGraph, END } from "@langchain/langgraph";
+import { ChatAnthropic } from "@langchain/anthropic";
+
+interface ActionState {
+  signalEvent: SignalEvent;
+  context: {
+    recentEvents: SignalEvent[];   // last N events for this signal
+    marketContext: string;          // current market conditions
+  };
+  interpretation: string | null;
+  action: {
+    type: "alert" | "log" | "webhook" | "trade_signal";
+    data: Record<string, unknown>;
+  } | null;
+  executed: boolean;
+}
+
+async function interpret(state: ActionState): Promise<Partial<ActionState>> {
+  const llm = new ChatAnthropic({ model: "claude-sonnet-4-20250514" });
+  const response = await llm.invoke([
+    { role: "system", content: INTERPRET_PROMPT },
+    { role: "user", content: JSON.stringify({
+      event: state.signalEvent,
+      recentHistory: state.context.recentEvents,
+      market: state.context.marketContext,
+    })},
+  ]);
+  return { interpretation: response.content };
+}
+
+async function decide(state: ActionState): Promise<Partial<ActionState>> {
+  const llm = new ChatAnthropic({ model: "claude-sonnet-4-20250514" });
+  const response = await llm.invoke([
+    { role: "system", content: DECIDE_PROMPT },
+    { role: "user", content: state.interpretation },
+  ]);
+  return { action: parseAction(response.content) };
+}
+
+async function execute(state: ActionState): Promise<Partial<ActionState>> {
+  const { action } = state;
+  switch (action!.type) {
+    case "alert":
+      await sendAlert(action!.data);
+      break;
+    case "webhook":
+      await fetch(action!.data.url, { method: "POST", body: JSON.stringify(action!.data) });
+      break;
+    case "trade_signal":
+      await publishToNats("signals.trade", action!.data);
+      break;
+    case "log":
+    default:
+      console.log("Signal logged:", state.signalEvent.id);
+  }
+  // Publish action to NATS for archival
+  await publishToNats(`signals.actions.${state.signalEvent.signalId}`, {
+    eventId: state.signalEvent.id,
+    action: action,
+    interpretation: state.interpretation,
+  });
+  return { executed: true };
+}
+
+const actionGraph = new StateGraph<ActionState>()
+  .addNode("interpret", interpret)
+  .addNode("decide", decide)
+  .addNode("execute", execute)
+  .addEdge("interpret", "decide")
+  .addEdge("decide", "execute")
+  .addEdge("execute", END)
+  .compile();
+
+// Called when signal fires (from NATS subscription)
+async function onSignalFired(event: SignalEvent) {
+  const context = await buildContext(event);
+  await actionGraph.invoke({
+    signalEvent: event,
+    context,
+    interpretation: null,
+    action: null,
+    executed: false,
+  });
+}
+```
 
 ## Technology Choices
 
