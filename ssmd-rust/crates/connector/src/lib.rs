@@ -4,6 +4,7 @@
 //! processing messages, and writing to various destinations.
 
 pub mod error;
+pub mod flusher;
 pub mod message;
 pub mod publisher;
 pub mod resolver;
@@ -15,6 +16,7 @@ pub mod websocket;
 pub mod writer;
 
 pub use error::{ConnectorError, ResolverError, WriterError};
+pub use flusher::DiskFlusher;
 pub use message::Message;
 pub use publisher::{Publisher, TradeData, TradeSide};
 pub use resolver::EnvResolver;
