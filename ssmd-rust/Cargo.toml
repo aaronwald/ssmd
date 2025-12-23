@@ -5,6 +5,7 @@ members = [
     "crates/middleware",
     "crates/connector",
     "crates/ssmd-connector",
+    "crates/schema",
 ]
 
 [workspace.package]
@@ -31,3 +32,5 @@ futures-util = "0.3"
 url = "2"
 clap = { version = "4", features = ["derive"] }
 bytes = "1"
+capnp = "0.19"
+capnpc = "0.19"
