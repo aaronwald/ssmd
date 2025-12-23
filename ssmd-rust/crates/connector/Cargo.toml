@@ -21,6 +21,11 @@ futures-util = { workspace = true }
 url = { workspace = true }
 bytes = { workspace = true }
 capnp = { workspace = true }
+simd-json = { workspace = true }
+lasso = { workspace = true }
+arrayvec = { workspace = true }
+memmap2 = { workspace = true }
+bytemuck = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
