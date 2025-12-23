@@ -56,46 +56,26 @@ impl Connector for KalshiConnector {
         })?;
 
         // Spawn task to receive messages and forward to channel
+        // Pass through raw Kalshi JSON bytes for data messages
         tokio::spawn(async move {
             loop {
-                match ws.recv().await {
-                    Ok(msg) => {
-                        let bytes = match &msg {
-                            WsMessage::Ticker { msg } => {
-                                serde_json::to_vec(&serde_json::json!({
-                                    "type": "ticker",
-                                    "market_ticker": msg.market_ticker,
-                                    "yes_bid": msg.yes_bid,
-                                    "yes_ask": msg.yes_ask,
-                                    "last_price": msg.last_price,
-                                    "volume": msg.volume,
-                                    "ts": msg.ts.timestamp()
-                                })).unwrap_or_default()
-                            }
-                            WsMessage::Trade { msg } => {
-                                serde_json::to_vec(&serde_json::json!({
-                                    "type": "trade",
-                                    "market_ticker": msg.market_ticker,
-                                    "price": msg.price,
-                                    "count": msg.count,
-                                    "side": msg.side,
-                                    "ts": msg.ts.timestamp()
-                                })).unwrap_or_default()
-                            }
-                            WsMessage::OrderbookSnapshot { msg } | WsMessage::OrderbookDelta { msg } => {
-                                serde_json::to_vec(&serde_json::json!({
-                                    "type": "orderbook",
-                                    "market_ticker": msg.market_ticker,
-                                    "yes": msg.yes,
-                                    "no": msg.no
-                                })).unwrap_or_default()
-                            }
-                            WsMessage::Subscribed { .. } | WsMessage::Unsubscribed { .. } | WsMessage::Unknown => {
-                                continue;
-                            }
-                        };
+                match ws.recv_raw().await {
+                    Ok((raw_json, msg)) => {
+                        // Skip control messages, pass through data messages as raw bytes
+                        let should_forward = matches!(
+                            msg,
+                            WsMessage::Ticker { .. }
+                                | WsMessage::Trade { .. }
+                                | WsMessage::OrderbookSnapshot { .. }
+                                | WsMessage::OrderbookDelta { .. }
+                        );
 
-                        if tx.send(bytes).await.is_err() {
+                        if !should_forward {
+                            continue;
+                        }
+
+                        // Pass through raw Kalshi JSON bytes - no re-serialization
+                        if tx.send(raw_json.into_bytes()).await.is_err() {
                             info!("Channel closed, stopping receiver");
                             break;
                         }
