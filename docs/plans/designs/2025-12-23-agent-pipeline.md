@@ -20,7 +20,7 @@ Extension to ssmd that feeds NATS market data streams into a LangGraph-based age
 
 ## Architecture
 
-NATS JetStream is the backbone - all components communicate via NATS, enabling independent scaling, restarts, and full observability.
+NATS carries raw data and events. Derived state (orderbooks, etc.) stays in-memory - too large to stream through NATS.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -28,13 +28,8 @@ NATS JetStream is the backbone - all components communicate via NATS, enabling i
 │                                                                             │
 │  Raw Market Data (from ssmd connector):                                     │
 │    kalshi.trades.>                                                          │
-│    kalshi.orderbook.>                                                       │
+│    kalshi.orderbook.>   (deltas only, not full books)                       │
 │    kalshi.ticker.>                                                          │
-│                                                                             │
-│  Derived State (from State Builders):                                       │
-│    {env}.state.orderbook.{ticker}                                           │
-│    {env}.state.price-history.{ticker}                                       │
-│    {env}.state.volume-profile.{ticker}                                      │
 │                                                                             │
 │  Signal Events (from Signal Runtime):                                       │
 │    {env}.signals.fired.{signalId}                                           │
@@ -42,21 +37,33 @@ NATS JetStream is the backbone - all components communicate via NATS, enabling i
 │  Actions (from Action Agent):                                               │
 │    {env}.signals.actions.{signalId}                                         │
 │                                                                             │
-└───────┬─────────────────┬─────────────────┬─────────────────┬───────────────┘
-        │                 │                 │                 │
-        ▼                 ▼                 ▼                 ▼
-┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────────────┐
-│ State Builder │ │ Signal Runtime│ │ Action Agent  │ │   Archiver (existing) │
-│    (Deno)     │ │    (Deno)     │ │    (Deno)     │ │                       │
-│               │ │               │ │               │ │                       │
-│ subscribes:   │ │ subscribes:   │ │ subscribes:   │ │ subscribes:           │
-│  kalshi.*     │ │  {env}.state.*│ │  {env}.signals│ │  kalshi.*             │
-│               │ │               │ │    .fired.*   │ │  {env}.state.*        │
-│ publishes:    │ │ publishes:    │ │               │ │  {env}.signals.*      │
-│  {env}.state.*│ │  {env}.signals│ │ publishes:    │ │                       │
-│               │ │    .fired.*   │ │  {env}.signals│ │ writes to: S3         │
-│               │ │               │ │    .actions.* │ │                       │
-└───────────────┘ └───────────────┘ └───────────────┘ └───────────────────────┘
+└───────┬─────────────────────────────────────────────┬───────────────────────┘
+        │                                             │
+        │ subscribe (raw deltas)                      │ subscribe (signals)
+        ▼                                             ▼
+┌─────────────────────────────────────────────┐ ┌───────────────────────┐
+│         Signal Runtime Process (Deno)       │ │   Archiver (existing) │
+│                                             │ │                       │
+│  ┌───────────────────────────────────────┐  │ │ subscribes:           │
+│  │     In-Memory State (not on NATS)     │  │ │  kalshi.*             │
+│  │                                       │  │ │  {env}.signals.*      │
+│  │  OrderBook { ticker → bids/asks }     │  │ │                       │
+│  │  PriceHistory { ticker → candles }    │  │ │ writes to: S3         │
+│  │  VolumeProfile { ticker → volumes }   │  │ │                       │
+│  └───────────────────────────────────────┘  │ └───────────────────────┘
+│         ▲                     │             │
+│         │ update              │ evaluate    │ ┌───────────────────────┐
+│         │                     ▼             │ │    Action Agent       │
+│  ┌──────┴──────┐     ┌───────────────┐     │ │       (Deno)          │
+│  │   State     │     │    Signal     │     │ │                       │
+│  │  Builders   │     │   Evaluator   │─────┼─▶ subscribes:           │
+│  └─────────────┘     └───────────────┘     │ │  {env}.signals.fired.*│
+│                             │               │ │                       │
+│                             │ publish       │ │ publishes:            │
+│                             ▼               │ │  {env}.signals.actions│
+│                      {env}.signals.fired.*  │ └───────────────────────┘
+│                                             │
+└─────────────────────────────────────────────┘
 
 ┌───────────────────────────────────────────────────────────────────────────────┐
 │                        Definition Agent (Deno + LangGraph.js)                 │
@@ -74,15 +81,25 @@ NATS JetStream is the backbone - all components communicate via NATS, enabling i
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Benefits of NATS-Centric Design
+### What Flows Through NATS
 
-| Benefit | Description |
-|---------|-------------|
-| **Independent scaling** | Run multiple State Builders or Signal Runtimes |
-| **Fault isolation** | Components restart without losing messages (JetStream persistence) |
-| **Observability** | All communication visible, auditable via NATS |
-| **Consistent pattern** | Same architecture as ssmd connector/archiver |
-| **Replay** | Can replay any stream for debugging or backtesting |
+| Stream | Size | Description |
+|--------|------|-------------|
+| `kalshi.orderbook.*` | Small | Deltas only (price/size updates), not full books |
+| `kalshi.trades.*` | Small | Individual trades |
+| `kalshi.ticker.*` | Small | Ticker updates |
+| `{env}.signals.fired.*` | Small | Signal events when conditions met |
+| `{env}.signals.actions.*` | Small | Action decisions from Action Agent |
+
+### What Stays In-Memory
+
+| State | Why Not NATS |
+|-------|--------------|
+| OrderBook | Too large (thousands of levels per ticker) |
+| PriceHistory | Grows over time, only needed locally |
+| VolumeProfile | Derived state, rebuilt from deltas |
+
+State Builders and Signal Evaluator run in the same process, sharing memory.
 
 ## Components
 
@@ -621,30 +638,33 @@ schemas/*.capnp
 
 ## Data Flow
 
-All communication via NATS - each arrow is a NATS publish/subscribe:
+Raw data flows through NATS. Derived state stays in-memory.
 
 ```
-Kalshi WS → Connector → NATS: kalshi.trades.*, kalshi.orderbook.*
+Kalshi WS → Connector → NATS: kalshi.trades.*, kalshi.orderbook.* (deltas)
                                     │
                                     ▼
-                        State Builder (Deno)
-                                    │
-                                    ▼
-                        NATS: {env}.state.orderbook.*, {env}.state.price-history.*
-                                    │
-                                    ▼
-                        Signal Runtime (Deno)
-                                    │
-                                    ▼
-                        NATS: {env}.signals.fired.*
-                                    │
-                          ┌─────────┴─────────┐
-                          ▼                   ▼
-                   Action Agent         Archiver
-                      (Deno)            (existing)
-                          │                   │
-                          ▼                   ▼
-           NATS: {env}.signals.actions.*     S3
+                    ┌───────────────────────────────────┐
+                    │     Signal Runtime Process        │
+                    │                                   │
+                    │  State Builders ──▶ In-Memory    │
+                    │                      State        │
+                    │                        │          │
+                    │                        ▼          │
+                    │               Signal Evaluator    │
+                    │                        │          │
+                    └────────────────────────┼──────────┘
+                                             │
+                                             ▼
+                                NATS: {env}.signals.fired.*
+                                             │
+                               ┌─────────────┴─────────────┐
+                               ▼                           ▼
+                        Action Agent                  Archiver
+                           (Deno)                    (existing)
+                               │                           │
+                               ▼                           ▼
+                NATS: {env}.signals.actions.*             S3
 ```
 
 **Signal creation flow (separate, not in hot path):**
@@ -836,6 +856,7 @@ Consumer groups ensure each message is processed by exactly one instance per par
 2. **Multi-ticker state** - Does each ticker get its own OrderBook instance, or shared state?
 3. **Backpressure** - What happens if signal evaluation can't keep up with message rate?
 4. **Testing** - How to test generated signals before deploying to production?
+5. **State snapshots** - Where to store orderbook snapshots for recovery? Options: Redis (fast), file journal, NATS KV? Not S3 (too slow for recovery).
 
 ## Future Considerations
 
