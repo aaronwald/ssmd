@@ -81,6 +81,19 @@ Documented in `docs/plans/2025-12-22-schema-normalization-design.md` TODO sectio
 - [ ] Gap detection and alerting
 - [ ] Recovery mechanisms (where protocol supports)
 
+### Future: Multicast Feed Recovery
+Not needed for initial TCP/WebSocket feeds (Kalshi, Polymarket). Required when adding multicast support (e.g., market data from exchanges).
+
+- [ ] Extend Feed schema with recovery endpoint configuration
+- [ ] Snapshot request mechanism (point-in-time state recovery)
+- [ ] Replay request mechanism (historical message replay)
+- [ ] Recovery source metadata (separate endpoint, different protocol)
+
+### Metrics & Observability
+- [ ] Latency histograms (message receive to write, end-to-end)
+- [ ] Prometheus histogram buckets for P50/P95/P99 latency
+- [ ] Timestamp tracking at each pipeline stage
+
 ### Enhancements (when needed)
 - [ ] Add `ssmd version` command
 - [ ] Add JSON output format (`--output json`)

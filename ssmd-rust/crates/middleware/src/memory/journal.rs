@@ -24,7 +24,10 @@ impl InMemoryJournal {
     }
 
     fn now_millis() -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after UNIX epoch")
+            .as_millis() as u64
     }
 }
 

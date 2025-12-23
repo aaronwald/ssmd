@@ -8,6 +8,8 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use crate::error::TransportError;
 use crate::transport::{Subscription, Transport, TransportMessage};
 
+const CHANNEL_BUFFER_SIZE: usize = 1024;
+
 pub struct InMemoryTransport {
     channels: Arc<RwLock<HashMap<String, broadcast::Sender<TransportMessage>>>>,
     sequence: Arc<Mutex<u64>>,
@@ -26,7 +28,7 @@ impl InMemoryTransport {
         if let Some(tx) = channels.get(subject) {
             tx.clone()
         } else {
-            let (tx, _) = broadcast::channel(1024);
+            let (tx, _) = broadcast::channel(CHANNEL_BUFFER_SIZE);
             channels.insert(subject.to_string(), tx.clone());
             tx
         }
@@ -69,7 +71,10 @@ impl Transport for InMemoryTransport {
             subject: subject.to_string(),
             payload,
             headers,
-            timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after UNIX epoch")
+                .as_millis() as u64,
             sequence: Some(seq),
         };
         let _ = tx.send(msg);
