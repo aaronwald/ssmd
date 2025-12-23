@@ -224,4 +224,125 @@ mod tests {
         let count = flusher.drain_batch();
         assert_eq!(count, 0);
     }
+
+    #[test]
+    fn test_flusher_empty_ring_no_crash() {
+        let (_ring, mut flusher, tmp) = create_test_setup();
+        let shutdown = Arc::new(AtomicBool::new(true)); // Immediate shutdown
+
+        // Run flusher with empty ring - should not crash
+        flusher.run(shutdown);
+
+        // No file should be created since no messages were written
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let output_path = tmp.path().join(&today).join("test-feed.jsonl");
+        assert!(!output_path.exists(), "No file should be created for empty ring");
+    }
+
+    #[test]
+    fn test_flusher_partial_batch_on_shutdown() {
+        let (ring, mut flusher, tmp) = create_test_setup();
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        // Write less than BATCH_SIZE (64) messages
+        let num_messages = 17;
+        for i in 0..num_messages {
+            ring.try_write(format!("{{\"id\":{}}}", i).as_bytes());
+        }
+
+        // Signal shutdown
+        shutdown.store(true, Ordering::Relaxed);
+        flusher.run(shutdown);
+
+        // Verify all messages written (not just first batch)
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let output_path = tmp.path().join(&today).join("test-feed.jsonl");
+        let content = fs::read_to_string(&output_path).unwrap();
+        let lines: Vec<_> = content.lines().collect();
+
+        assert_eq!(lines.len(), num_messages, "All {} messages should be written", num_messages);
+    }
+
+    #[test]
+    fn test_flusher_creates_nested_directories() {
+        let tmp = TempDir::new().unwrap();
+        let ring_path = tmp.path().join("ring.buf");
+        let ring = Arc::new(RingBuffer::new(&ring_path).unwrap());
+
+        // Use a nested path that doesn't exist
+        let nested_base = tmp.path().join("deep").join("nested").join("path");
+        let mut flusher = DiskFlusher::new(ring.clone(), nested_base.clone(), "test-feed".to_string());
+
+        // Write a message
+        ring.try_write(b"{\"test\":true}");
+
+        // Drain and flush
+        flusher.drain_batch();
+        flusher.flush();
+
+        // Verify nested directories were created
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let output_path = nested_base.join(&today).join("test-feed.jsonl");
+        assert!(output_path.exists(), "Should create nested directories");
+    }
+
+    #[test]
+    fn test_flusher_large_payload() {
+        let (ring, mut flusher, tmp) = create_test_setup();
+
+        // Create a large payload near the slot size limit
+        let header_size = 8; // SlotHeader size
+        let max_payload = crate::ring_buffer::SLOT_SIZE - header_size;
+        let large_json = format!("{{\"data\":\"{}\"}}", "x".repeat(max_payload - 20)); // Leave room for JSON wrapper
+
+        assert!(ring.try_write(large_json.as_bytes()), "Should accept large message");
+
+        // Drain and flush
+        flusher.drain_batch();
+        flusher.flush();
+
+        // Verify the large message was written correctly
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let output_path = tmp.path().join(&today).join("test-feed.jsonl");
+        let content = fs::read_to_string(&output_path).unwrap();
+
+        assert!(content.contains("\"data\":"), "Should contain the data field");
+        assert!(content.contains("\"ts\":"), "Should have timestamp wrapper");
+    }
+
+    #[test]
+    fn test_flusher_backpressure_recovery() {
+        let tmp = TempDir::new().unwrap();
+        let ring_path = tmp.path().join("ring.buf");
+        let ring = Arc::new(RingBuffer::new(&ring_path).unwrap());
+        let mut flusher = DiskFlusher::new(ring.clone(), tmp.path().to_path_buf(), "test-feed".to_string());
+
+        // Fill ring buffer completely
+        let mut written = 0;
+        while ring.try_write(format!("{{\"n\":{}}}", written).as_bytes()) {
+            written += 1;
+        }
+        assert!(ring.is_full(), "Ring should be full");
+        assert_eq!(written, crate::ring_buffer::RING_SLOTS);
+
+        // Drain one batch (64 messages)
+        let drained = flusher.drain_batch();
+        assert_eq!(drained, BATCH_SIZE);
+
+        // Producer should now be able to write again
+        assert!(!ring.is_full(), "Ring should not be full after drain");
+        assert!(ring.try_write(b"{\"resumed\":true}"), "Should be able to write after drain");
+
+        // Drain remaining and verify count
+        flusher.drain_all();
+        flusher.flush();
+
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let output_path = tmp.path().join(&today).join("test-feed.jsonl");
+        let content = fs::read_to_string(&output_path).unwrap();
+        let lines: Vec<_> = content.lines().collect();
+
+        // Should have all original messages + 1 resumed message
+        assert_eq!(lines.len(), written + 1);
+    }
 }
