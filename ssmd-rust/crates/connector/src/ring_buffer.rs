@@ -269,4 +269,150 @@ mod tests {
         assert_eq!(ring.write_position(), 1);
         assert_eq!(ring.read_position(), 1);
     }
+
+    #[test]
+    fn test_spsc_concurrent_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("ring.buf");
+        let ring = Arc::new(RingBuffer::new(&path).unwrap());
+
+        let ring_producer = Arc::clone(&ring);
+        let ring_consumer = Arc::clone(&ring);
+
+        const NUM_MESSAGES: usize = 10_000;
+
+        // Producer thread
+        let producer = thread::spawn(move || {
+            for i in 0..NUM_MESSAGES {
+                let msg = format!("msg{:05}", i);
+                while !ring_producer.try_write(msg.as_bytes()) {
+                    thread::yield_now(); // Backpressure - wait for consumer
+                }
+            }
+        });
+
+        // Consumer thread
+        let consumer = thread::spawn(move || {
+            let mut received = Vec::with_capacity(NUM_MESSAGES);
+            while received.len() < NUM_MESSAGES {
+                if let Some(data) = ring_consumer.try_read() {
+                    received.push(String::from_utf8(data).unwrap());
+                } else {
+                    thread::yield_now();
+                }
+            }
+            received
+        });
+
+        producer.join().unwrap();
+        let received = consumer.join().unwrap();
+
+        // Verify all messages received in order
+        assert_eq!(received.len(), NUM_MESSAGES);
+        for (i, msg) in received.iter().enumerate() {
+            assert_eq!(msg, &format!("msg{:05}", i), "Message {} out of order", i);
+        }
+    }
+
+    #[test]
+    fn test_position_wraparound() {
+        let (ring, _tmp) = create_test_ring();
+
+        // Simulate near-wraparound by writing and reading many messages
+        // This tests that position arithmetic works correctly
+        for round in 0..3 {
+            for i in 0..RING_SLOTS {
+                let msg = format!("round{}msg{}", round, i);
+                assert!(ring.try_write(msg.as_bytes()), "Write failed at round {} msg {}", round, i);
+            }
+            for i in 0..RING_SLOTS {
+                let data = ring.try_read().expect("Read failed");
+                let expected = format!("round{}msg{}", round, i);
+                assert_eq!(data, expected.as_bytes());
+            }
+        }
+
+        // Buffer should be empty after all reads
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn test_empty_buffer_operations() {
+        let (ring, _tmp) = create_test_ring();
+
+        // Verify empty state
+        assert!(ring.is_empty());
+        assert!(!ring.is_full());
+
+        // Multiple reads on empty should return None and not corrupt state
+        for _ in 0..100 {
+            assert!(ring.try_read().is_none());
+            assert!(ring.peek().is_none());
+        }
+
+        // Should still work after empty reads
+        assert!(ring.try_write(b"test"));
+        assert_eq!(ring.try_read().unwrap(), b"test");
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn test_exactly_full_buffer() {
+        let (ring, _tmp) = create_test_ring();
+
+        // Fill exactly to capacity
+        for i in 0..RING_SLOTS {
+            assert!(ring.try_write(format!("msg{}", i).as_bytes()));
+        }
+
+        // Verify full state
+        assert!(ring.is_full());
+        assert!(!ring.is_empty());
+
+        // One more write should fail
+        assert!(!ring.try_write(b"overflow"));
+
+        // Read one
+        let first = ring.try_read().unwrap();
+        assert_eq!(first, b"msg0");
+
+        // Now not full, but not empty
+        assert!(!ring.is_full());
+        assert!(!ring.is_empty());
+
+        // Can write one more now
+        assert!(ring.try_write(b"new"));
+
+        // Full again
+        assert!(ring.is_full());
+    }
+
+    #[test]
+    fn test_payload_size_boundaries() {
+        let (ring, _tmp) = create_test_ring();
+        let header_size = std::mem::size_of::<SlotHeader>();
+        let max_payload = SLOT_SIZE - header_size;
+
+        // Empty payload (0 bytes)
+        assert!(ring.try_write(b""));
+        let empty = ring.try_read().unwrap();
+        assert!(empty.is_empty());
+
+        // Exactly max payload
+        let max_msg = vec![b'x'; max_payload];
+        assert!(ring.try_write(&max_msg));
+        let read_max = ring.try_read().unwrap();
+        assert_eq!(read_max.len(), max_payload);
+
+        // One byte over max should fail
+        let too_big = vec![b'y'; max_payload + 1];
+        assert!(!ring.try_write(&too_big));
+
+        // Buffer should still work after rejected write
+        assert!(ring.try_write(b"still works"));
+        assert_eq!(ring.try_read().unwrap(), b"still works");
+    }
 }
