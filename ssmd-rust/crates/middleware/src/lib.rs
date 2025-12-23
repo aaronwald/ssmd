@@ -6,11 +6,13 @@
 pub mod cache;
 pub mod error;
 pub mod journal;
+pub mod memory;
 pub mod storage;
 pub mod transport;
 
 pub use cache::Cache;
 pub use error::{CacheError, JournalError, StorageError, TransportError};
 pub use journal::{Journal, JournalEntry, JournalPosition, JournalReader, TopicConfig};
+pub use memory::InMemoryCache;
 pub use storage::{ObjectMeta, Storage};
 pub use transport::{Subscription, Transport, TransportMessage};
