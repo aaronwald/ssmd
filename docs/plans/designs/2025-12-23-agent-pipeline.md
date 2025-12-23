@@ -180,6 +180,121 @@ interface SignalEvent {
 s3://ssmd-data/signals/2025/12/23/spread-alert/events.jsonl.gz
 ```
 
+### Skills (Tools)
+
+Agents use tools to query ssmd and external systems. Tools are bound to the LLM and can be called during graph execution.
+
+```typescript
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+import { NatsClient } from "./nats.ts";
+
+// Query current orderbook state from NATS
+const getOrderbook = tool(
+  async ({ ticker }: { ticker: string }) => {
+    const state = await nats.getLastMessage(`state.orderbook.${ticker}`);
+    return {
+      ticker,
+      bestBid: state.bestBid,
+      bestAsk: state.bestAsk,
+      spread: state.spread,
+      bidDepth: state.bidDepth,
+      askDepth: state.askDepth,
+      timestamp: state.timestamp,
+    };
+  },
+  {
+    name: "get_orderbook",
+    description: "Get current orderbook state for a ticker",
+    schema: z.object({ ticker: z.string() }),
+  }
+);
+
+// List available state builders
+const listStateBuilders = tool(
+  async () => {
+    const builders = await loadStateBuilders();
+    return builders.map(b => ({
+      id: b.id,
+      description: b.description,
+      subjects: b.subjects,
+      derivedFields: Object.keys(b.derived),
+    }));
+  },
+  {
+    name: "list_state_builders",
+    description: "List available state builders and their derived fields",
+    schema: z.object({}),
+  }
+);
+
+// List existing signals
+const listSignals = tool(
+  async () => {
+    const signals = await loadSignals();
+    return signals.map(s => ({
+      id: s.id,
+      name: s.name,
+      requires: s.requires,
+      description: s.description,
+    }));
+  },
+  {
+    name: "list_signals",
+    description: "List existing signal definitions for reference",
+    schema: z.object({}),
+  }
+);
+
+// Query recent trades
+const getRecentTrades = tool(
+  async ({ ticker, limit }: { ticker: string; limit: number }) => {
+    const trades = await nats.getHistory(`kalshi.trades.${ticker}`, limit);
+    return trades.map(t => ({
+      price: t.price,
+      size: t.size,
+      side: t.side,
+      timestamp: t.timestamp,
+    }));
+  },
+  {
+    name: "get_recent_trades",
+    description: "Get recent trades for a ticker",
+    schema: z.object({
+      ticker: z.string(),
+      limit: z.number().default(100),
+    }),
+  }
+);
+
+// Query signal history
+const getSignalHistory = tool(
+  async ({ signalId, hours }: { signalId: string; hours: number }) => {
+    const events = await nats.getHistory(`signals.fired.${signalId}`, {
+      since: Date.now() - hours * 3600 * 1000
+    });
+    return events.map(e => ({
+      id: e.id,
+      firedAt: e.firedAt,
+      ticker: e.ticker,
+      payload: e.payload,
+    }));
+  },
+  {
+    name: "get_signal_history",
+    description: "Get recent fire events for a signal",
+    schema: z.object({
+      signalId: z.string(),
+      hours: z.number().default(24),
+    }),
+  }
+);
+
+// All available tools
+const definitionTools = [listStateBuilders, listSignals, getOrderbook, getRecentTrades];
+const actionTools = [getOrderbook, getRecentTrades, getSignalHistory];
+```
+
 ### Definition Agent
 
 LangGraph.js graph for creating signals from natural language:
@@ -187,6 +302,10 @@ LangGraph.js graph for creating signals from natural language:
 ```typescript
 import { StateGraph, END } from "@langchain/langgraph";
 import { ChatAnthropic } from "@langchain/anthropic";
+
+// Bind tools to LLM
+const llm = new ChatAnthropic({ model: "claude-sonnet-4-20250514" });
+const llmWithTools = llm.bindTools(definitionTools);
 
 // State flowing through the graph
 interface DefinitionState {
@@ -205,17 +324,32 @@ interface DefinitionState {
 
 // Nodes
 async function understand(state: DefinitionState): Promise<Partial<DefinitionState>> {
-  const llm = new ChatAnthropic({ model: "claude-sonnet-4-20250514" });
-  const response = await llm.invoke([
+  // LLM can call tools to explore available state builders and existing signals
+  const response = await llmWithTools.invoke([
     { role: "system", content: UNDERSTAND_PROMPT },
     { role: "user", content: state.userRequest },
   ]);
+
+  // Handle tool calls if LLM wants to explore
+  if (response.tool_calls?.length) {
+    const toolResults = await executeTools(response.tool_calls);
+    const followUp = await llmWithTools.invoke([
+      ...state.messages,
+      response,
+      ...toolResults,
+    ]);
+    return {
+      signalSpec: parseSignalSpec(followUp.content),
+      messages: [...state.messages, response, ...toolResults, followUp],
+    };
+  }
+
   return { signalSpec: parseSignalSpec(response.content) };
 }
 
 async function generate(state: DefinitionState): Promise<Partial<DefinitionState>> {
-  const llm = new ChatAnthropic({ model: "claude-sonnet-4-20250514" });
-  const response = await llm.invoke([
+  // LLM can call tools to see example data, check current orderbook, etc.
+  const response = await llmWithTools.invoke([
     { role: "system", content: GENERATE_PROMPT },
     { role: "user", content: JSON.stringify(state.signalSpec) },
   ]);
@@ -284,6 +418,10 @@ LangGraph.js graph invoked when signals fire:
 import { StateGraph, END } from "@langchain/langgraph";
 import { ChatAnthropic } from "@langchain/anthropic";
 
+// Bind tools to LLM for action agent
+const actionLlm = new ChatAnthropic({ model: "claude-sonnet-4-20250514" });
+const actionLlmWithTools = actionLlm.bindTools(actionTools);
+
 interface ActionState {
   signalEvent: SignalEvent;
   context: {
@@ -299,8 +437,8 @@ interface ActionState {
 }
 
 async function interpret(state: ActionState): Promise<Partial<ActionState>> {
-  const llm = new ChatAnthropic({ model: "claude-sonnet-4-20250514" });
-  const response = await llm.invoke([
+  // LLM can call tools to get current orderbook, recent trades, signal history
+  const response = await actionLlmWithTools.invoke([
     { role: "system", content: INTERPRET_PROMPT },
     { role: "user", content: JSON.stringify({
       event: state.signalEvent,
@@ -308,12 +446,23 @@ async function interpret(state: ActionState): Promise<Partial<ActionState>> {
       market: state.context.marketContext,
     })},
   ]);
+
+  // Handle tool calls to gather more context
+  if (response.tool_calls?.length) {
+    const toolResults = await executeTools(response.tool_calls);
+    const followUp = await actionLlmWithTools.invoke([
+      response,
+      ...toolResults,
+      { role: "user", content: "Now provide your interpretation based on this data." },
+    ]);
+    return { interpretation: followUp.content };
+  }
+
   return { interpretation: response.content };
 }
 
 async function decide(state: ActionState): Promise<Partial<ActionState>> {
-  const llm = new ChatAnthropic({ model: "claude-sonnet-4-20250514" });
-  const response = await llm.invoke([
+  const response = await actionLlm.invoke([
     { role: "system", content: DECIDE_PROMPT },
     { role: "user", content: state.interpretation },
   ]);
