@@ -7,8 +7,11 @@ use tokio::sync::RwLock;
 use crate::error::StorageError;
 use crate::storage::{ObjectMeta, Storage};
 
+type BucketData = HashMap<String, (Bytes, ObjectMeta)>;
+type StorageData = HashMap<String, BucketData>;
+
 pub struct InMemoryStorage {
-    data: Arc<RwLock<HashMap<String, HashMap<String, (Bytes, ObjectMeta)>>>>,
+    data: Arc<RwLock<StorageData>>,
 }
 
 impl InMemoryStorage {
@@ -17,7 +20,10 @@ impl InMemoryStorage {
     }
 
     fn now_millis() -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after UNIX epoch")
+            .as_millis() as u64
     }
 }
 
