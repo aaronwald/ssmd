@@ -653,6 +653,140 @@ Kalshi WS → Connector → NATS: kalshi.trades.*, kalshi.orderbook.*
 User chat → Definition Agent → generates .ts → git commit → signal reload via NATS
 ```
 
+## Development vs Production
+
+Agents are developed against replayed data, but deploy as TypeScript that runs without LLM in the hot path.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              DEVELOPMENT                                    │
+│                                                                             │
+│  ┌─────────────┐     ┌─────────────────────────────────────────────────┐   │
+│  │  S3 Archive │     │            Definition Agent                     │   │
+│  │             │     │                                                 │   │
+│  │ historical  │────▶│  1. Replay data through State Builders          │   │
+│  │ data        │     │  2. LLM generates signal code                   │   │
+│  │             │     │  3. Test signal against replay                  │   │
+│  └─────────────┘     │  4. Validate: does it fire when expected?       │   │
+│                      │  5. Iterate until signal works                  │   │
+│                      │  6. Deploy: git commit + publish to NATS        │   │
+│                      └─────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      │ deploy (generated .ts)
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              PRODUCTION                                     │
+│                                                                             │
+│  ┌─────────────┐     ┌─────────────────────────────────────────────────┐   │
+│  │    NATS     │     │           Signal Runtime (no LLM)               │   │
+│  │             │     │                                                 │   │
+│  │ live data   │────▶│  - Loads compiled TypeScript signals            │   │
+│  │             │     │  - Evaluates against live state                 │   │
+│  │             │     │  - Pure functions, deterministic                │   │
+│  └─────────────┘     │  - Can run N instances in parallel              │   │
+│                      └──────────────────┬──────────────────────────────┘   │
+│                                         │                                   │
+│                                         │ signal fires                      │
+│                                         ▼                                   │
+│                      ┌─────────────────────────────────────────────────┐   │
+│                      │           Action Agent (LLM optional)           │   │
+│                      │                                                 │   │
+│                      │  - Can run with LLM for complex decisions       │   │
+│                      │  - Or run as pure TypeScript for simple actions │   │
+│                      │  - Multiple instances for different action types│   │
+│                      └─────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Replay Mode
+
+Replay historical data for development and testing:
+
+```typescript
+// replay.ts - Development tool for testing signals
+import { NatsReplay } from "./nats-replay.ts";
+import { loadStateBuilders, loadSignals } from "./loader.ts";
+
+interface ReplayConfig {
+  source: "nats" | "s3";
+  subjects: string[];           // e.g., ["kalshi.trades.*", "kalshi.orderbook.*"]
+  startTime: Date;
+  endTime: Date;
+  speed: number;                // 1.0 = real-time, 10.0 = 10x speed, 0 = as-fast-as-possible
+}
+
+async function replayTest(config: ReplayConfig, signalPath: string) {
+  const builders = await loadStateBuilders();
+  const signal = await import(signalPath);
+
+  const replay = new NatsReplay(config);
+  const results: SignalEvent[] = [];
+
+  // Build state and evaluate signal for each message
+  for await (const msg of replay.messages()) {
+    // Update state builders
+    for (const builder of builders) {
+      if (builder.matches(msg.subject)) {
+        builder.update(msg.data, state[builder.id]);
+      }
+    }
+
+    // Evaluate signal
+    if (signal.evaluate(state)) {
+      results.push({
+        firedAt: msg.timestamp,
+        payload: signal.payload(state),
+      });
+    }
+  }
+
+  return results;
+}
+
+// Usage: Test a signal against yesterday's data
+const fires = await replayTest({
+  source: "s3",
+  subjects: ["kalshi.orderbook.INXD-*"],
+  startTime: new Date("2025-12-22T00:00:00Z"),
+  endTime: new Date("2025-12-22T23:59:59Z"),
+  speed: 0,  // as fast as possible
+}, "./signals/spread-alert.ts");
+
+console.log(`Signal fired ${fires.length} times`);
+```
+
+### Parallel Signal Execution
+
+Multiple Signal Runtime instances can run in parallel, partitioned by ticker or signal:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         NATS JetStream                                      │
+│                                                                             │
+│  {env}.state.orderbook.INXD-*  ──────┬──────────────────────────────────▶  │
+│  {env}.state.orderbook.KXBTC-* ──────┼──────────────────────────────────▶  │
+│  {env}.state.orderbook.EVENT-* ──────┼──────────────────────────────────▶  │
+│                                      │                                      │
+└──────────────────────────────────────┼──────────────────────────────────────┘
+                                       │
+        ┌──────────────────────────────┼──────────────────────────────────┐
+        │                              │                                  │
+        ▼                              ▼                                  ▼
+┌───────────────────┐    ┌───────────────────┐    ┌───────────────────┐
+│ Signal Runtime #1 │    │ Signal Runtime #2 │    │ Signal Runtime #3 │
+│                   │    │                   │    │                   │
+│ filter: INXD-*    │    │ filter: KXBTC-*   │    │ filter: EVENT-*   │
+│ signals:          │    │ signals:          │    │ signals:          │
+│  - spread-alert   │    │  - spread-alert   │    │  - spread-alert   │
+│  - depth-imbalance│    │  - volume-spike   │    │  - custom-event   │
+└───────────────────┘    └───────────────────┘    └───────────────────┘
+```
+
+Consumer groups ensure each message is processed by exactly one instance per partition.
+
 ## Open Questions
 
 1. **Hot reload** - How does runtime detect new/changed signals? File watcher or explicit reload command?
