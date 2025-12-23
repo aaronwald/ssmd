@@ -1,48 +1,48 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use async_trait::async_trait;
 use bytes::Bytes;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use dashmap::DashMap;
+use tokio::sync::broadcast;
 
 use crate::error::TransportError;
+use crate::latency::now_tsc;
 use crate::transport::{Subscription, Transport, TransportMessage};
 
 const CHANNEL_BUFFER_SIZE: usize = 1024;
 
 pub struct InMemoryTransport {
-    channels: Arc<RwLock<HashMap<String, broadcast::Sender<TransportMessage>>>>,
-    sequence: Arc<Mutex<u64>>,
+    channels: DashMap<String, broadcast::Sender<TransportMessage>>,
+    sequence: AtomicU64,
 }
 
 impl InMemoryTransport {
     pub fn new() -> Self {
         Self {
-            channels: Arc::new(RwLock::new(HashMap::new())),
-            sequence: Arc::new(Mutex::new(0)),
+            channels: DashMap::new(),
+            sequence: AtomicU64::new(0),
         }
     }
 
-    async fn get_or_create_channel(&self, subject: &str) -> broadcast::Sender<TransportMessage> {
-        let mut channels = self.channels.write().await;
-        if let Some(tx) = channels.get(subject) {
-            tx.clone()
-        } else {
-            let (tx, _) = broadcast::channel(CHANNEL_BUFFER_SIZE);
-            channels.insert(subject.to_string(), tx.clone());
-            tx
-        }
+    #[inline]
+    fn next_sequence(&self) -> u64 {
+        self.sequence.fetch_add(1, Ordering::Relaxed)
     }
 
-    async fn next_sequence(&self) -> u64 {
-        let mut seq = self.sequence.lock().await;
-        *seq += 1;
-        *seq
+    fn get_or_create_channel(&self, subject: &str) -> broadcast::Sender<TransportMessage> {
+        self.channels
+            .entry(subject.to_string())
+            .or_insert_with(|| broadcast::channel(CHANNEL_BUFFER_SIZE).0)
+            .clone()
     }
 }
 
 impl Default for InMemoryTransport {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 struct InMemorySubscription {
@@ -52,29 +52,41 @@ struct InMemorySubscription {
 #[async_trait]
 impl Subscription for InMemorySubscription {
     async fn next(&mut self) -> Result<TransportMessage, TransportError> {
-        self.rx.recv().await.map_err(|e| TransportError::SubscribeFailed(e.to_string()))
+        self.rx
+            .recv()
+            .await
+            .map_err(|e| TransportError::SubscribeFailed(e.to_string()))
     }
-    async fn ack(&self, _sequence: u64) -> Result<(), TransportError> { Ok(()) }
-    async fn unsubscribe(self: Box<Self>) -> Result<(), TransportError> { Ok(()) }
+
+    async fn ack(&self, _sequence: u64) -> Result<(), TransportError> {
+        Ok(())
+    }
+
+    async fn unsubscribe(self: Box<Self>) -> Result<(), TransportError> {
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl Transport for InMemoryTransport {
     async fn publish(&self, subject: &str, payload: Bytes) -> Result<(), TransportError> {
-        self.publish_with_headers(subject, payload, HashMap::new()).await
+        self.publish_with_headers(subject, payload, HashMap::new())
+            .await
     }
 
-    async fn publish_with_headers(&self, subject: &str, payload: Bytes, headers: HashMap<String, String>) -> Result<(), TransportError> {
-        let tx = self.get_or_create_channel(subject).await;
-        let seq = self.next_sequence().await;
+    async fn publish_with_headers(
+        &self,
+        subject: &str,
+        payload: Bytes,
+        headers: HashMap<String, String>,
+    ) -> Result<(), TransportError> {
+        let tx = self.get_or_create_channel(subject);
+        let seq = self.next_sequence();
         let msg = TransportMessage {
             subject: subject.to_string(),
             payload,
             headers,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after UNIX epoch")
-                .as_millis() as u64,
+            timestamp: now_tsc(),
             sequence: Some(seq),
         };
         let _ = tx.send(msg);
@@ -82,12 +94,17 @@ impl Transport for InMemoryTransport {
     }
 
     async fn subscribe(&self, subject: &str) -> Result<Box<dyn Subscription>, TransportError> {
-        let tx = self.get_or_create_channel(subject).await;
+        let tx = self.get_or_create_channel(subject);
         let rx = tx.subscribe();
         Ok(Box::new(InMemorySubscription { rx }))
     }
 
-    async fn request(&self, _subject: &str, _payload: Bytes, _timeout: Duration) -> Result<TransportMessage, TransportError> {
+    async fn request(
+        &self,
+        _subject: &str,
+        _payload: Bytes,
+        _timeout: Duration,
+    ) -> Result<TransportMessage, TransportError> {
         Err(TransportError::Timeout)
     }
 }
@@ -100,7 +117,10 @@ mod tests {
     async fn test_publish_subscribe() {
         let transport = InMemoryTransport::new();
         let mut sub = transport.subscribe("test.subject").await.unwrap();
-        transport.publish("test.subject", Bytes::from("hello")).await.unwrap();
+        transport
+            .publish("test.subject", Bytes::from("hello"))
+            .await
+            .unwrap();
         let msg = sub.next().await.unwrap();
         assert_eq!(msg.subject, "test.subject");
         assert_eq!(msg.payload, Bytes::from("hello"));
@@ -110,11 +130,30 @@ mod tests {
     async fn test_sequence_numbers_increment() {
         let transport = InMemoryTransport::new();
         let mut sub = transport.subscribe("test.seq").await.unwrap();
-        transport.publish("test.seq", Bytes::from("1")).await.unwrap();
-        transport.publish("test.seq", Bytes::from("2")).await.unwrap();
+        transport
+            .publish("test.seq", Bytes::from("1"))
+            .await
+            .unwrap();
+        transport
+            .publish("test.seq", Bytes::from("2"))
+            .await
+            .unwrap();
         let msg1 = sub.next().await.unwrap();
         let msg2 = sub.next().await.unwrap();
-        assert_eq!(msg1.sequence, Some(1));
-        assert_eq!(msg2.sequence, Some(2));
+        assert_eq!(msg1.sequence, Some(0));
+        assert_eq!(msg2.sequence, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_timestamp_is_tsc() {
+        let transport = InMemoryTransport::new();
+        let mut sub = transport.subscribe("test.ts").await.unwrap();
+
+        let before = now_tsc();
+        transport.publish("test.ts", Bytes::from("x")).await.unwrap();
+        let after = now_tsc();
+
+        let msg = sub.next().await.unwrap();
+        assert!(msg.timestamp >= before && msg.timestamp <= after);
     }
 }
