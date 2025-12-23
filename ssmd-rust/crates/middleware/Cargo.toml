@@ -11,6 +11,10 @@ bytes = { workspace = true }
 tracing = { workspace = true }
 md5 = "0.7"
 ssmd-metadata = { path = "../metadata" }
+quanta = { workspace = true }
+dashmap = { workspace = true }
+lasso = { workspace = true }
+once_cell = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
