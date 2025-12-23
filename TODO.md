@@ -66,6 +66,16 @@
 - [x] CLI command updates
 - [x] Included in PR #8 (MERGED)
 
+### Middleware & Cap'n Proto (2025-12-23)
+- [x] Design: `docs/plans/2025-12-23-middleware-capnproto.md`
+- [x] ssmd-middleware crate (Transport, Storage, Cache, Journal traits)
+- [x] In-memory implementations for all middleware traits
+- [x] MiddlewareFactory for runtime selection based on Environment config
+- [x] ssmd-schema crate with Cap'n Proto trade types
+- [x] Publisher integration in ssmd-connector
+- [x] Updated CLAUDE.md with build/test/lint commands
+- [x] 37 Rust tests passing
+
 ## In Progress
 
 _None_
@@ -99,3 +109,8 @@ Not needed for initial TCP/WebSocket feeds (Kalshi, Polymarket). Required when a
 - [ ] Add JSON output format (`--output json`)
 - [ ] Shell completion scripts (bash/zsh)
 - [ ] CI/CD pipeline for automated testing
+
+### Future: LangChain Agent Pipeline
+- [ ] Research LangChain pipeline architecture for market data agents
+- [ ] Design agent workflow for data collection and processing
+- [ ] Evaluate integration with ssmd metadata and middleware
