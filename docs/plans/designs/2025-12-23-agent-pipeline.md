@@ -190,7 +190,7 @@ interface SignalEvent {
 }
 ```
 
-**NATS subject:** `{env}.signals.{signalId}`
+**NATS subject:** `{env}.signals.fired.{signalId}`
 
 **S3 archive:**
 ```
@@ -223,11 +223,11 @@ Agents use tools to query ssmd and external systems. Tools are bound to the LLM 
         │                     │                     │
         ▼                     ▼                     ▼
 ┌───────────────┐     ┌───────────────┐     ┌───────────────┐
-│ get_orderbook │     │ list_signals  │     │get_recent_    │
-│               │     │               │     │    trades     │
+│ replay_       │     │ list_signals  │     │get_recent_    │
+│ orderbook     │     │               │     │    trades     │
 │  ┌─────────┐  │     │  ┌─────────┐  │     │  ┌─────────┐  │
-│  │  NATS   │  │     │  │  File   │  │     │  │  NATS   │  │
-│  │ state.* │  │     │  │ System  │  │     │  │ trades.*│  │
+│  │   S3    │  │     │  │  File   │  │     │  │  NATS   │  │
+│  │ archive │  │     │  │ System  │  │     │  │ trades.*│  │
 │  └─────────┘  │     │  └─────────┘  │     │  └─────────┘  │
 └───────────────┘     └───────────────┘     └───────────────┘
 
@@ -235,11 +235,13 @@ Agents use tools to query ssmd and external systems. Tools are bound to the LLM 
 │                              Tool Catalog                                   │
 │                                                                             │
 │  Definition Agent Tools:              Action Agent Tools:                   │
-│  ├── list_state_builders              ├── get_orderbook                     │
-│  ├── list_signals                     ├── get_recent_trades                 │
-│  ├── get_orderbook                    └── get_signal_history                │
+│  ├── list_state_builders              ├── get_recent_trades                 │
+│  ├── list_signals                     ├── get_signal_history                │
+│  ├── replay_orderbook                 └── replay_orderbook                  │
 │  └── get_recent_trades                                                      │
 │                                                                             │
+│  Note: Orderbook state requires replay (too large for NATS).                │
+│  Chatbot tools rebuild state from archived deltas.                          │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -247,25 +249,34 @@ Agents use tools to query ssmd and external systems. Tools are bound to the LLM 
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { NatsClient } from "./nats.ts";
+import { replayAndBuildState } from "./replay.ts";
 
-// Query current orderbook state from NATS
-const getOrderbook = tool(
-  async ({ ticker }: { ticker: string }) => {
-    const state = await nats.getLastMessage(`state.orderbook.${ticker}`);
+// Replay orderbook deltas and build state (orderbook too large for NATS)
+const replayOrderbook = tool(
+  async ({ ticker, asOf }: { ticker: string; asOf?: string }) => {
+    const timestamp = asOf ? new Date(asOf) : new Date();
+    const state = await replayAndBuildState({
+      subjects: [`kalshi.orderbook.${ticker}`],
+      endTime: timestamp,
+      builder: "orderbook",
+    });
     return {
       ticker,
+      asOf: timestamp.toISOString(),
       bestBid: state.bestBid,
       bestAsk: state.bestAsk,
       spread: state.spread,
       bidDepth: state.bidDepth,
       askDepth: state.askDepth,
-      timestamp: state.timestamp,
     };
   },
   {
-    name: "get_orderbook",
-    description: "Get current orderbook state for a ticker",
-    schema: z.object({ ticker: z.string() }),
+    name: "replay_orderbook",
+    description: "Build orderbook state by replaying deltas (specify asOf for historical)",
+    schema: z.object({
+      ticker: z.string(),
+      asOf: z.string().optional().describe("ISO timestamp, defaults to now"),
+    }),
   }
 );
 
@@ -350,8 +361,8 @@ const getSignalHistory = tool(
 );
 
 // All available tools
-const definitionTools = [listStateBuilders, listSignals, getOrderbook, getRecentTrades];
-const actionTools = [getOrderbook, getRecentTrades, getSignalHistory];
+const definitionTools = [listStateBuilders, listSignals, replayOrderbook, getRecentTrades];
+const actionTools = [replayOrderbook, getRecentTrades, getSignalHistory];
 ```
 
 ### Definition Agent
@@ -732,14 +743,14 @@ Chatbots use **request/reply** for queries; **streaming** is for production runt
 │  REQUEST/REPLY (chatbot tools)         STREAMING (production runtime)       │
 │  ─────────────────────────────         ─────────────────────────────        │
 │                                                                             │
-│  Chatbot ──request──▶ NATS             NATS ──continuous──▶ Signal Runtime  │
+│  Chatbot ──request──▶ Tool             NATS ──continuous──▶ Signal Runtime  │
 │          ◀──reply────                       ──messages────▶                 │
 │                                                                             │
 │  Used for:                             Used for:                            │
-│  • get_orderbook()                     • State Builder subscriptions        │
+│  • replay_orderbook()                  • State Builder subscriptions        │
 │  • list_signals()                      • Signal Runtime evaluation          │
-│  • replay_test()                       • Action Agent triggers              │
-│  • live_test() (bounded)                                                    │
+│  • get_recent_trades()                 • Action Agent triggers              │
+│  • replay_test(), live_test()                                               │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -823,32 +834,34 @@ console.log(`Signal fired ${fires.length} times`);
 
 ### Parallel Signal Execution
 
-Multiple Signal Runtime instances can run in parallel, partitioned by ticker or signal:
+Multiple Signal Runtime instances can run in parallel, partitioned by ticker:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         NATS JetStream                                      │
+│                         NATS JetStream (raw deltas)                         │
 │                                                                             │
-│  {env}.state.orderbook.INXD-*  ──────┬──────────────────────────────────▶  │
-│  {env}.state.orderbook.KXBTC-* ──────┼──────────────────────────────────▶  │
-│  {env}.state.orderbook.EVENT-* ──────┼──────────────────────────────────▶  │
-│                                      │                                      │
-└──────────────────────────────────────┼──────────────────────────────────────┘
-                                       │
-        ┌──────────────────────────────┼──────────────────────────────────┐
-        │                              │                                  │
-        ▼                              ▼                                  ▼
+│  kalshi.orderbook.INXD-*  ───────┬──────────────────────────────────────▶  │
+│  kalshi.orderbook.KXBTC-* ───────┼──────────────────────────────────────▶  │
+│  kalshi.orderbook.EVENT-* ───────┼──────────────────────────────────────▶  │
+│                                  │                                          │
+└──────────────────────────────────┼──────────────────────────────────────────┘
+                                   │
+        ┌──────────────────────────┼──────────────────────────────────┐
+        │                          │                                  │
+        ▼                          ▼                                  ▼
 ┌───────────────────┐    ┌───────────────────┐    ┌───────────────────┐
 │ Signal Runtime #1 │    │ Signal Runtime #2 │    │ Signal Runtime #3 │
 │                   │    │                   │    │                   │
 │ filter: INXD-*    │    │ filter: KXBTC-*   │    │ filter: EVENT-*   │
+│ in-memory state:  │    │ in-memory state:  │    │ in-memory state:  │
+│  - orderbook      │    │  - orderbook      │    │  - orderbook      │
 │ signals:          │    │ signals:          │    │ signals:          │
 │  - spread-alert   │    │  - spread-alert   │    │  - spread-alert   │
 │  - depth-imbalance│    │  - volume-spike   │    │  - custom-event   │
 └───────────────────┘    └───────────────────┘    └───────────────────┘
 ```
 
-Consumer groups ensure each message is processed by exactly one instance per partition.
+Each instance subscribes to raw deltas, builds its own in-memory state, and evaluates signals independently.
 
 ## Open Questions
 
@@ -868,4 +881,4 @@ Consumer groups ensure each message is processed by exactly one instance per par
 ---
 
 *Design created: 2025-12-23*
-*Updated: 2025-12-23 - NATS-centric architecture (all components communicate via NATS)*
+*Updated: 2025-12-23 - Revised: derived state stays in-memory (too large for NATS), raw deltas and events flow through NATS*
