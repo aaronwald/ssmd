@@ -201,15 +201,16 @@ impl KalshiWebSocket {
             .map_err(|_| WebSocketError::SubscriptionFailed("Timeout waiting for confirmation".into()))?
     }
 
-    /// Receive the next message
-    pub async fn recv(&mut self) -> Result<WsMessage, WebSocketError> {
+    /// Receive the next message with raw text
+    /// Returns (raw_json, parsed_message) for raw data capture
+    pub async fn recv_raw(&mut self) -> Result<(String, WsMessage), WebSocketError> {
         loop {
             match self.ws.next().await {
                 Some(Ok(Message::Text(text))) => {
                     match serde_json::from_str::<WsMessage>(&text) {
                         Ok(msg) => {
                             debug!(msg = %text, "Received message");
-                            return Ok(msg);
+                            return Ok((text, msg));
                         }
                         Err(e) => {
                             warn!(error = %e, text = %text, "Failed to parse message");

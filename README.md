@@ -299,10 +299,39 @@ Validate a specific file or directory:
 ## Development
 
 ```bash
-make build       # Build binary
-make test        # Run tests
+make build       # Build Go CLI
+make test        # Run Go tests
 make lint        # Run vet + staticcheck
 make clean       # Remove binary
 make tools       # Install staticcheck
-make all         # lint + test + build
+make all         # lint + test + build (Go + Rust)
+
+# Rust-specific
+make rust-build  # Build Rust crates
+make rust-test   # Run Rust tests
+make rust-clippy # Run Rust linter
 ```
+
+## Running the Connector
+
+The Rust connector captures market data from configured feeds.
+
+```bash
+# Build the connector
+make rust-build
+
+# Create data directory
+mkdir -p ./data
+
+# Run Kalshi connector
+./ssmd-rust/target/debug/ssmd-connector \
+  --feed ./exchanges/feeds/kalshi.yaml \
+  --env ./exchanges/environments/kalshi-local.yaml
+```
+
+**Required environment variables for Kalshi:**
+- `KALSHI_API_KEY` - Your Kalshi API key
+- `KALSHI_PRIVATE_KEY` - Your RSA private key (PEM format)
+- `KALSHI_USE_DEMO` - Set to `true` for demo API (optional)
+
+The `--feed` and `--env` arguments are **file paths** to YAML configuration files, not feed/environment names.

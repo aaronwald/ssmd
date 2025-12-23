@@ -94,6 +94,22 @@ The hot path is optimized to avoid syscalls and locks:
 
 **Design principle:** Wall-clock timestamps only at disk boundary (syscall OK when doing I/O anyway).
 
+## Running the Connector
+
+```bash
+# Build first
+make rust-build
+
+# Run Kalshi connector (requires KALSHI_API_KEY and KALSHI_PRIVATE_KEY env vars)
+./ssmd-rust/target/debug/ssmd-connector \
+  --feed ./exchanges/feeds/kalshi.yaml \
+  --env ./exchanges/environments/kalshi-local.yaml
+
+# For demo API, also set KALSHI_USE_DEMO=true
+```
+
+The `--feed` and `--env` arguments are **file paths**, not names.
+
 ## Instructions
 
 1. All code must go through pr code review.
