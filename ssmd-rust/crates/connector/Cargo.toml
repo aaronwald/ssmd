@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 ssmd-metadata = { path = "../metadata" }
+ssmd-middleware = { path = "../middleware" }
+ssmd-schema = { path = "../schema" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
@@ -17,6 +19,8 @@ axum = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 url = { workspace = true }
+bytes = { workspace = true }
+capnp = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
