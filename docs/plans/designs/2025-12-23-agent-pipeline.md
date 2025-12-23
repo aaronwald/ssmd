@@ -213,6 +213,58 @@ LangGraph.js graph invoked when signals fire:
 | Agent framework | LangGraph.js | Official TypeScript port, same patterns as Python |
 | NATS client | nats.deno | Official Deno support |
 | Signal code | TypeScript | Same language for definition and execution |
+| Wire format | Cap'n Proto | Zero-copy, schema evolution, shared schemas with Rust |
+| TS Cap'n Proto | capnp-es | Modern TypeScript v5 implementation |
+
+## Wire Format
+
+All NATS messages use Cap'n Proto. Same `.capnp` schema files generate both Rust and TypeScript types.
+
+```capnp
+# schemas/state.capnp
+struct OrderBookState {
+  ticker @0 :Text;
+  timestamp @1 :UInt64;
+  bids @2 :List(Level);
+  asks @3 :List(Level);
+  bestBid @4 :Float64;
+  bestAsk @5 :Float64;
+  spread @6 :Float64;
+}
+
+struct Level {
+  price @0 :Float64;
+  size @1 :Float64;
+}
+
+# schemas/signal.capnp
+struct SignalEvent {
+  id @0 :Text;
+  signalId @1 :Text;
+  signalVersion @2 :Text;
+  firedAt @3 :UInt64;
+  ticker @4 :Text;
+  state @5 :Data;     # serialized state snapshot
+  payload @6 :Data;   # signal-specific payload
+}
+
+struct SignalAction {
+  eventId @0 :Text;
+  signalId @1 :Text;
+  actionType @2 :Text;  # alert, log, webhook, trade
+  actionData @3 :Data;  # action-specific payload
+  decidedAt @4 :UInt64;
+}
+```
+
+**Build pipeline:**
+```
+schemas/*.capnp
+    │
+    ├──▶ capnp compile --rust → ssmd-rust/crates/schema/src/
+    │
+    └──▶ capnp-es generate  → ssmd-agent/src/schema/
+```
 
 ## Data Flow
 
