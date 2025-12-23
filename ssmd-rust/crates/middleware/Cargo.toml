@@ -9,6 +9,7 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
 tracing = { workspace = true }
+md5 = "0.7"
 
 [dev-dependencies]
 tempfile = { workspace = true }
