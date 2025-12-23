@@ -5,6 +5,7 @@
 
 pub mod error;
 pub mod message;
+pub mod publisher;
 pub mod resolver;
 pub mod runner;
 pub mod server;
@@ -14,6 +15,7 @@ pub mod writer;
 
 pub use error::{ConnectorError, ResolverError, WriterError};
 pub use message::Message;
+pub use publisher::{Publisher, TradeData, TradeSide};
 pub use resolver::EnvResolver;
 pub use runner::Runner;
 pub use server::{create_router, run_server, ServerState};
