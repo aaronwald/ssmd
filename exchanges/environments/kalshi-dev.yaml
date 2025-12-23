@@ -4,12 +4,13 @@ schema: trade:v1
 keys:
     kalshi:
         type: api_key
-        description: Kalshi trading API credentials
+        description: Kalshi trading API credentials (RSA key pair)
         required: true
         fields:
             - api_key
-            - api_secret
-        source: env:KALSHI_API_KEY,KALSHI_API_SECRET
+            - private_key
+        source: env:KALSHI_API_KEY,KALSHI_PRIVATE_KEY
+        # Optional: KALSHI_USE_DEMO=true for demo API
 transport:
     type: memory
 storage:

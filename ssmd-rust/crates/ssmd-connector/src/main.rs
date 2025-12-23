@@ -12,6 +12,7 @@ use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_connector_lib::{
+    kalshi::{KalshiConfig, KalshiConnector, KalshiCredentials},
     EnvResolver, FileWriter, KeyResolver, Runner, ServerState, WebSocketConnector,
 };
 use ssmd_metadata::{Environment, Feed, FeedType, KeyType};
@@ -51,6 +52,94 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let env_config = Environment::load(&args.env)?;
     info!(env = %env_config.name, "Loaded environment configuration");
 
+    // Get output path from environment storage config
+    let output_path = env_config
+        .storage
+        .path
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("./data"));
+
+    // Setup shutdown signal
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Handle Ctrl+C
+    let shutdown_tx_clone = shutdown_tx.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        info!("Received shutdown signal");
+        shutdown_tx_clone.send(true).ok();
+    });
+
+    // Parse health server address
+    let health_addr: SocketAddr = args.health_addr.parse()?;
+
+    // Create and run connector based on feed name
+    match feed.name.as_str() {
+        "kalshi" => {
+            run_kalshi_connector(&feed, &output_path, health_addr, shutdown_rx).await
+        }
+        _ => {
+            run_generic_connector(&feed, &env_config, &output_path, health_addr, shutdown_rx).await
+        }
+    }
+}
+
+/// Run Kalshi-specific connector with RSA authentication
+async fn run_kalshi_connector(
+    feed: &Feed,
+    output_path: &PathBuf,
+    health_addr: SocketAddr,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Load Kalshi config from environment
+    let config = KalshiConfig::from_env().map_err(|e| {
+        error!(error = %e, "Failed to load Kalshi config");
+        e
+    })?;
+
+    let credentials = KalshiCredentials::new(config.api_key, &config.private_key_pem).map_err(|e| {
+        error!(error = %e, "Failed to create Kalshi credentials");
+        e
+    })?;
+
+    info!(use_demo = config.use_demo, "Creating Kalshi connector");
+
+    let connector = KalshiConnector::new(credentials, config.use_demo);
+    let writer = FileWriter::new(output_path, &feed.name);
+    let mut runner = Runner::new(&feed.name, connector, writer);
+    let connected_handle = runner.connected_handle();
+
+    // Start health server
+    let server_state = ServerState::new(&feed.name, Arc::clone(&connected_handle));
+    tokio::spawn(async move {
+        if let Err(e) = ssmd_connector_lib::run_server(health_addr, server_state).await {
+            error!(error = %e, "Health server error");
+        }
+    });
+    info!(addr = %health_addr, "Health server started");
+
+    // Run the connector
+    match runner.run(shutdown_rx).await {
+        Ok(()) => {
+            info!("Connector stopped gracefully");
+            Ok(())
+        }
+        Err(e) => {
+            error!(error = %e, "Connector error");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Run generic WebSocket connector
+async fn run_generic_connector(
+    feed: &Feed,
+    env_config: &Environment,
+    output_path: &PathBuf,
+    health_addr: SocketAddr,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Get latest version
     let version = feed.get_latest_version().ok_or("No feed versions defined")?;
 
@@ -69,7 +158,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Resolve credentials from environment config
     let creds: Option<HashMap<String, String>> = if let Some(ref keys) = env_config.keys {
-        // Find the API key spec for this feed
         let api_key_spec = keys.values().find(|k| k.key_type == KeyType::ApiKey);
 
         if let Some(key_spec) = api_key_spec {
@@ -92,35 +180,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // Get output path from environment storage config
-    let output_path = env_config
-        .storage
-        .path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./data"));
-
-    // Create connector and writer
     let connector = WebSocketConnector::new(&url, creds);
-    let writer = FileWriter::new(&output_path, &feed.name);
-
-    // Create runner
+    let writer = FileWriter::new(output_path, &feed.name);
     let mut runner = Runner::new(&feed.name, connector, writer);
     let connected_handle = runner.connected_handle();
 
-    // Setup shutdown signal
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-
-    // Handle Ctrl+C
-    let shutdown_tx_clone = shutdown_tx.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        info!("Received shutdown signal");
-        shutdown_tx_clone.send(true).ok();
-    });
-
     // Start health server
-    let health_addr: SocketAddr = args.health_addr.parse()?;
     let server_state = ServerState::new(&feed.name, Arc::clone(&connected_handle));
     tokio::spawn(async move {
         if let Err(e) = ssmd_connector_lib::run_server(health_addr, server_state).await {
@@ -129,17 +194,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     info!(addr = %health_addr, "Health server started");
 
-    // Run the connector (blocks until shutdown or disconnect)
+    // Run the connector
     match runner.run(shutdown_rx).await {
         Ok(()) => {
             info!("Connector stopped gracefully");
+            Ok(())
         }
         Err(e) => {
             error!(error = %e, "Connector error");
-            // Exit with error code for K8s to restart
             std::process::exit(1);
         }
     }
-
-    Ok(())
 }

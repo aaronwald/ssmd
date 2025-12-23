@@ -98,3 +98,4 @@ The hot path is optimized to avoid syscalls and locks:
 
 1. All code must go through pr code review.
 1. Use idiomatic go. See .github/instructions/go.instructions.md
+1. Follow the build instructions in CLAUDE. Limit freelancing unless we are in a brainstorming session.
