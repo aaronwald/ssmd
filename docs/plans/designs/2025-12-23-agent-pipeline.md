@@ -480,6 +480,142 @@ const result = await definitionGraph.invoke({
 
 Generated code is committed to git for version control and auditability.
 
+### Signal Generation: Structured Output + Templates
+
+Rather than asking the LLM to generate free-form TypeScript, we use **structured output via tool_use** combined with a **code template**. This constrains the LLM to produce only the variable parts while we control the boilerplate.
+
+> **Terminology: tool_use vs skills**
+>
+> **tool_use** is the Claude API feature where you define tools with JSON schemas and the model returns structured `tool_calls` with arguments matching the schema. This is what LangChain/LangGraph wraps with `bindTools()`. The model outputs structured data, not free text.
+>
+> **Skills** (as in Claude Code skills) are prompt templates injected into context. They guide behavior but don't enforce output structure.
+>
+> In this design, we use **tool_use** to force structured output that we can reliably template into code.
+
+#### The `create_signal` Tool
+
+```typescript
+const createSignal = tool({
+  name: "create_signal",
+  description: `Create a market data signal. The LLM provides structured data,
+which gets templated into a TypeScript signal file.
+
+Examples:
+
+User: "Alert when spread is wide"
+→ { id: "wide-spread", requires: ["orderbook"], condition: "state.orderbook.spread > 0.05", payloadFields: ["spread", "bestBid", "bestAsk"] }
+
+User: "Alert when price drops 5% in 10 minutes"
+→ { id: "price-drop", requires: ["priceHistory"], condition: "state.priceHistory.returns < -0.05", payloadFields: ["returns", "last", "vwap"] }
+
+User: "Alert when buy volume exceeds sell volume by 2x"
+→ { id: "buy-pressure", requires: ["volumeProfile"], condition: "state.volumeProfile.buyVolume > state.volumeProfile.sellVolume * 2", payloadFields: ["buyVolume", "sellVolume", "totalVolume"] }
+`,
+  schema: z.object({
+    id: z.string().describe("kebab-case identifier, e.g., 'wide-spread-alert'"),
+    name: z.string().describe("Human readable name, e.g., 'Wide Spread Alert'"),
+    requires: z.array(z.enum(["orderbook", "priceHistory", "volumeProfile"]))
+      .describe("State builders this signal depends on"),
+    condition: z.string()
+      .describe("TypeScript boolean expression using state.{builder}.{field}"),
+    payloadFields: z.array(z.string())
+      .describe("State fields to include in the signal payload"),
+  }),
+});
+```
+
+#### The Signal Template
+
+We maintain a checked-in template that wraps the structured output:
+
+```typescript
+// templates/signal.ts.template
+import type { Signal, StateMap } from "ssmd-agent/types";
+
+export const signal: Signal = {
+  id: "{{id}}",
+  name: "{{name}}",
+  requires: [{{#requires}}"{{.}}", {{/requires}}],
+
+  evaluate(state: StateMap): boolean {
+    return {{condition}};
+  },
+
+  payload(state: StateMap) {
+    return {
+      {{#payloadFields}}
+      {{.}}: state.{{builderFor .}}.{{.}},
+      {{/payloadFields}}
+    };
+  },
+};
+```
+
+#### Generation Flow
+
+```
+User: "Alert when spread > 5%"
+        │
+        ▼
+┌─────────────────────────────────────────────────────────┐
+│  LLM calls create_signal tool with structured output:   │
+│                                                         │
+│  {                                                      │
+│    id: "wide-spread-alert",                             │
+│    name: "Wide Spread Alert",                           │
+│    requires: ["orderbook"],                             │
+│    condition: "state.orderbook.spread > 0.05",          │
+│    payloadFields: ["spread", "bestBid", "bestAsk"]      │
+│  }                                                      │
+└─────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────┐
+│  Template engine generates TypeScript:                  │
+│                                                         │
+│  import type { Signal, StateMap } from "ssmd-agent/...";│
+│                                                         │
+│  export const signal: Signal = {                        │
+│    id: "wide-spread-alert",                             │
+│    name: "Wide Spread Alert",                           │
+│    requires: ["orderbook"],                             │
+│    evaluate(state: StateMap): boolean {                 │
+│      return state.orderbook.spread > 0.05;              │
+│    },                                                   │
+│    payload(state: StateMap) {                           │
+│      return {                                           │
+│        spread: state.orderbook.spread,                  │
+│        bestBid: state.orderbook.bestBid,                │
+│        bestAsk: state.orderbook.bestAsk,                │
+│      };                                                 │
+│    },                                                   │
+│  };                                                     │
+└─────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────┐
+│  Deno type-check validates the generated code           │
+│  If errors → feed back to LLM to fix condition/fields   │
+└─────────────────────────────────────────────────────────┘
+        │
+        ▼
+    Deploy to git
+```
+
+#### Why Structured Output + Templates
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Free-form code | Flexible, can express complex logic | Unpredictable structure, harder to validate |
+| Structured output only | Predictable, easy to validate | Limited expressiveness |
+| **Structured + Template** | Controlled structure, focused validation, LLM only provides variable parts | Template must cover all cases |
+
+Benefits:
+- **LLM can't break imports or interface structure** - template handles boilerplate
+- **Small surface area for validation** - only the `condition` expression needs checking
+- **Few-shot examples teach the pattern** - examples in tool description guide the LLM
+- **Template can evolve independently** - update template without changing prompts
+
 ### Action Agent
 
 LangGraph.js graph invoked when signals fire:
@@ -732,6 +868,36 @@ Agents are developed against replayed data, but deploy as TypeScript that runs w
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### NATS Access Patterns
+
+NATS JetStream provides **replay**, not SQL-style queries. Tools access data by:
+1. Creating a consumer starting at time X
+2. Replaying messages until time Y (or limit N)
+3. Building state from the replayed messages
+4. Returning the computed result
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              NATS Access                                     │
+│                                                                             │
+│  NOT a database query:          IS replay + compute:                        │
+│  ─────────────────────          ────────────────────                        │
+│                                                                             │
+│  ✗ SELECT * FROM orderbook      ✓ Replay kalshi.orderbook.* from T1 to T2   │
+│    WHERE ticker = 'INXD'          Build OrderBook state incrementally       │
+│    AND time > '2025-12-22'        Return computed { spread, bestBid, ... }  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Replay is the source of truth.** Snapshots and materialized views are performance optimizations that can always be rebuilt from replay.
+
+| Access Method | Use Case | Speed |
+|---------------|----------|-------|
+| Replay from JetStream | Recent data (hours) | Fast |
+| Replay from S3 archive | Historical data (days+) | Slower |
+| Snapshot + replay delta | Recovery, large state | Fast |
+
 ### Request/Reply vs Streaming
 
 Chatbots use **request/reply** for queries; **streaming** is for production runtime only.
@@ -882,3 +1048,4 @@ Each instance subscribes to raw deltas, builds its own in-memory state, and eval
 
 *Design created: 2025-12-23*
 *Updated: 2025-12-23 - Revised: derived state stays in-memory (too large for NATS), raw deltas and events flow through NATS*
+*Updated: 2025-12-23 - Added: Signal Generation via structured output + templates; NATS access patterns (replay-based)*
