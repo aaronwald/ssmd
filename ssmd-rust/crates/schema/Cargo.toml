@@ -1,0 +1,10 @@
+[package]
+name = "ssmd-schema"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+capnp = { workspace = true }
+
+[build-dependencies]
+capnpc = { workspace = true }
