@@ -20,68 +20,69 @@ Extension to ssmd that feeds NATS market data streams into a LangGraph-based age
 
 ## Architecture
 
+NATS JetStream is the backbone - all components communicate via NATS, enabling independent scaling, restarts, and full observability.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              ssmd (existing, Rust)                          │
+│                              NATS JetStream                                 │
 │                                                                             │
-│  ┌─────────────┐     ┌─────────────┐     ┌──────────────────────────────┐  │
-│  │   Kalshi    │────▶│  Connector  │────▶│         NATS JetStream       │  │
-│  │  WebSocket  │     │             │     │                              │  │
-│  └─────────────┘     └─────────────┘     │  kalshi.trades.>             │  │
-│                                          │  kalshi.orderbook.>          │  │
-│                                          │  kalshi.ticker.>             │  │
-│                                          │                              │  │
-│                                          │  {env}.signals.>  ◀────────────────┐
-│                                          └───────────┬──────────────────┘  │  │
-└──────────────────────────────────────────────────────┼─────────────────────┘  │
-                                                       │                        │
-                     ┌─────────────────────────────────┼────────────────────────┼─┐
-                     │                    ssmd-agent (Deno)                     │ │
-                     │                                 │                        │ │
-                     │                                 ▼                        │ │
-                     │  ┌─────────────────────────────────────────────────┐    │ │
-                     │  │                   State Builders                 │    │ │
-                     │  │  ┌──────────────┐  ┌──────────────┐  ┌────────┐ │    │ │
-                     │  │  │  OrderBook   │  │ PriceHistory │  │ Volume │ │    │ │
-                     │  │  │  Builder     │  │   Builder    │  │Profile │ │    │ │
-                     │  │  └──────────────┘  └──────────────┘  └────────┘ │    │ │
-                     │  └──────────────────────────┬──────────────────────┘    │ │
-                     │                             │                           │ │
-                     │                             ▼ (derived state)           │ │
-                     │  ┌─────────────────────────────────────────────────┐    │ │
-                     │  │                  Signal Runtime                  │    │ │
-                     │  │  ┌────────────────┐  ┌────────────────┐         │    │ │
-                     │  │  │ spread-alert   │  │ depth-imbalance│  ...    │    │ │
-                     │  │  └───────┬────────┘  └───────┬────────┘         │    │ │
-                     │  └──────────┼───────────────────┼──────────────────┘    │ │
-                     │             └─────────┬─────────┘                       │ │
-                     │                       ▼ (signal fires)                  │ │
-                     │  ┌─────────────────────────────────────────────────┐    │ │
-                     │  │              Action Agent (LangGraph.js)        │────┘ │
-                     │  │  - Interprets fired signal                      │      │
-                     │  │  - Decides action: alert, log, webhook, trade   │      │
-                     │  │  - Publishes SignalEvent to NATS                │      │
-                     │  └─────────────────────────────────────────────────┘      │
-                     │                                                           │
-                     │  ┌─────────────────────────────────────────────────┐      │
-                     │  │           Definition Agent (LangGraph.js)       │      │
-                     │  │  User: "Alert when spread > 5%"                 │      │
-                     │  │           │                                     │      │
-                     │  │           ▼                                     │      │
-                     │  │  Understand → Generate TS → Validate → Deploy   │      │
-                     │  └─────────────────────────────────────────────────┘      │
-                     │                                                           │
-                     │  signals/                    state/                       │
-                     │    spread-alert.ts             orderbook.ts               │
-                     │    depth-imbalance.ts          price-history.ts           │
-                     │    (version controlled)        (version controlled)       │
-                     └───────────────────────────────────────────────────────────┘
-                                                       │
-                                                       ▼ (archived)
-                     ┌───────────────────────────────────────────────────────────┐
-                     │  S3: signals/2025/12/23/spread-alert/events.jsonl.gz      │
-                     └───────────────────────────────────────────────────────────┘
+│  Raw Market Data (from ssmd connector):                                     │
+│    kalshi.trades.>                                                          │
+│    kalshi.orderbook.>                                                       │
+│    kalshi.ticker.>                                                          │
+│                                                                             │
+│  Derived State (from State Builders):                                       │
+│    {env}.state.orderbook.{ticker}                                           │
+│    {env}.state.price-history.{ticker}                                       │
+│    {env}.state.volume-profile.{ticker}                                      │
+│                                                                             │
+│  Signal Events (from Signal Runtime):                                       │
+│    {env}.signals.fired.{signalId}                                           │
+│                                                                             │
+│  Actions (from Action Agent):                                               │
+│    {env}.signals.actions.{signalId}                                         │
+│                                                                             │
+└───────┬─────────────────┬─────────────────┬─────────────────┬───────────────┘
+        │                 │                 │                 │
+        ▼                 ▼                 ▼                 ▼
+┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────────────┐
+│ State Builder │ │ Signal Runtime│ │ Action Agent  │ │   Archiver (existing) │
+│    (Deno)     │ │    (Deno)     │ │    (Deno)     │ │                       │
+│               │ │               │ │               │ │                       │
+│ subscribes:   │ │ subscribes:   │ │ subscribes:   │ │ subscribes:           │
+│  kalshi.*     │ │  {env}.state.*│ │  {env}.signals│ │  kalshi.*             │
+│               │ │               │ │    .fired.*   │ │  {env}.state.*        │
+│ publishes:    │ │ publishes:    │ │               │ │  {env}.signals.*      │
+│  {env}.state.*│ │  {env}.signals│ │ publishes:    │ │                       │
+│               │ │    .fired.*   │ │  {env}.signals│ │ writes to: S3         │
+│               │ │               │ │    .actions.* │ │                       │
+└───────────────┘ └───────────────┘ └───────────────┘ └───────────────────────┘
+
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                        Definition Agent (Deno + LangGraph.js)                 │
+│                                                                               │
+│  Separate process - not in hot path                                           │
+│  User: "Alert when spread > 5%"                                               │
+│          │                                                                    │
+│          ▼                                                                    │
+│  Understand → Generate TS → Validate → Deploy (git commit + signal reload)    │
+│                                                                               │
+│  signals/                              state/                                 │
+│    spread-alert.ts                       orderbook.ts                         │
+│    depth-imbalance.ts                    price-history.ts                     │
+│    (version controlled)                  (version controlled)                 │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Benefits of NATS-Centric Design
+
+| Benefit | Description |
+|---------|-------------|
+| **Independent scaling** | Run multiple State Builders or Signal Runtimes |
+| **Fault isolation** | Components restart without losing messages (JetStream persistence) |
+| **Observability** | All communication visible, auditable via NATS |
+| **Consistent pattern** | Same architecture as ssmd connector/archiver |
+| **Replay** | Can replay any stream for debugging or backtesting |
 
 ## Components
 
@@ -215,15 +216,37 @@ LangGraph.js graph invoked when signals fire:
 
 ## Data Flow
 
-1. **Kalshi → Connector → NATS** (existing ssmd)
-2. **NATS → State Builders** (order book, price history)
-3. **State → Signal Runtime** (evaluate conditions, no LLM)
-4. **Signal fires → Action Agent** (LLM interprets, decides action)
-5. **SignalEvent → NATS → S3** (audit trail)
+All communication via NATS - each arrow is a NATS publish/subscribe:
 
-**Signal creation flow:**
+```
+Kalshi WS → Connector → NATS: kalshi.trades.*, kalshi.orderbook.*
+                                    │
+                                    ▼
+                        State Builder (Deno)
+                                    │
+                                    ▼
+                        NATS: {env}.state.orderbook.*, {env}.state.price-history.*
+                                    │
+                                    ▼
+                        Signal Runtime (Deno)
+                                    │
+                                    ▼
+                        NATS: {env}.signals.fired.*
+                                    │
+                          ┌─────────┴─────────┐
+                          ▼                   ▼
+                   Action Agent         Archiver
+                      (Deno)            (existing)
+                          │                   │
+                          ▼                   ▼
+           NATS: {env}.signals.actions.*     S3
+```
 
-6. **User chat → Definition Agent → generates .ts → git commit → runtime reloads**
+**Signal creation flow (separate, not in hot path):**
+
+```
+User chat → Definition Agent → generates .ts → git commit → signal reload via NATS
+```
 
 ## Open Questions
 
@@ -242,3 +265,4 @@ LangGraph.js graph invoked when signals fire:
 ---
 
 *Design created: 2025-12-23*
+*Updated: 2025-12-23 - NATS-centric architecture (all components communicate via NATS)*
