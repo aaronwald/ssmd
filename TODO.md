@@ -76,6 +76,26 @@
 - [x] Updated CLAUDE.md with build/test/lint commands
 - [x] 37 Rust tests passing
 
+### Latency Optimizations (2025-12-23)
+- [x] Design: `docs/plans/2025-12-23-latency-optimizations-design.md`
+- [x] TSC timestamps via quanta (~10ns vs ~50ns syscall)
+- [x] Lock-free channels with DashMap + AtomicU64
+- [x] String interning via lasso ThreadedRodeo
+- [x] SPSC mmap ring buffer (4MB, 1024 slots)
+- [x] Disk flusher with batching on dedicated thread
+- [x] 66 Rust tests passing
+
+### Kalshi Connector (2025-12-23)
+- [x] Design: `docs/plans/2025-12-23-kalshi-port-impl.md`
+- [x] Kalshi auth module (RSA-PSS signing)
+- [x] Kalshi message types (WsMessage, TradeData, TickerData, OrderbookData)
+- [x] Kalshi WebSocket client (connect, subscribe, recv)
+- [x] KalshiConnector implementing Connector trait
+- [x] KalshiConfig from environment variables
+- [x] Binary entry point updated for Kalshi
+- [x] Environment config updated (kalshi-dev.yaml)
+- [x] 58 Rust tests passing
+
 ## In Progress
 
 _None_
