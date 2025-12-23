@@ -184,6 +184,48 @@ s3://ssmd-data/signals/2025/12/23/spread-alert/events.jsonl.gz
 
 Agents use tools to query ssmd and external systems. Tools are bound to the LLM and can be called during graph execution.
 
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           LangGraph Agent                                   │
+│                                                                             │
+│  ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                   │
+│  │   Node      │────▶│     LLM     │────▶│   Node      │                   │
+│  │ (understand)│     │ (w/ tools)  │     │ (generate)  │                   │
+│  └─────────────┘     └──────┬──────┘     └─────────────┘                   │
+│                             │                                               │
+│                             │ tool_calls?                                   │
+│                             ▼                                               │
+│                      ┌─────────────┐                                        │
+│                      │  Execute    │                                        │
+│                      │   Tools     │                                        │
+│                      └──────┬──────┘                                        │
+│                             │                                               │
+└─────────────────────────────┼───────────────────────────────────────────────┘
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        │                     │                     │
+        ▼                     ▼                     ▼
+┌───────────────┐     ┌───────────────┐     ┌───────────────┐
+│ get_orderbook │     │ list_signals  │     │get_recent_    │
+│               │     │               │     │    trades     │
+│  ┌─────────┐  │     │  ┌─────────┐  │     │  ┌─────────┐  │
+│  │  NATS   │  │     │  │  File   │  │     │  │  NATS   │  │
+│  │ state.* │  │     │  │ System  │  │     │  │ trades.*│  │
+│  └─────────┘  │     │  └─────────┘  │     │  └─────────┘  │
+└───────────────┘     └───────────────┘     └───────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Tool Catalog                                   │
+│                                                                             │
+│  Definition Agent Tools:              Action Agent Tools:                   │
+│  ├── list_state_builders              ├── get_orderbook                     │
+│  ├── list_signals                     ├── get_recent_trades                 │
+│  ├── get_orderbook                    └── get_signal_history                │
+│  └── get_recent_trades                                                      │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 ```typescript
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
