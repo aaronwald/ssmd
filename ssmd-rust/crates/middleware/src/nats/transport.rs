@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use async_nats::jetstream::{self, Context};
+use async_nats::jetstream::stream::{Config, RetentionPolicy, StorageType};
 use async_nats::Client;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -55,14 +57,17 @@ impl Subscription for NatsSubscription {
 /// NATS transport implementation
 pub struct NatsTransport {
     client: Client,
+    jetstream: Context,
     sequence: AtomicU64,
 }
 
 impl NatsTransport {
     /// Create a new NatsTransport from an existing client
     pub fn new(client: Client) -> Self {
+        let jetstream = jetstream::new(client.clone());
         Self {
             client,
+            jetstream,
             sequence: AtomicU64::new(0),
         }
     }
@@ -73,6 +78,34 @@ impl NatsTransport {
             .await
             .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
         Ok(Self::new(client))
+    }
+
+    /// Get JetStream context for stream operations
+    pub fn jetstream(&self) -> &Context {
+        &self.jetstream
+    }
+
+    /// Create or get a JetStream stream for market data
+    pub async fn ensure_stream(
+        &self,
+        stream_name: &str,
+        subjects: Vec<String>,
+    ) -> Result<(), TransportError> {
+        let config = Config {
+            name: stream_name.to_string(),
+            subjects,
+            retention: RetentionPolicy::Limits,
+            storage: StorageType::File,
+            max_age: std::time::Duration::from_secs(24 * 60 * 60), // 24 hours
+            ..Default::default()
+        };
+
+        self.jetstream
+            .get_or_create_stream(config)
+            .await
+            .map_err(|e| TransportError::PublishFailed(format!("stream creation failed: {}", e)))?;
+
+        Ok(())
     }
 
     #[inline]
@@ -151,6 +184,17 @@ mod tests {
     async fn test_publish_succeeds() {
         let transport = NatsTransport::connect("nats://localhost:4222").await.unwrap();
         let result = transport.publish("test.subject", Bytes::from("hello")).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires NATS server with JetStream
+    async fn test_ensure_stream() {
+        let transport = NatsTransport::connect("nats://localhost:4222").await.unwrap();
+        let result = transport.ensure_stream(
+            "TEST_STREAM",
+            vec!["test.>".to_string()],
+        ).await;
         assert!(result.is_ok());
     }
 }
