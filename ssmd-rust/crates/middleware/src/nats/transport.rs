@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_nats::jetstream::{self, Context};
@@ -58,18 +57,13 @@ impl Subscription for NatsSubscription {
 pub struct NatsTransport {
     client: Client,
     jetstream: Context,
-    sequence: AtomicU64,
 }
 
 impl NatsTransport {
     /// Create a new NatsTransport from an existing client
     pub fn new(client: Client) -> Self {
         let jetstream = jetstream::new(client.clone());
-        Self {
-            client,
-            jetstream,
-            sequence: AtomicU64::new(0),
-        }
+        Self { client, jetstream }
     }
 
     /// Connect to NATS server and create transport
@@ -106,11 +100,6 @@ impl NatsTransport {
             .map_err(|e| TransportError::PublishFailed(format!("stream creation failed: {}", e)))?;
 
         Ok(())
-    }
-
-    #[inline]
-    fn next_sequence(&self) -> u64 {
-        self.sequence.fetch_add(1, Ordering::Relaxed)
     }
 }
 

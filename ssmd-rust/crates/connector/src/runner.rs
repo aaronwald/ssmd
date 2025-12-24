@@ -57,6 +57,7 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                     match msg {
                         Some(data) => {
                             // Parse as JSON and wrap with metadata
+                            // TODO: Why parse?
                             let json_data = match serde_json::from_slice(&data) {
                                 Ok(v) => v,
                                 Err(_) => {
