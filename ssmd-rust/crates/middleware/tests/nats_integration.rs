@@ -42,7 +42,7 @@ async fn test_jetstream_stream_creation() {
     let subjects = SubjectBuilder::new("test-env", "kalshi");
 
     transport
-        .ensure_stream(&subjects.stream_name(), vec![subjects.all()])
+        .ensure_stream(subjects.stream_name(), vec![subjects.all().to_string()])
         .await
         .expect("Failed to create stream");
 }
