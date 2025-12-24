@@ -31,7 +31,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y capnproto
 
       - name: Setup Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Rust clippy
         run: make rust-clippy
