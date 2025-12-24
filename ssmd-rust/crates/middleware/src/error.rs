@@ -8,6 +8,8 @@ pub enum TransportError {
     PublishFailed(String),
     #[error("subscribe failed: {0}")]
     SubscribeFailed(String),
+    #[error("request failed: {0}")]
+    RequestFailed(String),
     #[error("timeout")]
     Timeout,
 }
