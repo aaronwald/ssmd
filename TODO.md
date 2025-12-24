@@ -102,16 +102,71 @@ _None_
 
 ## Pending
 
-### Phase 2: Streaming & Gateway
-Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `01-overview.md`, `05-data-flow.md`
+### Phase 2: Connector → NATS Streaming
+Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `05-data-flow.md`
 
-**Connector (partially complete):**
+**Connector (MVP for Agent Pipeline):**
 - [x] Rust project setup (cargo workspace)
 - [x] Cap'n Proto schema definition (.capnp files)
 - [x] Kalshi WebSocket client (tokio + tungstenite)
 - [x] Connector reads feed config from YAML files
 - [ ] NATS publisher (Cap'n Proto) - currently file output only
 - [ ] Environment prefix keying for NATS subjects (`{env}.{feed}.{type}.{symbol}`)
+- [ ] JetStream stream creation for market data
+
+### Phase 3: Agent Pipeline MVP
+Design: `docs/plans/designs/2025-12-23-agent-pipeline.md`, `docs/plans/designs/langchain-ideas.md`
+
+**LangGraph.js + NATS Infrastructure:**
+Ref: `docs/plans/designs/langchain-ideas.md`
+- [ ] Node.js/Deno project setup with LangGraph.js dependencies
+- [ ] PostgreSQL checkpointer setup (`@langchain/langgraph-checkpoint-postgres`)
+- [ ] NATS JetStream consumer service pattern
+- [ ] JetStream stream config: `AGENTS` (requests, workqueue retention)
+- [ ] JetStream stream config: `AGENT_RESPONSES` (responses, streaming)
+- [ ] Durable consumer with explicit ack, max_deliver, backpressure control
+- [ ] Streaming responses via NATS (`agent.stream.{thread_id}`)
+- [ ] Long-running agent heartbeat (`msg.working()`)
+- [ ] Thread ID strategy (session-based vs continuous vs entity-scoped)
+
+**Signal Runtime:**
+- [ ] State Builders (orderbook, priceHistory, volumeProfile)
+- [ ] Signal interface and evaluator
+- [ ] NATS subscription for raw market data
+- [ ] Signal event publishing to NATS
+
+**Definition Agent:**
+- [ ] LangGraph graph for signal creation (custom StateGraph or createReactAgent)
+- [ ] Structured output + template for signal generation
+- [ ] `create_signal` tool with schema validation
+- [ ] Type-check validation
+- [ ] Git commit workflow for signal deployment
+
+**Action Agent:**
+- [ ] LangGraph graph for signal response
+- [ ] Interpret → Decide → Execute nodes
+- [ ] Action types (alert, log, webhook, trade_signal)
+- [ ] Action event publishing to NATS
+
+**Agent Tools:**
+- [ ] `replay_orderbook` - build state from archived deltas
+- [ ] `list_state_builders` - show available builders
+- [ ] `list_signals` - show existing signals
+- [ ] `get_recent_trades` - query NATS history
+- [ ] `get_signal_history` - query signal fire events
+
+**Replay Mode:**
+- [ ] NatsReplay for historical data testing
+- [ ] S3 archive replay support
+- [ ] Signal testing against replayed data
+
+**Scaling & Operations:**
+- [ ] Horizontal scaling via JetStream workqueue distribution
+- [ ] Backpressure control via `max_ack_pending`
+- [ ] Multiple consumer instances
+
+### Phase 4: Gateway, Archiver & Persistence
+Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `01-overview.md`, `05-data-flow.md`
 
 **ssmd-gateway (Rust):**
 Ref: `docs/plans/designs/kalshi/05-data-flow.md`, `09-error-handling.md`
@@ -140,7 +195,7 @@ Ref: `docs/plans/completed/2025-12-22-schema-normalization.md` TODO section.
 - [ ] Gap detection and alerting
 - [ ] Recovery mechanisms (where protocol supports)
 
-### Phase 3: Persistence & Inventory
+### Phase 5: Security Master & Inventory
 Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `06-security-master.md`, `02-key-management.md`
 
 **Security Master Sync:**
@@ -177,7 +232,7 @@ Ref: `docs/plans/designs/kalshi/03-metadata-gitops.md`
 - [ ] `ssmd data quality --feed kalshi --date DATE` - quality report
 - [ ] `ssmd env teardown <env>` - delete all env-prefixed data (S3, NATS, Redis)
 
-### Phase 4: Operations & Scheduling
+### Phase 6: Operations & Scheduling
 Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `07-trading-day.md`, `08-sharding.md`, `09-error-handling.md`
 
 **Trading Day Management:**
@@ -250,57 +305,6 @@ Ref: `docs/plans/designs/kalshi/12-deployment.md`
 **CLI Completion:**
 - [ ] `ssmd data replay --date DATE --symbol SYMBOL`
 - [ ] `ssmd data export --date DATE --format parquet`
-
-### Agent Pipeline Implementation
-Design: `docs/plans/designs/2025-12-23-agent-pipeline.md`, `docs/plans/designs/langchain-ideas.md`
-
-**LangGraph.js + NATS Infrastructure:**
-Ref: `docs/plans/designs/langchain-ideas.md`
-- [ ] Node.js/Deno project setup with LangGraph.js dependencies
-- [ ] PostgreSQL checkpointer setup (`@langchain/langgraph-checkpoint-postgres`)
-- [ ] NATS JetStream consumer service pattern
-- [ ] JetStream stream config: `AGENTS` (requests, workqueue retention)
-- [ ] JetStream stream config: `AGENT_RESPONSES` (responses, streaming)
-- [ ] Durable consumer with explicit ack, max_deliver, backpressure control
-- [ ] Streaming responses via NATS (`agent.stream.{thread_id}`)
-- [ ] Long-running agent heartbeat (`msg.working()`)
-- [ ] Thread ID strategy (session-based vs continuous vs entity-scoped)
-
-**Signal Runtime:**
-- [ ] State Builders (orderbook, priceHistory, volumeProfile)
-- [ ] Signal interface and evaluator
-- [ ] NATS subscription for raw market data
-- [ ] Signal event publishing to NATS
-
-**Definition Agent:**
-- [ ] LangGraph graph for signal creation (custom StateGraph or createReactAgent)
-- [ ] Structured output + template for signal generation
-- [ ] `create_signal` tool with schema validation
-- [ ] Type-check validation
-- [ ] Git commit workflow for signal deployment
-
-**Action Agent:**
-- [ ] LangGraph graph for signal response
-- [ ] Interpret → Decide → Execute nodes
-- [ ] Action types (alert, log, webhook, trade_signal)
-- [ ] Action event publishing to NATS
-
-**Agent Tools:**
-- [ ] `replay_orderbook` - build state from archived deltas
-- [ ] `list_state_builders` - show available builders
-- [ ] `list_signals` - show existing signals
-- [ ] `get_recent_trades` - query NATS history
-- [ ] `get_signal_history` - query signal fire events
-
-**Replay Mode:**
-- [ ] NatsReplay for historical data testing
-- [ ] S3 archive replay support
-- [ ] Signal testing against replayed data
-
-**Scaling & Operations:**
-- [ ] Horizontal scaling via JetStream workqueue distribution
-- [ ] Backpressure control via `max_ack_pending`
-- [ ] Multiple consumer instances
 
 ### MCP Server
 Ref: `docs/plans/designs/kalshi/10-agent-integration.md`
