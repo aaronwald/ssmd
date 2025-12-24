@@ -110,9 +110,16 @@ Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `05-data-flow.md`
 - [x] Cap'n Proto schema definition (.capnp files)
 - [x] Kalshi WebSocket client (tokio + tungstenite)
 - [x] Connector reads feed config from YAML files
-- [ ] NATS publisher (Cap'n Proto) - currently file output only
-- [ ] Environment prefix keying for NATS subjects (`{env}.{feed}.{type}.{symbol}`)
-- [ ] JetStream stream creation for market data
+- [x] NATS publisher (Cap'n Proto) via NatsTransport
+- [x] Environment prefix keying for NATS subjects (`{env}.{feed}.{type}.{ticker}`)
+- [x] JetStream stream creation for market data
+- [x] SubjectBuilder for subject formatting
+- [x] MiddlewareFactory async with NATS support
+
+**Orderbook Data (Deferred):**
+- [ ] Publish L2 (aggregated price level) updates to NATS - not full snapshots
+- [ ] Snapshot full orderbook from shared cache (Redis or purpose-built for speed)
+- [ ] Clients build orderbooks from L2 updates + cache snapshots
 
 ### Phase 3: Agent Pipeline MVP
 Design: `docs/plans/designs/2025-12-23-agent-pipeline.md`, `docs/plans/designs/langchain-ideas.md`

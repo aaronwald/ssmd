@@ -8,7 +8,8 @@ use crate::error::WriterError;
 use crate::message::Message;
 use crate::traits::Writer;
 
-/// Writes messages to date-partitioned JSONL files
+/// Writes messages to date-partitioned JSONL files.
+/// Wall-clock timestamps applied here (syscall OK - we're doing disk I/O anyway).
 pub struct FileWriter {
     base_dir: PathBuf,
     feed_name: String,
@@ -31,17 +32,14 @@ impl FileWriter {
             }),
         }
     }
-
-    fn get_date_from_ts(ts: &str) -> String {
-        // Extract YYYY-MM-DD from ISO 8601 timestamp
-        ts.get(..10).unwrap_or("unknown").to_string()
-    }
 }
 
 #[async_trait]
 impl Writer for FileWriter {
     async fn write(&mut self, msg: &Message) -> Result<(), WriterError> {
-        let date = Self::get_date_from_ts(&msg.ts);
+        // Wall-clock timestamp at I/O boundary (syscall OK here)
+        let now = chrono::Utc::now();
+        let date = now.format("%Y-%m-%d").to_string();
 
         let mut inner = self.inner.lock().unwrap();
 
@@ -64,11 +62,13 @@ impl Writer for FileWriter {
             inner.current_date = date;
         }
 
-        // Write JSON line
+        // Write JSONL: {"ts":"...", "feed":"...", "data": <raw bytes>}
+        // Raw bytes written directly - no JSON parsing/re-serialization
         if let Some(ref mut writer) = inner.writer {
-            let line = serde_json::to_string(msg)
-                .map_err(|e| WriterError::WriteFailed(e.to_string()))?;
-            writeln!(writer, "{}", line)?;
+            let ts = now.to_rfc3339();
+            write!(writer, "{{\"ts\":\"{}\",\"feed\":\"{}\",\"data\":", ts, msg.feed)?;
+            writer.write_all(&msg.data)?;
+            writeln!(writer, "}}")?;
         }
 
         Ok(())
@@ -94,43 +94,38 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
         let mut writer = FileWriter::new(tmp_dir.path(), "test-feed");
 
-        let msg = Message {
-            ts: "2025-12-22T10:30:00Z".to_string(),
-            feed: "test-feed".to_string(),
-            data: serde_json::json!({"price": 100}),
-        };
+        let msg = Message::new("test-feed", br#"{"price": 100}"#.to_vec());
 
         writer.write(&msg).await.unwrap();
         writer.close().await.unwrap();
 
-        let expected_path = tmp_dir.path().join("2025-12-22").join("test-feed.jsonl");
+        // Find today's date directory
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let expected_path = tmp_dir.path().join(&today).join("test-feed.jsonl");
         assert!(expected_path.exists());
 
         let content = fs::read_to_string(expected_path).unwrap();
-        assert!(content.contains("\"price\":100"));
+        assert!(content.contains("\"price\": 100"));
     }
 
     #[tokio::test]
-    async fn test_date_partitioning() {
+    async fn test_write_preserves_raw_bytes() {
         let tmp_dir = TempDir::new().unwrap();
         let mut writer = FileWriter::new(tmp_dir.path(), "test-feed");
 
-        let msg1 = Message {
-            ts: "2025-12-22T10:30:00Z".to_string(),
-            feed: "test-feed".to_string(),
-            data: serde_json::json!({"day": 22}),
-        };
-        let msg2 = Message {
-            ts: "2025-12-23T10:30:00Z".to_string(),
-            feed: "test-feed".to_string(),
-            data: serde_json::json!({"day": 23}),
-        };
+        // Raw bytes - no JSON parsing
+        let raw_data = br#"{"ticker":"BTCUSD","price":42000.50}"#;
+        let msg = Message::new("test-feed", raw_data.to_vec());
 
-        writer.write(&msg1).await.unwrap();
-        writer.write(&msg2).await.unwrap();
+        writer.write(&msg).await.unwrap();
         writer.close().await.unwrap();
 
-        assert!(tmp_dir.path().join("2025-12-22").join("test-feed.jsonl").exists());
-        assert!(tmp_dir.path().join("2025-12-23").join("test-feed.jsonl").exists());
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let expected_path = tmp_dir.path().join(&today).join("test-feed.jsonl");
+        let content = fs::read_to_string(expected_path).unwrap();
+
+        // Should contain raw data unchanged
+        assert!(content.contains(r#""ticker":"BTCUSD""#));
+        assert!(content.contains(r#""price":42000.50"#));
     }
 }

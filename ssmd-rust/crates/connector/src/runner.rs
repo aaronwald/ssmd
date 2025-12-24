@@ -56,18 +56,9 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                 msg = rx.recv() => {
                     match msg {
                         Some(data) => {
-                            // Parse as JSON and wrap with metadata
-                            let json_data = match serde_json::from_slice(&data) {
-                                Ok(v) => v,
-                                Err(_) => {
-                                    // If not valid JSON, store as string
-                                    serde_json::Value::String(
-                                        String::from_utf8_lossy(&data).to_string()
-                                    )
-                                }
-                            };
-
-                            let message = Message::new(&self.feed_name, json_data);
+                            // Pass raw bytes through - no JSON parsing in hot path.
+                            // Parsing/validation happens at I/O boundary (flusher, gateway).
+                            let message = Message::new(&self.feed_name, data);
 
                             if let Err(e) = self.writer.write(&message).await {
                                 error!(error = %e, "Failed to write message");

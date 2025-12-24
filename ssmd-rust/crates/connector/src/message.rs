@@ -1,22 +1,36 @@
-use serde::{Deserialize, Serialize};
+use ssmd_middleware::now_tsc;
 
-/// Message wraps raw data with metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Message wraps raw data with metadata.
+/// Stores raw bytes to avoid JSON parsing overhead in hot path.
+#[derive(Debug, Clone)]
 pub struct Message {
-    /// ISO 8601 timestamp
-    pub ts: String,
-    /// Feed name
+    /// TSC timestamp (zero-syscall, convert to wall clock at I/O boundary)
+    pub tsc: u64,
+    /// Feed name (shared reference to avoid allocation)
     pub feed: String,
-    /// Raw message data (stored as raw JSON value)
-    pub data: serde_json::Value,
+    /// Raw message bytes (no parsing in hot path)
+    pub data: Vec<u8>,
 }
 
 impl Message {
-    pub fn new(feed: impl Into<String>, data: serde_json::Value) -> Self {
+    /// Create a new message with raw bytes.
+    /// Uses TSC timestamp to avoid syscall overhead.
+    #[inline]
+    pub fn new(feed: impl Into<String>, data: Vec<u8>) -> Self {
         Self {
-            ts: chrono::Utc::now().to_rfc3339(),
+            tsc: now_tsc(),
             feed: feed.into(),
             data,
+        }
+    }
+
+    /// Create message from borrowed data (copies bytes).
+    #[inline]
+    pub fn from_slice(feed: impl Into<String>, data: &[u8]) -> Self {
+        Self {
+            tsc: now_tsc(),
+            feed: feed.into(),
+            data: data.to_vec(),
         }
     }
 }

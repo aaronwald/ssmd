@@ -17,6 +17,7 @@ authors = ["ssmd contributors"]
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
+async-nats = "0.38"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
