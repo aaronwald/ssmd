@@ -102,44 +102,262 @@ _None_
 
 ## Pending
 
-### Next: Sequenced Stream Handling
-Documented in `docs/plans/2025-12-22-schema-normalization-design.md` TODO section.
+### Phase 2: Streaming & Gateway
+Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `01-overview.md`, `05-data-flow.md`
 
+**Connector (partially complete):**
+- [x] Rust project setup (cargo workspace)
+- [x] Cap'n Proto schema definition (.capnp files)
+- [x] Kalshi WebSocket client (tokio + tungstenite)
+- [x] Connector reads feed config from YAML files
+- [ ] NATS publisher (Cap'n Proto) - currently file output only
+- [ ] Environment prefix keying for NATS subjects (`{env}.{feed}.{type}.{symbol}`)
+
+**ssmd-gateway (Rust):**
+Ref: `docs/plans/designs/kalshi/05-data-flow.md`, `09-error-handling.md`
+- [ ] Gateway crate setup
+- [ ] NATS subscription (Cap'n Proto)
+- [ ] WebSocket server (JSON translation)
+- [ ] REST API endpoints (`/v1/markets`, `/v1/markets/{ticker}/trades`, `/v1/health`)
+- [ ] Client connection management with bounded buffers
+- [ ] Backpressure handling (drop policy, conflation)
+- [ ] Subscription modes (realtime, conflated, latest)
+
+**ssmd-archiver (Rust):**
+Ref: `docs/plans/designs/kalshi/01-overview.md`, `05-data-flow.md`
+- [ ] Archiver crate setup
+- [ ] NATS subscription for raw/normalized data
+- [ ] Raw archiver (JSONL to S3, compressed)
+- [ ] Normalized archiver (Cap'n Proto to S3)
+- [ ] Manifest file writing on completion
+- [ ] Gap detection and recording in manifest
+
+**Sequenced Stream Handling:**
+Ref: `docs/plans/completed/2025-12-22-schema-normalization.md` TODO section.
 - [ ] Add `sequenced: bool` to Protocol struct
 - [ ] Add `sequence_field: string` to Protocol struct
 - [ ] Sequence number tracking in Rust connector
 - [ ] Gap detection and alerting
 - [ ] Recovery mechanisms (where protocol supports)
 
-### Future: Multicast Feed Recovery
-Not needed for initial TCP/WebSocket feeds (Kalshi, Polymarket). Required when adding multicast support (e.g., market data from exchanges).
+### Phase 3: Persistence & Inventory
+Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `06-security-master.md`, `02-key-management.md`
+
+**Security Master Sync:**
+Ref: `docs/plans/designs/kalshi/06-security-master.md`
+- [ ] Market data model (Market struct with status, timing, settlement)
+- [ ] Redis cache layout (`{env}:secmaster:markets`, by_category, expiring)
+- [ ] Sync job: fetch from Kalshi API, compute changes, update cache
+- [ ] Change journal: publish to `{env}.secmaster.changes`
+- [ ] Connector integration: validate symbols against secmaster
+- [ ] Expiration handling: unsubscribe from settled markets
+- [ ] Cache warming on startup
+- [ ] CLI: `ssmd secmaster sync <env>` - trigger manual sync
+- [ ] CLI: `ssmd secmaster list <env>` - list markets with filters
+- [ ] CLI: `ssmd secmaster show <env> <ticker>` - market details
+- [ ] CLI: `ssmd secmaster search <env> <query>` - search markets
+- [ ] CLI: `ssmd secmaster export <env>` - export for backup
+
+**Key Management Enhancements:**
+Ref: `docs/plans/designs/kalshi/02-key-management.md`
+- [x] Key types and validation (completed in Phase 1)
+- [x] `ssmd key list/show/verify/check` (completed)
+- [ ] `ssmd key set <env> <key>` - set key values (Sealed Secrets)
+- [ ] `ssmd key init <env>` - interactive key setup
+- [ ] `ssmd key rotate <env> <key>` - rotate key values
+- [ ] `ssmd key delete <env> <key>` - delete a key
+- [ ] `ssmd key export <env>` - export key references (no secrets)
+- [ ] Runtime KeyResolver (Rust) for Sealed Secrets lookup
+- [ ] Key expiration tracking and Prometheus alerts
+
+**Data Inventory CLI:**
+Ref: `docs/plans/designs/kalshi/03-metadata-gitops.md`
+- [ ] `ssmd data inventory --feed kalshi` - show what data exists (reads S3 manifests)
+- [ ] `ssmd data gaps --feed kalshi --date DATE` - show gaps
+- [ ] `ssmd data quality --feed kalshi --date DATE` - quality report
+- [ ] `ssmd env teardown <env>` - delete all env-prefixed data (S3, NATS, Redis)
+
+### Phase 4: Operations & Scheduling
+Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `07-trading-day.md`, `08-sharding.md`, `09-error-handling.md`
+
+**Trading Day Management:**
+Ref: `docs/plans/designs/kalshi/07-trading-day.md`
+- [ ] Trading day state machine (PENDING → STARTING → ACTIVE → ENDING → COMPLETE)
+- [ ] State storage in Redis (`{env}:day:current`, `{env}:day:{date}:state`)
+- [ ] Day events journal (`{env}.day.events`)
+- [ ] CLI: `ssmd day status` - current trading day status
+- [ ] CLI: `ssmd day start <env>` - start trading day (triggers workflow)
+- [ ] CLI: `ssmd day end <env>` - end trading day (triggers teardown)
+- [ ] CLI: `ssmd day roll <env>` - end current + start next
+- [ ] CLI: `ssmd day history <env>` - view day history from journal
+- [ ] CLI: `ssmd day show <env> <date>` - specific day details
+- [ ] CLI: `ssmd day recover <env>` - resume from last checkpoint
+- [ ] Data partitioning by trading day
+
+**Temporal Workflows (ssmd-worker Go):**
+Ref: `docs/plans/designs/kalshi/01-overview.md`, `07-trading-day.md`
+- [ ] ssmd-worker Go module setup
+- [ ] StartTradingDay workflow (sync → connect → start archiver → start gateway → health check)
+- [ ] EndTradingDay workflow (drain → flush → stop → verify → record)
+- [ ] RollTradingDay workflow (end current + start next)
+- [ ] Workflow publishes events to journal
+- [ ] Scheduled operations via environment config
+
+**Sharding & Scaling:**
+Ref: `docs/plans/designs/kalshi/08-sharding.md`
+- [ ] Symbol attributes in metadata (tier, category)
+- [ ] Shard definitions in environment YAML (selectors, replicas, resources)
+- [ ] Shard resolution from secmaster at startup
+- [ ] NATS subject sharding (`internal.{shard}.{feed}.{type}.{symbol}`)
+- [ ] NATS stream mirroring for client-facing subjects
+- [ ] Auto-scaling configuration (Kubernetes HPA)
+- [ ] Fixed memory profile components (bounded buffers, LRU caches)
+- [ ] CLI: `ssmd shard list <env>` - list shards with metrics
+- [ ] CLI: `ssmd shard show <env> <shard>` - shard details
+- [ ] CLI: `ssmd shard symbols <env>` - symbol → shard mapping
+- [ ] CLI: `ssmd shard move <env> <symbol>` - move symbol between shards
+- [ ] CLI: `ssmd shard plan <env>` - preview resharding
+- [ ] CLI: `ssmd shard apply <env>` - execute resharding plan
+
+**Error Handling & Resilience:**
+Ref: `docs/plans/designs/kalshi/09-error-handling.md`
+- [ ] Retry policy with exponential backoff + jitter
+- [ ] Dead letter queue (`{env}.dlq.{component}`)
+- [ ] Circuit breaker for downstream calls
+- [ ] Graceful degradation (cache bypass, archiver catch-up)
+- [ ] CLI: `ssmd dlq list` - view dead letters
+- [ ] CLI: `ssmd dlq replay <id>` - replay failed message
+- [ ] CLI: `ssmd dlq purge` - purge old dead letters
+- [ ] CLI: `ssmd client list` - view gateway clients
+- [ ] CLI: `ssmd client disconnect <id>` - force disconnect
+- [ ] CLI: `ssmd client set-mode <id>` - change subscription mode
+
+**Secrets & Deployment:**
+Ref: `docs/plans/designs/kalshi/12-deployment.md`
+- [ ] Sealed Secrets integration
+- [ ] ArgoCD manifests for ssmd
+- [ ] Kubernetes namespace setup
+
+**Observability:**
+Ref: `docs/plans/designs/kalshi/12-deployment.md`
+- [ ] Prometheus metrics: connector (messages, lag, errors)
+- [ ] Prometheus metrics: gateway (clients, subscriptions, messages)
+- [ ] Prometheus metrics: archiver (bytes, files written)
+- [ ] Latency histograms (P50/P95/P99)
+- [ ] Alert rules (no data, high lag, circuit breaker, DLQ accumulating)
+- [ ] Structured JSON logging to stdout
+
+**CLI Completion:**
+- [ ] `ssmd data replay --date DATE --symbol SYMBOL`
+- [ ] `ssmd data export --date DATE --format parquet`
+
+### Agent Pipeline Implementation
+Design: `docs/plans/designs/2025-12-23-agent-pipeline.md`
+
+**Signal Runtime (Deno):**
+- [ ] Deno project setup with LangGraph.js
+- [ ] State Builders (orderbook, priceHistory, volumeProfile)
+- [ ] Signal interface and evaluator
+- [ ] NATS subscription for raw market data
+- [ ] Signal event publishing to NATS
+
+**Definition Agent:**
+- [ ] LangGraph graph for signal creation
+- [ ] Structured output + template for signal generation
+- [ ] `create_signal` tool with schema validation
+- [ ] Deno type-check validation
+- [ ] Git commit workflow for signal deployment
+
+**Action Agent:**
+- [ ] LangGraph graph for signal response
+- [ ] Interpret → Decide → Execute nodes
+- [ ] Action types (alert, log, webhook, trade_signal)
+- [ ] Action event publishing to NATS
+
+**Agent Tools:**
+- [ ] `replay_orderbook` - build state from archived deltas
+- [ ] `list_state_builders` - show available builders
+- [ ] `list_signals` - show existing signals
+- [ ] `get_recent_trades` - query NATS history
+- [ ] `get_signal_history` - query signal fire events
+
+**Replay Mode:**
+- [ ] NatsReplay for historical data testing
+- [ ] S3 archive replay support
+- [ ] Signal testing against replayed data
+
+### MCP Server
+Ref: `docs/plans/designs/kalshi/10-agent-integration.md`
+
+- [ ] ssmd-mcp Go server implementing MCP protocol
+- [ ] Tools: `ssmd_list_markets`, `ssmd_get_market`, `ssmd_get_trades`
+- [ ] Tools: `ssmd_get_orderbook`, `ssmd_query_historical`
+- [ ] Tools: `ssmd_report_issue`, `ssmd_system_status`, `ssmd_data_inventory`
+- [ ] Agent feedback loop (journal + Linear integration)
+- [ ] Rate limiting for agent requests
+
+### Testing & Quality
+Ref: `docs/plans/designs/kalshi/11-testing.md`
+
+**Unit & Integration Tests:**
+- [x] Rust unit tests (66 passing)
+- [x] Go CLI tests
+- [ ] Docker compose for local integration testing (NATS, MinIO, Redis)
+- [ ] Integration test framework with in-memory middleware
+
+**Replay Testing:**
+- [ ] ReplayTest framework (compare baseline vs candidate versions)
+- [ ] CLI: `ssmd test replay --feed --date --baseline --candidate`
+- [ ] CLI: `ssmd test compare --env-a --env-b --duration`
+- [ ] GitHub Actions workflow for replay on PR
+
+**Backtesting:**
+- [ ] SimulatedClock for non-realtime testing
+- [ ] CLI: `ssmd backtest --feed --date --strategy --speed`
+- [ ] Step-through mode for debugging
+
+## Open Questions
+
+Tracked from design documents - decisions needed before implementation.
+
+**From Kalshi Roadmap (`13-roadmap.md`):**
+- [ ] Kalshi rate limits - verify API limits for market sync
+- [ ] Orderbook depth - full book or top N levels?
+- [ ] Historical backfill - does Kalshi provide historical data API?
+- [ ] Client auth - API keys sufficient or need more?
+
+**From Agent Pipeline (`2025-12-23-agent-pipeline.md`):**
+- [ ] Hot reload - file watcher or explicit reload command for signals?
+- [ ] Multi-ticker state - each ticker gets own OrderBook or shared state?
+- [ ] Backpressure - what happens if signal evaluation can't keep up?
+- [ ] State snapshots - Redis, file journal, or NATS KV for recovery?
+
+## Future Work
+
+### Multicast Feed Recovery
+Not needed for initial TCP/WebSocket feeds (Kalshi, Polymarket). Required when adding multicast support.
 
 - [ ] Extend Feed schema with recovery endpoint configuration
 - [ ] Snapshot request mechanism (point-in-time state recovery)
 - [ ] Replay request mechanism (historical message replay)
 - [ ] Recovery source metadata (separate endpoint, different protocol)
 
-### Metrics & Observability
-- [ ] Latency histograms (message receive to write, end-to-end)
-- [ ] Prometheus histogram buckets for P50/P95/P99 latency
-- [ ] Timestamp tracking at each pipeline stage
+### Additional Connectors
+- [ ] Polymarket connector
+- [ ] Kraken connector (libechidna/C++ integration)
 
-### Enhancements (when needed)
+### CLI Enhancements
 - [ ] Add `ssmd version` command
 - [ ] Add JSON output format (`--output json`)
 - [ ] Shell completion scripts (bash/zsh)
 - [ ] CI/CD pipeline for automated testing
 
-### Future: Artifact Registry
-Agents need to discover what data has been collected before they can replay it.
+### Post-Milestone
+Ref: `docs/plans/designs/kalshi/13-roadmap.md` Future Work section.
 
-- [ ] Design artifact registry schema (what was collected, when, where stored)
-- [ ] Registry storage (NATS KV? Postgres? S3 manifest files?)
-- [ ] CLI commands for listing/querying available data
-- [ ] Integration with replay tools (lookup before replay)
-- [ ] Retention policies and cleanup
-
-### Future: LangChain Agent Pipeline
-- [ ] Research LangChain pipeline architecture for market data agents
-- [ ] Design agent workflow for data collection and processing
-- [ ] Evaluate integration with ssmd metadata and middleware
+- [ ] TUI admin interface
+- [ ] Lua transforms for custom client formats
+- [ ] Multi-tenant support
+- [ ] Web UI for signal management
+- [ ] Signal marketplace (share/import signal definitions)
+- [ ] Backtesting framework
