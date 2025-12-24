@@ -17,11 +17,6 @@ impl SubjectBuilder {
         format!("{}.{}.trade.{}", self.env, self.feed, ticker)
     }
 
-    /// Build subject for orderbook messages: {env}.{feed}.orderbook.{ticker}
-    pub fn orderbook(&self, ticker: &str) -> String {
-        format!("{}.{}.orderbook.{}", self.env, self.feed, ticker)
-    }
-
     /// Build wildcard subject for all feed data: {env}.{feed}.>
     pub fn all(&self) -> String {
         format!("{}.{}.>", self.env, self.feed)
@@ -41,12 +36,6 @@ mod tests {
     fn test_trade_subject() {
         let builder = SubjectBuilder::new("kalshi-dev", "kalshi");
         assert_eq!(builder.trade("BTCUSD"), "kalshi-dev.kalshi.trade.BTCUSD");
-    }
-
-    #[test]
-    fn test_orderbook_subject() {
-        let builder = SubjectBuilder::new("kalshi-dev", "kalshi");
-        assert_eq!(builder.orderbook("BTCUSD"), "kalshi-dev.kalshi.orderbook.BTCUSD");
     }
 
     #[test]

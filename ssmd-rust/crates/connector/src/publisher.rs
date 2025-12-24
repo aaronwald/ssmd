@@ -5,7 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use capnp::message::Builder;
 use ssmd_middleware::{Transport, TransportError};
-use ssmd_schema::{order_book_update, trade, Side};
+use ssmd_schema::{trade, Side};
 
 /// Trade data for publishing
 #[derive(Debug, Clone)]
@@ -22,22 +22,6 @@ pub struct TradeData {
 pub enum TradeSide {
     Buy,
     Sell,
-}
-
-/// Order book level data
-#[derive(Debug, Clone)]
-pub struct LevelData {
-    pub price: f64,
-    pub size: u32,
-}
-
-/// Order book update data for publishing
-#[derive(Debug, Clone)]
-pub struct OrderBookData {
-    pub timestamp_nanos: u64,
-    pub ticker: String,
-    pub bids: Vec<LevelData>,
-    pub asks: Vec<LevelData>,
 }
 
 /// Publisher for sending Cap'n Proto encoded messages to transport
@@ -89,40 +73,6 @@ impl Publisher {
         );
         self.transport.publish(&subject, Bytes::from(output)).await
     }
-
-    /// Publish an orderbook update to the transport
-    pub async fn publish_orderbook(&self, book: &OrderBookData) -> Result<(), TransportError> {
-        let mut message = Builder::new_default();
-        {
-            let mut book_builder = message.init_root::<order_book_update::Builder>();
-            book_builder.set_timestamp(book.timestamp_nanos);
-            book_builder.set_ticker(&book.ticker);
-
-            let mut bids = book_builder.reborrow().init_bids(book.bids.len() as u32);
-            for (i, bid) in book.bids.iter().enumerate() {
-                let mut level_builder = bids.reborrow().get(i as u32);
-                level_builder.set_price(bid.price);
-                level_builder.set_size(bid.size);
-            }
-
-            let mut asks = book_builder.reborrow().init_asks(book.asks.len() as u32);
-            for (i, ask) in book.asks.iter().enumerate() {
-                let mut level_builder = asks.reborrow().get(i as u32);
-                level_builder.set_price(ask.price);
-                level_builder.set_size(ask.size);
-            }
-        }
-
-        let mut output = Vec::new();
-        capnp::serialize::write_message(&mut output, &message)
-            .map_err(|e| TransportError::PublishFailed(e.to_string()))?;
-
-        let subject = format!(
-            "{}.{}.orderbook.{}",
-            self.env_prefix, self.feed_name, book.ticker
-        );
-        self.transport.publish(&subject, Bytes::from(output)).await
-    }
 }
 
 #[cfg(test)]
@@ -163,26 +113,5 @@ mod tests {
         let trade_reader = reader.get_root::<trade::Reader>().unwrap();
         assert_eq!(trade_reader.get_ticker().unwrap(), "BTCUSD");
         assert_eq!(trade_reader.get_price(), 100.50);
-    }
-
-    #[tokio::test]
-    async fn test_publish_orderbook() {
-        let transport = Arc::new(InMemoryTransport::new());
-        let publisher = Publisher::new(transport.clone(), "kalshi-dev", "kalshi");
-
-        let mut sub = transport.subscribe("kalshi-dev.kalshi.orderbook.BTCUSD").await.unwrap();
-
-        let book = OrderBookData {
-            timestamp_nanos: 1703318400000000000,
-            ticker: "BTCUSD".to_string(),
-            bids: vec![LevelData { price: 100.0, size: 10 }],
-            asks: vec![LevelData { price: 101.0, size: 5 }],
-        };
-
-        publisher.publish_orderbook(&book).await.unwrap();
-
-        let msg = sub.next().await.unwrap();
-        assert_eq!(msg.subject, "kalshi-dev.kalshi.orderbook.BTCUSD");
-        assert!(!msg.payload.is_empty());
     }
 }
