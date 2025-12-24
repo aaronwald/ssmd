@@ -252,20 +252,31 @@ Ref: `docs/plans/designs/kalshi/12-deployment.md`
 - [ ] `ssmd data export --date DATE --format parquet`
 
 ### Agent Pipeline Implementation
-Design: `docs/plans/designs/2025-12-23-agent-pipeline.md`
+Design: `docs/plans/designs/2025-12-23-agent-pipeline.md`, `docs/plans/designs/langchain-ideas.md`
 
-**Signal Runtime (Deno):**
-- [ ] Deno project setup with LangGraph.js
+**LangGraph.js + NATS Infrastructure:**
+Ref: `docs/plans/designs/langchain-ideas.md`
+- [ ] Node.js/Deno project setup with LangGraph.js dependencies
+- [ ] PostgreSQL checkpointer setup (`@langchain/langgraph-checkpoint-postgres`)
+- [ ] NATS JetStream consumer service pattern
+- [ ] JetStream stream config: `AGENTS` (requests, workqueue retention)
+- [ ] JetStream stream config: `AGENT_RESPONSES` (responses, streaming)
+- [ ] Durable consumer with explicit ack, max_deliver, backpressure control
+- [ ] Streaming responses via NATS (`agent.stream.{thread_id}`)
+- [ ] Long-running agent heartbeat (`msg.working()`)
+- [ ] Thread ID strategy (session-based vs continuous vs entity-scoped)
+
+**Signal Runtime:**
 - [ ] State Builders (orderbook, priceHistory, volumeProfile)
 - [ ] Signal interface and evaluator
 - [ ] NATS subscription for raw market data
 - [ ] Signal event publishing to NATS
 
 **Definition Agent:**
-- [ ] LangGraph graph for signal creation
+- [ ] LangGraph graph for signal creation (custom StateGraph or createReactAgent)
 - [ ] Structured output + template for signal generation
 - [ ] `create_signal` tool with schema validation
-- [ ] Deno type-check validation
+- [ ] Type-check validation
 - [ ] Git commit workflow for signal deployment
 
 **Action Agent:**
@@ -285,6 +296,11 @@ Design: `docs/plans/designs/2025-12-23-agent-pipeline.md`
 - [ ] NatsReplay for historical data testing
 - [ ] S3 archive replay support
 - [ ] Signal testing against replayed data
+
+**Scaling & Operations:**
+- [ ] Horizontal scaling via JetStream workqueue distribution
+- [ ] Backpressure control via `max_ack_pending`
+- [ ] Multiple consumer instances
 
 ### MCP Server
 Ref: `docs/plans/designs/kalshi/10-agent-integration.md`
@@ -326,11 +342,13 @@ Tracked from design documents - decisions needed before implementation.
 - [ ] Historical backfill - does Kalshi provide historical data API?
 - [ ] Client auth - API keys sufficient or need more?
 
-**From Agent Pipeline (`2025-12-23-agent-pipeline.md`):**
+**From Agent Pipeline (`2025-12-23-agent-pipeline.md`, `langchain-ideas.md`):**
 - [ ] Hot reload - file watcher or explicit reload command for signals?
 - [ ] Multi-ticker state - each ticker gets own OrderBook or shared state?
 - [ ] Backpressure - what happens if signal evaluation can't keep up?
 - [ ] State snapshots - Redis, file journal, or NATS KV for recovery?
+- [ ] Checkpointer choice - PostgresSaver (production) vs MemorySaver (dev) vs custom Redis?
+- [ ] Thread ID strategy - session-based, continuous, or entity-scoped?
 
 ## Future Work
 
