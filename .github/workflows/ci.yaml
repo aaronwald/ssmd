@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Go lint and test
+        run: make lint test
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Cap'n Proto
+        run: sudo apt-get update && sudo apt-get install -y capnproto
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Rust clippy
+        run: make rust-clippy
+
+      - name: Rust test
+        run: make rust-test
+
+      - name: Rust build
+        run: make rust-build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ssmd-rust
+          file: ./ssmd-rust/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
