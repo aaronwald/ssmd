@@ -5,6 +5,7 @@ use ssmd_metadata::{CacheType, Environment, StorageType, TransportType};
 use crate::cache::Cache;
 use crate::journal::Journal;
 use crate::memory::{InMemoryCache, InMemoryJournal, InMemoryStorage, InMemoryTransport};
+use crate::nats::NatsTransport;
 use crate::storage::Storage;
 use crate::transport::Transport;
 
@@ -26,12 +27,16 @@ pub struct MiddlewareFactory;
 
 impl MiddlewareFactory {
     /// Create a transport based on environment configuration
-    pub fn create_transport(env: &Environment) -> Result<Arc<dyn Transport>, FactoryError> {
+    pub async fn create_transport(env: &Environment) -> Result<Arc<dyn Transport>, FactoryError> {
         match env.transport.transport_type {
             TransportType::Memory => Ok(Arc::new(InMemoryTransport::new())),
             TransportType::Nats => {
-                // NATS implementation will come later
-                Err(FactoryError::UnsupportedTransport(TransportType::Nats))
+                let url = env.transport.url.as_ref()
+                    .ok_or_else(|| FactoryError::ConfigError("NATS URL required".to_string()))?;
+                let transport = NatsTransport::connect(url)
+                    .await
+                    .map_err(|e| FactoryError::ConfigError(e.to_string()))?;
+                Ok(Arc::new(transport))
             }
             TransportType::Mqtt => {
                 Err(FactoryError::UnsupportedTransport(TransportType::Mqtt))
@@ -101,10 +106,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_create_memory_transport() {
+    #[tokio::test]
+    async fn test_create_memory_transport() {
         let env = make_test_env();
-        let transport = MiddlewareFactory::create_transport(&env).unwrap();
+        let transport = MiddlewareFactory::create_transport(&env).await.unwrap();
         drop(transport);
     }
 
@@ -128,12 +133,23 @@ mod tests {
         drop(journal);
     }
 
-    #[test]
-    fn test_unsupported_transport() {
+    #[tokio::test]
+    async fn test_unsupported_transport() {
+        let mut env = make_test_env();
+        env.transport.transport_type = TransportType::Mqtt;
+
+        let result = MiddlewareFactory::create_transport(&env).await;
+        assert!(matches!(result, Err(FactoryError::UnsupportedTransport(_))));
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires NATS server
+    async fn test_create_nats_transport() {
         let mut env = make_test_env();
         env.transport.transport_type = TransportType::Nats;
+        env.transport.url = Some("nats://localhost:4222".to_string());
 
-        let result = MiddlewareFactory::create_transport(&env);
-        assert!(matches!(result, Err(FactoryError::UnsupportedTransport(_))));
+        let transport = MiddlewareFactory::create_transport(&env).await.unwrap();
+        drop(transport);
     }
 }
