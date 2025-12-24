@@ -130,6 +130,15 @@ Not needed for initial TCP/WebSocket feeds (Kalshi, Polymarket). Required when a
 - [ ] Shell completion scripts (bash/zsh)
 - [ ] CI/CD pipeline for automated testing
 
+### Future: Artifact Registry
+Agents need to discover what data has been collected before they can replay it.
+
+- [ ] Design artifact registry schema (what was collected, when, where stored)
+- [ ] Registry storage (NATS KV? Postgres? S3 manifest files?)
+- [ ] CLI commands for listing/querying available data
+- [ ] Integration with replay tools (lookup before replay)
+- [ ] Retention policies and cleanup
+
 ### Future: LangChain Agent Pipeline
 - [ ] Research LangChain pipeline architecture for market data agents
 - [ ] Design agent workflow for data collection and processing
