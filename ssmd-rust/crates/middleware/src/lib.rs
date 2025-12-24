@@ -19,6 +19,6 @@ pub use factory::{FactoryError, MiddlewareFactory};
 pub use journal::{Journal, JournalEntry, JournalPosition, JournalReader, TopicConfig};
 pub use latency::{intern, now_tsc, resolve, CLOCK, INTERNER};
 pub use memory::{InMemoryCache, InMemoryJournal, InMemoryStorage, InMemoryTransport};
-pub use nats::NatsTransport;
+pub use nats::{NatsTransport, SubjectBuilder};
 pub use storage::{ObjectMeta, Storage};
 pub use transport::{Subscription, Transport, TransportMessage};
