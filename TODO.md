@@ -121,6 +121,7 @@ Design: `docs/plans/designs/2025-12-23-agent-pipeline.md`, `docs/plans/designs/l
 Ref: `docs/plans/designs/langchain-ideas.md`
 - [ ] Node.js/Deno project setup with LangGraph.js dependencies
 - [ ] PostgreSQL checkpointer setup (`@langchain/langgraph-checkpoint-postgres`)
+- [ ] Checkpoint must include NATS stream position (seq no + stream name) for resumption
 - [ ] NATS JetStream consumer service pattern
 - [ ] JetStream stream config: `AGENTS` (requests, workqueue retention)
 - [ ] JetStream stream config: `AGENT_RESPONSES` (responses, streaming)
