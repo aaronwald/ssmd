@@ -4,6 +4,7 @@ import { z } from "zod";
 import { config } from "../config.ts";
 import { OrderBookBuilder, type OrderBookState } from "../state/orderbook.ts";
 import type { MarketRecord } from "../state/types.ts";
+import { runBacktest as executeBacktest } from "../backtest/runner.ts";
 
 async function apiRequest<T>(path: string): Promise<T> {
   const res = await fetch(`${config.dataUrl}${path}`, {
@@ -120,4 +121,20 @@ export const orderbookBuilder = tool(
   }
 );
 
+export const runBacktest = tool(
+  async ({ signalCode, states }) => {
+    const result = await executeBacktest(signalCode, states);
+    return JSON.stringify(result);
+  },
+  {
+    name: "run_backtest",
+    description: "Evaluate signal code against state snapshots. Returns fire count, errors, and sample payloads.",
+    schema: z.object({
+      signalCode: z.string().describe("TypeScript signal code with evaluate() and payload() functions"),
+      states: z.array(z.any()).describe("OrderBookState snapshots from orderbook_builder"),
+    }),
+  }
+);
+
 export const dataTools = [listDatasets, sampleData, getSchema, listBuilders, orderbookBuilder];
+export const allTools = [...dataTools, runBacktest];
