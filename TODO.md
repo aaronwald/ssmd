@@ -98,7 +98,9 @@
 
 ## In Progress
 
-_None_
+### Phase 3: Agent Pipeline MVP
+Plan: `docs/plans/2025-12-25-agent-pipeline-mvp-impl.md`
+Design: `docs/plans/2025-12-25-agent-pipeline-mvp-design.md`
 
 ## Pending
 
