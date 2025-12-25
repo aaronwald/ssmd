@@ -55,8 +55,32 @@ rust-clean:
 
 rust-all: rust-clippy rust-test rust-build
 
+# ssmd-data targets
+.PHONY: data-build data-test data-run
+
+data-build:
+	go build -o bin/ssmd-data ./cmd/ssmd-data
+
+data-test:
+	go test ./internal/api/... -v
+
+data-run: data-build
+	SSMD_DATA_PATH=./testdata SSMD_API_KEY=dev ./bin/ssmd-data
+
+# ssmd-agent targets
+.PHONY: agent-check agent-test agent-run
+
+agent-check:
+	cd ssmd-agent && deno check src/main.ts src/cli.ts
+
+agent-test:
+	cd ssmd-agent && deno test --allow-read --allow-net test/
+
+agent-run:
+	cd ssmd-agent && deno task agent
+
 # Combined targets
-all-build: build rust-build
+all-build: build rust-build data-build
 
 all-test: test rust-test
 
