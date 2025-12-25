@@ -328,31 +328,51 @@ $ ssmd data builders
 
 MVP: Everyone is entitled to all data (no auth required).
 
-Future: Entitlement checks based on user/API key:
+Future: API key required, entitlement checks, usage metering.
+
 ```yaml
 # entitlements.yaml (future)
 entitlements:
-  - user: "*"              # default: everyone
+  - api_key: "sk_test_*"     # wildcard for test keys
     feeds: ["kalshi"]
     date_range: "all"
+    rate_limit: 1000/day     # queries per day
 
-  - user: "backtest-agent"
+  - api_key: "sk_prod_agent_001"
     feeds: ["kalshi", "polymarket"]
     date_range: "last-30-days"
+    rate_limit: 10000/day
 
-  - user: "research-team"
+  - api_key: "sk_prod_research_*"
     feeds: ["*"]
     date_range: "all"
+    rate_limit: unlimited
 ```
 
 ```bash
 # MVP: no auth, returns all entitled data
 $ ssmd data list --feed kalshi
 
-# Future: user context from environment or flag
-$ ssmd data list --feed kalshi --user backtest-agent
+# Future: API key required
+$ SSMD_API_KEY=sk_prod_agent_001 ssmd data list --feed kalshi
 # Returns only data user is entitled to access
 ```
+
+**Usage metering (future):**
+```yaml
+# usage log written per query
+usage:
+  api_key: "sk_prod_agent_001"
+  timestamp: "2025-12-25T12:00:00Z"
+  command: "data sample"
+  feed: "kalshi"
+  records_returned: 1000
+  bytes_transferred: 524288
+```
+
+- Track queries per API key
+- Enforce rate limits
+- Bill based on usage (if needed)
 
 The entitlement check happens in the CLI before accessing storage. This keeps the storage layer simple (no per-file ACLs).
 
