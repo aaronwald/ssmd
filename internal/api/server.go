@@ -27,6 +27,7 @@ func NewServer(storage data.Storage, apiKey string) *Server {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.mux.HandleFunc("GET /datasets", s.requireAPIKey(s.handleDatasets))
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
