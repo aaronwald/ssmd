@@ -67,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tickers: HashSet<String> = HashSet::new();
     let mut message_types: HashSet<String> = HashSet::new();
     let mut gaps: Vec<Gap> = Vec::new();
+    let mut completed_files: Vec<ssmd_archiver::manifest::FileEntry> = Vec::new();
     let mut current_date = Utc::now().format("%Y-%m-%d").to_string();
 
     // Stats tracking
@@ -94,11 +95,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Check for day rollover
                 if date != current_date {
-                    info!(old = %current_date, new = %date, "Day rollover, writing manifest");
-                    write_manifest(&config.storage.path, &feed, &current_date, &config.rotation.interval, &mut writer, &tickers, &message_types, &gaps)?;
+                    info!(old = %current_date, new = %date, "Day rollover, writing final manifest");
+                    write_manifest(&config.storage.path, &feed, &current_date, &config.rotation.interval, &mut writer, &tickers, &message_types, &gaps, &mut completed_files)?;
                     tickers.clear();
                     message_types.clear();
                     gaps.clear();
+                    completed_files.clear();
                     current_date = date;
                 }
 
@@ -136,9 +138,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
 
-                            // Write to file
-                            if let Err(e) = writer.write(&msg.data, msg.seq, now) {
-                                error!(error = %e, "Failed to write message");
+                            // Write to file (returns Some(FileEntry) on rotation)
+                            match writer.write(&msg.data, msg.seq, now) {
+                                Ok(Some(rotated_entry)) => {
+                                    // File was rotated - update manifest immediately
+                                    info!(
+                                        file = %rotated_entry.name,
+                                        records = rotated_entry.records,
+                                        seq_range = %format!("{}-{}", rotated_entry.nats_start_seq, rotated_entry.nats_end_seq),
+                                        "File rotated"
+                                    );
+                                    completed_files.push(rotated_entry);
+                                    if let Err(e) = update_manifest(&config.storage.path, &feed, &current_date, &config.rotation.interval, &tickers, &message_types, &gaps, &completed_files) {
+                                        error!(error = %e, "Failed to update manifest after rotation");
+                                    }
+                                }
+                                Ok(None) => {} // Normal write, no rotation
+                                Err(e) => {
+                                    error!(error = %e, "Failed to write message");
+                                }
                             }
                         }
                     }
@@ -166,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Final cleanup
     info!("Writing final manifest");
-    write_manifest(&config.storage.path, &feed, &current_date, &config.rotation.interval, &mut writer, &tickers, &message_types, &gaps)?;
+    write_manifest(&config.storage.path, &feed, &current_date, &config.rotation.interval, &mut writer, &tickers, &message_types, &gaps, &mut completed_files)?;
 
     info!("Archiver stopped");
     Ok(())
@@ -182,6 +200,36 @@ fn extract_feed_from_filter(filter: &str) -> Option<String> {
     }
 }
 
+/// Update manifest with completed files (called on every rotation)
+fn update_manifest(
+    base_path: &Path,
+    feed: &str,
+    date: &str,
+    rotation_interval: &str,
+    tickers: &HashSet<String>,
+    message_types: &HashSet<String>,
+    gaps: &[Gap],
+    completed_files: &[ssmd_archiver::manifest::FileEntry],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = Manifest::new(feed, date, rotation_interval);
+    manifest.files = completed_files.to_vec();
+    manifest.tickers = tickers.iter().cloned().collect();
+    manifest.message_types = message_types.iter().cloned().collect();
+    manifest.gaps = gaps.to_vec();
+    manifest.has_gaps = !gaps.is_empty();
+
+    let manifest_path = base_path.join(feed).join(date).join("manifest.json");
+    if let Some(parent) = manifest_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let manifest_json = serde_json::to_string_pretty(&manifest)?;
+    std::fs::write(&manifest_path, manifest_json)?;
+
+    info!(path = ?manifest_path, files = completed_files.len(), "Updated manifest");
+    Ok(())
+}
+
+/// Write final manifest (called on shutdown/day rollover, closes current file)
 #[allow(clippy::too_many_arguments)]
 fn write_manifest(
     base_path: &Path,
@@ -192,27 +240,13 @@ fn write_manifest(
     tickers: &HashSet<String>,
     message_types: &HashSet<String>,
     gaps: &[Gap],
+    completed_files: &mut Vec<ssmd_archiver::manifest::FileEntry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Close current file and get entry
-    let file_entry = writer.close()?;
-
-    let mut manifest = Manifest::new(feed, date, rotation_interval);
-    if let Some(entry) = file_entry {
-        manifest.files.push(entry);
+    // Close current file and add to completed files
+    if let Some(entry) = writer.close()? {
+        completed_files.push(entry);
     }
-    manifest.tickers = tickers.iter().cloned().collect();
-    manifest.message_types = message_types.iter().cloned().collect();
-    manifest.gaps = gaps.to_vec();
-    manifest.has_gaps = !gaps.is_empty();
 
-    // Write manifest
-    let manifest_path = base_path.join(feed).join(date).join("manifest.json");
-    if let Some(parent) = manifest_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let manifest_json = serde_json::to_string_pretty(&manifest)?;
-    std::fs::write(&manifest_path, manifest_json)?;
-
-    info!(path = ?manifest_path, "Wrote manifest");
-    Ok(())
+    // Write manifest with all completed files
+    update_manifest(base_path, feed, date, rotation_interval, tickers, message_types, gaps, completed_files)
 }
