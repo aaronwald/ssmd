@@ -207,6 +207,71 @@ func runDataList(cmd *cobra.Command, args []string) error {
 }
 
 func runDataSample(cmd *cobra.Command, args []string) error {
+	feed := args[0]
+	date := args[1]
+
+	path := dataPath
+	if path == "" {
+		path = os.Getenv("SSMD_DATA_PATH")
+	}
+	if path == "" {
+		return fmt.Errorf("data path not specified (use --path or SSMD_DATA_PATH)")
+	}
+
+	storage, err := data.NewStorage(path)
+	if err != nil {
+		return fmt.Errorf("creating storage: %w", err)
+	}
+
+	// Get manifest to find files
+	manifest, err := storage.GetManifest(feed, date)
+	if err != nil {
+		return fmt.Errorf("getting manifest: %w", err)
+	}
+
+	if len(manifest.Files) == 0 {
+		return fmt.Errorf("no files in manifest for %s/%s", feed, date)
+	}
+
+	// Read from files up to limit
+	var allRecords []map[string]interface{}
+	remaining := dataLimit
+
+	for _, file := range manifest.Files {
+		if remaining <= 0 {
+			break
+		}
+
+		fileData, err := storage.ReadFile(feed, date, file.Name)
+		if err != nil {
+			continue
+		}
+
+		records, err := data.ReadJSONLGZFromBytes(fileData, dataTicker, dataType, remaining)
+		if err != nil {
+			continue
+		}
+
+		allRecords = append(allRecords, records...)
+		remaining -= len(records)
+	}
+
+	// Output
+	if dataOutputJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(allRecords)
+	}
+
+	// Pretty print each record
+	for _, r := range allRecords {
+		b, err := json.MarshalIndent(r, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshaling record: %w", err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), string(b))
+	}
+
 	return nil
 }
 
