@@ -23,6 +23,119 @@ ssmd data replay --date 2025-12-14 --symbol INXD-25-B4000
 ssmd data export --date 2025-12-14 --format parquet
 ```
 
+## ssmd-data API
+
+HTTP API for accessing archived market data. Used by ssmd-agent and other tooling.
+
+### Running Locally
+
+```bash
+# Build and run
+make data-build
+SSMD_DATA_PATH=./testdata SSMD_API_KEY=dev ./bin/ssmd-data
+
+# Or via Makefile (uses default dev settings)
+make data-run
+```
+
+### Docker Deployment
+
+```bash
+# Build image
+docker build -t ssmd-data -f cmd/ssmd-data/Dockerfile .
+
+# Run container
+docker run -d \
+  -p 8080:8080 \
+  -v /path/to/archive:/data:ro \
+  -e SSMD_DATA_PATH=/data \
+  -e SSMD_API_KEY=your-api-key \
+  ssmd-data
+```
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| SSMD_DATA_PATH | Yes | - | Path to archived data (local path or `gs://bucket/prefix`) |
+| SSMD_API_KEY | Yes | - | API key for authentication |
+| SSMD_DATA_PORT | No | 8080 | HTTP server port |
+
+### Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| GET /health | Health check |
+| GET /datasets | List available feeds and dates |
+| GET /datasets/{feed}/{date}/sample | Sample data with optional filters |
+| GET /schema/{feed}/{type} | Get message schema |
+| GET /builders | List available state builders |
+
+### Authentication
+
+All endpoints except `/health` require the `X-API-Key` header:
+
+```bash
+curl -H "X-API-Key: your-api-key" http://localhost:8080/datasets
+```
+
+## ssmd-agent REPL
+
+LangGraph-based AI agent for exploring data and creating trading signals.
+
+### Prerequisites
+
+```bash
+# Install Deno
+curl -fsSL https://deno.land/install.sh | sh
+export PATH="$HOME/.deno/bin:$PATH"
+```
+
+### Running
+
+```bash
+# Run agent REPL
+cd ssmd-agent
+deno task agent
+
+# Or via Makefile
+make agent-run
+```
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| ANTHROPIC_API_KEY | Yes | - | Claude API key |
+| SSMD_DATA_URL | No | http://localhost:8080 | ssmd-data API URL |
+| SSMD_API_KEY | No | dev | API key for ssmd-data |
+| SSMD_MODEL | No | claude-sonnet-4-20250514 | Claude model to use |
+
+### Skills
+
+Skills are loaded from `ssmd-agent/skills/*.md`:
+
+| Skill | Description |
+|-------|-------------|
+| explore-data | Guide for exploring archived datasets |
+| monitor-spread | Template for spread monitoring signals |
+| interpret-backtest | Guide for analyzing backtest results |
+| custom-signal | Template for custom signal logic |
+
+### Tools
+
+The agent has access to these tools:
+
+| Tool | Description |
+|------|-------------|
+| list_datasets | Query available feeds and dates |
+| sample_data | Fetch sample messages from archives |
+| get_schema | Get schema for a message type |
+| list_builders | List available state builders |
+| orderbook_builder | Process messages through OrderBookBuilder |
+| run_backtest | Run backtest with signal code |
+| deploy_signal | Deploy signal to signals/ directory |
+
 ## Environment Definition
 
 ```yaml
@@ -134,6 +247,15 @@ Structured JSON to stdout, collected with Loki:
 | github.com/temporalio/sdk-go | Temporal workflows |
 | github.com/nats-io/nats.go | NATS client |
 | gopkg.in/yaml.v3 | YAML parsing |
+
+### Deno Dependencies (ssmd-agent)
+
+| Dependency | Version | Purpose |
+|------------|---------|---------|
+| @langchain/langgraph | 0.2.57 | Agent workflow framework |
+| @langchain/anthropic | 0.3.18 | Claude integration |
+| @langchain/core | 0.3.31 | LangChain core types |
+| zod | 3.24.1 | Schema validation |
 
 ## Infrastructure Requirements
 
