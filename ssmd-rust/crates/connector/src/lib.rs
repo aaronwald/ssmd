@@ -15,7 +15,9 @@ pub mod runner;
 pub mod server;
 pub mod traits;
 pub mod websocket;
-pub mod writer;
+// writer.rs kept for ring buffer integration tests but not exported
+// TODO: Delete in next major version when archiver replaces file writer
+mod writer;
 
 pub use error::{ConnectorError, ResolverError, WriterError};
 pub use flusher::DiskFlusher;
@@ -28,7 +30,6 @@ pub use runner::Runner;
 pub use server::{create_router, run_server, ServerState};
 pub use traits::{Connector, KeyResolver, Writer};
 pub use websocket::WebSocketConnector;
-pub use writer::FileWriter;
 
 #[cfg(test)]
 mod integration_tests {

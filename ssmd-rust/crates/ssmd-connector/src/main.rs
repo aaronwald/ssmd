@@ -1,7 +1,7 @@
 //! ssmd-connector: Market data collection binary
 //!
-//! Connects to market data sources and writes to configured destinations.
-//! Supports file (raw JSON) and NATS (Cap'n Proto) output modes.
+//! Connects to market data sources and publishes to NATS.
+//! Raw JSON passthrough - no transformation.
 
 use clap::Parser;
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_connector_lib::{
     kalshi::{KalshiConfig, KalshiConnector, KalshiCredentials},
-    EnvResolver, FileWriter, KeyResolver, NatsWriter, Runner, ServerState, WebSocketConnector,
+    EnvResolver, KeyResolver, NatsWriter, Runner, ServerState, WebSocketConnector,
 };
 use ssmd_metadata::{Environment, Feed, FeedType, KeyType, TransportType};
 use ssmd_middleware::MiddlewareFactory;
@@ -54,14 +54,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let env_config = Environment::load(&args.env)?;
     info!(env = %env_config.name, "Loaded environment configuration");
 
-    // Get output path from environment storage config
-    let output_path = env_config
-        .storage
-        .path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./data"));
-
     // Setup shutdown signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -82,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_kalshi_connector(&feed, &env_config, health_addr, shutdown_rx).await
         }
         _ => {
-            run_generic_connector(&feed, &env_config, &output_path, health_addr, shutdown_rx).await
+            run_generic_connector(&feed, &env_config, health_addr, shutdown_rx).await
         }
     }
 }
@@ -109,25 +101,18 @@ async fn run_kalshi_connector(
 
     let connector = KalshiConnector::new(credentials, config.use_demo);
 
-    // Select writer based on transport type
+    // NATS transport required
     match env_config.transport.transport_type {
         TransportType::Nats => {
-            info!(transport = "nats", "Using NATS writer (Cap'n Proto)");
+            info!(transport = "nats", "Using NATS writer (raw JSON)");
             let transport = MiddlewareFactory::create_transport(env_config).await?;
             let writer = NatsWriter::new(transport, &env_config.name, &feed.name);
             run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
         }
         TransportType::Memory => {
-            // Memory transport - use file writer for persistence
-            let output_path = env_config
-                .storage
-                .path
-                .as_ref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("./data"));
-            info!(transport = "memory", path = ?output_path, "Using file writer (raw JSON)");
-            let writer = FileWriter::new(&output_path, &feed.name);
-            run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
+            error!("Memory transport not supported - use NATS transport");
+            error!("Set transport.transport_type: nats in environment config");
+            Err("Memory transport not supported - connector requires NATS".into())
         }
         TransportType::Mqtt => {
             error!("MQTT transport not yet supported");
@@ -177,7 +162,6 @@ where
 async fn run_generic_connector(
     feed: &Feed,
     env_config: &Environment,
-    output_path: &PathBuf,
     health_addr: SocketAddr,
     shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -221,29 +205,22 @@ async fn run_generic_connector(
         None
     };
 
-    let connector = WebSocketConnector::new(&url, creds);
-    let writer = FileWriter::new(output_path, &feed.name);
-    let mut runner = Runner::new(&feed.name, connector, writer);
-    let connected_handle = runner.connected_handle();
-
-    // Start health server
-    let server_state = ServerState::new(&feed.name, Arc::clone(&connected_handle));
-    tokio::spawn(async move {
-        if let Err(e) = ssmd_connector_lib::run_server(health_addr, server_state).await {
-            error!(error = %e, "Health server error");
+    // NATS transport required
+    match env_config.transport.transport_type {
+        TransportType::Nats => {
+            info!(transport = "nats", "Using NATS writer (raw JSON)");
+            let transport = MiddlewareFactory::create_transport(env_config).await?;
+            let connector = WebSocketConnector::new(&url, creds);
+            let writer = NatsWriter::new(transport, &env_config.name, &feed.name);
+            run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
         }
-    });
-    info!(addr = %health_addr, "Health server started");
-
-    // Run the connector
-    match runner.run(shutdown_rx).await {
-        Ok(()) => {
-            info!("Connector stopped gracefully");
-            Ok(())
+        TransportType::Memory => {
+            error!("Memory transport not supported - use NATS transport");
+            Err("Memory transport not supported - connector requires NATS".into())
         }
-        Err(e) => {
-            error!(error = %e, "Connector error");
-            std::process::exit(1);
+        TransportType::Mqtt => {
+            error!("MQTT transport not yet supported");
+            Err("MQTT transport not yet supported".into())
         }
     }
 }
