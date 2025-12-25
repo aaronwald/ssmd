@@ -26,6 +26,7 @@ func init() {
 	rootCmd.AddCommand(cmd.ValidateCommand())
 	rootCmd.AddCommand(cmd.DiffCommand())
 	rootCmd.AddCommand(cmd.CommitCommand())
+	rootCmd.AddCommand(cmd.DataCommand())
 }
 
 func main() {
