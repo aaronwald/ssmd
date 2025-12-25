@@ -298,3 +298,79 @@ func TestSampleEndpointNotFound(t *testing.T) {
 		t.Errorf("expected 404, got %d", rec.Code)
 	}
 }
+
+func TestSchemaEndpoint(t *testing.T) {
+	server := NewServer(&mockStorage{}, "test-key")
+
+	req := httptest.NewRequest("GET", "/schema/kalshi/orderbook", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+
+	var schema SchemaInfo
+	if err := json.NewDecoder(rec.Body).Decode(&schema); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+
+	if schema.Type != "orderbook" {
+		t.Errorf("expected type orderbook, got %s", schema.Type)
+	}
+
+	if len(schema.Fields) == 0 {
+		t.Error("expected fields to be populated")
+	}
+}
+
+func TestSchemaEndpointUnknownFeed(t *testing.T) {
+	server := NewServer(&mockStorage{}, "test-key")
+
+	req := httptest.NewRequest("GET", "/schema/unknown/orderbook", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestBuildersEndpoint(t *testing.T) {
+	server := NewServer(&mockStorage{}, "test-key")
+
+	req := httptest.NewRequest("GET", "/builders", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+
+	var builders []BuilderInfo
+	if err := json.NewDecoder(rec.Body).Decode(&builders); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+
+	if len(builders) == 0 {
+		t.Error("expected at least one builder")
+	}
+
+	// Check orderbook builder exists
+	found := false
+	for _, b := range builders {
+		if b.ID == "orderbook" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected orderbook builder")
+	}
+}

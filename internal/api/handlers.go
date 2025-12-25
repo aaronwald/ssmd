@@ -152,3 +152,81 @@ func (s *Server) handleSample(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(allRecords)
 }
+
+// SchemaInfo represents a message type schema
+type SchemaInfo struct {
+	Type    string            `json:"type"`
+	Fields  map[string]string `json:"fields"`
+	Derived []string          `json:"derived,omitempty"`
+}
+
+// BuilderInfo represents a state builder
+type BuilderInfo struct {
+	ID          string   `json:"id"`
+	Description string   `json:"description"`
+	Derived     []string `json:"derived"`
+}
+
+// Known schemas for each feed
+var knownSchemas = map[string]map[string]SchemaInfo{
+	"kalshi": {
+		"trade": {
+			Type: "trade",
+			Fields: map[string]string{
+				"ticker": "string", "price": "number", "count": "number",
+				"side": "string", "ts": "number", "taker_side": "string",
+			},
+		},
+		"ticker": {
+			Type: "ticker",
+			Fields: map[string]string{
+				"ticker": "string", "yes_bid": "number", "yes_ask": "number",
+				"no_bid": "number", "no_ask": "number", "last_price": "number",
+				"volume": "number", "open_interest": "number", "ts": "number",
+			},
+			Derived: []string{"spread", "midpoint"},
+		},
+		"orderbook": {
+			Type: "orderbook",
+			Fields: map[string]string{
+				"ticker": "string", "yes_bid": "number", "yes_ask": "number",
+				"no_bid": "number", "no_ask": "number", "ts": "number",
+			},
+			Derived: []string{"spread", "midpoint", "imbalance"},
+		},
+	},
+}
+
+var stateBuilders = []BuilderInfo{
+	{ID: "orderbook", Description: "Maintains bid/ask levels from orderbook updates",
+		Derived: []string{"spread", "bestBid", "bestAsk", "bidDepth", "askDepth", "midpoint"}},
+	{ID: "priceHistory", Description: "Rolling window of price history",
+		Derived: []string{"last", "vwap", "returns", "high", "low", "volatility"}},
+	{ID: "volumeProfile", Description: "Buy/sell volume tracking",
+		Derived: []string{"buyVolume", "sellVolume", "totalVolume", "ratio", "average"}},
+}
+
+func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
+	feed := r.PathValue("feed")
+	msgType := r.PathValue("type")
+
+	feedSchemas, ok := knownSchemas[feed]
+	if !ok {
+		http.Error(w, `{"error":"unknown feed"}`, http.StatusNotFound)
+		return
+	}
+
+	schema, ok := feedSchemas[msgType]
+	if !ok {
+		http.Error(w, `{"error":"unknown message type"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(schema)
+}
+
+func (s *Server) handleBuilders(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stateBuilders)
+}
