@@ -1,5 +1,18 @@
 # SSMD Deployment Guide
 
+Deploy ssmd components to Kubernetes.
+
+## Components
+
+| Component | Image | Purpose |
+|-----------|-------|---------|
+| **ssmd-connector** | `ghcr.io/<owner>/ssmd-connector` | Kalshi WebSocket → NATS/File |
+| **ssmd-agent** | `ghcr.io/<owner>/ssmd-agent` | LangGraph signal runtime (stub) |
+
+---
+
+## ssmd-connector
+
 Deploy ssmd-connector to Kubernetes. Supports two output modes:
 
 | Mode | Transport | Output | Use Case |
@@ -322,9 +335,16 @@ Both connect to the same Kalshi feed but output to different destinations.
 ## Network Policies
 
 If using network policies, allow:
-- **Egress**: ssmd → NATS (port 4222) - NATS mode only
-- **Egress**: ssmd → Kalshi API (port 443, external)
-- **Egress**: ssmd → DNS (port 53)
+
+**ssmd-connector:**
+- **Egress**: ssmd-connector → NATS (port 4222) - NATS mode only
+- **Egress**: ssmd-connector → Kalshi API (port 443, external)
+- **Egress**: ssmd-connector → DNS (port 53)
+
+**ssmd-agent (future):**
+- **Egress**: ssmd-agent → NATS (port 4222)
+- **Egress**: ssmd-agent → Anthropic API (port 443, external)
+- **Egress**: ssmd-agent → DNS (port 53)
 
 ## Environment Variables
 
@@ -383,4 +403,117 @@ kubectl logs -n ssmd -l app=ssmd-connector-nats | grep -i error
 # Check disk space and permissions
 kubectl exec -n ssmd deploy/ssmd-connector-file -- df -h /data
 kubectl exec -n ssmd deploy/ssmd-connector-file -- ls -la /data/
+```
+
+---
+
+## ssmd-agent
+
+Deno-based agent runtime for LangGraph signal processing. Currently a stub with health check endpoint.
+
+### Container Image
+
+```bash
+# Build locally
+cd ssmd-agent
+docker build -t ssmd-agent:latest .
+
+# Or use GHCR (tags trigger builds)
+git tag v0.1.5
+git push origin v0.1.5
+# Image pushed to ghcr.io/<owner>/ssmd-agent:0.1.5
+```
+
+### Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ssmd-agent
+  namespace: ssmd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ssmd-agent
+  template:
+    metadata:
+      labels:
+        app: ssmd-agent
+    spec:
+      containers:
+        - name: agent
+          image: ghcr.io/<owner>/ssmd-agent:0.1.5
+          ports:
+            - containerPort: 8080
+              name: health
+          env:
+            - name: PORT
+              value: "8080"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+```
+
+### Service
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ssmd-agent
+  namespace: ssmd
+spec:
+  selector:
+    app: ssmd-agent
+  ports:
+    - port: 8080
+      targetPort: health
+      name: http
+```
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `PORT` | No | `8080` | HTTP server port |
+
+### Future Configuration
+
+When NATS integration is added:
+
+| Variable | Description |
+|----------|-------------|
+| `NATS_URL` | NATS server URL |
+| `NATS_SUBJECTS` | Subjects to subscribe to |
+| `ANTHROPIC_API_KEY` | For LangGraph LLM calls |
+
+### Verify Deployment
+
+```bash
+# Check pod
+kubectl get pods -n ssmd -l app=ssmd-agent
+
+# Check health
+kubectl exec -n ssmd deploy/ssmd-agent -- curl -s localhost:8080/health
+
+# Check logs
+kubectl logs -n ssmd -l app=ssmd-agent -f
 ```
