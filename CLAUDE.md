@@ -100,12 +100,19 @@ The hot path is optimized to avoid syscalls and locks:
 # Build first
 make rust-build
 
-# Run Kalshi connector (requires KALSHI_API_KEY and KALSHI_PRIVATE_KEY env vars)
+# Run Kalshi connector (requires KALSHI_API_KEY, KALSHI_PRIVATE_KEY, and NATS)
 ./ssmd-rust/target/debug/ssmd-connector \
   --feed ./exchanges/feeds/kalshi.yaml \
   --env ./exchanges/environments/kalshi-local.yaml
 
 # For demo API, also set KALSHI_USE_DEMO=true
+```
+
+The connector requires NATS transport. Configure in environment YAML:
+```yaml
+transport:
+  transport_type: nats
+  url: nats://localhost:4222
 ```
 
 The `--feed` and `--env` arguments are **file paths**, not names.
