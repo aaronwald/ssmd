@@ -98,9 +98,44 @@
 
 ## In Progress
 
-### Phase 3: Agent Pipeline MVP
+(None)
+
+## Completed (Continued)
+
+### Phase 3: Agent Pipeline MVP (2025-12-25)
 Plan: `docs/plans/2025-12-25-agent-pipeline-mvp-impl.md`
 Design: `docs/plans/2025-12-25-agent-pipeline-mvp-design.md`
+
+**ssmd-data API (Go):**
+- [x] HTTP server skeleton with health endpoint
+- [x] /datasets endpoint with feed/date filtering
+- [x] /datasets/{feed}/{date}/sample endpoint with ticker/type/limit filters
+- [x] /schema/{feed}/{type} endpoint
+- [x] /builders endpoint
+- [x] API key authentication middleware
+- [x] Dockerfile (Go 1.23-alpine)
+
+**ssmd-agent REPL (Deno):**
+- [x] LangGraph dependencies and config
+- [x] Skills loader from markdown files
+- [x] Data tools (list_datasets, sample_data, get_schema, list_builders)
+- [x] OrderBookBuilder state builder
+- [x] orderbook_builder tool
+- [x] Backtest runner tool
+- [x] deploy_signal tool
+- [x] System prompt builder
+- [x] LangGraph agent setup with createReactAgent
+- [x] Streaming CLI REPL
+
+**Skills (Markdown):**
+- [x] explore-data.md
+- [x] monitor-spread.md
+- [x] interpret-backtest.md
+- [x] custom-signal.md
+
+**Build:**
+- [x] Makefile targets (data-build, data-test, agent-check, agent-test, agent-run)
+- [x] Integration tests for OrderBookBuilder and skills loader
 
 ## Pending
 
@@ -140,51 +175,10 @@ Design: Enables sharding - multiple archivers can subscribe to different subject
 - [ ] Snapshot full orderbook from shared cache (Redis or purpose-built for speed)
 - [ ] Clients build orderbooks from L2 updates + cache snapshots
 
-### Phase 3: Agent Pipeline MVP
-Design: `docs/plans/designs/2025-12-25-backtest-agent-skills.md`
-Depends on: Phase 2 Archiver (provides JSONL data files)
+### Phase 3: Agent Pipeline MVP ✅ COMPLETED 2025-12-25
+See "Completed (Continued)" section above for details.
 
-**ssmd data CLI (Go):** ✅ COMPLETED 2025-12-25
-Ref: `docs/plans/2025-12-25-dataset-service.md`
-- [x] `ssmd data list` - list available datasets (reads manifests from local/GCS)
-- [x] `ssmd data sample <feed> <date>` - sample records from dataset
-- [x] `ssmd data schema <feed> <type>` - show schema for message type
-- [x] `ssmd data builders` - list available state builders
-- [x] `--output json` flag for all data commands (agent consumption)
-- [x] Storage abstraction (LocalStorage + GCSStorage via gsutil)
-- [x] Security: path traversal protection, command injection prevention
-- [x] Integration tests
-
-**State Builders (TypeScript, shared):**
-- [ ] `src/state/types.ts` - StateBuilder<T> interface
-- [ ] `src/state/orderbook.ts` - OrderBookBuilder
-- [ ] `src/state/price-history.ts` - PriceHistoryBuilder
-- [ ] `src/state/volume-profile.ts` - VolumeProfileBuilder
-
-**Backtest Runner (TypeScript):**
-- [ ] Load JSONL data from `ssmd data sample`
-- [ ] Replay through state builders
-- [ ] Evaluate signal code, collect fires
-- [ ] Return BacktestResult (fires, errors, sample_payloads)
-
-**Skills (Markdown files):**
-- [ ] `skills/explore-data.md` - data discovery
-- [ ] `skills/interpret-backtest.md` - result analysis
-- [ ] `skills/monitor-spread.md` - spread signal template
-- [ ] `skills/price-alert.md` - price threshold template
-- [ ] `skills/volume-spike.md` - volume signal template
-- [ ] `skills/custom-signal.md` - generic template
-- [ ] Skill loader from filesystem
-
-**CLI Agent (Deno):**
-- [ ] LangGraph.js + @langchain/anthropic setup
-- [ ] Tool wrappers for `ssmd data` commands
-- [ ] `run_backtest` tool
-- [ ] `deploy_signal` tool (write file + git commit)
-- [ ] Streaming output via `streamEvents()`
-- [ ] REPL interface (`deno task agent`)
-
-**Signal Runtime (TypeScript):**
+**Signal Runtime (TypeScript) - Future:**
 - [ ] Load signals from `signals/*.ts`
 - [ ] NATS subscription for market data
 - [ ] State builder updates
@@ -195,6 +189,8 @@ Ref: `docs/plans/2025-12-25-dataset-service.md`
 - [ ] Memory persistence (PostgresSaver)
 - [ ] Guardrails (rate limiting, cost controls, sandbox)
 - [ ] Arrow/Parquet storage format
+- [ ] PriceHistoryBuilder state builder
+- [ ] VolumeProfileBuilder state builder
 
 **Scaling & Operations:**
 - [ ] Horizontal scaling via JetStream workqueue distribution
