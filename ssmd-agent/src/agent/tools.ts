@@ -2,6 +2,8 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { config } from "../config.ts";
+import { OrderBookBuilder, type OrderBookState } from "../state/orderbook.ts";
+import type { MarketRecord } from "../state/types.ts";
 
 async function apiRequest<T>(path: string): Promise<T> {
   const res = await fetch(`${config.dataUrl}${path}`, {
@@ -83,4 +85,39 @@ export const listBuilders = tool(
   }
 );
 
-export const dataTools = [listDatasets, sampleData, getSchema, listBuilders];
+export const orderbookBuilder = tool(
+  async ({ records }) => {
+    const builder = new OrderBookBuilder();
+    const snapshots: OrderBookState[] = [];
+
+    for (const record of records as MarketRecord[]) {
+      builder.update(record);
+      const state = builder.getState();
+      // Only add if we have meaningful data
+      if (state.ticker) {
+        snapshots.push(state);
+      }
+    }
+
+    return JSON.stringify({
+      count: snapshots.length,
+      snapshots: snapshots.slice(0, 100), // Limit to prevent huge responses
+      summary: snapshots.length > 0 ? {
+        ticker: snapshots[0].ticker,
+        spreadRange: {
+          min: Math.min(...snapshots.map(s => s.spread)),
+          max: Math.max(...snapshots.map(s => s.spread)),
+        },
+      } : null,
+    });
+  },
+  {
+    name: "orderbook_builder",
+    description: "Process market records through OrderBook state builder. Returns state snapshots with spread calculations.",
+    schema: z.object({
+      records: z.array(z.any()).describe("Array of market data records from sample_data"),
+    }),
+  }
+);
+
+export const dataTools = [listDatasets, sampleData, getSchema, listBuilders, orderbookBuilder];
