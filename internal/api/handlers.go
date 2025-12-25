@@ -4,7 +4,10 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/aaronwald/ssmd/internal/data"
 )
 
 // DatasetInfo represents a dataset in API responses
@@ -97,4 +100,55 @@ func (s *Server) handleDatasets(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(datasets)
+}
+
+func (s *Server) handleSample(w http.ResponseWriter, r *http.Request) {
+	feed := r.PathValue("feed")
+	date := r.PathValue("date")
+
+	tickerFilter := r.URL.Query().Get("ticker")
+	typeFilter := r.URL.Query().Get("type")
+	limitStr := r.URL.Query().Get("limit")
+
+	limit := 10
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	manifest, err := s.storage.GetManifest(feed, date)
+	if err != nil || manifest == nil {
+		http.Error(w, `{"error":"dataset not found"}`, http.StatusNotFound)
+		return
+	}
+
+	var allRecords []map[string]interface{}
+	remaining := limit
+
+	for _, file := range manifest.Files {
+		if remaining <= 0 {
+			break
+		}
+
+		fileData, err := s.storage.ReadFile(feed, date, file.Name)
+		if err != nil {
+			continue
+		}
+
+		records, err := data.ReadJSONLGZFromBytes(fileData, tickerFilter, typeFilter, remaining)
+		if err != nil {
+			continue
+		}
+
+		allRecords = append(allRecords, records...)
+		remaining -= len(records)
+	}
+
+	if allRecords == nil {
+		allRecords = []map[string]interface{}{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(allRecords)
 }
