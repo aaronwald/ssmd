@@ -136,5 +136,57 @@ export const runBacktest = tool(
   }
 );
 
+export const deploySignal = tool(
+  async ({ code, path }) => {
+    // Ensure path is under signals directory
+    const fullPath = `${config.signalsPath}/${path}`;
+
+    // Write the file
+    await Deno.writeTextFile(fullPath, code);
+
+    // Git add and commit
+    const addCmd = new Deno.Command("git", {
+      args: ["add", fullPath],
+      stdout: "piped",
+      stderr: "piped",
+    });
+    await addCmd.output();
+
+    const commitCmd = new Deno.Command("git", {
+      args: ["commit", "-m", `signal: add ${path}`],
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const commitResult = await commitCmd.output();
+
+    if (!commitResult.success) {
+      const stderr = new TextDecoder().decode(commitResult.stderr);
+      return JSON.stringify({ error: `git commit failed: ${stderr}` });
+    }
+
+    // Get commit SHA
+    const revCmd = new Deno.Command("git", {
+      args: ["rev-parse", "HEAD"],
+      stdout: "piped",
+    });
+    const revResult = await revCmd.output();
+    const sha = new TextDecoder().decode(revResult.stdout).trim();
+
+    return JSON.stringify({
+      path: fullPath,
+      sha: sha.slice(0, 7),
+      message: `Deployed to ${fullPath}`,
+    });
+  },
+  {
+    name: "deploy_signal",
+    description: "Write signal file and git commit. Use after successful backtest.",
+    schema: z.object({
+      code: z.string().describe("Complete TypeScript signal code"),
+      path: z.string().describe("Filename within signals/ directory (e.g., 'spread-alert.ts')"),
+    }),
+  }
+);
+
 export const dataTools = [listDatasets, sampleData, getSchema, listBuilders, orderbookBuilder];
-export const allTools = [...dataTools, runBacktest];
+export const allTools = [...dataTools, runBacktest, deploySignal];
