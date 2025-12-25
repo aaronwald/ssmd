@@ -2,9 +2,11 @@
 package data
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -117,4 +119,122 @@ func (s *LocalStorage) ReadFile(feed, date, filename string) ([]byte, error) {
 		return nil, fmt.Errorf("reading file: %w", err)
 	}
 	return data, nil
+}
+
+// GCSStorage implements Storage for Google Cloud Storage via gsutil
+type GCSStorage struct {
+	bucket string
+	prefix string
+}
+
+// NewGCSStorage creates a new GCS storage instance
+func NewGCSStorage(gcsURL string) (*GCSStorage, error) {
+	// Parse gs://bucket/prefix
+	if !strings.HasPrefix(gcsURL, "gs://") {
+		return nil, fmt.Errorf("invalid GCS URL: %s", gcsURL)
+	}
+
+	path := strings.TrimPrefix(gcsURL, "gs://")
+	parts := strings.SplitN(path, "/", 2)
+
+	bucket := parts[0]
+	prefix := ""
+	if len(parts) > 1 {
+		prefix = parts[1]
+	}
+
+	return &GCSStorage{bucket: bucket, prefix: prefix}, nil
+}
+
+// NewStorage creates a Storage based on path type
+func NewStorage(path string) (Storage, error) {
+	if strings.HasPrefix(path, "gs://") {
+		return NewGCSStorage(path)
+	}
+	return NewLocalStorage(path), nil
+}
+
+// gsutil runs a gsutil command and returns stdout
+func (s *GCSStorage) gsutil(args ...string) ([]byte, error) {
+	cmd := exec.Command("gsutil", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gsutil %v: %s", args, stderr.String())
+	}
+	return stdout.Bytes(), nil
+}
+
+// gcsPath builds a gs:// path
+func (s *GCSStorage) gcsPath(parts ...string) string {
+	allParts := []string{s.bucket}
+	if s.prefix != "" {
+		allParts = append(allParts, s.prefix)
+	}
+	allParts = append(allParts, parts...)
+	return "gs://" + strings.Join(allParts, "/")
+}
+
+// ListFeeds returns all feed directories from GCS
+func (s *GCSStorage) ListFeeds() ([]string, error) {
+	output, err := s.gsutil("ls", s.gcsPath())
+	if err != nil {
+		return nil, err
+	}
+
+	var feeds []string
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// gs://bucket/prefix/feed/ -> feed
+		line = strings.TrimSuffix(line, "/")
+		parts := strings.Split(line, "/")
+		feeds = append(feeds, parts[len(parts)-1])
+	}
+	sort.Strings(feeds)
+	return feeds, nil
+}
+
+// ListDates returns all date directories for a feed from GCS
+func (s *GCSStorage) ListDates(feed string) ([]string, error) {
+	output, err := s.gsutil("ls", s.gcsPath(feed))
+	if err != nil {
+		return nil, err
+	}
+
+	var dates []string
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		line = strings.TrimSuffix(line, "/")
+		parts := strings.Split(line, "/")
+		dates = append(dates, parts[len(parts)-1])
+	}
+	sort.Strings(dates)
+	return dates, nil
+}
+
+// GetManifest reads and parses a manifest.json from GCS
+func (s *GCSStorage) GetManifest(feed, date string) (*types.Manifest, error) {
+	output, err := s.gsutil("cat", s.gcsPath(feed, date, "manifest.json"))
+	if err != nil {
+		return nil, err
+	}
+
+	var m types.Manifest
+	if err := json.Unmarshal(output, &m); err != nil {
+		return nil, fmt.Errorf("parsing manifest: %w", err)
+	}
+	return &m, nil
+}
+
+// ReadFile reads file contents from GCS
+func (s *GCSStorage) ReadFile(feed, date, filename string) ([]byte, error) {
+	return s.gsutil("cat", s.gcsPath(feed, date, filename))
 }

@@ -133,3 +133,55 @@ func TestLocalStorageValidPaths(t *testing.T) {
 		t.Errorf("unexpected data: got %q, want %q", string(data), "test content")
 	}
 }
+
+func TestGCSStorageParseURL(t *testing.T) {
+	storage, err := NewGCSStorage("gs://ssmd-archive")
+	if err != nil {
+		t.Fatalf("NewGCSStorage failed: %v", err)
+	}
+
+	if storage.bucket != "ssmd-archive" {
+		t.Errorf("expected bucket ssmd-archive, got %s", storage.bucket)
+	}
+	if storage.prefix != "" {
+		t.Errorf("expected empty prefix, got %s", storage.prefix)
+	}
+}
+
+func TestGCSStorageParseURLWithPrefix(t *testing.T) {
+	storage, err := NewGCSStorage("gs://my-bucket/data/ssmd")
+	if err != nil {
+		t.Fatalf("NewGCSStorage failed: %v", err)
+	}
+
+	if storage.bucket != "my-bucket" {
+		t.Errorf("expected bucket my-bucket, got %s", storage.bucket)
+	}
+	if storage.prefix != "data/ssmd" {
+		t.Errorf("expected prefix data/ssmd, got %s", storage.prefix)
+	}
+}
+
+func TestNewStorageLocal(t *testing.T) {
+	storage, err := NewStorage("/tmp/data")
+	if err != nil {
+		t.Fatalf("NewStorage failed: %v", err)
+	}
+
+	_, ok := storage.(*LocalStorage)
+	if !ok {
+		t.Error("expected LocalStorage for local path")
+	}
+}
+
+func TestNewStorageGCS(t *testing.T) {
+	storage, err := NewStorage("gs://bucket/prefix")
+	if err != nil {
+		t.Fatalf("NewStorage failed: %v", err)
+	}
+
+	_, ok := storage.(*GCSStorage)
+	if !ok {
+		t.Error("expected GCSStorage for gs:// path")
+	}
+}
