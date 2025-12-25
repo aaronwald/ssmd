@@ -13,7 +13,7 @@ use tokio_tungstenite::{
     tungstenite::{http::Request, Message},
     MaybeTlsStream, WebSocketStream,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 /// Production WebSocket URL
 pub const KALSHI_WS_URL: &str = "wss://api.elections.kalshi.com/trade-api/ws/v2";
@@ -209,7 +209,7 @@ impl KalshiWebSocket {
                 Some(Ok(Message::Text(text))) => {
                     match serde_json::from_str::<WsMessage>(&text) {
                         Ok(msg) => {
-                            debug!(msg = %text, "Received message");
+                            trace!(msg = %text, "Received message");
                             return Ok((text, msg));
                         }
                         Err(e) => {
@@ -219,7 +219,7 @@ impl KalshiWebSocket {
                     }
                 }
                 Some(Ok(Message::Ping(data))) => {
-                    debug!("Received ping, sending pong");
+                    trace!("Received ping, sending pong");
                     self.ws.send(Message::Pong(data)).await?;
                 }
                 Some(Ok(Message::Close(frame))) => {

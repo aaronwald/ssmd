@@ -1,10 +1,15 @@
 # SSMD Deployment Guide
 
-Deploy ssmd-connector to Kubernetes.
+Deploy ssmd-connector to Kubernetes. Supports two output modes:
+
+| Mode | Transport | Output | Use Case |
+|------|-----------|--------|----------|
+| **NATS** | `nats` | Cap'n Proto to JetStream | Real-time streaming |
+| **File** | `memory` | Raw JSON to disk | Archival/replay |
 
 ## Prerequisites
 
-- Kubernetes cluster with NATS JetStream
+- Kubernetes cluster with NATS JetStream (for NATS mode)
 - Container registry access (GHCR or other)
 - `kubectl` configured for target cluster
 - `kubeseal` CLI (if using Sealed Secrets)
@@ -41,13 +46,32 @@ metadata:
     name: ssmd
 ```
 
-### ConfigMap (Feed + Environment)
+### Secret (Kalshi Credentials)
+
+```bash
+kubectl create secret generic ssmd-kalshi-credentials \
+  --namespace=ssmd \
+  --from-literal=api-key="$KALSHI_API_KEY" \
+  --from-file=private-key=/path/to/kalshi-private-key.pem
+```
+
+---
+
+## Deployment Option 1: NATS Streaming (Cap'n Proto)
+
+Publishes normalized market data to NATS JetStream as Cap'n Proto messages.
+
+**Subjects:**
+- `{env}.{feed}.trade.{ticker}` - Trade executions
+- `{env}.{feed}.ticker.{ticker}` - Price updates
+
+### ConfigMap (NATS Mode)
 
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: ssmd-config
+  name: ssmd-nats-config
   namespace: ssmd
 data:
   feeds/kalshi.yaml: |
@@ -60,42 +84,34 @@ data:
           transport: websocket
           message: json
 
-  environments/prod.yaml: |
+  environments/prod-nats.yaml: |
     name: prod
+    feed: kalshi
+    schema: "trade:v1"
     transport:
       transport_type: nats
       url: nats://nats.nats.svc.cluster.local:4222
     storage:
-      storage_type: file
-      path: /data
+      storage_type: local
 ```
 
-### Secret (Kalshi Credentials)
-
-```bash
-kubectl create secret generic ssmd-kalshi-credentials \
-  --namespace=ssmd \
-  --from-literal=api-key="$KALSHI_API_KEY" \
-  --from-file=private-key=/path/to/kalshi-private-key.pem
-```
-
-### Deployment
+### Deployment (NATS Mode)
 
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ssmd-connector
+  name: ssmd-connector-nats
   namespace: ssmd
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ssmd-connector
+      app: ssmd-connector-nats
   template:
     metadata:
       labels:
-        app: ssmd-connector
+        app: ssmd-connector-nats
     spec:
       containers:
         - name: connector
@@ -104,7 +120,7 @@ spec:
             - "--feed"
             - "/config/feeds/kalshi.yaml"
             - "--env"
-            - "/config/environments/prod.yaml"
+            - "/config/environments/prod-nats.yaml"
           ports:
             - containerPort: 8080
               name: health
@@ -120,7 +136,7 @@ spec:
                   name: ssmd-kalshi-credentials
                   key: private-key
             - name: RUST_LOG
-              value: "info,ssmd_connector=debug"
+              value: "info"
           volumeMounts:
             - name: config
               mountPath: /config
@@ -147,30 +163,10 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: ssmd-config
+            name: ssmd-nats-config
 ```
 
-### Service
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: ssmd-connector
-  namespace: ssmd
-spec:
-  type: ClusterIP
-  ports:
-    - port: 8080
-      targetPort: health
-      name: health
-  selector:
-    app: ssmd-connector
-```
-
-## NATS JetStream Stream
-
-Create a stream for market data:
+### NATS JetStream Stream
 
 ```bash
 nats stream add PROD_KALSHI \
@@ -183,10 +179,150 @@ nats stream add PROD_KALSHI \
   -s nats://<nats-host>:4222
 ```
 
+---
+
+## Deployment Option 2: File Capture (Raw JSON)
+
+Writes raw JSON messages to disk for archival and replay. Uses date-partitioned JSONL files.
+
+**Output:** `/data/{date}/{feed}.jsonl`
+
+### ConfigMap (File Mode)
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ssmd-file-config
+  namespace: ssmd
+data:
+  feeds/kalshi.yaml: |
+    name: kalshi
+    feed_type: websocket
+    versions:
+      - version: "1.0"
+        endpoint: wss://trading-api.kalshi.com/trade-api/ws/v2
+        protocol:
+          transport: websocket
+          message: json
+
+  environments/prod-file.yaml: |
+    name: prod
+    feed: kalshi
+    schema: "trade:v1"
+    transport:
+      transport_type: memory
+    storage:
+      storage_type: local
+      path: /data
+```
+
+### Deployment (File Mode)
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ssmd-connector-file
+  namespace: ssmd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ssmd-connector-file
+  template:
+    metadata:
+      labels:
+        app: ssmd-connector-file
+    spec:
+      containers:
+        - name: connector
+          image: ghcr.io/<owner>/ssmd-connector:0.1.0
+          args:
+            - "--feed"
+            - "/config/feeds/kalshi.yaml"
+            - "--env"
+            - "/config/environments/prod-file.yaml"
+          ports:
+            - containerPort: 8080
+              name: health
+          env:
+            - name: KALSHI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ssmd-kalshi-credentials
+                  key: api-key
+            - name: KALSHI_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ssmd-kalshi-credentials
+                  key: private-key
+            - name: RUST_LOG
+              value: "info"
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: ssmd-file-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: ssmd-data
+```
+
+### PersistentVolumeClaim (File Mode)
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ssmd-data
+  namespace: ssmd
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+```
+
+---
+
+## Running Both Modes
+
+For production, run both deployments:
+- **ssmd-connector-nats**: Real-time streaming to consumers
+- **ssmd-connector-file**: Raw capture for archival/replay
+
+Both connect to the same Kalshi feed but output to different destinations.
+
 ## Network Policies
 
 If using network policies, allow:
-- **Egress**: ssmd → NATS (port 4222)
+- **Egress**: ssmd → NATS (port 4222) - NATS mode only
 - **Egress**: ssmd → Kalshi API (port 443, external)
 - **Egress**: ssmd → DNS (port 53)
 
@@ -205,26 +341,32 @@ If using network policies, allow:
 # Check pods
 kubectl get pods -n ssmd
 
-# Check logs
-kubectl logs -n ssmd -l app=ssmd-connector -f
+# Check logs (NATS mode)
+kubectl logs -n ssmd -l app=ssmd-connector-nats -f
+
+# Check logs (File mode)
+kubectl logs -n ssmd -l app=ssmd-connector-file -f
 
 # Monitor NATS trades
 nats sub -s nats://<nats-host>:4222 "prod.kalshi.trade.>"
+
+# Check file output
+kubectl exec -n ssmd deploy/ssmd-connector-file -- ls -la /data/
 ```
 
 ## Troubleshooting
 
 ### Connector not starting
 ```bash
-kubectl describe pod -n ssmd -l app=ssmd-connector
-kubectl logs -n ssmd -l app=ssmd-connector --previous
+kubectl describe pod -n ssmd -l app=ssmd-connector-nats
+kubectl logs -n ssmd -l app=ssmd-connector-nats --previous
 ```
 
 ### NATS connection issues
 ```bash
 # Test from pod
-kubectl exec -n ssmd deploy/ssmd-connector -- \
-  nc -zv <nats-service> 4222
+kubectl exec -n ssmd deploy/ssmd-connector-nats -- \
+  nc -zv nats.nats.svc.cluster.local 4222
 ```
 
 ### No data publishing
@@ -233,5 +375,12 @@ kubectl exec -n ssmd deploy/ssmd-connector -- \
 nats stream info PROD_KALSHI -s nats://<nats-host>:4222
 
 # Check connector logs for errors
-kubectl logs -n ssmd -l app=ssmd-connector | grep -i error
+kubectl logs -n ssmd -l app=ssmd-connector-nats | grep -i error
+```
+
+### File output not appearing
+```bash
+# Check disk space and permissions
+kubectl exec -n ssmd deploy/ssmd-connector-file -- df -h /data
+kubectl exec -n ssmd deploy/ssmd-connector-file -- ls -la /data/
 ```

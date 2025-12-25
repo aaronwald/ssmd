@@ -1,6 +1,7 @@
 //! ssmd-connector: Market data collection binary
 //!
-//! Connects to market data sources and writes to local storage.
+//! Connects to market data sources and writes to configured destinations.
+//! Supports file (raw JSON) and NATS (Cap'n Proto) output modes.
 
 use clap::Parser;
 use std::collections::HashMap;
@@ -13,9 +14,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_connector_lib::{
     kalshi::{KalshiConfig, KalshiConnector, KalshiCredentials},
-    EnvResolver, FileWriter, KeyResolver, Runner, ServerState, WebSocketConnector,
+    EnvResolver, FileWriter, KeyResolver, NatsWriter, Runner, ServerState, WebSocketConnector,
 };
-use ssmd_metadata::{Environment, Feed, FeedType, KeyType};
+use ssmd_metadata::{Environment, Feed, FeedType, KeyType, TransportType};
+use ssmd_middleware::MiddlewareFactory;
 
 #[derive(Parser, Debug)]
 #[command(name = "ssmd-connector")]
@@ -77,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create and run connector based on feed name
     match feed.name.as_str() {
         "kalshi" => {
-            run_kalshi_connector(&feed, &output_path, health_addr, shutdown_rx).await
+            run_kalshi_connector(&feed, &env_config, health_addr, shutdown_rx).await
         }
         _ => {
             run_generic_connector(&feed, &env_config, &output_path, health_addr, shutdown_rx).await
@@ -88,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Run Kalshi-specific connector with RSA authentication
 async fn run_kalshi_connector(
     feed: &Feed,
-    output_path: &PathBuf,
+    env_config: &Environment,
     health_addr: SocketAddr,
     shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -106,7 +108,46 @@ async fn run_kalshi_connector(
     info!(use_demo = config.use_demo, "Creating Kalshi connector");
 
     let connector = KalshiConnector::new(credentials, config.use_demo);
-    let writer = FileWriter::new(output_path, &feed.name);
+
+    // Select writer based on transport type
+    match env_config.transport.transport_type {
+        TransportType::Nats => {
+            info!(transport = "nats", "Using NATS writer (Cap'n Proto)");
+            let transport = MiddlewareFactory::create_transport(env_config).await?;
+            let writer = NatsWriter::new(transport, &env_config.name, &feed.name);
+            run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
+        }
+        TransportType::Memory => {
+            // Memory transport - use file writer for persistence
+            let output_path = env_config
+                .storage
+                .path
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("./data"));
+            info!(transport = "memory", path = ?output_path, "Using file writer (raw JSON)");
+            let writer = FileWriter::new(&output_path, &feed.name);
+            run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
+        }
+        TransportType::Mqtt => {
+            error!("MQTT transport not yet supported");
+            Err("MQTT transport not yet supported".into())
+        }
+    }
+}
+
+/// Run connector with a specific writer implementation
+async fn run_with_writer<C, W>(
+    feed: &Feed,
+    connector: C,
+    writer: W,
+    health_addr: SocketAddr,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    C: ssmd_connector_lib::traits::Connector,
+    W: ssmd_connector_lib::traits::Writer,
+{
     let mut runner = Runner::new(&feed.name, connector, writer);
     let connected_handle = runner.connected_handle();
 

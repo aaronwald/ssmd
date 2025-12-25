@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 ssmd-metadata = { path = "../metadata" }
+ssmd-middleware = { path = "../middleware" }
 ssmd-connector-lib = { path = "../connector" }
 tokio = { workspace = true }
 clap = { workspace = true }

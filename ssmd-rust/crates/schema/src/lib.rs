@@ -36,6 +36,26 @@ mod tests {
     }
 
     #[test]
+    fn test_build_ticker() {
+        let mut message = Builder::new_default();
+        {
+            let mut ticker = message.init_root::<ticker::Builder>();
+            ticker.set_timestamp(1703318400000000000);
+            ticker.set_ticker("KXTEST-123");
+            ticker.set_bid_price(0.45);
+            ticker.set_ask_price(0.46);
+            ticker.set_last_price(0.45);
+            ticker.set_volume(1000);
+            ticker.set_open_interest(500);
+        }
+
+        let reader = message.get_root_as_reader::<ticker::Reader>().unwrap();
+        assert_eq!(reader.get_ticker().unwrap(), "KXTEST-123");
+        assert_eq!(reader.get_bid_price(), 0.45);
+        assert_eq!(reader.get_ask_price(), 0.46);
+    }
+
+    #[test]
     fn test_build_order_book_update() {
         let mut message = Builder::new_default();
         {
