@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use clap::Parser;
-use tokio::signal;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -81,12 +81,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Fetch interval
     let mut fetch_interval = interval(Duration::from_millis(100));
 
-    info!("Archiver running, press Ctrl+C to stop");
+    // Set up signal handlers for graceful shutdown
+    let mut sigterm = signal(SignalKind::terminate())
+        .expect("Failed to create SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt())
+        .expect("Failed to create SIGINT handler");
+
+    info!("Archiver running, waiting for SIGTERM/SIGINT to stop");
 
     loop {
         tokio::select! {
-            _ = signal::ctrl_c() => {
-                info!("Shutdown signal received");
+            _ = sigterm.recv() => {
+                info!("SIGTERM received, shutting down gracefully");
+                break;
+            }
+            _ = sigint.recv() => {
+                info!("SIGINT received, shutting down gracefully");
                 break;
             }
             _ = fetch_interval.tick() => {
