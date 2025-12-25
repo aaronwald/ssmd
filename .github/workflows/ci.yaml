@@ -53,11 +53,37 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build (no push)
+      - name: Build connector (no push)
         uses: docker/build-push-action@v6
         with:
           context: ./ssmd-rust
           file: ./ssmd-rust/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Deno check
+        run: deno check ssmd-agent/src/main.ts
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build agent (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ssmd-agent
+          file: ./ssmd-agent/Dockerfile
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
