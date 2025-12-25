@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,4 +130,130 @@ func TestDataBuildersOutput(t *testing.T) {
 	if !strings.Contains(output, "priceHistory") {
 		t.Error("expected builders to contain priceHistory")
 	}
+}
+
+func TestDataCommandsIntegration(t *testing.T) {
+	// Save and restore all flags
+	origPath := dataPath
+	origOutput := dataOutput
+	origFeed := dataFeed
+	origFrom := dataFrom
+	origTo := dataTo
+	origLimit := dataLimit
+	origTicker := dataTicker
+	origType := dataType
+
+	t.Cleanup(func() {
+		dataPath = origPath
+		dataOutput = origOutput
+		dataFeed = origFeed
+		dataFrom = origFrom
+		dataTo = origTo
+		dataLimit = origLimit
+		dataTicker = origTicker
+		dataType = origType
+	})
+
+	// Create realistic test data structure
+	tmp := t.TempDir()
+
+	// Create kalshi/2025-12-25 with manifest and data file
+	dataDir := filepath.Join(tmp, "kalshi", "2025-12-25")
+	os.MkdirAll(dataDir, 0755)
+
+	// Create manifest
+	manifest := `{
+		"feed": "kalshi",
+		"date": "2025-12-25",
+		"format": "jsonl",
+		"rotation_interval": "5m",
+		"files": [
+			{"name": "1200.jsonl.gz", "records": 3, "bytes": 500, "start": "2025-12-25T12:00:00Z", "end": "2025-12-25T12:05:00Z", "nats_start_seq": 1, "nats_end_seq": 3}
+		],
+		"tickers": ["INXD-25001", "KXBTC-25001"],
+		"message_types": ["trade", "ticker"],
+		"has_gaps": false
+	}`
+	os.WriteFile(filepath.Join(dataDir, "manifest.json"), []byte(manifest), 0644)
+
+	// Create gzipped data file
+	dataFile, _ := os.Create(filepath.Join(dataDir, "1200.jsonl.gz"))
+	gw := gzip.NewWriter(dataFile)
+	gw.Write([]byte(`{"type":"trade","msg":{"market_ticker":"INXD-25001","price":55,"count":100}}` + "\n"))
+	gw.Write([]byte(`{"type":"ticker","msg":{"market_ticker":"INXD-25001","yes_bid":50,"yes_ask":60}}` + "\n"))
+	gw.Write([]byte(`{"type":"trade","msg":{"market_ticker":"KXBTC-25001","price":42,"count":50}}` + "\n"))
+	gw.Close()
+	dataFile.Close()
+
+	// Test list
+	t.Run("list command", func(t *testing.T) {
+		dataPath = tmp
+		dataOutput = "json"
+		dataFeed = ""
+		dataFrom = ""
+		dataTo = ""
+
+		var buf bytes.Buffer
+		dataListCmd.SetOut(&buf)
+		err := runDataList(dataListCmd, []string{})
+		if err != nil {
+			t.Fatalf("list failed: %v", err)
+		}
+
+		var datasets []DatasetInfo
+		if err := json.Unmarshal(buf.Bytes(), &datasets); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+		if len(datasets) != 1 || datasets[0].Feed != "kalshi" {
+			t.Errorf("unexpected list output: %v", datasets)
+		}
+	})
+
+	// Test sample
+	t.Run("sample command", func(t *testing.T) {
+		dataPath = tmp
+		dataOutput = "json"
+		dataLimit = 10
+		dataTicker = ""
+		dataType = ""
+
+		var buf bytes.Buffer
+		dataSampleCmd.SetOut(&buf)
+		err := runDataSample(dataSampleCmd, []string{"kalshi", "2025-12-25"})
+		if err != nil {
+			t.Fatalf("sample failed: %v", err)
+		}
+
+		var records []map[string]interface{}
+		if err := json.Unmarshal(buf.Bytes(), &records); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+		if len(records) != 3 {
+			t.Errorf("expected 3 records, got %d", len(records))
+		}
+	})
+
+	// Test sample with ticker filter
+	t.Run("sample with filter", func(t *testing.T) {
+		dataPath = tmp
+		dataOutput = "json"
+		dataLimit = 10
+		dataTicker = "INXD-25001"
+		dataType = ""
+
+		var buf bytes.Buffer
+		dataSampleCmd.SetOut(&buf)
+		err := runDataSample(dataSampleCmd, []string{"kalshi", "2025-12-25"})
+		if err != nil {
+			t.Fatalf("sample with filter failed: %v", err)
+		}
+
+		var records []map[string]interface{}
+		if err := json.Unmarshal(buf.Bytes(), &records); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+		if len(records) != 2 {
+			t.Errorf("expected 2 INXD records, got %d", len(records))
+		}
+	})
 }
