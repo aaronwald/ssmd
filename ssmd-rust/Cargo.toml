@@ -6,6 +6,7 @@ members = [
     "crates/connector",
     "crates/ssmd-connector",
     "crates/schema",
+    "crates/ssmd-archiver",
 ]
 
 [workspace.package]

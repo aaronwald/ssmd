@@ -5,6 +5,8 @@ use dashmap::DashMap;
 /// Helper for NATS subject formatting with environment prefix.
 /// Caches formatted subjects to avoid repeated allocations in hot path.
 pub struct SubjectBuilder {
+    /// Pre-computed base prefix: "{env}.{feed}."
+    base_prefix: Arc<str>,
     /// Pre-computed prefix: "{env}.{feed}.trade."
     trade_prefix: Arc<str>,
     /// Pre-computed prefix: "{env}.{feed}.ticker."
@@ -25,12 +27,14 @@ impl SubjectBuilder {
         let feed = feed.into();
 
         // Pre-compute static subjects at construction time
+        let base_prefix: Arc<str> = format!("{}.{}.", env, feed).into();
         let trade_prefix: Arc<str> = format!("{}.{}.trade.", env, feed).into();
         let ticker_prefix: Arc<str> = format!("{}.{}.ticker.", env, feed).into();
         let wildcard: Arc<str> = format!("{}.{}.>", env, feed).into();
         let stream_name: Arc<str> = format!("{}_{}", env.to_uppercase(), feed.to_uppercase()).into();
 
         Self {
+            base_prefix,
             trade_prefix,
             ticker_prefix,
             wildcard,
@@ -85,6 +89,22 @@ impl SubjectBuilder {
     pub fn stream_name(&self) -> &str {
         &self.stream_name
     }
+
+    /// Build subject for JSON trade messages: {env}.{feed}.json.trade.{ticker}
+    /// Not cached - allocates each call (acceptable for MVP volume).
+    pub fn json_trade(&self, ticker: &str) -> String {
+        format!("{}json.trade.{}", self.base_prefix, ticker)
+    }
+
+    /// Build subject for JSON ticker messages: {env}.{feed}.json.ticker.{ticker}
+    pub fn json_ticker(&self, ticker: &str) -> String {
+        format!("{}json.ticker.{}", self.base_prefix, ticker)
+    }
+
+    /// Build subject for JSON orderbook messages: {env}.{feed}.json.orderbook.{ticker}
+    pub fn json_orderbook(&self, ticker: &str) -> String {
+        format!("{}json.orderbook.{}", self.base_prefix, ticker)
+    }
 }
 
 #[cfg(test)]
@@ -131,5 +151,23 @@ mod tests {
     fn test_stream_name() {
         let builder = SubjectBuilder::new("kalshi-dev", "kalshi");
         assert_eq!(builder.stream_name(), "KALSHI-DEV_KALSHI");
+    }
+
+    #[test]
+    fn test_json_trade_subject() {
+        let builder = SubjectBuilder::new("prod", "kalshi");
+        assert_eq!(builder.json_trade("INXD-25001"), "prod.kalshi.json.trade.INXD-25001");
+    }
+
+    #[test]
+    fn test_json_ticker_subject() {
+        let builder = SubjectBuilder::new("prod", "kalshi");
+        assert_eq!(builder.json_ticker("KXBTC-25001"), "prod.kalshi.json.ticker.KXBTC-25001");
+    }
+
+    #[test]
+    fn test_json_orderbook_subject() {
+        let builder = SubjectBuilder::new("prod", "kalshi");
+        assert_eq!(builder.json_orderbook("INXD-25001"), "prod.kalshi.json.orderbook.INXD-25001");
     }
 }
