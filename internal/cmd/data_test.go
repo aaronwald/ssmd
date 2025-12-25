@@ -36,7 +36,7 @@ func TestDataListCommand(t *testing.T) {
 func TestDataListOutput(t *testing.T) {
 	// Save original values
 	origPath := dataPath
-	origJSON := dataOutputJSON
+	origOutput := dataOutput
 	origFeed := dataFeed
 	origFrom := dataFrom
 	origTo := dataTo
@@ -44,7 +44,7 @@ func TestDataListOutput(t *testing.T) {
 	// Restore on cleanup
 	t.Cleanup(func() {
 		dataPath = origPath
-		dataOutputJSON = origJSON
+		dataOutput = origOutput
 		dataFeed = origFeed
 		dataFrom = origFrom
 		dataTo = origTo
@@ -59,7 +59,7 @@ func TestDataListOutput(t *testing.T) {
 
 	// Set path flag
 	dataPath = tmp
-	dataOutputJSON = true
+	dataOutput = "json"
 	dataFeed = ""
 	dataFrom = ""
 	dataTo = ""
@@ -85,10 +85,10 @@ func TestDataListOutput(t *testing.T) {
 }
 
 func TestDataSchemaOutput(t *testing.T) {
-	origJSON := dataOutputJSON
-	t.Cleanup(func() { dataOutputJSON = origJSON })
+	origOutput := dataOutput
+	t.Cleanup(func() { dataOutput = origOutput })
 
-	dataOutputJSON = true
+	dataOutput = "json"
 
 	var buf bytes.Buffer
 	dataSchemaCmd.SetOut(&buf)
@@ -108,10 +108,10 @@ func TestDataSchemaOutput(t *testing.T) {
 }
 
 func TestDataBuildersOutput(t *testing.T) {
-	origJSON := dataOutputJSON
-	t.Cleanup(func() { dataOutputJSON = origJSON })
+	origOutput := dataOutput
+	t.Cleanup(func() { dataOutput = origOutput })
 
-	dataOutputJSON = true
+	dataOutput = "json"
 
 	var buf bytes.Buffer
 	dataBuildersCmd.SetOut(&buf)
