@@ -38,11 +38,14 @@ impl ArchiveWriter {
     }
 
     /// Write a record to the current file, rotating if needed
-    pub fn write(&mut self, data: &[u8], seq: u64, now: DateTime<Utc>) -> Result<(), ArchiverError> {
+    /// Returns Some(FileEntry) if a rotation occurred (file was closed)
+    pub fn write(&mut self, data: &[u8], seq: u64, now: DateTime<Utc>) -> Result<Option<FileEntry>, ArchiverError> {
         // Check if we need to rotate
-        if self.should_rotate(now) {
-            self.rotate(now)?;
-        }
+        let rotated = if self.should_rotate(now) {
+            self.rotate(now)?
+        } else {
+            None
+        };
 
         // Ensure we have a file open
         if self.current_file.is_none() {
@@ -63,7 +66,7 @@ impl ArchiveWriter {
         file.records += 1;
         file.bytes_written += data.len() as u64 + 1;
 
-        Ok(())
+        Ok(rotated)
     }
 
     /// Flush and close current file, returning FileEntry for manifest
@@ -149,8 +152,8 @@ mod tests {
         let mut writer = ArchiveWriter::new(tmp.path().to_path_buf(), "kalshi".to_string(), 15);
 
         let now = Utc::now();
-        writer.write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now).unwrap();
-        writer.write(br#"{"type":"trade","ticker":"KXBTC"}"#, 2, now).unwrap();
+        assert!(writer.write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now).unwrap().is_none());
+        assert!(writer.write(br#"{"type":"trade","ticker":"KXBTC"}"#, 2, now).unwrap().is_none());
 
         let entry = writer.close().unwrap().unwrap();
         assert_eq!(entry.records, 2);
