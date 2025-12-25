@@ -1,40 +1,26 @@
-//! NATS Writer - publishes Cap'n Proto encoded messages to NATS
+//! NATS Writer - publishes raw JSON messages to NATS
 //!
-//! Parses incoming JSON messages from connectors, converts to Cap'n Proto,
-//! and publishes to appropriate NATS subjects.
-//!
-//! TODO: Add raw JSON capture path alongside Cap'n Proto normalization
+//! Passes through incoming JSON messages from connectors directly to NATS.
+//! No transformation - raw bytes are preserved for archiving.
 
-use std::cell::RefCell;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use capnp::message::Builder;
 use tracing::{trace, warn};
 
-use ssmd_middleware::{SubjectBuilder, Transport, TransportError};
-use ssmd_schema::{ticker, trade, Side};
+use ssmd_middleware::{SubjectBuilder, Transport};
 
 use crate::error::WriterError;
-use crate::kalshi::messages::{TickerData, TradeData, WsMessage};
+use crate::kalshi::messages::WsMessage;
 use crate::message::Message;
 use crate::traits::Writer;
 
-/// Initial capacity for serialization buffer
-const BUFFER_CAPACITY: usize = 256;
-
-thread_local! {
-    /// Thread-local buffer for Cap'n Proto serialization
-    static CAPNP_BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(BUFFER_CAPACITY));
-}
-
-/// Writer that publishes Cap'n Proto encoded messages to NATS
+/// Writer that publishes raw JSON messages to NATS
 pub struct NatsWriter {
     transport: Arc<dyn Transport>,
     subjects: SubjectBuilder,
-    trade_count: u64,
-    ticker_count: u64,
+    message_count: u64,
 }
 
 impl NatsWriter {
@@ -46,92 +32,20 @@ impl NatsWriter {
         Self {
             transport,
             subjects: SubjectBuilder::new(env_name, feed_name),
-            trade_count: 0,
-            ticker_count: 0,
+            message_count: 0,
         }
     }
 
-    /// Publish a trade to NATS
-    async fn publish_trade(&mut self, data: &TradeData) -> Result<(), TransportError> {
-        let subject = self.subjects.trade(&data.market_ticker);
-
-        let payload = CAPNP_BUFFER.with(|buf| {
-            let mut buffer = buf.borrow_mut();
-            buffer.clear();
-
-            let mut message = Builder::new_default();
-            {
-                let mut trade_builder = message.init_root::<trade::Builder>();
-                trade_builder.set_timestamp(data.ts.timestamp_nanos_opt().unwrap_or(0) as u64);
-                trade_builder.set_ticker(&data.market_ticker);
-                // Kalshi prices are in cents (0-100), convert to decimal
-                trade_builder.set_price(data.price as f64 / 100.0);
-                trade_builder.set_size(data.count as u32);
-                trade_builder.set_side(match data.side.as_str() {
-                    "yes" | "buy" => Side::Buy,
-                    _ => Side::Sell,
-                });
-                trade_builder.set_trade_id(""); // Kalshi doesn't include trade_id in WS
-            }
-
-            capnp::serialize::write_message(&mut *buffer, &message)
-                .map_err(|e| TransportError::PublishFailed(e.to_string()))?;
-
-            Ok::<_, TransportError>(Bytes::copy_from_slice(&buffer))
-        })?;
-
-        self.transport.publish(&subject, payload).await?;
-        self.trade_count += 1;
-        Ok(())
-    }
-
-    /// Publish a ticker update to NATS
-    async fn publish_ticker(&mut self, data: &TickerData) -> Result<(), TransportError> {
-        let subject = self.subjects.ticker(&data.market_ticker);
-
-        let payload = CAPNP_BUFFER.with(|buf| {
-            let mut buffer = buf.borrow_mut();
-            buffer.clear();
-
-            let mut message = Builder::new_default();
-            {
-                let mut ticker_builder = message.init_root::<ticker::Builder>();
-                ticker_builder.set_timestamp(data.ts.timestamp_nanos_opt().unwrap_or(0) as u64);
-                ticker_builder.set_ticker(&data.market_ticker);
-                // Kalshi prices are in cents (0-100), convert to decimal
-                ticker_builder.set_bid_price(data.yes_bid.unwrap_or(0) as f64 / 100.0);
-                ticker_builder.set_ask_price(data.yes_ask.unwrap_or(0) as f64 / 100.0);
-                ticker_builder.set_last_price(data.last_price.unwrap_or(0) as f64 / 100.0);
-                ticker_builder.set_volume(data.volume.unwrap_or(0) as u64);
-                ticker_builder.set_open_interest(data.open_interest.unwrap_or(0) as u64);
-            }
-
-            capnp::serialize::write_message(&mut *buffer, &message)
-                .map_err(|e| TransportError::PublishFailed(e.to_string()))?;
-
-            Ok::<_, TransportError>(Bytes::copy_from_slice(&buffer))
-        })?;
-
-        self.transport.publish(&subject, payload).await?;
-        self.ticker_count += 1;
-        Ok(())
-    }
-
-    /// Get count of published trades
-    pub fn trade_count(&self) -> u64 {
-        self.trade_count
-    }
-
-    /// Get count of published tickers
-    pub fn ticker_count(&self) -> u64 {
-        self.ticker_count
+    /// Get count of published messages
+    pub fn message_count(&self) -> u64 {
+        self.message_count
     }
 }
 
 #[async_trait]
 impl Writer for NatsWriter {
     async fn write(&mut self, msg: &Message) -> Result<(), WriterError> {
-        // Parse JSON to determine message type
+        // Parse just enough to extract message type and ticker
         let ws_msg: WsMessage = match serde_json::from_slice(&msg.data) {
             Ok(m) => m,
             Err(e) => {
@@ -140,38 +54,41 @@ impl Writer for NatsWriter {
             }
         };
 
-        match ws_msg {
+        let subject = match &ws_msg {
             WsMessage::Trade { msg: trade_data } => {
-                self.publish_trade(&trade_data).await.map_err(|e| {
-                    WriterError::WriteFailed(format!("NATS publish failed: {}", e))
-                })?;
+                self.subjects.json_trade(&trade_data.market_ticker)
             }
             WsMessage::Ticker { msg: ticker_data } => {
-                self.publish_ticker(&ticker_data).await.map_err(|e| {
-                    WriterError::WriteFailed(format!("NATS publish failed: {}", e))
-                })?;
+                self.subjects.json_ticker(&ticker_data.market_ticker)
             }
-            WsMessage::OrderbookSnapshot { .. } | WsMessage::OrderbookDelta { .. } => {
-                // TODO: Publish orderbook updates when L2 support is added
-                trace!("Orderbook message received, skipping (not yet implemented)");
+            WsMessage::OrderbookSnapshot { msg: ob_data } => {
+                self.subjects.json_orderbook(&ob_data.market_ticker)
+            }
+            WsMessage::OrderbookDelta { msg: ob_data } => {
+                self.subjects.json_orderbook(&ob_data.market_ticker)
             }
             WsMessage::Subscribed { .. } | WsMessage::Unsubscribed { .. } => {
                 // Control messages, don't publish
+                return Ok(());
             }
             WsMessage::Unknown => {
                 warn!("Unknown message type received");
+                return Ok(());
             }
-        }
+        };
 
+        // Publish raw bytes - no transformation
+        self.transport
+            .publish(&subject, Bytes::from(msg.data.clone()))
+            .await
+            .map_err(|e| WriterError::WriteFailed(format!("NATS publish failed: {}", e)))?;
+
+        self.message_count += 1;
         Ok(())
     }
 
     async fn close(&mut self) -> Result<(), WriterError> {
-        trace!(
-            trades = self.trade_count,
-            tickers = self.ticker_count,
-            "NatsWriter closing"
-        );
+        trace!(messages = self.message_count, "NatsWriter closing");
         Ok(())
     }
 }
@@ -182,12 +99,15 @@ mod tests {
     use ssmd_middleware::InMemoryTransport;
 
     #[tokio::test]
-    async fn test_publish_trade() {
+    async fn test_publish_trade_json() {
         let transport = Arc::new(InMemoryTransport::new());
         let mut writer = NatsWriter::new(transport.clone(), "dev", "kalshi");
 
-        // Subscribe before publishing (exact subject - InMemoryTransport doesn't support wildcards)
-        let mut sub = transport.subscribe("dev.kalshi.trade.KXTEST-123").await.unwrap();
+        // Subscribe to exact subject
+        let mut sub = transport
+            .subscribe("dev.kalshi.json.trade.KXTEST-123")
+            .await
+            .unwrap();
 
         let trade_json = br#"{"type":"trade","sid":2,"seq":1,"msg":{"market_ticker":"KXTEST-123","price":50,"count":10,"side":"yes","ts":1732579880}}"#;
         let msg = Message::new("kalshi", trade_json.to_vec());
@@ -195,28 +115,20 @@ mod tests {
         writer.write(&msg).await.unwrap();
 
         let received = sub.next().await.unwrap();
-        assert_eq!(received.subject, "dev.kalshi.trade.KXTEST-123");
-        assert!(!received.payload.is_empty());
-
-        // Deserialize and verify
-        let reader = capnp::serialize::read_message_from_flat_slice(
-            &mut received.payload.as_ref(),
-            capnp::message::ReaderOptions::new(),
-        )
-        .unwrap();
-        let trade_reader = reader.get_root::<trade::Reader>().unwrap();
-        assert_eq!(trade_reader.get_ticker().unwrap(), "KXTEST-123");
-        assert_eq!(trade_reader.get_price(), 0.50); // 50 cents = 0.50
-        assert_eq!(trade_reader.get_size(), 10);
+        assert_eq!(received.subject, "dev.kalshi.json.trade.KXTEST-123");
+        // Raw JSON preserved
+        assert_eq!(received.payload.as_ref(), trade_json);
     }
 
     #[tokio::test]
-    async fn test_publish_ticker() {
+    async fn test_publish_ticker_json() {
         let transport = Arc::new(InMemoryTransport::new());
         let mut writer = NatsWriter::new(transport.clone(), "dev", "kalshi");
 
-        // Subscribe to exact subject - InMemoryTransport doesn't support wildcards
-        let mut sub = transport.subscribe("dev.kalshi.ticker.KXTEST-456").await.unwrap();
+        let mut sub = transport
+            .subscribe("dev.kalshi.json.ticker.KXTEST-456")
+            .await
+            .unwrap();
 
         let ticker_json = br#"{"type":"ticker","sid":1,"msg":{"market_ticker":"KXTEST-456","yes_bid":45,"yes_ask":46,"price":45,"volume":1000,"open_interest":500,"ts":1732579880}}"#;
         let msg = Message::new("kalshi", ticker_json.to_vec());
@@ -224,17 +136,8 @@ mod tests {
         writer.write(&msg).await.unwrap();
 
         let received = sub.next().await.unwrap();
-        assert_eq!(received.subject, "dev.kalshi.ticker.KXTEST-456");
-
-        let reader = capnp::serialize::read_message_from_flat_slice(
-            &mut received.payload.as_ref(),
-            capnp::message::ReaderOptions::new(),
-        )
-        .unwrap();
-        let ticker_reader = reader.get_root::<ticker::Reader>().unwrap();
-        assert_eq!(ticker_reader.get_ticker().unwrap(), "KXTEST-456");
-        assert_eq!(ticker_reader.get_bid_price(), 0.45);
-        assert_eq!(ticker_reader.get_ask_price(), 0.46);
+        assert_eq!(received.subject, "dev.kalshi.json.ticker.KXTEST-456");
+        assert_eq!(received.payload.as_ref(), ticker_json);
     }
 
     #[tokio::test]
@@ -249,7 +152,26 @@ mod tests {
         writer.write(&msg).await.unwrap();
 
         // No messages published
-        assert_eq!(writer.trade_count(), 0);
-        assert_eq!(writer.ticker_count(), 0);
+        assert_eq!(writer.message_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_message_count() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = NatsWriter::new(transport.clone(), "dev", "kalshi");
+
+        // Need to subscribe to receive
+        let _sub = transport
+            .subscribe("dev.kalshi.json.trade.KXTEST-123")
+            .await
+            .unwrap();
+
+        let trade_json = br#"{"type":"trade","sid":2,"seq":1,"msg":{"market_ticker":"KXTEST-123","price":50,"count":10,"side":"yes","ts":1732579880}}"#;
+        let msg = Message::new("kalshi", trade_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+        writer.write(&msg).await.unwrap();
+
+        assert_eq!(writer.message_count(), 2);
     }
 }
