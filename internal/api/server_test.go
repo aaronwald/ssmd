@@ -2,6 +2,8 @@
 package api
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,19 @@ import (
 
 	"github.com/aaronwald/ssmd/internal/types"
 )
+
+// Helper to create gzipped JSONL
+func createGzipJSONL(records []map[string]interface{}) []byte {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	for _, r := range records {
+		b, _ := json.Marshal(r)
+		gw.Write(b)
+		gw.Write([]byte("\n"))
+	}
+	gw.Close()
+	return buf.Bytes()
+}
 
 type mockStorage struct {
 	feeds     []string
@@ -174,5 +189,112 @@ func TestDatasetsWithFeedFilter(t *testing.T) {
 
 	if datasets[0].Feed != "kalshi" {
 		t.Errorf("expected feed kalshi, got %s", datasets[0].Feed)
+	}
+}
+
+func TestSampleEndpoint(t *testing.T) {
+	// Create mock with file data
+	storage := &mockStorage{
+		manifests: map[string]map[string]*types.Manifest{
+			"kalshi": {
+				"2025-12-25": {
+					Feed: "kalshi",
+					Date: "2025-12-25",
+					Files: []types.FileEntry{
+						{Name: "data.jsonl.gz"},
+					},
+				},
+			},
+		},
+		fileData: map[string][]byte{
+			"kalshi/2025-12-25/data.jsonl.gz": createGzipJSONL([]map[string]interface{}{
+				{"type": "orderbook", "ticker": "INXD", "yes_bid": 0.45},
+				{"type": "orderbook", "ticker": "INXD", "yes_ask": 0.55},
+				{"type": "trade", "ticker": "INXD", "price": 0.50},
+			}),
+		},
+	}
+
+	server := NewServer(storage, "test-key")
+
+	req := httptest.NewRequest("GET", "/datasets/kalshi/2025-12-25/sample?limit=2", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var records []map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&records); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+
+	if len(records) != 2 {
+		t.Errorf("expected 2 records, got %d", len(records))
+	}
+}
+
+func TestSampleEndpointWithTypeFilter(t *testing.T) {
+	storage := &mockStorage{
+		manifests: map[string]map[string]*types.Manifest{
+			"kalshi": {
+				"2025-12-25": {
+					Feed: "kalshi",
+					Date: "2025-12-25",
+					Files: []types.FileEntry{
+						{Name: "data.jsonl.gz"},
+					},
+				},
+			},
+		},
+		fileData: map[string][]byte{
+			"kalshi/2025-12-25/data.jsonl.gz": createGzipJSONL([]map[string]interface{}{
+				{"type": "orderbook", "ticker": "INXD", "yes_bid": 0.45},
+				{"type": "trade", "ticker": "INXD", "price": 0.50},
+				{"type": "orderbook", "ticker": "INXD", "yes_ask": 0.55},
+			}),
+		},
+	}
+
+	server := NewServer(storage, "test-key")
+
+	req := httptest.NewRequest("GET", "/datasets/kalshi/2025-12-25/sample?type=trade", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+
+	var records []map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&records); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+
+	if len(records) != 1 {
+		t.Errorf("expected 1 trade record, got %d", len(records))
+	}
+
+	if records[0]["type"] != "trade" {
+		t.Errorf("expected type trade, got %v", records[0]["type"])
+	}
+}
+
+func TestSampleEndpointNotFound(t *testing.T) {
+	server := NewServer(&mockStorage{}, "test-key")
+
+	req := httptest.NewRequest("GET", "/datasets/unknown/2025-12-25/sample", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", rec.Code)
 	}
 }
