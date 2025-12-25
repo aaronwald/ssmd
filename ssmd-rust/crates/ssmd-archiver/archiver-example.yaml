@@ -1,0 +1,12 @@
+# ssmd-archiver configuration example
+nats:
+  url: nats://localhost:4222
+  stream: MARKETDATA
+  consumer: archiver-kalshi
+  filter: "prod.kalshi.json.>"
+
+storage:
+  path: /data/ssmd
+
+rotation:
+  interval: 15m   # 15m for testing, 1h or 1d for production

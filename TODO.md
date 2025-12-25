@@ -105,7 +105,7 @@ _None_
 ### Phase 2: Connector → NATS Streaming
 Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `05-data-flow.md`
 
-**Connector (MVP for Agent Pipeline):**
+**Connector (NATS-only output):**
 - [x] Rust project setup (cargo workspace)
 - [x] Cap'n Proto schema definition (.capnp files)
 - [x] Kalshi WebSocket client (tokio + tungstenite)
@@ -117,13 +117,19 @@ Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `05-data-flow.md`
 - [x] MiddlewareFactory async with NATS support
 - [x] NatsWriter implementing Writer trait (parses JSON → Cap'n Proto → NATS)
 - [x] Ticker schema in Cap'n Proto for price updates
-- [x] Configurable writer selection (NATS vs File) based on environment transport type
-- [x] Dual deployment documentation (NATS streaming + File capture)
+- [ ] **BREAKING**: Remove file writer path - all output to NATS only
+- [ ] Configurable format: JSON or Cap'n Proto to NATS
+- [ ] Subject pattern for JSON: `{env}.{feed}.json.{type}.{ticker}`
+- [ ] Subject pattern for Cap'n Proto: `{env}.{feed}.capnp.{type}.{ticker}`
 
-**Raw Capture (Pending):**
-- [ ] Add raw JSON passthrough to NATS alongside Cap'n Proto normalization
-- [ ] Subject pattern: `{env}.{feed}.raw.{message_type}`
-- [ ] Enable both raw and normalized streams for debugging/replay
+**Archiver (Rust, subscribes from NATS):**
+Design: Enables sharding - multiple archivers can subscribe to different subject patterns
+- [ ] NATS JetStream subscription (durable consumer)
+- [ ] Write JSONL.gz files partitioned by trading day
+- [ ] Manifest file generation (record counts, tickers, time range)
+- [ ] Local storage path configuration
+- [ ] GCS sync support (homelab → cloud)
+- [ ] Backpressure handling (bounded buffer, slow consumer detection)
 
 **Orderbook Data (Deferred):**
 - [ ] Publish L2 (aggregated price level) updates to NATS - not full snapshots
@@ -131,51 +137,57 @@ Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `05-data-flow.md`
 - [ ] Clients build orderbooks from L2 updates + cache snapshots
 
 ### Phase 3: Agent Pipeline MVP
-Design: `docs/plans/designs/2025-12-23-agent-pipeline.md`, `docs/plans/designs/langchain-ideas.md`
+Design: `docs/plans/designs/2025-12-25-backtest-agent-skills.md`
+Depends on: Phase 2 Archiver (provides JSONL data files)
 
-**LangGraph.js + NATS Infrastructure:**
-Ref: `docs/plans/designs/langchain-ideas.md`
-- [ ] Node.js/Deno project setup with LangGraph.js dependencies
-- [ ] PostgreSQL checkpointer setup (`@langchain/langgraph-checkpoint-postgres`)
-- [ ] Checkpoint must include NATS stream position (seq no + stream name) for resumption
-- [ ] NATS JetStream consumer service pattern
-- [ ] JetStream stream config: `AGENTS` (requests, workqueue retention)
-- [ ] JetStream stream config: `AGENT_RESPONSES` (responses, streaming)
-- [ ] Durable consumer with explicit ack, max_deliver, backpressure control
-- [ ] Streaming responses via NATS (`agent.stream.{thread_id}`)
-- [ ] Long-running agent heartbeat (`msg.working()`)
-- [ ] Thread ID strategy (session-based vs continuous vs entity-scoped)
+**ssmd data CLI (Go):**
+Ref: `docs/plans/designs/2025-12-25-backtest-agent-skills.md` - Dataset Service section
+- [ ] `ssmd data list` - list available datasets (reads manifests from local/GCS)
+- [ ] `ssmd data sample <feed> <date>` - sample records from dataset
+- [ ] `ssmd data schema <feed> <type>` - show schema for message type
+- [ ] `ssmd data builders` - list available state builders
+- [ ] `--output json` flag for all data commands (agent consumption)
 
-**Signal Runtime:**
-- [ ] State Builders (orderbook, priceHistory, volumeProfile)
-- [ ] Signal interface and evaluator
-- [ ] NATS subscription for raw market data
-- [ ] Signal event publishing to NATS
+**State Builders (TypeScript, shared):**
+- [ ] `src/state/types.ts` - StateBuilder<T> interface
+- [ ] `src/state/orderbook.ts` - OrderBookBuilder
+- [ ] `src/state/price-history.ts` - PriceHistoryBuilder
+- [ ] `src/state/volume-profile.ts` - VolumeProfileBuilder
 
-**Definition Agent:**
-- [ ] LangGraph graph for signal creation (custom StateGraph or createReactAgent)
-- [ ] Structured output + template for signal generation
-- [ ] `create_signal` tool with schema validation
-- [ ] Type-check validation
-- [ ] Git commit workflow for signal deployment
+**Backtest Runner (TypeScript):**
+- [ ] Load JSONL data from `ssmd data sample`
+- [ ] Replay through state builders
+- [ ] Evaluate signal code, collect fires
+- [ ] Return BacktestResult (fires, errors, sample_payloads)
 
-**Action Agent:**
-- [ ] LangGraph graph for signal response
-- [ ] Interpret → Decide → Execute nodes
-- [ ] Action types (alert, log, webhook, trade_signal)
-- [ ] Action event publishing to NATS
+**Skills (Markdown files):**
+- [ ] `skills/explore-data.md` - data discovery
+- [ ] `skills/interpret-backtest.md` - result analysis
+- [ ] `skills/monitor-spread.md` - spread signal template
+- [ ] `skills/price-alert.md` - price threshold template
+- [ ] `skills/volume-spike.md` - volume signal template
+- [ ] `skills/custom-signal.md` - generic template
+- [ ] Skill loader from filesystem
 
-**Agent Tools:**
-- [ ] `replay_orderbook` - build state from archived deltas
-- [ ] `list_state_builders` - show available builders
-- [ ] `list_signals` - show existing signals
-- [ ] `get_recent_trades` - query NATS history
-- [ ] `get_signal_history` - query signal fire events
+**CLI Agent (Deno):**
+- [ ] LangGraph.js + @langchain/anthropic setup
+- [ ] Tool wrappers for `ssmd data` commands
+- [ ] `run_backtest` tool
+- [ ] `deploy_signal` tool (write file + git commit)
+- [ ] Streaming output via `streamEvents()`
+- [ ] REPL interface (`deno task agent`)
 
-**Replay Mode:**
-- [ ] NatsReplay for historical data testing
-- [ ] S3 archive replay support
-- [ ] Signal testing against replayed data
+**Signal Runtime (TypeScript):**
+- [ ] Load signals from `signals/*.ts`
+- [ ] NATS subscription for market data
+- [ ] State builder updates
+- [ ] Signal evaluation loop
+- [ ] Fire event publishing to NATS
+
+**Future (Post-MVP):**
+- [ ] Memory persistence (PostgresSaver)
+- [ ] Guardrails (rate limiting, cost controls, sandbox)
+- [ ] Arrow/Parquet storage format
 
 **Scaling & Operations:**
 - [ ] Horizontal scaling via JetStream workqueue distribution

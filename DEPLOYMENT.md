@@ -6,19 +6,24 @@ Deploy ssmd components to Kubernetes.
 
 | Component | Image | Purpose |
 |-----------|-------|---------|
-| **ssmd-connector** | `ghcr.io/<owner>/ssmd-connector` | Kalshi WebSocket → NATS/File |
+| **ssmd-connector** | `ghcr.io/<owner>/ssmd-connector` | Kalshi WebSocket → NATS (raw JSON) |
+| **ssmd-archiver** | `ghcr.io/<owner>/ssmd-archiver` | NATS → JSONL.gz files |
 | **ssmd-agent** | `ghcr.io/<owner>/ssmd-agent` | LangGraph signal runtime (stub) |
 
 ---
 
 ## ssmd-connector
 
-Deploy ssmd-connector to Kubernetes. Supports two output modes:
+Deploy ssmd-connector to Kubernetes. Publishes raw JSON to NATS JetStream.
 
 | Mode | Transport | Output | Use Case |
 |------|-----------|--------|----------|
-| **NATS** | `nats` | Cap'n Proto to JetStream | Real-time streaming |
-| **File** | `memory` | Raw JSON to disk | Archival/replay |
+| **NATS** | `nats` | Raw JSON to JetStream | Real-time streaming |
+
+**Subjects:**
+- `{env}.{feed}.json.trade.{ticker}` - Trade executions
+- `{env}.{feed}.json.ticker.{ticker}` - Price updates
+- `{env}.{feed}.json.orderbook.{ticker}` - Orderbook updates
 
 ## Prerequisites
 
@@ -70,15 +75,11 @@ kubectl create secret generic ssmd-kalshi-credentials \
 
 ---
 
-## Deployment Option 1: NATS Streaming (Cap'n Proto)
+## Deployment: NATS Streaming
 
-Publishes normalized market data to NATS JetStream as Cap'n Proto messages.
+Publishes raw JSON market data to NATS JetStream.
 
-**Subjects:**
-- `{env}.{feed}.trade.{ticker}` - Trade executions
-- `{env}.{feed}.ticker.{ticker}` - Price updates
-
-### ConfigMap (NATS Mode)
+### ConfigMap
 
 ```yaml
 apiVersion: v1
@@ -108,7 +109,7 @@ data:
       storage_type: local
 ```
 
-### Deployment (NATS Mode)
+### Deployment
 
 ```yaml
 apiVersion: apps/v1
@@ -194,82 +195,73 @@ nats stream add PROD_KALSHI \
 
 ---
 
-## Deployment Option 2: File Capture (Raw JSON)
+## ssmd-archiver
 
-Writes raw JSON messages to disk for archival and replay. Uses date-partitioned JSONL files.
+Subscribes to NATS JetStream and writes JSONL.gz files to disk with configurable rotation.
 
-**Output:** `/data/{date}/{feed}.jsonl`
+**Output:** `/data/ssmd/{feed}/{date}/{HHMM}.jsonl.gz` + `manifest.json`
 
-### ConfigMap (File Mode)
+### Container Image
+
+```bash
+# Build locally
+cd ssmd-rust
+docker build -f crates/ssmd-archiver/Dockerfile -t ssmd-archiver:latest .
+
+# Or use GHCR (tags trigger builds)
+git tag v0.1.0
+git push origin v0.1.0
+# Image pushed to ghcr.io/<owner>/ssmd-archiver:0.1.0
+```
+
+### ConfigMap
 
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: ssmd-file-config
+  name: ssmd-archiver-config
   namespace: ssmd
 data:
-  feeds/kalshi.yaml: |
-    name: kalshi
-    feed_type: websocket
-    versions:
-      - version: "1.0"
-        endpoint: wss://trading-api.kalshi.com/trade-api/ws/v2
-        protocol:
-          transport: websocket
-          message: json
+  archiver.yaml: |
+    nats:
+      url: nats://nats.nats.svc.cluster.local:4222
+      stream: PROD_KALSHI
+      consumer: archiver-kalshi
+      filter: "prod.kalshi.json.>"
 
-  environments/prod-file.yaml: |
-    name: prod
-    feed: kalshi
-    schema: "trade:v1"
-    transport:
-      transport_type: memory
     storage:
-      storage_type: local
-      path: /data
+      path: /data/ssmd
+
+    rotation:
+      interval: 15m   # 15m for testing, 1h or 1d for production
 ```
 
-### Deployment (File Mode)
+### Deployment
 
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ssmd-connector-file
+  name: ssmd-archiver
   namespace: ssmd
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ssmd-connector-file
+      app: ssmd-archiver
   template:
     metadata:
       labels:
-        app: ssmd-connector-file
+        app: ssmd-archiver
     spec:
       containers:
-        - name: connector
-          image: ghcr.io/<owner>/ssmd-connector:0.1.0
+        - name: archiver
+          image: ghcr.io/<owner>/ssmd-archiver:0.1.0
           args:
-            - "--feed"
-            - "/config/feeds/kalshi.yaml"
-            - "--env"
-            - "/config/environments/prod-file.yaml"
-          ports:
-            - containerPort: 8080
-              name: health
+            - "--config"
+            - "/config/archiver.yaml"
           env:
-            - name: KALSHI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: ssmd-kalshi-credentials
-                  key: api-key
-            - name: KALSHI_PRIVATE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: ssmd-kalshi-credentials
-                  key: private-key
             - name: RUST_LOG
               value: "info"
           volumeMounts:
@@ -277,36 +269,24 @@ spec:
               mountPath: /config
               readOnly: true
             - name: data
-              mountPath: /data
+              mountPath: /data/ssmd
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 50m
+              memory: 64Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: health
-            initialDelaySeconds: 30
-            periodSeconds: 10
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: health
-            initialDelaySeconds: 10
-            periodSeconds: 5
+              cpu: 200m
+              memory: 256Mi
       volumes:
         - name: config
           configMap:
-            name: ssmd-file-config
+            name: ssmd-archiver-config
         - name: data
           persistentVolumeClaim:
             claimName: ssmd-data
 ```
 
-### PersistentVolumeClaim (File Mode)
+### PersistentVolumeClaim
 
 ```yaml
 apiVersion: v1
@@ -322,24 +302,49 @@ spec:
       storage: 100Gi
 ```
 
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `RUST_LOG` | No | `info` | Log level |
+
+### Verify Deployment
+
+```bash
+# Check pod
+kubectl get pods -n ssmd -l app=ssmd-archiver
+
+# Check logs
+kubectl logs -n ssmd -l app=ssmd-archiver -f
+
+# Check output files
+kubectl exec -n ssmd deploy/ssmd-archiver -- ls -la /data/ssmd/kalshi/
+```
+
 ---
 
-## Running Both Modes
+## Production Architecture
 
-For production, run both deployments:
-- **ssmd-connector-nats**: Real-time streaming to consumers
-- **ssmd-connector-file**: Raw capture for archival/replay
+For production, run both connector and archiver:
+- **ssmd-connector**: Real-time streaming to NATS
+- **ssmd-archiver**: Persists NATS data to disk for archival/replay
 
-Both connect to the same Kalshi feed but output to different destinations.
+```
+Kalshi WS → Connector → NATS JetStream → Archiver → JSONL.gz → GCS (cron)
+```
 
 ## Network Policies
 
 If using network policies, allow:
 
 **ssmd-connector:**
-- **Egress**: ssmd-connector → NATS (port 4222) - NATS mode only
+- **Egress**: ssmd-connector → NATS (port 4222)
 - **Egress**: ssmd-connector → Kalshi API (port 443, external)
 - **Egress**: ssmd-connector → DNS (port 53)
+
+**ssmd-archiver:**
+- **Egress**: ssmd-archiver → NATS (port 4222)
+- **Egress**: ssmd-archiver → DNS (port 53)
 
 **ssmd-agent (future):**
 - **Egress**: ssmd-agent → NATS (port 4222)
