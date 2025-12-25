@@ -83,3 +83,26 @@ func TestDataListOutput(t *testing.T) {
 		t.Error("expected output to contain record count")
 	}
 }
+
+func TestDataSchemaOutput(t *testing.T) {
+	origJSON := dataOutputJSON
+	t.Cleanup(func() { dataOutputJSON = origJSON })
+
+	dataOutputJSON = true
+
+	var buf bytes.Buffer
+	dataSchemaCmd.SetOut(&buf)
+
+	err := runDataSchema(dataSchemaCmd, []string{"kalshi", "orderbook"})
+	if err != nil {
+		t.Fatalf("runDataSchema failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "yes_bid") {
+		t.Error("expected schema to contain yes_bid field")
+	}
+	if !strings.Contains(output, "spread") {
+		t.Error("expected schema to contain spread derived field")
+	}
+}

@@ -97,6 +97,58 @@ type DatasetInfo struct {
 	HasGaps bool    `json:"has_gaps"`
 }
 
+// SchemaInfo represents a message type schema
+type SchemaInfo struct {
+	Type    string            `json:"type"`
+	Fields  map[string]string `json:"fields"`
+	Derived []string          `json:"derived,omitempty"`
+}
+
+// Known schemas for Kalshi
+var knownSchemas = map[string]map[string]SchemaInfo{
+	"kalshi": {
+		"trade": {
+			Type: "trade",
+			Fields: map[string]string{
+				"ticker":     "string",
+				"price":      "number",
+				"count":      "number",
+				"side":       "string",
+				"ts":         "number",
+				"taker_side": "string",
+			},
+			Derived: []string{},
+		},
+		"ticker": {
+			Type: "ticker",
+			Fields: map[string]string{
+				"ticker":        "string",
+				"yes_bid":       "number",
+				"yes_ask":       "number",
+				"no_bid":        "number",
+				"no_ask":        "number",
+				"last_price":    "number",
+				"volume":        "number",
+				"open_interest": "number",
+				"ts":            "number",
+			},
+			Derived: []string{"spread", "midpoint"},
+		},
+		"orderbook": {
+			Type: "orderbook",
+			Fields: map[string]string{
+				"ticker":  "string",
+				"yes_bid": "number",
+				"yes_ask": "number",
+				"no_bid":  "number",
+				"no_ask":  "number",
+				"ts":      "number",
+			},
+			Derived: []string{"spread", "midpoint", "imbalance"},
+		},
+	},
+}
+
 // Placeholder implementations
 func runDataList(cmd *cobra.Command, args []string) error {
 	// Determine data path
@@ -276,6 +328,38 @@ func runDataSample(cmd *cobra.Command, args []string) error {
 }
 
 func runDataSchema(cmd *cobra.Command, args []string) error {
+	feed := args[0]
+	msgType := args[1]
+
+	feedSchemas, ok := knownSchemas[feed]
+	if !ok {
+		return fmt.Errorf("unknown feed: %s", feed)
+	}
+
+	schema, ok := feedSchemas[msgType]
+	if !ok {
+		return fmt.Errorf("unknown message type %s for feed %s", msgType, feed)
+	}
+
+	if dataOutputJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(schema)
+	}
+
+	// Table output
+	fmt.Fprintf(cmd.OutOrStdout(), "Schema: %s.%s\n\n", feed, msgType)
+	fmt.Fprintf(cmd.OutOrStdout(), "Fields:\n")
+	for name, typ := range schema.Fields {
+		fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", name, typ)
+	}
+	if len(schema.Derived) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "\nDerived:\n")
+		for _, d := range schema.Derived {
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", d)
+		}
+	}
+
 	return nil
 }
 
