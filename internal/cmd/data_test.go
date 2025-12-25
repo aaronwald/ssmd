@@ -106,3 +106,26 @@ func TestDataSchemaOutput(t *testing.T) {
 		t.Error("expected schema to contain spread derived field")
 	}
 }
+
+func TestDataBuildersOutput(t *testing.T) {
+	origJSON := dataOutputJSON
+	t.Cleanup(func() { dataOutputJSON = origJSON })
+
+	dataOutputJSON = true
+
+	var buf bytes.Buffer
+	dataBuildersCmd.SetOut(&buf)
+
+	err := runDataBuilders(dataBuildersCmd, []string{})
+	if err != nil {
+		t.Fatalf("runDataBuilders failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "orderbook") {
+		t.Error("expected builders to contain orderbook")
+	}
+	if !strings.Contains(output, "priceHistory") {
+		t.Error("expected builders to contain priceHistory")
+	}
+}

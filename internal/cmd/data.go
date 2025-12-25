@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aaronwald/ssmd/internal/data"
@@ -102,6 +103,32 @@ type SchemaInfo struct {
 	Type    string            `json:"type"`
 	Fields  map[string]string `json:"fields"`
 	Derived []string          `json:"derived,omitempty"`
+}
+
+// BuilderInfo represents a state builder
+type BuilderInfo struct {
+	ID          string   `json:"id"`
+	Description string   `json:"description"`
+	Derived     []string `json:"derived"`
+}
+
+// State builders
+var stateBuilders = []BuilderInfo{
+	{
+		ID:          "orderbook",
+		Description: "Maintains bid/ask levels from orderbook updates",
+		Derived:     []string{"spread", "bestBid", "bestAsk", "bidDepth", "askDepth", "midpoint"},
+	},
+	{
+		ID:          "priceHistory",
+		Description: "Rolling window of price history",
+		Derived:     []string{"last", "vwap", "returns", "high", "low", "volatility"},
+	},
+	{
+		ID:          "volumeProfile",
+		Description: "Buy/sell volume tracking",
+		Derived:     []string{"buyVolume", "sellVolume", "totalVolume", "ratio", "average"},
+	},
 }
 
 // Known schemas for Kalshi
@@ -364,5 +391,18 @@ func runDataSchema(cmd *cobra.Command, args []string) error {
 }
 
 func runDataBuilders(cmd *cobra.Command, args []string) error {
+	if dataOutputJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(stateBuilders)
+	}
+
+	// Table output
+	fmt.Fprintf(cmd.OutOrStdout(), "%-15s %-45s %s\n", "ID", "DESCRIPTION", "DERIVED FIELDS")
+	for _, b := range stateBuilders {
+		derived := strings.Join(b.Derived, ", ")
+		fmt.Fprintf(cmd.OutOrStdout(), "%-15s %-45s %s\n", b.ID, b.Description, derived)
+	}
+
 	return nil
 }
