@@ -161,7 +161,7 @@ func validateGCSPathPart(part string) error {
 	}
 	// Reject path traversal attempts
 	if strings.Contains(part, "..") {
-		return fmt.Errorf("path component cannot contain ..")
+		return fmt.Errorf("path component cannot contain parent reference")
 	}
 	// Only allow alphanumeric, dash, underscore, dot
 	for _, r := range part {
