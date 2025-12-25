@@ -1,7 +1,7 @@
 //! ssmd-archiver binary entry point
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use clap::Parser;
@@ -152,8 +152,9 @@ fn extract_feed_from_filter(filter: &str) -> Option<String> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_manifest(
-    base_path: &PathBuf,
+    base_path: &Path,
     feed: &str,
     date: &str,
     rotation_interval: &str,
