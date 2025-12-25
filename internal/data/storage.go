@@ -154,6 +154,25 @@ func NewStorage(path string) (Storage, error) {
 	return NewLocalStorage(path), nil
 }
 
+// validateGCSPathPart validates a path component for GCS operations
+func validateGCSPathPart(part string) error {
+	if part == "" {
+		return fmt.Errorf("path component cannot be empty")
+	}
+	// Reject path traversal attempts
+	if strings.Contains(part, "..") {
+		return fmt.Errorf("path component cannot contain ..")
+	}
+	// Only allow alphanumeric, dash, underscore, dot
+	for _, r := range part {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
+			return fmt.Errorf("path component contains invalid character: %c", r)
+		}
+	}
+	return nil
+}
+
 // gsutil runs a gsutil command and returns stdout
 func (s *GCSStorage) gsutil(args ...string) ([]byte, error) {
 	cmd := exec.Command("gsutil", args...)
@@ -201,6 +220,9 @@ func (s *GCSStorage) ListFeeds() ([]string, error) {
 
 // ListDates returns all date directories for a feed from GCS
 func (s *GCSStorage) ListDates(feed string) ([]string, error) {
+	if err := validateGCSPathPart(feed); err != nil {
+		return nil, fmt.Errorf("invalid feed: %w", err)
+	}
 	output, err := s.gsutil("ls", s.gcsPath(feed))
 	if err != nil {
 		return nil, err
@@ -222,6 +244,12 @@ func (s *GCSStorage) ListDates(feed string) ([]string, error) {
 
 // GetManifest reads and parses a manifest.json from GCS
 func (s *GCSStorage) GetManifest(feed, date string) (*types.Manifest, error) {
+	if err := validateGCSPathPart(feed); err != nil {
+		return nil, fmt.Errorf("invalid feed: %w", err)
+	}
+	if err := validateGCSPathPart(date); err != nil {
+		return nil, fmt.Errorf("invalid date: %w", err)
+	}
 	output, err := s.gsutil("cat", s.gcsPath(feed, date, "manifest.json"))
 	if err != nil {
 		return nil, err
@@ -236,5 +264,14 @@ func (s *GCSStorage) GetManifest(feed, date string) (*types.Manifest, error) {
 
 // ReadFile reads file contents from GCS
 func (s *GCSStorage) ReadFile(feed, date, filename string) ([]byte, error) {
+	if err := validateGCSPathPart(feed); err != nil {
+		return nil, fmt.Errorf("invalid feed: %w", err)
+	}
+	if err := validateGCSPathPart(date); err != nil {
+		return nil, fmt.Errorf("invalid date: %w", err)
+	}
+	if err := validateGCSPathPart(filename); err != nil {
+		return nil, fmt.Errorf("invalid filename: %w", err)
+	}
 	return s.gsutil("cat", s.gcsPath(feed, date, filename))
 }

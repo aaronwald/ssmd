@@ -185,3 +185,57 @@ func TestNewStorageGCS(t *testing.T) {
 		t.Error("expected GCSStorage for gs:// path")
 	}
 }
+
+func TestGCSStoragePathValidation(t *testing.T) {
+	storage, _ := NewGCSStorage("gs://bucket")
+
+	testCases := []struct {
+		name     string
+		feed     string
+		date     string
+		filename string
+	}{
+		{"command injection semicolon", "feed;rm -rf /", "date", "file"},
+		{"command injection pipe", "feed|cat /etc/passwd", "date", "file"},
+		{"command injection ampersand", "feed&& cat /etc/passwd", "date", "file"},
+		{"path traversal", "../etc", "passwd", ""},
+		{"backtick injection", "feed`whoami`", "date", "file"},
+		{"dollar injection", "feed$(whoami)", "date", "file"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name+" via ListDates", func(t *testing.T) {
+			_, err := storage.ListDates(tc.feed)
+			if err == nil {
+				t.Error("expected error for injection attempt, got nil")
+			}
+		})
+
+		t.Run(tc.name+" via ReadFile", func(t *testing.T) {
+			_, err := storage.ReadFile(tc.feed, tc.date, tc.filename)
+			if err == nil {
+				t.Error("expected error for injection attempt, got nil")
+			}
+		})
+	}
+}
+
+func TestGCSStoragePathConstruction(t *testing.T) {
+	storage, _ := NewGCSStorage("gs://bucket/prefix")
+
+	path := storage.gcsPath("feed", "date", "file.json")
+	expected := "gs://bucket/prefix/feed/date/file.json"
+	if path != expected {
+		t.Errorf("expected %s, got %s", expected, path)
+	}
+}
+
+func TestGCSStoragePathConstructionNoPrefix(t *testing.T) {
+	storage, _ := NewGCSStorage("gs://bucket")
+
+	path := storage.gcsPath("feed")
+	expected := "gs://bucket/feed"
+	if path != expected {
+		t.Errorf("expected %s, got %s", expected, path)
+	}
+}
