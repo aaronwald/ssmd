@@ -20,7 +20,13 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Google Cloud SDK
+RUN curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts
+ENV PATH="/root/google-cloud-sdk/bin:$PATH"
 
 COPY --from=builder /build/target/release/ssmd-archiver /usr/local/bin/
 
