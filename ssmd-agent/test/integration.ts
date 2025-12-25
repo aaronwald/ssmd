@@ -1,5 +1,8 @@
 // ssmd-agent/test/integration.ts
-import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
+import {
+  assertEquals,
+  assertAlmostEquals,
+} from "https://deno.land/std@0.208.0/assert/mod.ts";
 import { OrderBookBuilder } from "../src/state/orderbook.ts";
 import { loadSkills } from "../src/agent/skills.ts";
 
@@ -18,7 +21,7 @@ Deno.test("OrderBookBuilder calculates spread", () => {
   assertEquals(state.ticker, "INXD-25001");
   assertEquals(state.bestBid, 0.45);
   assertEquals(state.bestAsk, 0.55);
-  assertEquals(state.spread, 0.1);
+  assertAlmostEquals(state.spread, 0.1, 1e-10);
 });
 
 Deno.test("OrderBookBuilder ignores non-orderbook messages", () => {
@@ -49,7 +52,7 @@ Deno.test("OrderBookBuilder spreadPercent calculation", () => {
 
   const state = builder.getState();
   // spread = 0.10, spreadPercent = 0.10 / 0.50 = 0.20
-  assertEquals(state.spreadPercent, 0.2);
+  assertAlmostEquals(state.spreadPercent, 0.2, 1e-10);
 });
 
 Deno.test("Skills loader finds skills", async () => {
