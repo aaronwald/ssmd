@@ -69,6 +69,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut gaps: Vec<Gap> = Vec::new();
     let mut current_date = Utc::now().format("%Y-%m-%d").to_string();
 
+    // Stats tracking
+    let mut total_messages: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut first_seq: Option<u64> = None;
+    let mut last_seq: u64 = 0;
+    let mut last_stats_time = std::time::Instant::now();
+    let stats_interval = Duration::from_secs(30);
+
     // Fetch interval
     let mut fetch_interval = interval(Duration::from_millis(100));
 
@@ -108,6 +116,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 });
                             }
 
+                            // Track stats
+                            total_messages += 1;
+                            total_bytes += msg.data.len() as u64;
+                            if first_seq.is_none() {
+                                first_seq = Some(msg.seq);
+                            }
+                            last_seq = msg.seq;
+
                             // Extract ticker and type for manifest
                             if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&msg.data) {
                                 if let Some(msg_type) = parsed.get("type").and_then(|v| v.as_str()) {
@@ -129,6 +145,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(e) => {
                         error!(error = %e, "Failed to fetch messages");
                     }
+                }
+
+                // Periodic stats log
+                if last_stats_time.elapsed() >= stats_interval {
+                    info!(
+                        feed = %feed,
+                        messages = total_messages,
+                        bytes = total_bytes,
+                        tickers = tickers.len(),
+                        seq_range = %format!("{}-{}", first_seq.unwrap_or(0), last_seq),
+                        gaps = gaps.len(),
+                        "Archiver stats"
+                    );
+                    last_stats_time = std::time::Instant::now();
                 }
             }
         }

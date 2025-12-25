@@ -1,6 +1,6 @@
 use async_nats::jetstream::{self, consumer::PullConsumer};
 use futures_util::StreamExt;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::config::NatsConfig;
 use crate::error::ArchiverError;
@@ -99,7 +99,7 @@ impl Subscriber {
             }
         }
 
-        debug!(count = result.len(), "Fetched messages");
+        trace!(count = result.len(), "Fetched messages");
         Ok(result)
     }
 
