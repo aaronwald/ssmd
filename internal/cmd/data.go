@@ -51,30 +51,35 @@ var (
 	dataTicker     string
 	dataLimit      int
 	dataType       string
-	dataOutputJSON bool
+	dataOutput     string
 	dataPath       string
 )
+
+// isJSONOutput returns true if JSON output format is requested
+func isJSONOutput() bool {
+	return dataOutput == "json"
+}
 
 func init() {
 	// List flags
 	dataListCmd.Flags().StringVar(&dataFeed, "feed", "", "Filter by feed name")
 	dataListCmd.Flags().StringVar(&dataFrom, "from", "", "Start date (YYYY-MM-DD)")
 	dataListCmd.Flags().StringVar(&dataTo, "to", "", "End date (YYYY-MM-DD)")
-	dataListCmd.Flags().BoolVar(&dataOutputJSON, "output", false, "Output as JSON (use --output json)")
+	dataListCmd.Flags().StringVar(&dataOutput, "output", "", "Output format (json)")
 	dataListCmd.Flags().StringVar(&dataPath, "path", "", "Data path (default: $SSMD_DATA_PATH or gs://ssmd-archive)")
 
 	// Sample flags
 	dataSampleCmd.Flags().StringVar(&dataTicker, "ticker", "", "Filter by ticker")
 	dataSampleCmd.Flags().IntVar(&dataLimit, "limit", 10, "Max records to return")
 	dataSampleCmd.Flags().StringVar(&dataType, "type", "", "Message type (trade, ticker, orderbook)")
-	dataSampleCmd.Flags().BoolVar(&dataOutputJSON, "output", false, "Output as JSON")
+	dataSampleCmd.Flags().StringVar(&dataOutput, "output", "", "Output format (json)")
 	dataSampleCmd.Flags().StringVar(&dataPath, "path", "", "Data path")
 
 	// Schema flags
-	dataSchemaCmd.Flags().BoolVar(&dataOutputJSON, "output", false, "Output as JSON")
+	dataSchemaCmd.Flags().StringVar(&dataOutput, "output", "", "Output format (json)")
 
 	// Builders flags
-	dataBuildersCmd.Flags().BoolVar(&dataOutputJSON, "output", false, "Output as JSON")
+	dataBuildersCmd.Flags().StringVar(&dataOutput, "output", "", "Output format (json)")
 
 	// Add subcommands
 	dataCmd.AddCommand(dataListCmd)
@@ -264,7 +269,7 @@ func runDataList(cmd *cobra.Command, args []string) error {
 	}
 
 	// Output
-	if dataOutputJSON {
+	if isJSONOutput() {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
 		return enc.Encode(datasets)
@@ -336,7 +341,7 @@ func runDataSample(cmd *cobra.Command, args []string) error {
 	}
 
 	// Output
-	if dataOutputJSON {
+	if isJSONOutput() {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
 		return enc.Encode(allRecords)
@@ -368,7 +373,7 @@ func runDataSchema(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown message type %s for feed %s", msgType, feed)
 	}
 
-	if dataOutputJSON {
+	if isJSONOutput() {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
 		return enc.Encode(schema)
@@ -391,7 +396,7 @@ func runDataSchema(cmd *cobra.Command, args []string) error {
 }
 
 func runDataBuilders(cmd *cobra.Command, args []string) error {
-	if dataOutputJSON {
+	if isJSONOutput() {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
 		return enc.Encode(stateBuilders)
