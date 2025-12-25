@@ -122,13 +122,15 @@ Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `05-data-flow.md`
 - [ ] Subject pattern for JSON: `{env}.{feed}.json.{type}.{ticker}`
 - [ ] Subject pattern for Cap'n Proto: `{env}.{feed}.capnp.{type}.{ticker}`
 
-**Archiver (Rust, subscribes from NATS):**
+**Archiver (Rust, subscribes from NATS):** ✅ COMPLETED 2025-12-25
 Design: Enables sharding - multiple archivers can subscribe to different subject patterns
-- [ ] NATS JetStream subscription (durable consumer)
-- [ ] Write JSONL.gz files partitioned by trading day
-- [ ] Manifest file generation (record counts, tickers, time range)
-- [ ] Local storage path configuration
-- [ ] GCS sync support (homelab → cloud)
+- [x] NATS JetStream subscription (durable consumer)
+- [x] Write JSONL.gz files partitioned by trading day
+- [x] Manifest file generation (record counts, tickers, time range, gaps)
+- [x] Local storage path configuration
+- [x] GCS sync support (Google Cloud SDK in Docker image)
+- [x] Graceful shutdown with SIGTERM handler
+- [x] Crash-safe manifest (update on every rotation)
 - [ ] Backpressure handling (bounded buffer, slow consumer detection)
 
 **Orderbook Data (Deferred):**
@@ -140,13 +142,16 @@ Design: Enables sharding - multiple archivers can subscribe to different subject
 Design: `docs/plans/designs/2025-12-25-backtest-agent-skills.md`
 Depends on: Phase 2 Archiver (provides JSONL data files)
 
-**ssmd data CLI (Go):**
-Ref: `docs/plans/designs/2025-12-25-backtest-agent-skills.md` - Dataset Service section
-- [ ] `ssmd data list` - list available datasets (reads manifests from local/GCS)
-- [ ] `ssmd data sample <feed> <date>` - sample records from dataset
-- [ ] `ssmd data schema <feed> <type>` - show schema for message type
-- [ ] `ssmd data builders` - list available state builders
-- [ ] `--output json` flag for all data commands (agent consumption)
+**ssmd data CLI (Go):** ✅ COMPLETED 2025-12-25
+Ref: `docs/plans/2025-12-25-dataset-service.md`
+- [x] `ssmd data list` - list available datasets (reads manifests from local/GCS)
+- [x] `ssmd data sample <feed> <date>` - sample records from dataset
+- [x] `ssmd data schema <feed> <type>` - show schema for message type
+- [x] `ssmd data builders` - list available state builders
+- [x] `--output json` flag for all data commands (agent consumption)
+- [x] Storage abstraction (LocalStorage + GCSStorage via gsutil)
+- [x] Security: path traversal protection, command injection prevention
+- [x] Integration tests
 
 **State Builders (TypeScript, shared):**
 - [ ] `src/state/types.ts` - StateBuilder<T> interface
