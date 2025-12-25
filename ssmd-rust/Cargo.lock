@@ -1965,6 +1965,7 @@ dependencies = [
  "serde_yaml",
  "ssmd-connector-lib",
  "ssmd-metadata",
+ "ssmd-middleware",
  "tokio",
  "tracing",
  "tracing-subscriber",

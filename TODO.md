@@ -115,6 +115,15 @@ Ref: `docs/plans/designs/kalshi/13-roadmap.md`, `05-data-flow.md`
 - [x] JetStream stream creation for market data
 - [x] SubjectBuilder for subject formatting
 - [x] MiddlewareFactory async with NATS support
+- [x] NatsWriter implementing Writer trait (parses JSON → Cap'n Proto → NATS)
+- [x] Ticker schema in Cap'n Proto for price updates
+- [x] Configurable writer selection (NATS vs File) based on environment transport type
+- [x] Dual deployment documentation (NATS streaming + File capture)
+
+**Raw Capture (Pending):**
+- [ ] Add raw JSON passthrough to NATS alongside Cap'n Proto normalization
+- [ ] Subject pattern: `{env}.{feed}.raw.{message_type}`
+- [ ] Enable both raw and normalized streams for debugging/replay
 
 **Orderbook Data (Deferred):**
 - [ ] Publish L2 (aggregated price level) updates to NATS - not full snapshots
