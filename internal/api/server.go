@@ -29,6 +29,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /datasets", s.requireAPIKey(s.handleDatasets))
 	s.mux.HandleFunc("GET /datasets/{feed}/{date}/sample", s.requireAPIKey(s.handleSample))
+	s.mux.HandleFunc("GET /datasets/{feed}/{date}/tickers", s.requireAPIKey(s.handleTickers))
 	s.mux.HandleFunc("GET /schema/{feed}/{type}", s.requireAPIKey(s.handleSchema))
 	s.mux.HandleFunc("GET /builders", s.requireAPIKey(s.handleBuilders))
 }
