@@ -49,6 +49,23 @@ List available market data datasets.
 
 ---
 
+#### `list_tickers`
+
+List all tickers available in a dataset for a given feed and date.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `feed` | string | Yes | Feed name (e.g., `"kalshi"`) |
+| `date` | string | Yes | Date `YYYY-MM-DD` |
+
+**Returns:** Array of ticker strings
+
+```json
+["INXD-25001", "BTCUSD-25003", "ETHUSD-25004"]
+```
+
+---
+
 #### `sample_data`
 
 Get sample records from a dataset.

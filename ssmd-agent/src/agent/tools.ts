@@ -60,6 +60,21 @@ export const sampleData = tool(
   }
 );
 
+export const listTickers = tool(
+  async ({ feed, date }) => {
+    const path = `/datasets/${feed}/${date}/tickers`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "list_tickers",
+    description: "List all tickers available in a dataset for a given feed and date.",
+    schema: z.object({
+      feed: z.string().describe("Feed name (e.g., 'kalshi')"),
+      date: z.string().describe("Date YYYY-MM-DD"),
+    }),
+  }
+);
+
 export const getSchema = tool(
   async ({ feed, type }) => {
     const path = `/schema/${feed}/${type}`;
@@ -188,5 +203,5 @@ export const deploySignal = tool(
   }
 );
 
-export const dataTools = [listDatasets, sampleData, getSchema, listBuilders, orderbookBuilder];
+export const dataTools = [listDatasets, listTickers, sampleData, getSchema, listBuilders, orderbookBuilder];
 export const allTools = [...dataTools, runBacktest, deploySignal];

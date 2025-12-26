@@ -230,3 +230,22 @@ func (s *Server) handleBuilders(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stateBuilders)
 }
+
+func (s *Server) handleTickers(w http.ResponseWriter, r *http.Request) {
+	feed := r.PathValue("feed")
+	date := r.PathValue("date")
+
+	manifest, err := s.storage.GetManifest(feed, date)
+	if err != nil || manifest == nil {
+		http.Error(w, `{"error":"dataset not found"}`, http.StatusNotFound)
+		return
+	}
+
+	tickers := manifest.Tickers
+	if tickers == nil {
+		tickers = []string{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tickers)
+}
