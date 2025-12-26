@@ -1,6 +1,7 @@
 // ssmd-agent/src/cli.ts
 import { checkApiVersion, validateConfig } from "./config.ts";
 import { createAgent } from "./agent/graph.ts";
+import { AuditLogger } from "./audit/logger.ts";
 
 interface TokenUsage {
   input: number;
@@ -55,6 +56,11 @@ async function main() {
   // Check API version compatibility (non-blocking warning)
   await checkApiVersion();
 
+  // Initialize audit logger
+  const audit = new AuditLogger();
+  await audit.init();
+  console.log(`[audit] Logging to ${audit.getLogFile()}`);
+
   console.log("Type 'quit' to exit\n");
 
   const agent = await createAgent();
@@ -64,11 +70,15 @@ async function main() {
     const input = prompt("ssmd-agent>");
     if (!input || input === "quit" || input === "exit") {
       console.log("Goodbye!");
+      await audit.close();
       break;
     }
 
+    await audit.logUserInput(input);
+
     try {
       const usage: TokenUsage = { input: 0, output: 0 };
+      let currentResponse = "";
 
       for await (const event of agent.streamEvents(
         { messages: [{ role: "user", content: input }] },
@@ -81,14 +91,18 @@ async function main() {
               // Handle both string content and array of content blocks
               if (typeof chunk.content === "string") {
                 Deno.stdout.writeSync(encoder.encode(chunk.content));
+                currentResponse += chunk.content;
               } else if (Array.isArray(chunk.content)) {
                 for (const block of chunk.content) {
                   if (typeof block === "string") {
                     Deno.stdout.writeSync(encoder.encode(block));
+                    currentResponse += block;
                   } else if (block?.text) {
                     Deno.stdout.writeSync(encoder.encode(block.text));
+                    currentResponse += block.text;
                   } else if (block?.type === "text" && block?.text) {
                     Deno.stdout.writeSync(encoder.encode(block.text));
+                    currentResponse += block.text;
                   }
                 }
               }
@@ -107,14 +121,21 @@ async function main() {
               usage.input = output.usage_metadata.input_tokens ?? usage.input;
               usage.output = output.usage_metadata.output_tokens ?? usage.output;
             }
+            // Log the complete response
+            if (currentResponse) {
+              await audit.logAssistantChunk(currentResponse);
+              currentResponse = "";
+            }
             break;
           }
           case "on_tool_start": {
             console.log(`\n[tool] ${event.name}(${formatArgs(event.data?.input)})`);
+            await audit.logToolCall(event.name, event.data?.input);
             break;
           }
           case "on_tool_end": {
             console.log(`  → ${formatResult(event.data?.output)}`);
+            await audit.logToolResult(event.name, event.data?.output);
             break;
           }
         }
@@ -123,10 +144,12 @@ async function main() {
       // Show token usage
       if (usage.input > 0 || usage.output > 0) {
         console.log(`\n[tokens] in: ${usage.input.toLocaleString()}, out: ${usage.output.toLocaleString()}`);
+        await audit.logTurnComplete(usage);
       }
       console.log("");
     } catch (e) {
       console.error(`\nError: ${(e as Error).message}\n`);
+      await audit.log("error", { message: (e as Error).message });
     }
   }
 }
