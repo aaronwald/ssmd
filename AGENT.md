@@ -263,6 +263,7 @@ ssmd-data not running or not accessible. Check:
 | `ANTHROPIC_API_KEY` | Yes | - | Anthropic API key |
 | `SSMD_MODEL` | No | `claude-sonnet-4-20250514` | Claude model to use |
 | `SSMD_SKILLS_PATH` | No | `./skills` | Path to skills directory |
+| `SSMD_PROMPTS_PATH` | No | `./prompts` | Path to prompt templates |
 | `SSMD_SIGNALS_PATH` | No | `./signals` | Path to deploy signals |
 
 ## What's NOT Implemented Yet

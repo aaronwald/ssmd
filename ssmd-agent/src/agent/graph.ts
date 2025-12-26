@@ -13,7 +13,7 @@ export async function createAgent() {
   });
 
   const skills = await loadSkills();
-  const systemPrompt = buildSystemPrompt(skills);
+  const systemPrompt = await buildSystemPrompt(skills);
 
   const agent = createReactAgent({
     llm: model,
