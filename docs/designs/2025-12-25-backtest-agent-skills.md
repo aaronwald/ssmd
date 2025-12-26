@@ -19,18 +19,18 @@ Skills & tools provide the knowledge for generating code that works with streams
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           RUNTIME (Production)                              │
-│                                                                             │
+┌────────────────────────────────────────────────────────────────────────────┐
+│                           RUNTIME (Production)                             │
+│                                                                            │
 │  ┌─────────────┐         ┌─────────────────────────────────────────────┐   │
 │  │  Connector  │────────▶│              NATS JetStream                 │   │
 │  │   (Rust)    │         │                                             │   │
 │  │             │         │  Subjects:                                  │   │
-│  │  Kalshi WS  │         │    {env}.kalshi.json.trade.{ticker}        │   │
-│  │  → JSON     │         │    {env}.kalshi.json.ticker.{ticker}       │   │
-│  │  → Cap'n    │         │    {env}.kalshi.capnp.trade.{ticker}       │   │
+│  │  Kalshi WS  │         │    {env}.kalshi.json.trade.{ticker}         │   │
+│  │  → JSON     │         │    {env}.kalshi.json.ticker.{ticker}        │   │
+│  │  → Cap'n    │         │    {env}.kalshi.capnp.trade.{ticker}        │   │
 │  └─────────────┘         └──────────────┬─────────────────┬────────────┘   │
-│                                         │                 │                 │
+│                                         │                 │                │
 │                    ┌────────────────────┘                 └────────────┐   │
 │                    ▼                                                   ▼   │
 │       ┌────────────────────────┐                    ┌──────────────────────┐
@@ -41,10 +41,10 @@ Skills & tools provide the knowledge for generating code that works with streams
 │       │  Evaluates conditions  │                    │  Local: /data/ssmd/  │
 │       └───────────┬────────────┘                    │  Sync: → GCS         │
 │                   │                                 └──────────────────────┘
-│                   ▼                                            │
-│       {env}.signals.fired.*                                    │
-│                                                                │
-└────────────────────────────────────────────────────────────────┼────────────┘
+│                   ▼                                            │           |
+│       {env}.signals.fired.*                                    │           |
+│                                                                │           |
+└────────────────────────────────────────────────────────────────┼───────────┘
                                                                  │
                                             gsutil rsync (cron)  │
                                                                  ▼
