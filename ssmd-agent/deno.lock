@@ -4,6 +4,7 @@
     "npm:@langchain/anthropic@0.3": "0.3.34_@langchain+core@0.3.80__zod@3.25.76_zod@3.25.76",
     "npm:@langchain/core@0.3": "0.3.80_zod@3.25.76",
     "npm:@langchain/langgraph@0.2": "0.2.74_@langchain+core@0.3.80__zod@3.25.76",
+    "npm:yaml@^2.3.0": "2.8.2",
     "npm:zod@^3.23.0": "3.25.76"
   },
   "npm": {
@@ -220,6 +221,10 @@
     },
     "uuid@9.0.1": {
       "integrity": "sha512-b+1eJOlsR9K8HJpow9Ok3fiWOWSIcIzXodvv0rQjVoOVNpWMpxf1wZNpt4y9h10odCNrqnYp1OBzRktckBe3sA==",
+      "bin": true
+    },
+    "yaml@2.8.2": {
+      "integrity": "sha512-mplynKqc1C2hTVYxd0PU2xQAc22TI1vShAYGksCCfxbn/dFwnHTNi1bvYsBTkhdUNtGIf5xNOg938rrSSYvS9A==",
       "bin": true
     },
     "zod-to-json-schema@3.25.0_zod@3.25.76": {
