@@ -1,6 +1,7 @@
 // ssmd-agent/src/cli.ts
 import { checkApiVersion, validateConfig } from "./config.ts";
 import { createAgent } from "./agent/graph.ts";
+import { EventLogger } from "./audit/events.ts";
 
 interface TokenUsage {
   input: number;
@@ -55,6 +56,11 @@ async function main() {
   // Check API version compatibility (non-blocking warning)
   await checkApiVersion();
 
+  // Initialize event logger
+  const logger = new EventLogger();
+  await logger.init();
+  console.log(`[audit] ${logger.getLogFile()}`);
+
   console.log("Type 'quit' to exit\n");
 
   const agent = await createAgent();
@@ -64,16 +70,19 @@ async function main() {
     const input = prompt("ssmd-agent>");
     if (!input || input === "quit" || input === "exit") {
       console.log("Goodbye!");
+      await logger.close();
       break;
     }
 
     try {
+      await logger.logEvent({ event: "user_input", data: { content: input } });
       const usage: TokenUsage = { input: 0, output: 0 };
 
       for await (const event of agent.streamEvents(
         { messages: [{ role: "user", content: input }] },
         { version: "v2" }
       )) {
+        await logger.logEvent(event);
         switch (event.event) {
           case "on_chat_model_stream": {
             const chunk = event.data?.chunk;
