@@ -2,6 +2,11 @@
 import { validateConfig } from "./config.ts";
 import { createAgent } from "./agent/graph.ts";
 
+interface TokenUsage {
+  input: number;
+  output: number;
+}
+
 function formatArgs(input: unknown): string {
   if (typeof input === "object" && input !== null) {
     const obj = input as Record<string, unknown>;
@@ -59,6 +64,8 @@ async function main() {
     }
 
     try {
+      const usage: TokenUsage = { input: 0, output: 0 };
+
       for await (const event of agent.streamEvents(
         { messages: [{ role: "user", content: input }] },
         { version: "v2" }
@@ -82,6 +89,20 @@ async function main() {
                 }
               }
             }
+            // Track usage from chunk if available
+            if (chunk?.usage_metadata) {
+              usage.input += chunk.usage_metadata.input_tokens ?? 0;
+              usage.output += chunk.usage_metadata.output_tokens ?? 0;
+            }
+            break;
+          }
+          case "on_chat_model_end": {
+            // Get final usage from the completed response
+            const output = event.data?.output;
+            if (output?.usage_metadata) {
+              usage.input = output.usage_metadata.input_tokens ?? usage.input;
+              usage.output = output.usage_metadata.output_tokens ?? usage.output;
+            }
             break;
           }
           case "on_tool_start": {
@@ -94,7 +115,12 @@ async function main() {
           }
         }
       }
-      console.log("\n");
+
+      // Show token usage
+      if (usage.input > 0 || usage.output > 0) {
+        console.log(`\n[tokens] in: ${usage.input.toLocaleString()}, out: ${usage.output.toLocaleString()}`);
+      }
+      console.log("");
     } catch (e) {
       console.error(`\nError: ${(e as Error).message}\n`);
     }
