@@ -8,7 +8,9 @@ Deploy ssmd components to Kubernetes.
 |-----------|-------|---------|
 | **ssmd-connector** | `ghcr.io/<owner>/ssmd-connector` | Kalshi WebSocket → NATS (raw JSON) |
 | **ssmd-archiver** | `ghcr.io/<owner>/ssmd-archiver` | NATS → JSONL.gz files |
-| **ssmd-agent** | `ghcr.io/<owner>/ssmd-agent` | LangGraph signal runtime (stub) |
+| **ssmd-data** | `ghcr.io/<owner>/ssmd-data` | HTTP API for archived data |
+
+> **Note:** `ssmd-agent` is a local development tool, not a deployed service. See [AGENT.md](AGENT.md) for usage.
 
 ---
 
@@ -346,10 +348,9 @@ If using network policies, allow:
 - **Egress**: ssmd-archiver → NATS (port 4222)
 - **Egress**: ssmd-archiver → DNS (port 53)
 
-**ssmd-agent (future):**
-- **Egress**: ssmd-agent → NATS (port 4222)
-- **Egress**: ssmd-agent → Anthropic API (port 443, external)
-- **Egress**: ssmd-agent → DNS (port 53)
+**ssmd-data:**
+- **Ingress**: Clients → ssmd-data (port 8080)
+- **Egress**: ssmd-data → DNS (port 53)
 
 ## Environment Variables
 
@@ -412,21 +413,28 @@ kubectl exec -n ssmd deploy/ssmd-connector-file -- ls -la /data/
 
 ---
 
-## ssmd-agent
+## ssmd-data
 
-Deno-based agent runtime for LangGraph signal processing. Currently a stub with health check endpoint.
+HTTP API for serving archived market data. Used by ssmd-agent (local dev tool) and other clients.
 
 ### Container Image
 
 ```bash
 # Build locally
-cd ssmd-agent
-docker build -t ssmd-agent:latest .
+docker build -f cmd/ssmd-data/Dockerfile -t ssmd-data:latest .
 
 # Or use GHCR (tags trigger builds)
-git tag v0.1.5
-git push origin v0.1.5
-# Image pushed to ghcr.io/<owner>/ssmd-agent:0.1.5
+git tag v0.1.0
+git push origin v0.1.0
+# Image pushed to ghcr.io/<owner>/ssmd-data:0.1.0
+```
+
+### Secret (API Key)
+
+```bash
+kubectl create secret generic ssmd-data-credentials \
+  --namespace=ssmd \
+  --from-literal=api-key="$(openssl rand -hex 32)"
 ```
 
 ### Deployment
@@ -435,27 +443,38 @@ git push origin v0.1.5
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ssmd-agent
+  name: ssmd-data
   namespace: ssmd
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ssmd-agent
+      app: ssmd-data
   template:
     metadata:
       labels:
-        app: ssmd-agent
+        app: ssmd-data
     spec:
       containers:
-        - name: agent
-          image: ghcr.io/<owner>/ssmd-agent:0.1.5
+        - name: data
+          image: ghcr.io/<owner>/ssmd-data:0.1.0
           ports:
             - containerPort: 8080
-              name: health
+              name: http
           env:
             - name: PORT
               value: "8080"
+            - name: SSMD_DATA_PATH
+              value: "/data/ssmd"
+            - name: SSMD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ssmd-data-credentials
+                  key: api-key
+          volumeMounts:
+            - name: data
+              mountPath: /data/ssmd
+              readOnly: true
           resources:
             requests:
               cpu: 50m
@@ -466,15 +485,19 @@ spec:
           livenessProbe:
             httpGet:
               path: /health
-              port: health
+              port: http
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /health
-              port: health
+              port: http
             initialDelaySeconds: 5
             periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ssmd-data
 ```
 
 ### Service
@@ -483,14 +506,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: ssmd-agent
+  name: ssmd-data
   namespace: ssmd
 spec:
   selector:
-    app: ssmd-agent
+    app: ssmd-data
   ports:
     - port: 8080
-      targetPort: health
+      targetPort: http
       name: http
 ```
 
@@ -499,26 +522,34 @@ spec:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `PORT` | No | `8080` | HTTP server port |
-
-### Future Configuration
-
-When NATS integration is added:
-
-| Variable | Description |
-|----------|-------------|
-| `NATS_URL` | NATS server URL |
-| `NATS_SUBJECTS` | Subjects to subscribe to |
-| `ANTHROPIC_API_KEY` | For LangGraph LLM calls |
+| `SSMD_DATA_PATH` | Yes | - | Path to archived data (local or `gs://bucket`) |
+| `SSMD_API_KEY` | Yes | - | API key for authentication |
 
 ### Verify Deployment
 
 ```bash
 # Check pod
-kubectl get pods -n ssmd -l app=ssmd-agent
+kubectl get pods -n ssmd -l app=ssmd-data
 
 # Check health
-kubectl exec -n ssmd deploy/ssmd-agent -- curl -s localhost:8080/health
+kubectl exec -n ssmd deploy/ssmd-data -- curl -s localhost:8080/health
+
+# Test API (get API key first)
+API_KEY=$(kubectl get secret -n ssmd ssmd-data-credentials -o jsonpath='{.data.api-key}' | base64 -d)
+kubectl exec -n ssmd deploy/ssmd-data -- \
+  curl -s -H "X-API-Key: $API_KEY" localhost:8080/datasets
 
 # Check logs
-kubectl logs -n ssmd -l app=ssmd-agent -f
+kubectl logs -n ssmd -l app=ssmd-data -f
+```
+
+### Exposing to Local Development
+
+To use ssmd-agent from your laptop:
+
+```bash
+# Port forward (temporary)
+kubectl port-forward -n ssmd svc/ssmd-data 8080:8080
+
+# Or create an Ingress/LoadBalancer for persistent access
 ```
