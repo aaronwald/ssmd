@@ -67,7 +67,20 @@ async function main() {
           case "on_chat_model_stream": {
             const chunk = event.data?.chunk;
             if (chunk?.content) {
-              Deno.stdout.writeSync(encoder.encode(chunk.content));
+              // Handle both string content and array of content blocks
+              if (typeof chunk.content === "string") {
+                Deno.stdout.writeSync(encoder.encode(chunk.content));
+              } else if (Array.isArray(chunk.content)) {
+                for (const block of chunk.content) {
+                  if (typeof block === "string") {
+                    Deno.stdout.writeSync(encoder.encode(block));
+                  } else if (block?.text) {
+                    Deno.stdout.writeSync(encoder.encode(block.text));
+                  } else if (block?.type === "text" && block?.text) {
+                    Deno.stdout.writeSync(encoder.encode(block.text));
+                  }
+                }
+              }
             }
             break;
           }
