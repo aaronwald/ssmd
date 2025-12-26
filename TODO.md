@@ -191,6 +191,7 @@ See "Completed (Continued)" section above for details.
 - [ ] Arrow/Parquet storage format
 - [ ] PriceHistoryBuilder state builder
 - [ ] VolumeProfileBuilder state builder
+- [ ] OpenRouter support (https://openrouter.ai/) - alternative LLM provider for ssmd-agent
 
 **Scaling & Operations:**
 - [ ] Horizontal scaling via JetStream workqueue distribution
