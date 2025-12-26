@@ -11,6 +11,7 @@ export const config = {
   skillsPath: Deno.env.get("SSMD_SKILLS_PATH") ?? "./skills",
   promptsPath: Deno.env.get("SSMD_PROMPTS_PATH") ?? "./prompts",
   signalsPath: Deno.env.get("SSMD_SIGNALS_PATH") ?? "./signals",
+  logsPath: Deno.env.get("SSMD_LOGS_PATH") ?? "./logs",
 };
 
 export function validateConfig(): void {
