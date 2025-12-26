@@ -5,6 +5,7 @@ export const config = {
   anthropicApiKey: Deno.env.get("ANTHROPIC_API_KEY") ?? "",
   model: Deno.env.get("SSMD_MODEL") ?? "claude-sonnet-4-20250514",
   skillsPath: Deno.env.get("SSMD_SKILLS_PATH") ?? "./skills",
+  promptsPath: Deno.env.get("SSMD_PROMPTS_PATH") ?? "./prompts",
   signalsPath: Deno.env.get("SSMD_SIGNALS_PATH") ?? "./signals",
 };
 
