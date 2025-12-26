@@ -1,5 +1,5 @@
 // ssmd-agent/src/cli.ts
-import { validateConfig } from "./config.ts";
+import { checkApiVersion, validateConfig } from "./config.ts";
 import { createAgent } from "./agent/graph.ts";
 
 interface TokenUsage {
@@ -51,6 +51,10 @@ async function main() {
   }
 
   console.log("ssmd-agent v0.1.0");
+
+  // Check API version compatibility (non-blocking warning)
+  await checkApiVersion();
+
   console.log("Type 'quit' to exit\n");
 
   const agent = await createAgent();
