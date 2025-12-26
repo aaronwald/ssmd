@@ -106,6 +106,7 @@
 - [ ] OpenRouter integration (https://openrouter.ai/) - alternative LLM provider
 - [ ] API key management UI - generate keys for testing, use Authentik for access control
 - [ ] Document skills vs tools design - clarify when to use skills (prompt templates) vs tools (function calls)
+- [ ] Skills for stream analysis - sequence numbers, gap detection, latency impacts from NATS recording
 
 ## Completed (Continued)
 
