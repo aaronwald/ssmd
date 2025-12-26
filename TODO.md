@@ -132,6 +132,7 @@ Secmaster enables sophisticated filtering on tickers, events, and markets (categ
 - [ ] SQLite checkpointer for conversation persistence (@langchain/langgraph-checkpoint-sqlite)
 - [ ] Testing guardrails - rate limiting, cost controls, sandbox execution
 - [ ] Date/calendar tools - get current date, trading calendars, market hours
+- [ ] Usage tracking - token counts, model usage, cost estimation per session
 
 ## Completed (Continued)
 
