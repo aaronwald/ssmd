@@ -102,6 +102,28 @@
 
 ## Next Up
 
+### Kalshi Consolidation (from varlab)
+Priority: Consolidate Kalshi work from varlab into ssmd to enable tools and skills.
+
+**Security Master & Fees:**
+Secmaster enables sophisticated filtering on tickers, events, and markets (category, expiration, status, etc.)
+
+- [ ] Port secmaster sync from varlab (market metadata, categories, expiration)
+- [ ] Port fee schedule from varlab (maker/taker fees per tier)
+- [ ] Redis cache for secmaster lookups
+- [ ] `ssmd secmaster sync <env>` - trigger manual sync
+- [ ] `ssmd secmaster list <env>` - list markets with filters (category, status, expiration)
+- [ ] `ssmd secmaster show <env> <ticker>` - market details
+- [ ] Agent tools: `list_markets`, `get_market`, `get_fees`
+- [ ] Skills for market discovery and fee-aware signal design
+
+**Temporal Jobs:**
+- [ ] Port Temporal workflows from varlab
+- [ ] Fix daily startup/shutdown workflows
+- [ ] Fix secmaster sync scheduled workflow
+- [ ] ssmd-worker Go module with Temporal SDK
+- [ ] `ssmd day start/end/roll/status` commands
+
 ### ssmd-agent Enhancements
 - [ ] OpenRouter integration (https://openrouter.ai/) - alternative LLM provider
 - [ ] API key management UI - generate keys for testing, use Authentik for access control
