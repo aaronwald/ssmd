@@ -126,6 +126,7 @@ Secmaster enables sophisticated filtering on tickers, events, and markets (categ
 
 ### ssmd-agent Enhancements
 - [ ] OpenRouter integration (https://openrouter.ai/) - alternative LLM provider
+- [ ] Test with cheap model (qwen/qwen3-8b via OpenRouter) for cost-effective development
 - [ ] API key management UI - generate keys for testing, use Authentik for access control
 - [ ] Skills for stream analysis - sequence numbers, gap detection, latency impacts from NATS recording
 - [x] Conversation audit logging via streamEvents to JSONL

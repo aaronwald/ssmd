@@ -6,9 +6,17 @@ import { OrderBookBuilder, type OrderBookState } from "../state/orderbook.ts";
 import type { MarketRecord } from "../state/types.ts";
 import { runBacktest as executeBacktest } from "../backtest/runner.ts";
 
+const API_TIMEOUT_MS = 10000; // 10 second timeout
+
 async function apiRequest<T>(path: string): Promise<T> {
   const res = await fetch(`${config.dataUrl}${path}`, {
     headers: { "X-API-Key": config.dataApiKey },
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
+  }).catch((err) => {
+    if (err.name === "TimeoutError") {
+      throw new Error(`API timeout after ${API_TIMEOUT_MS / 1000}s - is ssmd-data running?`);
+    }
+    throw new Error(`API connection failed: ${err.message}`);
   });
   if (!res.ok) {
     throw new Error(`API error: ${res.status} ${await res.text()}`);
@@ -203,5 +211,17 @@ export const deploySignal = tool(
   }
 );
 
+export const getToday = tool(
+  async () => {
+    return new Date().toISOString().split("T")[0];
+  },
+  {
+    name: "get_today",
+    description: "Get today's date in YYYY-MM-DD format (UTC).",
+    schema: z.object({}),
+  }
+);
+
+export const calendarTools = [getToday];
 export const dataTools = [listDatasets, listTickers, sampleData, getSchema, listBuilders, orderbookBuilder];
-export const allTools = [...dataTools, runBacktest, deploySignal];
+export const allTools = [...calendarTools, ...dataTools, runBacktest, deploySignal];
