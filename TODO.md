@@ -199,6 +199,7 @@ See "Completed (Continued)" section above for details.
 - [ ] Arrow/Parquet storage format
 - [ ] PriceHistoryBuilder state builder
 - [ ] VolumeProfileBuilder state builder
+- [ ] Complex workflows beyond ReactAgent (multi-step, state machines, human-in-the-loop)
 
 **Scaling & Operations:**
 - [ ] Horizontal scaling via JetStream workqueue distribution
