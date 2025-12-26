@@ -8,48 +8,54 @@ ssmd - Simple/Streaming Market Data system
 
 ## Build Commands
 
+All builds are done via Makefile:
+
 ```bash
-# Build everything (Go + Rust)
+# Full validation (lint + security + test + build)
+make all
+
+# Build everything (Go CLI + Rust + ssmd-data)
 make all-build
 
-# Go only
-make build
-
-# Rust only
-make rust-build
-```
-
-## Test Commands
-
-```bash
 # Test everything (Go + Rust)
 make all-test
 
-# Go only
-make test
-
-# Rust only
-make rust-test
-```
-
-## Lint Commands
-
-```bash
 # Lint everything (Go + Rust)
 make all-lint
-
-# Go only
-make lint
-
-# Rust only
-make rust-clippy
 ```
 
-## Full Validation
+### Go Targets
 
 ```bash
-# Run lint + test + build for both Go and Rust
-make all
+make build          # Build ssmd CLI
+make test           # Run Go tests
+make lint           # Run vet + staticcheck
+make security       # Run govulncheck
+```
+
+### Rust Targets
+
+```bash
+make rust-build     # Build all Rust crates
+make rust-test      # Run Rust tests
+make rust-clippy    # Run Clippy linter
+make rust-clean     # Clean Rust build artifacts
+```
+
+### ssmd-data API
+
+```bash
+make data-build     # Build ssmd-data binary to bin/
+make data-test      # Run API handler tests
+make data-run       # Run with test config (SSMD_DATA_PATH=./testdata)
+```
+
+### ssmd-agent (Deno)
+
+```bash
+make agent-check    # Deno type check
+make agent-test     # Run agent tests
+make agent-run      # Start agent REPL (requires ANTHROPIC_API_KEY)
 ```
 
 ## Prerequisites
