@@ -82,6 +82,6 @@ agent-run:
 # Combined targets
 all-build: build rust-build data-build
 
-all-test: test rust-test
+all-test: test rust-test data-test agent-test
 
-all-lint: lint rust-clippy
+all-lint: lint rust-clippy agent-check
