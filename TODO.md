@@ -130,6 +130,7 @@ Secmaster enables sophisticated filtering on tickers, events, and markets (categ
 - [ ] Skills for stream analysis - sequence numbers, gap detection, latency impacts from NATS recording
 - [x] Conversation audit logging via streamEvents to JSONL
 - [ ] SQLite checkpointer for conversation persistence (@langchain/langgraph-checkpoint-sqlite)
+- [ ] Testing guardrails - rate limiting, cost controls, sandbox execution
 
 ## Completed (Continued)
 
