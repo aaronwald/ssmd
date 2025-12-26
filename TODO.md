@@ -128,7 +128,7 @@ Secmaster enables sophisticated filtering on tickers, events, and markets (categ
 - [ ] OpenRouter integration (https://openrouter.ai/) - alternative LLM provider
 - [ ] API key management UI - generate keys for testing, use Authentik for access control
 - [ ] Skills for stream analysis - sequence numbers, gap detection, latency impacts from NATS recording
-- [ ] Conversation audit logging via LangChain callbacks (BaseCallbackHandler) - not inline code
+- [x] Conversation audit logging via streamEvents to JSONL
 - [ ] SQLite checkpointer for conversation persistence (@langchain/langgraph-checkpoint-sqlite)
 
 ## Completed (Continued)
