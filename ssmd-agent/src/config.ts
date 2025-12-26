@@ -1,4 +1,8 @@
 // ssmd-agent/src/config.ts
+
+// Expected API version - update when adding tools that require new endpoints
+export const EXPECTED_API_VERSION = "0.2.1";
+
 export const config = {
   dataUrl: Deno.env.get("SSMD_DATA_URL") ?? "http://localhost:8080",
   dataApiKey: Deno.env.get("SSMD_DATA_API_KEY") ?? "",
@@ -15,5 +19,46 @@ export function validateConfig(): void {
   }
   if (!config.anthropicApiKey) {
     throw new Error("ANTHROPIC_API_KEY required");
+  }
+}
+
+/**
+ * Check ssmd-data API version compatibility.
+ * Warns if server is older or unreachable.
+ */
+export async function checkApiVersion(): Promise<void> {
+  try {
+    const res = await fetch(`${config.dataUrl}/version`, {
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!res.ok) {
+      if (res.status === 404) {
+        console.warn(
+          `⚠️  ssmd-data server does not support /version endpoint (server may be outdated)`
+        );
+        console.warn(
+          `   Expected API version: ${EXPECTED_API_VERSION}. Some tools may not work.`
+        );
+      } else {
+        console.warn(`⚠️  ssmd-data /version check failed: ${res.status}`);
+      }
+      return;
+    }
+
+    const { version } = await res.json() as { version: string };
+
+    if (version !== EXPECTED_API_VERSION) {
+      console.warn(
+        `⚠️  API version mismatch: server=${version}, expected=${EXPECTED_API_VERSION}`
+      );
+      console.warn(`   Some tools may not work correctly.`);
+    }
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      console.warn(`⚠️  ssmd-data server not reachable at ${config.dataUrl}`);
+    } else {
+      console.warn(`⚠️  Failed to check API version: ${err}`);
+    }
   }
 }

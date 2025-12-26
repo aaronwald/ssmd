@@ -9,6 +9,9 @@ import (
 	"github.com/aaronwald/ssmd/internal/data"
 )
 
+// APIVersion is the current API version. Increment when adding new endpoints.
+const APIVersion = "0.2.1"
+
 type Server struct {
 	storage data.Storage
 	apiKey  string
@@ -27,6 +30,7 @@ func NewServer(storage data.Storage, apiKey string) *Server {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.mux.HandleFunc("GET /version", s.handleVersion)
 	s.mux.HandleFunc("GET /datasets", s.requireAPIKey(s.handleDatasets))
 	s.mux.HandleFunc("GET /datasets/{feed}/{date}/sample", s.requireAPIKey(s.handleSample))
 	s.mux.HandleFunc("GET /datasets/{feed}/{date}/tickers", s.requireAPIKey(s.handleTickers))
@@ -43,4 +47,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"version": APIVersion})
 }
