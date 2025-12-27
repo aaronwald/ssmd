@@ -123,6 +123,43 @@ transport:
 
 The `--feed` and `--env` arguments are **file paths**, not names.
 
+## Docker Images
+
+All images are built via GitHub Actions - **do not use docker/podman directly**.
+
+### Build Triggers
+
+Images build automatically on git tag push (e.g., `v0.4.4`), or via manual workflow dispatch.
+
+### Triggering a Build
+
+```bash
+# Option 1: Tag and push (triggers build-cli.yaml, build-connector.yaml, etc.)
+git tag v0.4.4
+git push origin v0.4.4
+
+# Option 2: Manual via GitHub CLI
+gh workflow run build-cli.yaml -f tag=0.4.4
+```
+
+### Available Workflows
+
+| Workflow | Image | Dockerfile |
+|----------|-------|------------|
+| `build-cli.yaml` | `ghcr.io/aaronwald/ssmd` | `cmd/ssmd/Dockerfile` |
+| `build-connector.yaml` | `ghcr.io/aaronwald/ssmd-connector` | `ssmd-rust/Dockerfile` |
+| `build-archiver.yaml` | `ghcr.io/aaronwald/ssmd-archiver` | `ssmd-rust/crates/ssmd-archiver/Dockerfile` |
+| `build-data.yaml` | `ghcr.io/aaronwald/ssmd-data` | `cmd/ssmd-data/Dockerfile` |
+| `build-agent.yaml` | `ghcr.io/aaronwald/ssmd-agent` | `ssmd-agent/Dockerfile` |
+
+### Updating ssmd-worker (Temporal)
+
+The ssmd-worker in varlab bundles the ssmd CLI. After pushing a new ssmd tag:
+
+1. Update `varlab/workers/kalshi-temporal/Dockerfile` to reference new ssmd version
+2. Build and push new ssmd-worker image
+3. Update `varlab/clusters/homelab/apps/ssmd/worker/deployment.yaml`
+
 ## Instructions
 
 1. All code must go through pr code review.
