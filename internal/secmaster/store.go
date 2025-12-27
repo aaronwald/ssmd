@@ -137,8 +137,13 @@ func (s *Store) bulkUpsertEvents(ctx context.Context, events []types.Event) erro
 			deleted_at = NULL
 	`, strings.Join(valueStrings, ", "))
 
-	_, err := s.db.ExecContext(ctx, query, valueArgs...)
-	return err
+	result, err := s.db.ExecContext(ctx, query, valueArgs...)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	fmt.Printf("    [DB] events batch: %d attempted, %d affected\n", len(events), rows)
+	return nil
 }
 
 // MarketBatchSize is the number of markets to insert per bulk query
@@ -181,6 +186,7 @@ func (s *Store) UpsertMarketBatch(ctx context.Context, markets []types.Market) (
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	fmt.Printf("    [DB] found %d/%d parent events in DB\n", len(existingEvents), len(eventTickers))
 
 	// Filter markets to only those with existing parent events
 	validMarkets := make([]types.Market, 0, len(markets))
@@ -257,8 +263,13 @@ func (s *Store) bulkUpsertMarkets(ctx context.Context, markets []types.Market) e
 			deleted_at = NULL
 	`, strings.Join(valueStrings, ", "))
 
-	_, err := s.db.ExecContext(ctx, query, valueArgs...)
-	return err
+	result, err := s.db.ExecContext(ctx, query, valueArgs...)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	fmt.Printf("    [DB] markets batch: %d attempted, %d affected\n", len(markets), rows)
+	return nil
 }
 
 // isForeignKeyError checks if error is a postgres FK violation
