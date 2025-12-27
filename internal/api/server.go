@@ -11,7 +11,7 @@ import (
 )
 
 // APIVersion is the current API version. Increment when adding new endpoints.
-const APIVersion = "0.2.1"
+const APIVersion = "0.3.0"
 
 type Server struct {
 	storage        data.Storage
