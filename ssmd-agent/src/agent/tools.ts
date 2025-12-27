@@ -222,6 +222,64 @@ export const getToday = tool(
   }
 );
 
+export const listMarkets = tool(
+  async ({ category, status, series, closing_before, closing_after, limit }) => {
+    const params = new URLSearchParams();
+    if (category) params.set("category", category);
+    if (status) params.set("status", status);
+    if (series) params.set("series", series);
+    if (closing_before) params.set("closing_before", closing_before);
+    if (closing_after) params.set("closing_after", closing_after);
+    if (limit) params.set("limit", String(limit));
+
+    const path = `/markets${params.toString() ? "?" + params : ""}`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "list_markets",
+    description: "List markets from secmaster with filters. Returns markets with event metadata.",
+    schema: z.object({
+      category: z.string().optional().describe("Filter by category (e.g., 'Economics')"),
+      status: z.string().optional().describe("Filter by status: open, closed, settled"),
+      series: z.string().optional().describe("Filter by series ticker (e.g., 'INXD')"),
+      closing_before: z.string().optional().describe("ISO timestamp - markets closing before this time"),
+      closing_after: z.string().optional().describe("ISO timestamp - markets closing after this time"),
+      limit: z.number().optional().describe("Max results (default 100)"),
+    }),
+  }
+);
+
+export const getMarket = tool(
+  async ({ ticker }) => {
+    const path = `/markets/${encodeURIComponent(ticker)}`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "get_market",
+    description: "Get details for a specific market by ticker.",
+    schema: z.object({
+      ticker: z.string().describe("Market ticker (e.g., 'INXD-25JAN01-B4550')"),
+    }),
+  }
+);
+
+export const getFees = tool(
+  async ({ tier }) => {
+    const params = new URLSearchParams();
+    if (tier) params.set("tier", tier);
+    const path = `/fees${params.toString() ? "?" + params : ""}`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "get_fees",
+    description: "Get fee schedule (maker/taker fees) for a tier.",
+    schema: z.object({
+      tier: z.string().optional().describe("Fee tier (default: 'default')"),
+    }),
+  }
+);
+
 export const calendarTools = [getToday];
 export const dataTools = [listDatasets, listTickers, sampleData, getSchema, listBuilders, orderbookBuilder];
-export const allTools = [...calendarTools, ...dataTools, runBacktest, deploySignal];
+export const secmasterTools = [listMarkets, getMarket, getFees];
+export const allTools = [...calendarTools, ...dataTools, ...secmasterTools, runBacktest, deploySignal];
