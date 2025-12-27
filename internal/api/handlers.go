@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/aaronwald/ssmd/internal/data"
+	"github.com/aaronwald/ssmd/internal/secmaster"
+	"github.com/aaronwald/ssmd/internal/types"
 )
 
 // DatasetInfo represents a dataset in API responses
@@ -248,4 +250,96 @@ func (s *Server) handleTickers(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(tickers)
+}
+
+func (s *Server) handleMarkets(w http.ResponseWriter, r *http.Request) {
+	if s.secmasterStore == nil {
+		http.Error(w, `{"error":"secmaster not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	opts := secmaster.MarketListOptions{
+		Category: r.URL.Query().Get("category"),
+		Status:   r.URL.Query().Get("status"),
+		Series:   r.URL.Query().Get("series"),
+		Limit:    100,
+	}
+
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			opts.Limit = l
+		}
+	}
+
+	if before := r.URL.Query().Get("closing_before"); before != "" {
+		if t, err := time.Parse(time.RFC3339, before); err == nil {
+			opts.ClosingBefore = &t
+		}
+	}
+
+	if after := r.URL.Query().Get("closing_after"); after != "" {
+		if t, err := time.Parse(time.RFC3339, after); err == nil {
+			opts.ClosingAfter = &t
+		}
+	}
+
+	markets, err := s.secmasterStore.ListMarkets(r.Context(), opts)
+	if err != nil {
+		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if markets == nil {
+		markets = []types.MarketWithEvent{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(markets)
+}
+
+func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
+	if s.secmasterStore == nil {
+		http.Error(w, `{"error":"secmaster not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	ticker := r.PathValue("ticker")
+
+	market, err := s.secmasterStore.GetMarket(r.Context(), ticker)
+	if err != nil {
+		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		return
+	}
+	if market == nil {
+		http.Error(w, `{"error":"market not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(market)
+}
+
+func (s *Server) handleFees(w http.ResponseWriter, r *http.Request) {
+	if s.secmasterStore == nil {
+		http.Error(w, `{"error":"secmaster not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	tier := r.URL.Query().Get("tier")
+	if tier == "" {
+		tier = "default"
+	}
+
+	fees, err := s.secmasterStore.GetFees(r.Context(), tier)
+	if err != nil {
+		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		return
+	}
+	if fees == nil {
+		http.Error(w, `{"error":"tier not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(fees)
 }
