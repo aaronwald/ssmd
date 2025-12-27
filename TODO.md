@@ -119,8 +119,10 @@ Priority: Consolidate Kalshi work from varlab into ssmd to enable tools and skil
 **Security Master & Fees - Phase 2:**
 - [ ] Redis cache for secmaster lookups
 - [ ] Debezium CDC for real-time cache updates
-- [ ] `ssmd secmaster list` - list markets with filters (category, status, expiration)
-- [ ] `ssmd secmaster show <ticker>` - market details
+- [x] `ssmd secmaster list` - list markets with filters (category, status, expiration)
+- [x] `ssmd secmaster show <ticker>` - market details
+- [x] `ssmd secmaster stats` - summary statistics (counts by status/category)
+- [ ] Reconcile CLI direct SQL access vs ssmd-data HTTP service (consistency vs offline admin)
 - [ ] Skills for market discovery and fee-aware signal design
 
 **Temporal Jobs:**

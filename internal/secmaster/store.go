@@ -11,6 +11,11 @@ import (
 )
 
 // Store handles secmaster database operations
+//
+// TODO: Reconcile direct SQL access vs using the ssmd-data HTTP service from CLI.
+// Currently CLI commands (list, show, stats) use Store directly, while the agent
+// uses the HTTP API. Consider having CLI call the service for consistency, or
+// keep direct access for offline/admin use cases.
 type Store struct {
 	db *sql.DB
 }
@@ -182,4 +187,104 @@ func (s *Store) GetFees(ctx context.Context, tier string) (*types.Fee, error) {
 		return nil, nil
 	}
 	return &f, err
+}
+
+// SecmasterStats holds summary statistics
+type SecmasterStats struct {
+	TotalEvents        int
+	TotalMarkets       int
+	MarketsByStatus    map[string]int
+	TopCategories      []CategoryCount
+	LastSyncTime       *time.Time
+	MarketsClosingSoon int // closing within 24h
+}
+
+// CategoryCount holds category name and count
+type CategoryCount struct {
+	Category string
+	Count    int
+}
+
+// GetStats returns summary statistics about synced data
+func (s *Store) GetStats(ctx context.Context) (*SecmasterStats, error) {
+	stats := &SecmasterStats{
+		MarketsByStatus: make(map[string]int),
+	}
+
+	// Total events
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE deleted_at IS NULL`).Scan(&stats.TotalEvents)
+	if err != nil {
+		return nil, fmt.Errorf("count events: %w", err)
+	}
+
+	// Total markets
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM markets WHERE deleted_at IS NULL`).Scan(&stats.TotalMarkets)
+	if err != nil {
+		return nil, fmt.Errorf("count markets: %w", err)
+	}
+
+	// Markets by status
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT status, COUNT(*) FROM markets
+		WHERE deleted_at IS NULL
+		GROUP BY status ORDER BY COUNT(*) DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("count by status: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		stats.MarketsByStatus[status] = count
+	}
+
+	// Top categories (limit 5)
+	rows, err = s.db.QueryContext(ctx, `
+		SELECT e.category, COUNT(m.ticker) as cnt
+		FROM markets m
+		JOIN events e ON m.event_ticker = e.event_ticker
+		WHERE m.deleted_at IS NULL AND e.deleted_at IS NULL
+		GROUP BY e.category
+		ORDER BY cnt DESC
+		LIMIT 5
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("top categories: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cc CategoryCount
+		if err := rows.Scan(&cc.Category, &cc.Count); err != nil {
+			return nil, err
+		}
+		stats.TopCategories = append(stats.TopCategories, cc)
+	}
+
+	// Last sync time (most recent updated_at)
+	var lastSync sql.NullTime
+	err = s.db.QueryRowContext(ctx, `SELECT MAX(updated_at) FROM markets WHERE deleted_at IS NULL`).Scan(&lastSync)
+	if err != nil {
+		return nil, fmt.Errorf("last sync: %w", err)
+	}
+	if lastSync.Valid {
+		stats.LastSyncTime = &lastSync.Time
+	}
+
+	// Markets closing within 24h
+	err = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM markets
+		WHERE deleted_at IS NULL
+		AND status = 'open'
+		AND close_time > NOW()
+		AND close_time < NOW() + INTERVAL '24 hours'
+	`).Scan(&stats.MarketsClosingSoon)
+	if err != nil {
+		return nil, fmt.Errorf("closing soon: %w", err)
+	}
+
+	return stats, nil
 }
