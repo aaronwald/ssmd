@@ -105,16 +105,20 @@
 ### Kalshi Consolidation (from varlab)
 Priority: Consolidate Kalshi work from varlab into ssmd to enable tools and skills.
 
-**Security Master & Fees:**
-Secmaster enables sophisticated filtering on tickers, events, and markets (category, expiration, status, etc.)
+**Security Master & Fees - Phase 1 (v0.3.0):** ✅ COMPLETED 2025-12-27
+- [x] PostgreSQL schema for events, markets, fees (`migrations/001_secmaster.sql`)
+- [x] Go types: Event, Market, MarketWithEvent, Fee (`internal/types/secmaster.go`)
+- [x] Secmaster store with CRUD operations (`internal/secmaster/store.go`)
+- [x] Kalshi REST API client with pagination (`internal/secmaster/kalshi.go`)
+- [x] `ssmd secmaster sync` command with `--incremental` flag
+- [x] API endpoints: `/markets`, `/markets/{ticker}`, `/fees`
+- [x] Agent tools: `list_markets`, `get_market`, `get_fees`
 
-- [ ] Port secmaster sync from varlab (market metadata, categories, expiration)
-- [ ] Port fee schedule from varlab (maker/taker fees per tier)
+**Security Master & Fees - Phase 2:**
 - [ ] Redis cache for secmaster lookups
-- [ ] `ssmd secmaster sync <env>` - trigger manual sync
-- [ ] `ssmd secmaster list <env>` - list markets with filters (category, status, expiration)
-- [ ] `ssmd secmaster show <env> <ticker>` - market details
-- [ ] Agent tools: `list_markets`, `get_market`, `get_fees`
+- [ ] Debezium CDC for real-time cache updates
+- [ ] `ssmd secmaster list` - list markets with filters (category, status, expiration)
+- [ ] `ssmd secmaster show <ticker>` - market details
 - [ ] Skills for market discovery and fee-aware signal design
 
 **Temporal Jobs:**
