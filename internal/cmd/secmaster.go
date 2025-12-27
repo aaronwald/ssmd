@@ -10,18 +10,11 @@ import (
 	"time"
 
 	"github.com/aaronwald/ssmd/internal/secmaster"
+	"github.com/aaronwald/ssmd/internal/types"
 	"github.com/spf13/cobra"
 
 	_ "github.com/lib/pq"
 )
-
-// isForeignKeyError checks if the error is a postgres foreign key violation
-func isForeignKeyError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "violates foreign key constraint")
-}
 
 var secmasterCmd = &cobra.Command{
 	Use:   "secmaster",
@@ -104,45 +97,60 @@ func runSync(cmd *cobra.Command, args []string) error {
 
 	ctx := context.Background()
 
-	// Fetch and upsert events
-	fmt.Printf("Fetching events (window: %d days)...\n", windowDays)
-	events, err := client.FetchAllEvents(minCloseTS)
-	if err != nil {
-		return fmt.Errorf("fetch events: %w", err)
-	}
-	fmt.Printf("Fetched %d events\n", len(events))
-
-	for _, e := range events {
-		if err := store.UpsertEvent(ctx, &e); err != nil {
-			return fmt.Errorf("upsert event %s: %w", e.EventTicker, err)
+	// Stream events - upsert each page as it arrives
+	fmt.Printf("Syncing events (window: %d days)...\n", windowDays)
+	eventCount, eventCursor, err := client.StreamEvents(minCloseTS, "", func(events []types.Event, cursor string) error {
+		if err := store.UpsertEventBatch(ctx, events); err != nil {
+			return err
 		}
-	}
-
-	// Fetch and upsert markets
-	fmt.Printf("Fetching markets...\n")
-	markets, err := client.FetchAllMarkets(minCloseTS)
+		fmt.Printf("  Events: +%d (cursor: %s)\n", len(events), truncateCursor(cursor))
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("fetch markets: %w", err)
-	}
-	fmt.Printf("Fetched %d markets\n", len(markets))
-
-	var skippedMarkets int
-	for _, m := range markets {
-		if err := store.UpsertMarket(ctx, &m); err != nil {
-			// Skip markets with missing parent events (FK violation)
-			if isForeignKeyError(err) {
-				skippedMarkets++
-				continue
-			}
-			return fmt.Errorf("upsert market %s: %w", m.Ticker, err)
+		if eventCursor != "" {
+			fmt.Printf("Partial sync failed at cursor: %s\n", eventCursor)
 		}
+		return fmt.Errorf("sync events: %w", err)
 	}
 
-	if skippedMarkets > 0 {
-		fmt.Printf("Skipped %d markets with missing parent events\n", skippedMarkets)
+	// Stream markets - upsert each page as it arrives
+	fmt.Printf("Syncing markets...\n")
+	var totalSkipped int
+	marketCount, marketCursor, err := client.StreamMarkets(minCloseTS, "", func(markets []types.Market, cursor string) error {
+		skipped, err := store.UpsertMarketBatch(ctx, markets)
+		if err != nil {
+			return err
+		}
+		totalSkipped += skipped
+		if skipped > 0 {
+			fmt.Printf("  Markets: +%d (skipped: %d, cursor: %s)\n", len(markets)-skipped, skipped, truncateCursor(cursor))
+		} else {
+			fmt.Printf("  Markets: +%d (cursor: %s)\n", len(markets), truncateCursor(cursor))
+		}
+		return nil
+	})
+	if err != nil {
+		if marketCursor != "" {
+			fmt.Printf("Partial sync failed at cursor: %s\n", marketCursor)
+		}
+		return fmt.Errorf("sync markets: %w", err)
 	}
-	fmt.Printf("Sync complete: %d events, %d markets synced\n", len(events), len(markets)-skippedMarkets)
+
+	if totalSkipped > 0 {
+		fmt.Printf("Skipped %d markets with missing parent events\n", totalSkipped)
+	}
+	fmt.Printf("Sync complete: %d events, %d markets synced\n", eventCount, marketCount-totalSkipped)
 	return nil
+}
+
+func truncateCursor(cursor string) string {
+	if cursor == "" {
+		return "done"
+	}
+	if len(cursor) > 16 {
+		return cursor[:16] + "..."
+	}
+	return cursor
 }
 
 func runList(cmd *cobra.Command, args []string) error {
