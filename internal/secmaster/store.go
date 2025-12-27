@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aaronwald/ssmd/internal/types"
@@ -72,6 +73,109 @@ func (s *Store) UpsertMarket(ctx context.Context, m *types.Market) error {
 		m.YesBid, m.YesAsk, m.NoBid, m.NoAsk, m.LastPrice,
 		m.Volume, m.Volume24h, m.OpenInterest)
 	return err
+}
+
+// UpsertEventBatch upserts multiple events in a single transaction
+func (s *Store) UpsertEventBatch(ctx context.Context, events []types.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO events (event_ticker, title, category, series_ticker, strike_date, mutually_exclusive, status, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		ON CONFLICT (event_ticker) DO UPDATE SET
+			title = EXCLUDED.title,
+			category = EXCLUDED.category,
+			series_ticker = EXCLUDED.series_ticker,
+			strike_date = EXCLUDED.strike_date,
+			mutually_exclusive = EXCLUDED.mutually_exclusive,
+			status = EXCLUDED.status,
+			updated_at = NOW(),
+			deleted_at = NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, e := range events {
+		_, err := stmt.ExecContext(ctx, e.EventTicker, e.Title, e.Category, e.SeriesTicker,
+			e.StrikeDate, e.MutuallyExclusive, e.Status)
+		if err != nil {
+			return fmt.Errorf("exec event %s: %w", e.EventTicker, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// UpsertMarketBatch upserts multiple markets in a single transaction.
+// Returns count of skipped markets (FK violations) for logging.
+func (s *Store) UpsertMarketBatch(ctx context.Context, markets []types.Market) (int, error) {
+	if len(markets) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO markets (ticker, event_ticker, title, status, close_time,
+			yes_bid, yes_ask, no_bid, no_ask, last_price, volume, volume_24h, open_interest, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+		ON CONFLICT (ticker) DO UPDATE SET
+			title = EXCLUDED.title,
+			status = EXCLUDED.status,
+			close_time = EXCLUDED.close_time,
+			yes_bid = EXCLUDED.yes_bid,
+			yes_ask = EXCLUDED.yes_ask,
+			no_bid = EXCLUDED.no_bid,
+			no_ask = EXCLUDED.no_ask,
+			last_price = EXCLUDED.last_price,
+			volume = EXCLUDED.volume,
+			volume_24h = EXCLUDED.volume_24h,
+			open_interest = EXCLUDED.open_interest,
+			updated_at = NOW(),
+			deleted_at = NULL
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	skipped := 0
+	for _, m := range markets {
+		_, err := stmt.ExecContext(ctx, m.Ticker, m.EventTicker, m.Title, m.Status, m.CloseTime,
+			m.YesBid, m.YesAsk, m.NoBid, m.NoAsk, m.LastPrice,
+			m.Volume, m.Volume24h, m.OpenInterest)
+		if err != nil {
+			if isForeignKeyError(err) {
+				skipped++
+				continue
+			}
+			return skipped, fmt.Errorf("exec market %s: %w", m.Ticker, err)
+		}
+	}
+
+	return skipped, tx.Commit()
+}
+
+// isForeignKeyError checks if error is a postgres FK violation
+func isForeignKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "violates foreign key constraint")
 }
 
 // MarketListOptions for filtering markets
