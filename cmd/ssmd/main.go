@@ -27,6 +27,7 @@ func init() {
 	rootCmd.AddCommand(cmd.DiffCommand())
 	rootCmd.AddCommand(cmd.CommitCommand())
 	rootCmd.AddCommand(cmd.DataCommand())
+	rootCmd.AddCommand(cmd.SecmasterCommand())
 }
 
 func main() {
