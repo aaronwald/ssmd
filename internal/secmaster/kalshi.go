@@ -19,7 +19,7 @@ const (
 	MarketsPageLimit = 1000
 	RequestTimeout   = 30 * time.Second
 	MaxRetries       = 10                 // Increased for aggressive rate limiting
-	DefaultRateDelay = 500 * time.Millisecond
+	DefaultRateDelay = 250 * time.Millisecond // 4 req/sec like Rust impl
 	Min429Wait       = 5 * time.Second    // Minimum wait on 429 even if Retry-After is shorter
 	Max429Wait       = 120 * time.Second  // Cap Retry-After at 2 min
 )

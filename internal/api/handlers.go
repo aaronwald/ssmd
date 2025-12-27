@@ -343,3 +343,58 @@ func (s *Server) handleFees(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(fees)
 }
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if s.secmasterStore == nil {
+		http.Error(w, `{"error":"secmaster not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	opts := secmaster.EventListOptions{
+		Category: r.URL.Query().Get("category"),
+		Status:   r.URL.Query().Get("status"),
+		Series:   r.URL.Query().Get("series"),
+		Limit:    100,
+	}
+
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			opts.Limit = l
+		}
+	}
+
+	events, err := s.secmasterStore.ListEvents(r.Context(), opts)
+	if err != nil {
+		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if events == nil {
+		events = []types.EventWithMarketCount{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(events)
+}
+
+func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
+	if s.secmasterStore == nil {
+		http.Error(w, `{"error":"secmaster not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	eventTicker := r.PathValue("event_ticker")
+
+	event, err := s.secmasterStore.GetEvent(r.Context(), eventTicker)
+	if err != nil {
+		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		return
+	}
+	if event == nil {
+		http.Error(w, `{"error":"event not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(event)
+}
