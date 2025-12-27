@@ -8,9 +8,15 @@ Deploy ssmd components to Kubernetes.
 |-----------|-------|---------|
 | **ssmd-connector** | `ghcr.io/<owner>/ssmd-connector` | Kalshi WebSocket → NATS (raw JSON) |
 | **ssmd-archiver** | `ghcr.io/<owner>/ssmd-archiver` | NATS → JSONL.gz files |
-| **ssmd-data** | `ghcr.io/<owner>/ssmd-data` | HTTP API for archived data |
+| **ssmd-data** | `ghcr.io/<owner>/ssmd-data` | HTTP API for archived data + secmaster |
 
 > **Note:** `ssmd-agent` is a local development tool, not a deployed service. See [AGENT.md](AGENT.md) for usage.
+
+### Optional Dependencies
+
+| Component | Purpose | Required For |
+|-----------|---------|--------------|
+| **PostgreSQL** | Market metadata storage | Secmaster endpoints (`/markets`, `/fees`) |
 
 ---
 
@@ -48,9 +54,9 @@ docker build -t ssmd-connector:latest .
 Tags trigger automatic builds:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
-# Image pushed to ghcr.io/<owner>/ssmd-connector:0.1.0
+git tag v0.3.0
+git push origin v0.3.0
+# Image pushed to ghcr.io/<owner>/ssmd-connector:0.3.0
 ```
 
 ## Kubernetes Resources
@@ -131,7 +137,7 @@ spec:
     spec:
       containers:
         - name: connector
-          image: ghcr.io/<owner>/ssmd-connector:0.1.0
+          image: ghcr.io/<owner>/ssmd-connector:0.3.0
           args:
             - "--feed"
             - "/config/feeds/kalshi.yaml"
@@ -211,9 +217,9 @@ cd ssmd-rust
 docker build -f crates/ssmd-archiver/Dockerfile -t ssmd-archiver:latest .
 
 # Or use GHCR (tags trigger builds)
-git tag v0.1.0
-git push origin v0.1.0
-# Image pushed to ghcr.io/<owner>/ssmd-archiver:0.1.0
+git tag v0.3.0
+git push origin v0.3.0
+# Image pushed to ghcr.io/<owner>/ssmd-archiver:0.3.0
 ```
 
 ### ConfigMap
@@ -259,7 +265,7 @@ spec:
     spec:
       containers:
         - name: archiver
-          image: ghcr.io/<owner>/ssmd-archiver:0.1.0
+          image: ghcr.io/<owner>/ssmd-archiver:0.3.0
           args:
             - "--config"
             - "/config/archiver.yaml"
@@ -350,6 +356,7 @@ If using network policies, allow:
 
 **ssmd-data:**
 - **Ingress**: Clients → ssmd-data (port 8080)
+- **Egress**: ssmd-data → PostgreSQL (port 5432, optional for secmaster)
 - **Egress**: ssmd-data → DNS (port 53)
 
 ## Environment Variables
@@ -424,10 +431,27 @@ HTTP API for serving archived market data. Used by ssmd-agent (local dev tool) a
 docker build -f cmd/ssmd-data/Dockerfile -t ssmd-data:latest .
 
 # Or use GHCR (tags trigger builds)
-git tag v0.1.0
-git push origin v0.1.0
-# Image pushed to ghcr.io/<owner>/ssmd-data:0.1.0
+git tag v0.3.0
+git push origin v0.3.0
+# Image pushed to ghcr.io/<owner>/ssmd-data:0.3.0
 ```
+
+### API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check |
+| `GET /version` | API version |
+| `GET /datasets` | List available datasets |
+| `GET /datasets/{feed}/{date}/sample` | Sample data with filters |
+| `GET /datasets/{feed}/{date}/tickers` | List tickers in dataset |
+| `GET /schema/{feed}/{type}` | Schema for message type |
+| `GET /builders` | List available state builders |
+| `GET /markets` | List markets (requires PostgreSQL) |
+| `GET /markets/{ticker}` | Get market details (requires PostgreSQL) |
+| `GET /fees` | Get fee tiers (requires PostgreSQL) |
+
+> **Note:** Secmaster endpoints (`/markets`, `/fees`) return 503 if `DATABASE_URL` is not configured.
 
 ### Secret (API Key)
 
@@ -436,6 +460,40 @@ kubectl create secret generic ssmd-data-credentials \
   --namespace=ssmd \
   --from-literal=api-key="$(openssl rand -hex 32)"
 ```
+
+### PostgreSQL Setup (Optional)
+
+Required for secmaster endpoints (`/markets`, `/fees`). Skip if not using secmaster features.
+
+```bash
+# Create database secret
+kubectl create secret generic ssmd-postgres-credentials \
+  --namespace=ssmd \
+  --from-literal=database-url="postgres://user:pass@postgres.ssmd.svc:5432/ssmd?sslmode=disable"
+
+# Apply schema migration
+kubectl run --rm -it psql-migrate --namespace=ssmd \
+  --image=postgres:15-alpine \
+  --env="PGPASSWORD=pass" \
+  -- psql -h postgres.ssmd.svc -U user -d ssmd -f - < migrations/001_secmaster.sql
+```
+
+### Syncing Secmaster Data
+
+Use the `ssmd secmaster sync` command to populate the database from Kalshi API:
+
+```bash
+# Full sync (all events and markets)
+KALSHI_API_KEY=your-key \
+KALSHI_PRIVATE_KEY_PATH=/path/to/key.pem \
+DATABASE_URL="postgres://..." \
+ssmd secmaster sync
+
+# Incremental sync (only recent changes)
+ssmd secmaster sync --incremental
+```
+
+Schedule periodic syncs via cron or Temporal workflow to keep data current.
 
 ### Deployment
 
@@ -457,7 +515,7 @@ spec:
     spec:
       containers:
         - name: data
-          image: ghcr.io/<owner>/ssmd-data:0.1.0
+          image: ghcr.io/<owner>/ssmd-data:0.3.0
           ports:
             - containerPort: 8080
               name: http
@@ -471,6 +529,13 @@ spec:
                 secretKeyRef:
                   name: ssmd-data-credentials
                   key: api-key
+            # Optional: Enable secmaster endpoints
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ssmd-postgres-credentials
+                  key: database-url
+                  optional: true
           volumeMounts:
             - name: data
               mountPath: /data/ssmd
@@ -524,6 +589,7 @@ spec:
 | `PORT` | No | `8080` | HTTP server port |
 | `SSMD_DATA_PATH` | Yes | - | Path to archived data (local or `gs://bucket`) |
 | `SSMD_API_KEY` | Yes | - | API key for authentication |
+| `DATABASE_URL` | No | - | PostgreSQL connection string for secmaster |
 
 ### Verify Deployment
 

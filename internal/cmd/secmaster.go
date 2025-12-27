@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aaronwald/ssmd/internal/secmaster"
@@ -13,6 +14,14 @@ import (
 
 	_ "github.com/lib/pq"
 )
+
+// isForeignKeyError checks if the error is a postgres foreign key violation
+func isForeignKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "violates foreign key constraint")
+}
 
 var secmasterCmd = &cobra.Command{
 	Use:   "secmaster",
@@ -85,12 +94,21 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Fetched %d markets\n", len(markets))
 
+	var skippedMarkets int
 	for _, m := range markets {
 		if err := store.UpsertMarket(ctx, &m); err != nil {
+			// Skip markets with missing parent events (FK violation)
+			if isForeignKeyError(err) {
+				skippedMarkets++
+				continue
+			}
 			return fmt.Errorf("upsert market %s: %w", m.Ticker, err)
 		}
 	}
 
-	fmt.Printf("Sync complete: %d events, %d markets\n", len(events), len(markets))
+	if skippedMarkets > 0 {
+		fmt.Printf("Skipped %d markets with missing parent events\n", skippedMarkets)
+	}
+	fmt.Printf("Sync complete: %d events, %d markets synced\n", len(events), len(markets)-skippedMarkets)
 	return nil
 }

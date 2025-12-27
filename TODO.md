@@ -113,6 +113,8 @@ Priority: Consolidate Kalshi work from varlab into ssmd to enable tools and skil
 - [x] `ssmd secmaster sync` command with `--incremental` flag
 - [x] API endpoints: `/markets`, `/markets/{ticker}`, `/fees`
 - [x] Agent tools: `list_markets`, `get_market`, `get_fees`
+- [x] ssmd-data DATABASE_URL wiring (`cmd/ssmd-data/main.go`)
+- [x] DEPLOYMENT.md updated with secmaster setup, PostgreSQL, version 0.3.0
 
 **Security Master & Fees - Phase 2:**
 - [ ] Redis cache for secmaster lookups
