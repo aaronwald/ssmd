@@ -7,15 +7,17 @@ import (
 	"net/http"
 
 	"github.com/aaronwald/ssmd/internal/data"
+	"github.com/aaronwald/ssmd/internal/secmaster"
 )
 
 // APIVersion is the current API version. Increment when adding new endpoints.
 const APIVersion = "0.2.1"
 
 type Server struct {
-	storage data.Storage
-	apiKey  string
-	mux     *http.ServeMux
+	storage        data.Storage
+	apiKey         string
+	mux            *http.ServeMux
+	secmasterStore *secmaster.Store
 }
 
 func NewServer(storage data.Storage, apiKey string) *Server {
@@ -28,6 +30,11 @@ func NewServer(storage data.Storage, apiKey string) *Server {
 	return s
 }
 
+// SetSecmasterStore sets the optional secmaster store for market queries
+func (s *Server) SetSecmasterStore(store *secmaster.Store) {
+	s.secmasterStore = store
+}
+
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /version", s.handleVersion)
@@ -36,6 +43,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /datasets/{feed}/{date}/tickers", s.requireAPIKey(s.handleTickers))
 	s.mux.HandleFunc("GET /schema/{feed}/{type}", s.requireAPIKey(s.handleSchema))
 	s.mux.HandleFunc("GET /builders", s.requireAPIKey(s.handleBuilders))
+	// Secmaster endpoints
+	s.mux.HandleFunc("GET /markets", s.requireAPIKey(s.handleMarkets))
+	s.mux.HandleFunc("GET /markets/{ticker}", s.requireAPIKey(s.handleMarket))
+	s.mux.HandleFunc("GET /fees", s.requireAPIKey(s.handleFees))
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
