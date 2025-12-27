@@ -2,12 +2,15 @@
 package main
 
 import (
+	"database/sql"
 	"log"
 	"net/http"
 	"os"
 
 	"github.com/aaronwald/ssmd/internal/api"
 	"github.com/aaronwald/ssmd/internal/data"
+	"github.com/aaronwald/ssmd/internal/secmaster"
+	_ "github.com/lib/pq"
 )
 
 func main() {
@@ -32,6 +35,22 @@ func main() {
 	}
 
 	server := api.NewServer(storage, apiKey)
+
+	// Optional: Connect to PostgreSQL for secmaster endpoints
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		db, err := sql.Open("postgres", dbURL)
+		if err != nil {
+			log.Fatalf("connecting to database: %v", err)
+		}
+		defer db.Close()
+
+		if err := db.Ping(); err != nil {
+			log.Fatalf("pinging database: %v", err)
+		}
+
+		server.SetSecmasterStore(secmaster.NewStore(db))
+		log.Printf("secmaster endpoints enabled (PostgreSQL connected)")
+	}
 
 	log.Printf("ssmd-data listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, server); err != nil {
