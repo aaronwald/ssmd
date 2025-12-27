@@ -3,6 +3,8 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { config } from "../config.ts";
 import { OrderBookBuilder, type OrderBookState } from "../state/orderbook.ts";
+import { PriceHistoryBuilder, type PriceHistoryState } from "../state/price_history.ts";
+import { VolumeProfileBuilder, type VolumeProfileState } from "../state/volume_profile.ts";
 import type { MarketRecord } from "../state/types.ts";
 import { runBacktest as executeBacktest } from "../backtest/runner.ts";
 
@@ -144,6 +146,80 @@ export const orderbookBuilder = tool(
   }
 );
 
+export const priceHistoryBuilder = tool(
+  async ({ records, windowSize }) => {
+    const builder = new PriceHistoryBuilder(windowSize ?? 100);
+    const snapshots: PriceHistoryState[] = [];
+
+    for (const record of records as MarketRecord[]) {
+      builder.update(record);
+      const state = builder.getState();
+      if (state.ticker && state.tradeCount > 0) {
+        snapshots.push(state);
+      }
+    }
+
+    return JSON.stringify({
+      count: snapshots.length,
+      snapshots: snapshots.slice(0, 100),
+      summary: snapshots.length > 0 ? {
+        ticker: snapshots[snapshots.length - 1].ticker,
+        priceRange: {
+          high: Math.max(...snapshots.map(s => s.high)),
+          low: Math.min(...snapshots.filter(s => s.low > 0).map(s => s.low)),
+        },
+        finalVwap: snapshots[snapshots.length - 1].vwap,
+        totalReturns: snapshots[snapshots.length - 1].returns,
+      } : null,
+    });
+  },
+  {
+    name: "price_history_builder",
+    description: "Process trade records through PriceHistory builder. Returns rolling window stats: last, high, low, vwap, returns, volatility.",
+    schema: z.object({
+      records: z.array(z.any()).describe("Array of trade records from sample_data"),
+      windowSize: z.number().optional().describe("Number of trades in rolling window (default 100)"),
+    }),
+  }
+);
+
+export const volumeProfileBuilder = tool(
+  async ({ records, windowMs }) => {
+    const builder = new VolumeProfileBuilder(windowMs ?? 300000);
+    const snapshots: VolumeProfileState[] = [];
+
+    for (const record of records as MarketRecord[]) {
+      builder.update(record);
+      const state = builder.getState();
+      if (state.ticker && state.tradeCount > 0) {
+        snapshots.push(state);
+      }
+    }
+
+    return JSON.stringify({
+      count: snapshots.length,
+      snapshots: snapshots.slice(0, 100),
+      summary: snapshots.length > 0 ? {
+        ticker: snapshots[snapshots.length - 1].ticker,
+        finalVolume: {
+          buy: snapshots[snapshots.length - 1].buyVolume,
+          sell: snapshots[snapshots.length - 1].sellVolume,
+          total: snapshots[snapshots.length - 1].totalVolume,
+        },
+        buyRatio: snapshots[snapshots.length - 1].ratio,
+      } : null,
+    });
+  },
+  {
+    name: "volume_profile_builder",
+    description: "Process trade records through VolumeProfile builder. Tracks buy/sell volume ratio over time window.",
+    schema: z.object({
+      records: z.array(z.any()).describe("Array of trade records from sample_data"),
+      windowMs: z.number().optional().describe("Time window in milliseconds (default 300000 = 5 min)"),
+    }),
+  }
+);
+
 export const runBacktest = tool(
   async ({ signalCode, states }) => {
     const result = await executeBacktest(signalCode, states);
@@ -279,7 +355,44 @@ export const getFees = tool(
   }
 );
 
+export const listEvents = tool(
+  async ({ category, status, series, limit }) => {
+    const params = new URLSearchParams();
+    if (category) params.set("category", category);
+    if (status) params.set("status", status);
+    if (series) params.set("series", series);
+    if (limit) params.set("limit", String(limit));
+
+    const path = `/events${params.toString() ? "?" + params : ""}`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "list_events",
+    description: "List events from secmaster with market counts. Events are containers for related markets.",
+    schema: z.object({
+      category: z.string().optional().describe("Filter by category (e.g., 'Economics')"),
+      status: z.string().optional().describe("Filter by status: open, closed, settled"),
+      series: z.string().optional().describe("Filter by series ticker (e.g., 'INXD')"),
+      limit: z.number().optional().describe("Max results (default 100)"),
+    }),
+  }
+);
+
+export const getEvent = tool(
+  async ({ event_ticker }) => {
+    const path = `/events/${encodeURIComponent(event_ticker)}`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "get_event",
+    description: "Get details for a specific event including all its markets.",
+    schema: z.object({
+      event_ticker: z.string().describe("Event ticker (e.g., 'INXD-25JAN01')"),
+    }),
+  }
+);
+
 export const calendarTools = [getToday];
-export const dataTools = [listDatasets, listTickers, sampleData, getSchema, listBuilders, orderbookBuilder];
-export const secmasterTools = [listMarkets, getMarket, getFees];
+export const dataTools = [listDatasets, listTickers, sampleData, getSchema, listBuilders, orderbookBuilder, priceHistoryBuilder, volumeProfileBuilder];
+export const secmasterTools = [listMarkets, getMarket, getFees, listEvents, getEvent];
 export const allTools = [...calendarTools, ...dataTools, ...secmasterTools, runBacktest, deploySignal];

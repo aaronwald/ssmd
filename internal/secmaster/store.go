@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aaronwald/ssmd/internal/types"
+	"github.com/lib/pq"
 )
 
 // Store handles secmaster database operations
@@ -75,21 +76,56 @@ func (s *Store) UpsertMarket(ctx context.Context, m *types.Market) error {
 	return err
 }
 
-// UpsertEventBatch upserts multiple events in a single transaction
+// EventBatchSize is the number of events to insert per bulk query
+const EventBatchSize = 500
+
+// UpsertEventBatch upserts multiple events using bulk inserts
 func (s *Store) UpsertEventBatch(ctx context.Context, events []types.Event) error {
 	if len(events) == 0 {
 		return nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
+	// Process in batches
+	for i := 0; i < len(events); i += EventBatchSize {
+		end := i + EventBatchSize
+		if end > len(events) {
+			end = len(events)
+		}
+		batch := events[i:end]
 
-	stmt, err := tx.PrepareContext(ctx, `
+		if err := s.bulkUpsertEvents(ctx, batch); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// bulkUpsertEvents inserts a batch of events using multi-row VALUES
+func (s *Store) bulkUpsertEvents(ctx context.Context, events []types.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	// Build multi-row VALUES clause
+	valueStrings := make([]string, 0, len(events))
+	valueArgs := make([]interface{}, 0, len(events)*7)
+
+	for i, e := range events {
+		base := i * 7
+		valueStrings = append(valueStrings, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, NOW())",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7,
+		))
+		valueArgs = append(valueArgs,
+			e.EventTicker, e.Title, e.Category, e.SeriesTicker,
+			e.StrikeDate, e.MutuallyExclusive, e.Status,
+		)
+	}
+
+	query := fmt.Sprintf(`
 		INSERT INTO events (event_ticker, title, category, series_ticker, strike_date, mutually_exclusive, status, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		VALUES %s
 		ON CONFLICT (event_ticker) DO UPDATE SET
 			title = EXCLUDED.title,
 			category = EXCLUDED.category,
@@ -99,36 +135,112 @@ func (s *Store) UpsertEventBatch(ctx context.Context, events []types.Event) erro
 			status = EXCLUDED.status,
 			updated_at = NOW(),
 			deleted_at = NULL
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare: %w", err)
-	}
-	defer stmt.Close()
+	`, strings.Join(valueStrings, ", "))
 
-	for _, e := range events {
-		_, err := stmt.ExecContext(ctx, e.EventTicker, e.Title, e.Category, e.SeriesTicker,
-			e.StrikeDate, e.MutuallyExclusive, e.Status)
-		if err != nil {
-			return fmt.Errorf("exec event %s: %w", e.EventTicker, err)
-		}
-	}
-
-	return tx.Commit()
+	_, err := s.db.ExecContext(ctx, query, valueArgs...)
+	return err
 }
 
-// UpsertMarketBatch upserts multiple markets, skipping those with missing parent events.
-// Uses individual statements (not a transaction) because PostgreSQL aborts transactions
-// after any error - we need to continue after FK violations.
-// Returns count of skipped markets (FK violations) for logging.
+// MarketBatchSize is the number of markets to insert per bulk query
+const MarketBatchSize = 500
+
+// UpsertMarketBatch upserts multiple markets using bulk inserts.
+// Pre-filters markets by existing events to avoid FK violations.
+// Returns count of skipped markets (missing parent events) for logging.
 func (s *Store) UpsertMarketBatch(ctx context.Context, markets []types.Market) (int, error) {
 	if len(markets) == 0 {
 		return 0, nil
 	}
 
-	query := `
+	// Collect unique event tickers from this batch
+	eventTickerSet := make(map[string]struct{})
+	for _, m := range markets {
+		eventTickerSet[m.EventTicker] = struct{}{}
+	}
+	eventTickers := make([]string, 0, len(eventTickerSet))
+	for t := range eventTickerSet {
+		eventTickers = append(eventTickers, t)
+	}
+
+	// Query which events exist in DB
+	existingEvents := make(map[string]struct{})
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT event_ticker FROM events WHERE event_ticker = ANY($1) AND deleted_at IS NULL",
+		pq.Array(eventTickers))
+	if err != nil {
+		return 0, fmt.Errorf("query existing events: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ticker string
+		if err := rows.Scan(&ticker); err != nil {
+			return 0, err
+		}
+		existingEvents[ticker] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	// Filter markets to only those with existing parent events
+	validMarkets := make([]types.Market, 0, len(markets))
+	skipped := 0
+	for _, m := range markets {
+		if _, exists := existingEvents[m.EventTicker]; exists {
+			validMarkets = append(validMarkets, m)
+		} else {
+			skipped++
+		}
+	}
+
+	if len(validMarkets) == 0 {
+		return skipped, nil
+	}
+
+	// Process in batches using bulk INSERT
+	for i := 0; i < len(validMarkets); i += MarketBatchSize {
+		end := i + MarketBatchSize
+		if end > len(validMarkets) {
+			end = len(validMarkets)
+		}
+		batch := validMarkets[i:end]
+
+		if err := s.bulkUpsertMarkets(ctx, batch); err != nil {
+			return skipped, err
+		}
+	}
+
+	return skipped, nil
+}
+
+// bulkUpsertMarkets inserts a batch of markets using multi-row VALUES
+func (s *Store) bulkUpsertMarkets(ctx context.Context, markets []types.Market) error {
+	if len(markets) == 0 {
+		return nil
+	}
+
+	// Build multi-row VALUES clause
+	valueStrings := make([]string, 0, len(markets))
+	valueArgs := make([]interface{}, 0, len(markets)*13)
+
+	for i, m := range markets {
+		base := i * 13
+		valueStrings = append(valueStrings, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, NOW())",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7,
+			base+8, base+9, base+10, base+11, base+12, base+13,
+		))
+		valueArgs = append(valueArgs,
+			m.Ticker, m.EventTicker, m.Title, m.Status, m.CloseTime,
+			m.YesBid, m.YesAsk, m.NoBid, m.NoAsk, m.LastPrice,
+			m.Volume, m.Volume24h, m.OpenInterest,
+		)
+	}
+
+	query := fmt.Sprintf(`
 		INSERT INTO markets (ticker, event_ticker, title, status, close_time,
 			yes_bid, yes_ask, no_bid, no_ask, last_price, volume, volume_24h, open_interest, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+		VALUES %s
 		ON CONFLICT (ticker) DO UPDATE SET
 			title = EXCLUDED.title,
 			status = EXCLUDED.status,
@@ -143,23 +255,10 @@ func (s *Store) UpsertMarketBatch(ctx context.Context, markets []types.Market) (
 			open_interest = EXCLUDED.open_interest,
 			updated_at = NOW(),
 			deleted_at = NULL
-	`
+	`, strings.Join(valueStrings, ", "))
 
-	skipped := 0
-	for _, m := range markets {
-		_, err := s.db.ExecContext(ctx, query, m.Ticker, m.EventTicker, m.Title, m.Status, m.CloseTime,
-			m.YesBid, m.YesAsk, m.NoBid, m.NoAsk, m.LastPrice,
-			m.Volume, m.Volume24h, m.OpenInterest)
-		if err != nil {
-			if isForeignKeyError(err) {
-				skipped++
-				continue
-			}
-			return skipped, fmt.Errorf("upsert market %s: %w", m.Ticker, err)
-		}
-	}
-
-	return skipped, nil
+	_, err := s.db.ExecContext(ctx, query, valueArgs...)
+	return err
 }
 
 // isForeignKeyError checks if error is a postgres FK violation
@@ -383,4 +482,122 @@ func (s *Store) GetStats(ctx context.Context) (*SecmasterStats, error) {
 	}
 
 	return stats, nil
+}
+
+// EventListOptions for filtering events
+type EventListOptions struct {
+	Category string
+	Status   string
+	Series   string
+	Limit    int
+}
+
+// ListEvents returns events with market count
+func (s *Store) ListEvents(ctx context.Context, opts EventListOptions) ([]types.EventWithMarketCount, error) {
+	query := `
+		SELECT e.event_ticker, e.title, e.category, e.series_ticker, e.strike_date,
+			e.mutually_exclusive, e.status, e.created_at, e.updated_at,
+			COUNT(m.ticker) as market_count
+		FROM events e
+		LEFT JOIN markets m ON e.event_ticker = m.event_ticker AND m.deleted_at IS NULL
+		WHERE e.deleted_at IS NULL
+	`
+	args := []interface{}{}
+	argNum := 1
+
+	if opts.Category != "" {
+		query += fmt.Sprintf(" AND e.category = $%d", argNum)
+		args = append(args, opts.Category)
+		argNum++
+	}
+	if opts.Status != "" {
+		query += fmt.Sprintf(" AND e.status = $%d", argNum)
+		args = append(args, opts.Status)
+		argNum++
+	}
+	if opts.Series != "" {
+		query += fmt.Sprintf(" AND e.series_ticker = $%d", argNum)
+		args = append(args, opts.Series)
+		argNum++
+	}
+
+	query += " GROUP BY e.event_ticker ORDER BY e.strike_date ASC NULLS LAST"
+
+	if opts.Limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", argNum)
+		args = append(args, opts.Limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []types.EventWithMarketCount
+	for rows.Next() {
+		var e types.EventWithMarketCount
+		err := rows.Scan(
+			&e.EventTicker, &e.Title, &e.Category, &e.SeriesTicker, &e.StrikeDate,
+			&e.MutuallyExclusive, &e.Status, &e.CreatedAt, &e.UpdatedAt,
+			&e.MarketCount,
+		)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// GetEvent returns an event with its markets
+func (s *Store) GetEvent(ctx context.Context, eventTicker string) (*types.EventWithMarkets, error) {
+	// Get event
+	eventQuery := `
+		SELECT event_ticker, title, category, series_ticker, strike_date,
+			mutually_exclusive, status, created_at, updated_at
+		FROM events
+		WHERE event_ticker = $1 AND deleted_at IS NULL
+	`
+	var e types.EventWithMarkets
+	err := s.db.QueryRowContext(ctx, eventQuery, eventTicker).Scan(
+		&e.EventTicker, &e.Title, &e.Category, &e.SeriesTicker, &e.StrikeDate,
+		&e.MutuallyExclusive, &e.Status, &e.CreatedAt, &e.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Get markets for this event
+	marketsQuery := `
+		SELECT ticker, event_ticker, title, status, close_time,
+			yes_bid, yes_ask, no_bid, no_ask, last_price,
+			volume, volume_24h, open_interest, created_at, updated_at
+		FROM markets
+		WHERE event_ticker = $1 AND deleted_at IS NULL
+		ORDER BY close_time ASC NULLS LAST
+	`
+	rows, err := s.db.QueryContext(ctx, marketsQuery, eventTicker)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var m types.Market
+		err := rows.Scan(
+			&m.Ticker, &m.EventTicker, &m.Title, &m.Status, &m.CloseTime,
+			&m.YesBid, &m.YesAsk, &m.NoBid, &m.NoAsk, &m.LastPrice,
+			&m.Volume, &m.Volume24h, &m.OpenInterest, &m.CreatedAt, &m.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		e.Markets = append(e.Markets, m)
+	}
+
+	return &e, rows.Err()
 }

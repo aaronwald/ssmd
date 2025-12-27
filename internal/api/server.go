@@ -46,6 +46,8 @@ func (s *Server) routes() {
 	// Secmaster endpoints
 	s.mux.HandleFunc("GET /markets", s.requireAPIKey(s.handleMarkets))
 	s.mux.HandleFunc("GET /markets/{ticker}", s.requireAPIKey(s.handleMarket))
+	s.mux.HandleFunc("GET /events", s.requireAPIKey(s.handleEvents))
+	s.mux.HandleFunc("GET /events/{event_ticker}", s.requireAPIKey(s.handleEvent))
 	s.mux.HandleFunc("GET /fees", s.requireAPIKey(s.handleFees))
 }
 

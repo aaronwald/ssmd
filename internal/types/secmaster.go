@@ -51,6 +51,18 @@ type MarketWithEvent struct {
 	EventTitle   string `json:"event_title" db:"event_title"`
 }
 
+// EventWithMarketCount is an event with count of associated markets
+type EventWithMarketCount struct {
+	Event
+	MarketCount int `json:"market_count" db:"market_count"`
+}
+
+// EventWithMarkets is an event with its list of markets
+type EventWithMarkets struct {
+	Event
+	Markets []Market `json:"markets"`
+}
+
 // Fee represents fee schedule for a tier
 type Fee struct {
 	Tier      string    `json:"tier" db:"tier"`
