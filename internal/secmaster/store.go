@@ -116,20 +116,16 @@ func (s *Store) UpsertEventBatch(ctx context.Context, events []types.Event) erro
 	return tx.Commit()
 }
 
-// UpsertMarketBatch upserts multiple markets in a single transaction.
+// UpsertMarketBatch upserts multiple markets, skipping those with missing parent events.
+// Uses individual statements (not a transaction) because PostgreSQL aborts transactions
+// after any error - we need to continue after FK violations.
 // Returns count of skipped markets (FK violations) for logging.
 func (s *Store) UpsertMarketBatch(ctx context.Context, markets []types.Market) (int, error) {
 	if len(markets) == 0 {
 		return 0, nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.PrepareContext(ctx, `
+	query := `
 		INSERT INTO markets (ticker, event_ticker, title, status, close_time,
 			yes_bid, yes_ask, no_bid, no_ask, last_price, volume, volume_24h, open_interest, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
@@ -147,15 +143,11 @@ func (s *Store) UpsertMarketBatch(ctx context.Context, markets []types.Market) (
 			open_interest = EXCLUDED.open_interest,
 			updated_at = NOW(),
 			deleted_at = NULL
-	`)
-	if err != nil {
-		return 0, fmt.Errorf("prepare: %w", err)
-	}
-	defer stmt.Close()
+	`
 
 	skipped := 0
 	for _, m := range markets {
-		_, err := stmt.ExecContext(ctx, m.Ticker, m.EventTicker, m.Title, m.Status, m.CloseTime,
+		_, err := s.db.ExecContext(ctx, query, m.Ticker, m.EventTicker, m.Title, m.Status, m.CloseTime,
 			m.YesBid, m.YesAsk, m.NoBid, m.NoAsk, m.LastPrice,
 			m.Volume, m.Volume24h, m.OpenInterest)
 		if err != nil {
@@ -163,11 +155,11 @@ func (s *Store) UpsertMarketBatch(ctx context.Context, markets []types.Market) (
 				skipped++
 				continue
 			}
-			return skipped, fmt.Errorf("exec market %s: %w", m.Ticker, err)
+			return skipped, fmt.Errorf("upsert market %s: %w", m.Ticker, err)
 		}
 	}
 
-	return skipped, tx.Commit()
+	return skipped, nil
 }
 
 // isForeignKeyError checks if error is a postgres FK violation

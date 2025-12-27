@@ -18,9 +18,10 @@ const (
 	DefaultPageLimit = 200
 	MarketsPageLimit = 1000
 	RequestTimeout   = 30 * time.Second
-	MaxRetries       = 5
-	DefaultRateDelay = 250 * time.Millisecond
-	Max429Wait       = 120 * time.Second // Cap Retry-After at 2 min
+	MaxRetries       = 10                 // Increased for aggressive rate limiting
+	DefaultRateDelay = 500 * time.Millisecond
+	Min429Wait       = 5 * time.Second    // Minimum wait on 429 even if Retry-After is shorter
+	Max429Wait       = 120 * time.Second  // Cap Retry-After at 2 min
 )
 
 // KalshiClient for REST API calls
@@ -98,6 +99,9 @@ func (c *KalshiClient) doRequest(reqURL string) (*http.Response, error) {
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+			if retryAfter < Min429Wait {
+				retryAfter = Min429Wait
+			}
 			if retryAfter > Max429Wait {
 				retryAfter = Max429Wait
 			}
