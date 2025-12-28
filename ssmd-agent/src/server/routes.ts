@@ -1,10 +1,11 @@
 // HTTP server routes
+import { listDatasets } from "./handlers/datasets.ts";
 
 export const API_VERSION = "1.0.0";
 
 export interface RouteContext {
   apiKey: string;
-  // Future: database connection, storage, etc.
+  dataDir: string;
 }
 
 type Handler = (req: Request, ctx: RouteContext) => Promise<Response>;
@@ -42,9 +43,15 @@ route("GET", "/version", async () => {
   return json({ version: API_VERSION });
 }, false);
 
-// Datasets endpoint (placeholder)
-route("GET", "/datasets", async () => {
-  return json({ datasets: [] });
+// Datasets endpoint
+route("GET", "/datasets", async (req, ctx) => {
+  const url = new URL(req.url);
+  const feedFilter = url.searchParams.get("feed") ?? undefined;
+  const fromDate = url.searchParams.get("from") ?? undefined;
+  const toDate = url.searchParams.get("to") ?? undefined;
+
+  const datasets = await listDatasets(ctx.dataDir, feedFilter, fromDate, toDate);
+  return json({ datasets });
 });
 
 // Helper to create JSON response

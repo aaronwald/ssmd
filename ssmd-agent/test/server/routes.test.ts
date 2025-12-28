@@ -4,7 +4,7 @@ import { createRouter, API_VERSION, type RouteContext } from "../../src/server/r
 const TEST_API_KEY = "test-api-key";
 
 function createTestRouter() {
-  const ctx: RouteContext = { apiKey: TEST_API_KEY };
+  const ctx: RouteContext = { apiKey: TEST_API_KEY, dataDir: "/tmp/test-data" };
   return createRouter(ctx);
 }
 
