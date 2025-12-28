@@ -1,0 +1,30 @@
+// Server module exports
+export { logger, requireApiKey, cors } from "./middleware.ts";
+export { createRouter, API_VERSION, type RouteContext } from "./routes.ts";
+
+import { createRouter, type RouteContext } from "./routes.ts";
+import { logger, cors } from "./middleware.ts";
+
+export interface ServerOptions {
+  port: number;
+  apiKey: string;
+}
+
+/**
+ * Create and start the HTTP server
+ */
+export function createServer(options: ServerOptions): Deno.HttpServer<Deno.NetAddr> {
+  const ctx: RouteContext = {
+    apiKey: options.apiKey,
+  };
+
+  const router = createRouter(ctx);
+  const handler = cors(logger(router));
+
+  console.log(`ssmd-data-ts listening on http://localhost:${options.port}`);
+
+  return Deno.serve(
+    { port: options.port },
+    handler
+  );
+}

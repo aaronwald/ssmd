@@ -4,7 +4,8 @@
     "agent": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run src/cli.ts",
     "cli": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run src/cli/main.ts",
     "dev": "deno run --watch --allow-net --allow-env src/main.ts",
-    "check": "deno check src/main.ts src/cli.ts src/cli/main.ts",
+    "server": "deno run --allow-net --allow-env src/server/main.ts",
+    "check": "deno check src/main.ts src/cli.ts src/cli/main.ts src/server/main.ts",
     "test": "deno test --allow-read --allow-net --allow-env test/"
   },
   "imports": {
