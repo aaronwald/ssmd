@@ -1,6 +1,7 @@
 // CLI command router
 import { parse } from "https://deno.land/std@0.224.0/flags/mod.ts";
 import { getFeedsDir } from "../utils/paths.ts";
+import { initExchanges } from "./init.ts";
 import {
   listFeeds,
   showFeed,
@@ -34,6 +35,13 @@ export async function run(args: string[]): Promise<void> {
     case "version":
       console.log("ssmd 1.0.0");
       break;
+
+    case "init": {
+      const path = flags._[1] as string | undefined;
+      await initExchanges(path);
+      console.log("\nInitialized exchanges directory.");
+      break;
+    }
 
     case "feed":
       await handleFeedCommand(subcommand, flags);
