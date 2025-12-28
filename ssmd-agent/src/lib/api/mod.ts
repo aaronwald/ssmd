@@ -1,4 +1,4 @@
 /**
  * API client module exports
  */
-// Will export KalshiClient after Task 15
+export { KalshiClient, createKalshiClient, type KalshiClientOptions } from "./kalshi.ts";

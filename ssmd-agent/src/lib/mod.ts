@@ -9,4 +9,5 @@
  */
 export * from "./types/mod.ts";
 export * from "./db/mod.ts";
+export * from "./api/mod.ts";
 export * from "./utils/mod.ts";
