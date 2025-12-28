@@ -15,16 +15,6 @@ test/
 *.md
 docs/
 
-# Agent-specific files (not needed for data server)
-src/agent/
-src/backtest/
-src/cli/
-src/state/
-src/audit/
-src/main.ts
-src/cli.ts
-src/config.ts
-
 # OS files
 .DS_Store
 Thumbs.db
