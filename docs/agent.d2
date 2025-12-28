@@ -1,0 +1,41 @@
+direction: right
+
+refdata: Reference Data {
+  style.fill: "#e8f5e9"
+}
+
+capture: Data Capture {
+  style.fill: "#fff3e0"
+}
+
+agent: Agent (ssmd-agent) {
+  style.fill: "#f3e5f5"
+
+  prompts: Prompts {
+    shape: oval
+  }
+  repl: LangGraph REPL
+
+  tools: Tools {
+    style.fill: "#e0f2f1"
+    example: "list_markets, backtest, ..."
+  }
+
+  builders: Builders {
+    style.fill: "#fff8e1"
+    example: "orderbook, price_history, ..."
+  }
+
+  prompts -> repl
+  repl -> tools
+  repl -> builders
+}
+
+signals: signals/*.ts {
+  shape: document
+  style.fill: "#f3e5f5"
+}
+
+refdata -> agent.tools: {style.stroke-dash: 3}
+capture -> agent.builders: {style.stroke-dash: 3}
+agent -> signals

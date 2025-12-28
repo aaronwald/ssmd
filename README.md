@@ -16,6 +16,12 @@ A homelab-friendly market data system. Capture, archive, and analyze market data
 
 <!-- Source: docs/architecture.d2 - regenerate with: d2 docs/architecture.d2 docs/architecture.svg -->
 
+### Agent
+
+![Agent](docs/agent.svg)
+
+<!-- Source: docs/agent.d2 - regenerate with: d2 docs/agent.d2 docs/agent.svg -->
+
 ### Signal Runtime (planned)
 
 ![Signal Runtime](docs/signal-runtime.svg)

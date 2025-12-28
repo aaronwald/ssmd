@@ -42,31 +42,7 @@ refdata: Reference Data {
   api -> postgres
 }
 
-repl: REPL (ssmd-agent) {
-  style.fill: "#f3e5f5"
-
-  prompts: Prompts {
-    shape: oval
-  }
-  agent: LangGraph Agent
-
-  tools: Tools {
-    style.fill: "#e0f2f1"
-    example: "list_markets, backtest, ..."
-  }
-
-  builders: Builders {
-    style.fill: "#fff8e1"
-    example: "orderbook, price_history, ..."
-  }
-
-  prompts -> agent
-  agent -> tools
-  agent -> builders
-}
-
-signals: signals/*.ts {
-  shape: document
+agent: Agent (ssmd-agent) {
   style.fill: "#f3e5f5"
 }
 
@@ -77,7 +53,6 @@ git: Git {
 
 exchanges -> capture
 exchanges -> refdata
-refdata -> repl: {style.stroke-dash: 3}
-capture -> repl: {style.stroke-dash: 3}
-repl -> signals
-signals -> git
+refdata -> agent: {style.stroke-dash: 3}
+capture -> agent: {style.stroke-dash: 3}
+agent -> git
