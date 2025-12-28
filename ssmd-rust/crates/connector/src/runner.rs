@@ -66,10 +66,10 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                             }
                         }
                         None => {
-                            // Channel closed - connector disconnected
+                            // Channel closed - connector disconnected unexpectedly
                             self.connected.store(false, Ordering::SeqCst);
-                            info!("Connector disconnected");
-                            break;
+                            error!("Connector disconnected unexpectedly - exiting to trigger restart");
+                            return Err(ConnectorError::Disconnected("channel closed".to_string()));
                         }
                     }
                 }
