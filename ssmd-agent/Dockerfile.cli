@@ -1,0 +1,19 @@
+# ssmd-cli: TypeScript CLI for market data operations
+FROM denoland/deno:2.1.4
+
+WORKDIR /app
+
+# Copy only necessary files for the CLI
+COPY deno.json ./
+COPY src/cli/ ./src/cli/
+COPY src/lib/ ./src/lib/
+COPY src/backtest/ ./src/backtest/
+
+# Cache dependencies
+RUN deno cache src/cli/main.ts
+
+# Create non-root user for security
+USER deno
+
+# Set up the CLI entrypoint
+ENTRYPOINT ["deno", "run", "--allow-net", "--allow-env", "--allow-read", "--allow-write", "--allow-run", "src/cli/main.ts"]
