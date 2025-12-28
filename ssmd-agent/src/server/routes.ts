@@ -1,5 +1,6 @@
 // HTTP server routes
 import { listDatasets } from "./handlers/datasets.ts";
+import { globalRegistry } from "./metrics.ts";
 
 export const API_VERSION = "1.0.0";
 
@@ -41,6 +42,13 @@ route("GET", "/health", async () => {
 // Version endpoint (no auth)
 route("GET", "/version", async () => {
   return json({ version: API_VERSION });
+}, false);
+
+// Prometheus metrics endpoint (no auth)
+route("GET", "/metrics", async () => {
+  return new Response(globalRegistry.format(), {
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
 }, false);
 
 // Datasets endpoint
