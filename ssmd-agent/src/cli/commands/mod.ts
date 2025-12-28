@@ -1,14 +1,24 @@
 // CLI command router
 import { parse } from "https://deno.land/std@0.224.0/flags/mod.ts";
+import { getFeedsDir } from "../utils/paths.ts";
+import {
+  listFeeds,
+  showFeed,
+  createFeed,
+  printFeedList,
+  printFeed,
+  type CreateFeedOptions,
+} from "./feed.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
-    string: ["_"],
+    string: ["_", "type", "endpoint", "display-name", "auth-method"],
     boolean: ["help", "version"],
-    alias: { h: "help", v: "version" },
+    alias: { h: "help", v: "version", t: "type", e: "endpoint" },
   });
 
   const command = flags._[0] as string;
+  const subcommand = flags._[1] as string;
 
   if (flags.version) {
     console.log("ssmd 1.0.0");
@@ -25,6 +35,10 @@ export async function run(args: string[]): Promise<void> {
       console.log("ssmd 1.0.0");
       break;
 
+    case "feed":
+      await handleFeedCommand(subcommand, flags);
+      break;
+
     case "agent":
       // Launch the existing agent REPL
       await import("../../cli.ts");
@@ -34,6 +48,60 @@ export async function run(args: string[]): Promise<void> {
       console.error(`Unknown command: ${command}`);
       console.log("");
       printHelp();
+      Deno.exit(1);
+  }
+}
+
+async function handleFeedCommand(
+  subcommand: string,
+  flags: ReturnType<typeof parse>
+): Promise<void> {
+  const feedsDir = await getFeedsDir();
+
+  switch (subcommand) {
+    case "list":
+    case undefined: {
+      const feeds = await listFeeds(feedsDir);
+      printFeedList(feeds);
+      break;
+    }
+
+    case "show": {
+      const name = flags._[2] as string;
+      if (!name) {
+        console.error("Usage: ssmd feed show <name>");
+        Deno.exit(1);
+      }
+      const feed = await showFeed(feedsDir, name);
+      if (!feed) {
+        console.error(`Feed '${name}' not found`);
+        Deno.exit(1);
+      }
+      printFeed(feed);
+      break;
+    }
+
+    case "add":
+    case "create": {
+      const name = flags._[2] as string;
+      if (!name || !flags.type) {
+        console.error("Usage: ssmd feed add <name> --type <websocket|rest|multicast>");
+        Deno.exit(1);
+      }
+      const options: CreateFeedOptions = {
+        type: flags.type as CreateFeedOptions["type"],
+        displayName: flags["display-name"] as string | undefined,
+        endpoint: flags.endpoint as string | undefined,
+        authMethod: flags["auth-method"] as string | undefined,
+      };
+      await createFeed(feedsDir, name, options);
+      console.log(`Created feed: ${name}`);
+      break;
+    }
+
+    default:
+      console.error(`Unknown feed command: ${subcommand}`);
+      console.log("Usage: ssmd feed [list|show|add]");
       Deno.exit(1);
   }
 }
