@@ -1,0 +1,33 @@
+direction: right
+
+exchanges: Exchanges {
+  style.fill: "#e3f2fd"
+}
+
+git: Git {
+  shape: cylinder
+  style.fill: "#ffebee"
+}
+
+nats: NATS JetStream {
+  shape: cylinder
+  style.fill: "#ffecb3"
+}
+
+exchanges -> nats: {style.stroke-dash: 3}
+
+runtime: Signal Runtime (planned) {
+  style.stroke-dash: 3
+  style.fill: "#f5f5f5"
+
+  subscribe: Subscribe
+  builders: State Builders
+  eval: Evaluate
+  fire: Fire Events
+
+  subscribe -> builders -> eval -> fire
+}
+
+git -> runtime: {style.stroke-dash: 3}
+nats -> runtime: {style.stroke-dash: 3}
+runtime -> nats: {style.stroke-dash: 3}

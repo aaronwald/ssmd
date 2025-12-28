@@ -1,0 +1,83 @@
+direction: right
+
+exchanges: Exchanges {
+  kalshi: Kalshi WebSocket
+}
+
+capture: Data Capture {
+  style.fill: "#fff3e0"
+  connector: ssmd-connector {
+    shape: rectangle
+    style.fill: "#e3f2fd"
+  }
+  nats: NATS JetStream {
+    shape: cylinder
+    style.fill: "#ffecb3"
+  }
+  archiver: ssmd-archiver {
+    shape: rectangle
+    style.fill: "#e3f2fd"
+  }
+
+  connector -> nats
+  nats -> archiver
+}
+
+refdata: Reference Data {
+  style.fill: "#e8f5e9"
+  cli: ssmd CLI {
+    shape: rectangle
+    style.fill: "#c8e6c9"
+  }
+  postgres: PostgreSQL {
+    shape: cylinder
+    style.fill: "#a5d6a7"
+  }
+  api: ssmd-data {
+    shape: rectangle
+    style.fill: "#c8e6c9"
+  }
+
+  cli -> postgres
+  api -> postgres
+}
+
+repl: REPL (ssmd-agent) {
+  style.fill: "#f3e5f5"
+
+  prompts: Prompts {
+    shape: oval
+  }
+  agent: LangGraph Agent
+
+  tools: Tools {
+    style.fill: "#e0f2f1"
+    example: "list_markets, backtest, ..."
+  }
+
+  builders: Builders {
+    style.fill: "#fff8e1"
+    example: "orderbook, price_history, ..."
+  }
+
+  prompts -> agent
+  agent -> tools
+  agent -> builders
+}
+
+signals: signals/*.ts {
+  shape: document
+  style.fill: "#f3e5f5"
+}
+
+git: Git {
+  shape: cylinder
+  style.fill: "#ffebee"
+}
+
+exchanges -> capture
+exchanges -> refdata
+refdata -> repl: {style.stroke-dash: 3}
+capture -> repl: {style.stroke-dash: 3}
+repl -> signals
+signals -> git
