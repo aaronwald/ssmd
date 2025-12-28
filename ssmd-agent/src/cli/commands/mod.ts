@@ -11,11 +11,12 @@ import {
   type CreateFeedOptions,
 } from "./feed.ts";
 import { handleBacktest } from "./backtest.ts";
+import { handleSecmaster } from "./secmaster.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
     string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed"],
-    boolean: ["help", "version", "allow-dirty", "no-wait"],
+    boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run"],
     alias: { h: "help", v: "version", t: "type", e: "endpoint" },
   });
 
@@ -50,6 +51,10 @@ export async function run(args: string[]): Promise<void> {
 
     case "backtest":
       await handleBacktest(subcommand, flags);
+      break;
+
+    case "secmaster":
+      await handleSecmaster(subcommand, flags);
       break;
 
     case "agent":
