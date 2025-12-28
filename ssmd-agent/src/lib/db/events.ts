@@ -75,7 +75,7 @@ export async function getExistingEventTickers(
     AND deleted_at IS NULL
   `;
 
-  return new Set(rows.map((r: { event_ticker: string }) => r.event_ticker));
+  return new Set(rows.map((r) => (r as Record<string, string>).event_ticker));
 }
 
 /**
