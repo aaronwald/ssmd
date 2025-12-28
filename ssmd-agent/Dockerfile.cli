@@ -9,11 +9,15 @@ COPY src/cli/ ./src/cli/
 COPY src/lib/ ./src/lib/
 COPY src/backtest/ ./src/backtest/
 
-# Cache dependencies
+# Cache dependencies first
 RUN deno cache src/cli/main.ts
+
+# Compile to standalone binary for easy distribution
+RUN deno compile --allow-net --allow-env --allow-read --allow-write --allow-run \
+    --output /usr/local/bin/ssmd src/cli/main.ts
 
 # Create non-root user for security
 USER deno
 
-# Set up the CLI entrypoint
-ENTRYPOINT ["deno", "run", "--allow-net", "--allow-env", "--allow-read", "--allow-write", "--allow-run", "src/cli/main.ts"]
+# Set up the CLI entrypoint (can use either compiled binary or deno run)
+ENTRYPOINT ["/usr/local/bin/ssmd"]
