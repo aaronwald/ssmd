@@ -8,6 +8,7 @@ import { logger, cors } from "./middleware.ts";
 export interface ServerOptions {
   port: number;
   apiKey: string;
+  dataDir: string;
 }
 
 /**
@@ -16,6 +17,7 @@ export interface ServerOptions {
 export function createServer(options: ServerOptions): Deno.HttpServer<Deno.NetAddr> {
   const ctx: RouteContext = {
     apiKey: options.apiKey,
+    dataDir: options.dataDir,
   };
 
   const router = createRouter(ctx);
