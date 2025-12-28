@@ -12,24 +12,15 @@ A homelab-friendly market data system. Capture, archive, and analyze market data
 
 ## Architecture
 
-```
-Exchanges          Homelab Infrastructure                    Developer Laptop
-─────────          ──────────────────────                    ────────────────
-                   ┌─────────────────────────────────────┐
- Kalshi ──────────▶│  Connector ──▶ NATS ──▶ Archiver   │
- Polymarket ──────▶│    (Rust)    JetStream    (Rust)   │
- Kraken ──────────▶│                  │          │       │
-                   │                  │          ▼       │
-                   │                  │    JSONL.gz      │
-                   │                  │    + Manifest    │
-                   │                  │          │       │
-                   │                  │          ▼       │
-                   │                  │    ssmd-data ◀───│───── ssmd-agent
-                   │                  │     (Go API)     │      (Deno REPL)
-                   │                  │                  │
-                   │  ssmd CLI (Go) - Metadata mgmt     │
-                   └─────────────────────────────────────┘
-```
+![Architecture](docs/architecture.svg)
+
+<!-- Source: docs/architecture.d2 - regenerate with: d2 docs/architecture.d2 docs/architecture.svg -->
+
+### Signal Runtime (planned)
+
+![Signal Runtime](docs/signal-runtime.svg)
+
+<!-- Source: docs/signal-runtime.d2 - regenerate with: d2 docs/signal-runtime.d2 docs/signal-runtime.svg -->
 
 ## Components
 
