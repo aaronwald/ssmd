@@ -60,7 +60,8 @@ jobs:
           deno-version: v2.x
 
       - name: Deno check
-        run: deno check ssmd-agent/src/main.ts ssmd-agent/src/cli.ts
+        working-directory: ssmd-agent
+        run: deno check src/main.ts src/cli.ts
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
