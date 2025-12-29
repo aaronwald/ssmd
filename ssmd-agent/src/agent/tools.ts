@@ -7,6 +7,7 @@ import { PriceHistoryBuilder, type PriceHistoryState } from "../state/price_hist
 import { VolumeProfileBuilder, type VolumeProfileState } from "../state/volume_profile.ts";
 import type { MarketRecord } from "../state/types.ts";
 import { runBacktest as executeBacktest } from "../backtest/runner.ts";
+import { getDb, closeDb, getCurrentFee, getFeeAsOf } from "../lib/db/mod.ts";
 
 const API_TIMEOUT_MS = 10000; // 10 second timeout
 
@@ -392,7 +393,51 @@ export const getEvent = tool(
   }
 );
 
+export const getFeeSchedule = tool(
+  async ({ series_ticker, as_of }) => {
+    const sql = getDb();
+    try {
+      const fee = as_of
+        ? await getFeeAsOf(sql, series_ticker, new Date(as_of))
+        : await getCurrentFee(sql, series_ticker);
+
+      if (!fee) {
+        return JSON.stringify({
+          error: `No fee schedule found for ${series_ticker}`,
+          hint: "Run 'ssmd fees sync' to populate fee schedules",
+        });
+      }
+
+      return JSON.stringify({
+        series_ticker: fee.series_ticker,
+        fee_type: fee.fee_type,
+        fee_multiplier: fee.fee_multiplier,
+        effective_from: fee.effective_from.toISOString(),
+        effective_to: fee.effective_to?.toISOString() ?? null,
+      });
+    } finally {
+      await closeDb();
+    }
+  },
+  {
+    name: "get_fee_schedule",
+    description:
+      "Get the fee schedule for a series ticker. Returns fee type (quadratic/quadratic_with_maker_fees/flat) and multiplier. Supports point-in-time queries.",
+    schema: z.object({
+      series_ticker: z
+        .string()
+        .describe("Series ticker, e.g., 'KXBTC' or 'INXD'"),
+      as_of: z
+        .string()
+        .optional()
+        .describe(
+          "Point-in-time query (ISO timestamp), defaults to current schedule"
+        ),
+    }),
+  }
+);
+
 export const calendarTools = [getToday];
 export const dataTools = [listDatasets, listTickers, sampleData, getSchema, listBuilders, orderbookBuilder, priceHistoryBuilder, volumeProfileBuilder];
-export const secmasterTools = [listMarkets, getMarket, getFees, listEvents, getEvent];
+export const secmasterTools = [listMarkets, getMarket, getFees, listEvents, getEvent, getFeeSchedule];
 export const allTools = [...calendarTools, ...dataTools, ...secmasterTools, runBacktest, deploySignal];
