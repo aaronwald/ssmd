@@ -12,6 +12,7 @@
     "@langchain/anthropic": "npm:@langchain/anthropic@^0.3",
     "@langchain/langgraph": "npm:@langchain/langgraph@^0.2",
     "@langchain/core": "npm:@langchain/core@^0.3",
+    "nats": "npm:nats@^2.29.3",
     "zod": "npm:zod@^3.23",
     "yaml": "npm:yaml@^2.3",
     "postgres": "https://deno.land/x/postgresjs@v3.4.4/mod.js"

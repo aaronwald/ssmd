@@ -4,6 +4,8 @@
     "npm:@langchain/anthropic@0.3": "0.3.34_@langchain+core@0.3.80__zod@3.25.76_zod@3.25.76",
     "npm:@langchain/core@0.3": "0.3.80_zod@3.25.76",
     "npm:@langchain/langgraph@0.2": "0.2.74_@langchain+core@0.3.80__zod@3.25.76",
+    "npm:nats@*": "2.29.3",
+    "npm:nats@^2.29.3": "2.29.3",
     "npm:yaml@^2.3.0": "2.8.2",
     "npm:zod@^3.23.0": "3.25.76"
   },
@@ -170,6 +172,18 @@
       "integrity": "sha512-71ippSywq5Yb7/tVYyGbkBggbU8H3u5Rz56fH60jGFgr8uHwxs+aSKeqmluIVzM0m0kB7xQjKS6qPfd0b2ZoqQ==",
       "bin": true
     },
+    "nats@2.29.3": {
+      "integrity": "sha512-tOQCRCwC74DgBTk4pWZ9V45sk4d7peoE2njVprMRCBXrhJ5q5cYM7i6W+Uvw2qUrcfOSnuisrX7bEx3b3Wx4QA==",
+      "dependencies": [
+        "nkeys.js"
+      ]
+    },
+    "nkeys.js@1.1.0": {
+      "integrity": "sha512-tB/a0shZL5UZWSwsoeyqfTszONTt4k2YS0tuQioMOD180+MbombYVgzDUYHlx+gejYK6rgf08n/2Df99WY0Sxg==",
+      "dependencies": [
+        "tweetnacl"
+      ]
+    },
     "p-finally@1.0.0": {
       "integrity": "sha512-LICb2p9CB7FS+0eR1oqWnHhp0FljGLZCWBE9aix0Uye9W8LTQPwMTYVGWQWIw9RdQiDg4+epXQODwIYJtSJaow=="
     },
@@ -214,6 +228,9 @@
     },
     "ts-algebra@2.0.0": {
       "integrity": "sha512-FPAhNPFMrkwz76P7cdjdmiShwMynZYN6SgOujD1urY4oNm80Ou9oMdmbR45LotcKOXoy7wSmHkRFE6Mxbrhefw=="
+    },
+    "tweetnacl@1.0.3": {
+      "integrity": "sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw=="
     },
     "uuid@10.0.0": {
       "integrity": "sha512-8XkAphELsDnEGrDxUOHB3RGvXz6TeuYSGEZBOjtTtPm2lwhGBjLgOzLHB63IUWfBpNucQjND6d3AOudO+H3RWQ==",
@@ -773,6 +790,7 @@
       "npm:@langchain/anthropic@0.3",
       "npm:@langchain/core@0.3",
       "npm:@langchain/langgraph@0.2",
+      "npm:nats@^2.29.3",
       "npm:yaml@^2.3.0",
       "npm:zod@^3.23.0"
     ]

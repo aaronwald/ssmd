@@ -13,11 +13,12 @@ import {
 import { handleBacktest } from "./backtest.ts";
 import { handleSecmaster } from "./secmaster.ts";
 import { handleFees } from "./fees.ts";
+import { handleSignal } from "./signal.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
-    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit"],
-    boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run"],
+    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject"],
+    boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console"],
     alias: { h: "help", v: "version", t: "type", e: "endpoint" },
   });
 
@@ -60,6 +61,10 @@ export async function run(args: string[]): Promise<void> {
 
     case "fees":
       await handleFees(subcommand, flags);
+      break;
+
+    case "signal":
+      await handleSignal(subcommand, flags);
       break;
 
     case "agent":
@@ -141,6 +146,7 @@ function printHelp(): void {
   console.log("  secmaster         Security master database operations");
   console.log("  fees              Fee schedule database operations");
   console.log("  backtest          Run signal backtests");
+  console.log("  signal            Run signals in real-time");
   console.log("  agent             Start interactive agent REPL");
   console.log("");
   console.log("OPTIONS:");
