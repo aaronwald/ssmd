@@ -202,19 +202,19 @@ export const volumeProfileBuilder = tool(
       summary: snapshots.length > 0 ? {
         ticker: snapshots[snapshots.length - 1].ticker,
         finalVolume: {
-          buy: snapshots[snapshots.length - 1].buyVolume,
-          sell: snapshots[snapshots.length - 1].sellVolume,
-          total: snapshots[snapshots.length - 1].totalVolume,
+          contracts: snapshots[snapshots.length - 1].totalVolume,
+          dollars: snapshots[snapshots.length - 1].dollarVolume,
         },
-        buyRatio: snapshots[snapshots.length - 1].ratio,
+        tradeCount: snapshots[snapshots.length - 1].tradeCount,
+        windowMs: snapshots[snapshots.length - 1].windowMs,
       } : null,
     });
   },
   {
     name: "volume_profile_builder",
-    description: "Process trade records through VolumeProfile builder. Tracks buy/sell volume ratio over time window.",
+    description: "Process market records through VolumeProfile builder. Tracks contract and USD volume over a sliding time window.",
     schema: z.object({
-      records: z.array(z.any()).describe("Array of trade records from sample_data"),
+      records: z.array(z.any()).describe("Array of market records from sample_data"),
       windowMs: z.number().optional().describe("Time window in milliseconds (default 300000 = 5 min)"),
     }),
   }
