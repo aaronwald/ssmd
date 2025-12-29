@@ -1,12 +1,10 @@
 /**
  * Secmaster sync command - sync Kalshi events and markets to PostgreSQL
  */
-import { getDb, closeDb, withTiming } from "../../lib/db/client.ts";
+import { getDb, closeDb } from "../../lib/db/client.ts";
 import { bulkUpsertEvents, softDeleteMissingEvents } from "../../lib/db/events.ts";
 import { bulkUpsertMarkets, softDeleteMissingMarkets } from "../../lib/db/markets.ts";
 import { createKalshiClient } from "../../lib/api/kalshi.ts";
-import type { Event } from "../../lib/types/event.ts";
-import type { Market } from "../../lib/types/market.ts";
 
 /**
  * Secmaster sync options
@@ -57,73 +55,69 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
   };
 
   try {
-    // Sync events
+    // Sync events - upsert each batch as it arrives
     if (!options.marketsOnly) {
       console.log("\n[Events] Starting sync...");
       const eventStart = Date.now();
 
-      const allEvents: Event[] = [];
+      const allEventTickers: string[] = [];
+      let batchCount = 0;
+
       for await (const batch of client.fetchAllEvents()) {
-        allEvents.push(...batch);
-      }
-      result.events.fetched = allEvents.length;
-      console.log(`[Events] Fetched ${allEvents.length} events from API`);
+        result.events.fetched += batch.length;
+        allEventTickers.push(...batch.map((e) => e.event_ticker));
 
-      if (!options.dryRun) {
-        const { result: upsertResult } = await withTiming("events upsert", () =>
-          bulkUpsertEvents(sql, allEvents)
-        );
-        result.events.upserted = upsertResult.total;
-        console.log(`[Events] Upserted ${upsertResult.total} in ${upsertResult.batches} batches`);
-
-        if (!options.noDelete) {
-          const eventTickers = allEvents.map((e) => e.event_ticker);
-          const deleted = await softDeleteMissingEvents(sql, eventTickers);
-          result.events.deleted = deleted;
-          if (deleted > 0) {
-            console.log(`[Events] Soft-deleted ${deleted} missing events`);
-          }
+        if (!options.dryRun) {
+          await bulkUpsertEvents(sql, batch);
+          batchCount++;
         }
-      } else {
-        console.log("[Events] Dry run - skipping database writes");
+      }
+
+      result.events.upserted = result.events.fetched;
+      console.log(`[Events] Synced ${result.events.fetched} events in ${batchCount} batches`);
+
+      if (!options.dryRun && !options.noDelete) {
+        const deleted = await softDeleteMissingEvents(sql, allEventTickers);
+        result.events.deleted = deleted;
+        if (deleted > 0) {
+          console.log(`[Events] Soft-deleted ${deleted} missing events`);
+        }
       }
 
       result.events.durationMs = Date.now() - eventStart;
     }
 
-    // Sync markets
+    // Sync markets - upsert each batch as it arrives
     if (!options.eventsOnly) {
       console.log("\n[Markets] Starting sync...");
       const marketStart = Date.now();
 
-      const allMarkets: Market[] = [];
+      const allMarketTickers: string[] = [];
+      let batchCount = 0;
+
       for await (const batch of client.fetchAllMarkets()) {
-        allMarkets.push(...batch);
-      }
-      result.markets.fetched = allMarkets.length;
-      console.log(`[Markets] Fetched ${allMarkets.length} markets from API`);
+        result.markets.fetched += batch.length;
+        allMarketTickers.push(...batch.map((m) => m.ticker));
 
-      if (!options.dryRun) {
-        const { result: upsertResult } = await withTiming("markets upsert", () =>
-          bulkUpsertMarkets(sql, allMarkets)
-        );
-        result.markets.upserted = upsertResult.total;
-        result.markets.skipped = upsertResult.skipped;
-        console.log(
-          `[Markets] Upserted ${upsertResult.total} in ${upsertResult.batches} batches` +
-            (upsertResult.skipped > 0 ? ` (${upsertResult.skipped} skipped)` : "")
-        );
-
-        if (!options.noDelete) {
-          const marketTickers = allMarkets.map((m) => m.ticker);
-          const deleted = await softDeleteMissingMarkets(sql, marketTickers);
-          result.markets.deleted = deleted;
-          if (deleted > 0) {
-            console.log(`[Markets] Soft-deleted ${deleted} missing markets`);
-          }
+        if (!options.dryRun) {
+          const batchResult = await bulkUpsertMarkets(sql, batch);
+          result.markets.upserted += batchResult.total;
+          result.markets.skipped += batchResult.skipped;
+          batchCount++;
         }
-      } else {
-        console.log("[Markets] Dry run - skipping database writes");
+      }
+
+      console.log(
+        `[Markets] Synced ${result.markets.upserted} markets in ${batchCount} batches` +
+          (result.markets.skipped > 0 ? ` (${result.markets.skipped} skipped)` : "")
+      );
+
+      if (!options.dryRun && !options.noDelete) {
+        const deleted = await softDeleteMissingMarkets(sql, allMarketTickers);
+        result.markets.deleted = deleted;
+        if (deleted > 0) {
+          console.log(`[Markets] Soft-deleted ${deleted} missing markets`);
+        }
       }
 
       result.markets.durationMs = Date.now() - marketStart;
