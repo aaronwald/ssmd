@@ -58,9 +58,9 @@ export function fromKalshiEvent(ke: KalshiEvent): Event {
     event_ticker: ke.event_ticker,
     title: ke.title,
     category: ke.category,
-    series_ticker: ke.series_ticker,
-    strike_date: ke.strike_date,
-    mutually_exclusive: ke.mutually_exclusive,
+    series_ticker: ke.series_ticker ?? null,
+    strike_date: ke.strike_date ?? null,
+    mutually_exclusive: ke.mutually_exclusive ?? false,
     status: "active",
   };
 }
