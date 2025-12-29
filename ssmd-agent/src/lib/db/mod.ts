@@ -8,6 +8,7 @@ export {
   softDeleteMissingEvents,
   listEvents,
   getEvent,
+  getEventStats,
   type EventRow,
 } from "./events.ts";
 export {
@@ -15,6 +16,7 @@ export {
   softDeleteMissingMarkets,
   listMarkets,
   getMarket,
+  getMarketStats,
   type MarketBulkResult,
   type MarketRow,
 } from "./markets.ts";

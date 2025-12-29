@@ -189,3 +189,27 @@ export async function getMarket(
 
   return rows[0] as unknown as MarketRow;
 }
+
+/**
+ * Get market statistics.
+ */
+export async function getMarketStats(
+  sql: ReturnType<typeof postgres>
+): Promise<{ total: number; by_status: Record<string, number> }> {
+  const statusRows = await sql`
+    SELECT status, COUNT(*) as count
+    FROM markets
+    WHERE deleted_at IS NULL
+    GROUP BY status
+  `;
+
+  const by_status: Record<string, number> = {};
+  let total = 0;
+  for (const row of statusRows) {
+    const r = row as Record<string, unknown>;
+    by_status[r.status as string] = Number(r.count);
+    total += Number(r.count);
+  }
+
+  return { total, by_status };
+}

@@ -6,6 +6,27 @@ import { bulkUpsertEvents, softDeleteMissingEvents } from "../../lib/db/events.t
 import { bulkUpsertMarkets, softDeleteMissingMarkets } from "../../lib/db/markets.ts";
 import { createKalshiClient } from "../../lib/api/kalshi.ts";
 
+const API_TIMEOUT_MS = 10000;
+
+function getApiUrl(): string {
+  return Deno.env.get("SSMD_API_URL") ?? "http://localhost:8080";
+}
+
+function getApiKey(): string {
+  return Deno.env.get("SSMD_DATA_API_KEY") ?? "";
+}
+
+async function apiRequest<T>(path: string): Promise<T> {
+  const res = await fetch(`${getApiUrl()}${path}`, {
+    headers: { "X-API-Key": getApiKey() },
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`API error: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
 /**
  * Secmaster sync options
  */
@@ -157,6 +178,167 @@ export function printSyncSummary(result: SyncResult): void {
 }
 
 /**
+ * Stats response from API
+ */
+interface SecmasterStats {
+  events: {
+    total: number;
+    by_status: Record<string, number>;
+    by_category: Record<string, number>;
+  };
+  markets: {
+    total: number;
+    by_status: Record<string, number>;
+  };
+}
+
+/**
+ * Show secmaster statistics
+ */
+async function showStats(): Promise<void> {
+  const stats = await apiRequest<SecmasterStats>("/v1/secmaster/stats");
+
+  console.log("\n=== Secmaster Statistics ===\n");
+
+  console.log("Events:");
+  console.log(`  Total: ${stats.events.total}`);
+  if (Object.keys(stats.events.by_status).length > 0) {
+    console.log("  By status:");
+    for (const [status, count] of Object.entries(stats.events.by_status)) {
+      console.log(`    ${status}: ${count}`);
+    }
+  }
+  if (Object.keys(stats.events.by_category).length > 0) {
+    console.log("  Top categories:");
+    for (const [category, count] of Object.entries(stats.events.by_category)) {
+      console.log(`    ${category}: ${count}`);
+    }
+  }
+
+  console.log("\nMarkets:");
+  console.log(`  Total: ${stats.markets.total}`);
+  if (Object.keys(stats.markets.by_status).length > 0) {
+    console.log("  By status:");
+    for (const [status, count] of Object.entries(stats.markets.by_status)) {
+      console.log(`    ${status}: ${count}`);
+    }
+  }
+}
+
+/**
+ * Event row from API
+ */
+interface EventRow {
+  event_ticker: string;
+  title: string;
+  category: string;
+  series_ticker: string | null;
+  status: string;
+  updated_at: string;
+}
+
+/**
+ * Market row from API
+ */
+interface MarketRow {
+  ticker: string;
+  event_ticker: string;
+  title: string;
+  status: string;
+  close_time: string | null;
+  last_price: number;
+  volume_24h: number;
+  updated_at: string;
+}
+
+/**
+ * List events
+ */
+async function listEvents(flags: Record<string, unknown>): Promise<void> {
+  const params = new URLSearchParams();
+  if (flags.category) params.set("category", String(flags.category));
+  if (flags.status) params.set("status", String(flags.status));
+  if (flags.series) params.set("series", String(flags.series));
+  if (flags.limit) params.set("limit", String(flags.limit));
+
+  const url = `/v1/events${params.toString() ? "?" + params : ""}`;
+  const { events } = await apiRequest<{ events: EventRow[] }>(url);
+
+  console.log("\n=== Events ===\n");
+  console.log(`Found ${events.length} events\n`);
+
+  for (const e of events) {
+    console.log(`${e.event_ticker}`);
+    console.log(`  Title: ${e.title}`);
+    console.log(`  Category: ${e.category}`);
+    console.log(`  Status: ${e.status}`);
+    if (e.series_ticker) console.log(`  Series: ${e.series_ticker}`);
+    console.log();
+  }
+}
+
+/**
+ * List markets
+ */
+async function listMarkets(flags: Record<string, unknown>): Promise<void> {
+  const params = new URLSearchParams();
+  if (flags.category) params.set("category", String(flags.category));
+  if (flags.status) params.set("status", String(flags.status));
+  if (flags.series) params.set("series", String(flags.series));
+  if (flags.event) params.set("event", String(flags.event));
+  if (flags.limit) params.set("limit", String(flags.limit));
+
+  const url = `/v1/markets${params.toString() ? "?" + params : ""}`;
+  const { markets } = await apiRequest<{ markets: MarketRow[] }>(url);
+
+  console.log("\n=== Markets ===\n");
+  console.log(`Found ${markets.length} markets\n`);
+
+  for (const m of markets) {
+    console.log(`${m.ticker}`);
+    console.log(`  Title: ${m.title}`);
+    console.log(`  Event: ${m.event_ticker}`);
+    console.log(`  Status: ${m.status}`);
+    console.log(`  Last: ${m.last_price}¢  Vol24h: ${m.volume_24h}`);
+    if (m.close_time) console.log(`  Closes: ${m.close_time}`);
+    console.log();
+  }
+}
+
+/**
+ * Show a single event
+ */
+async function showEvent(ticker: string): Promise<void> {
+  const event = await apiRequest<EventRow & { market_count: number }>(`/v1/events/${encodeURIComponent(ticker)}`);
+
+  console.log("\n=== Event Details ===\n");
+  console.log(`Ticker: ${event.event_ticker}`);
+  console.log(`Title: ${event.title}`);
+  console.log(`Category: ${event.category}`);
+  console.log(`Status: ${event.status}`);
+  if (event.series_ticker) console.log(`Series: ${event.series_ticker}`);
+  console.log(`Markets: ${event.market_count}`);
+  console.log(`Updated: ${event.updated_at}`);
+}
+
+/**
+ * Show a single market
+ */
+async function showMarket(ticker: string): Promise<void> {
+  const m = await apiRequest<MarketRow>(`/v1/markets/${encodeURIComponent(ticker)}`);
+
+  console.log("\n=== Market Details ===\n");
+  console.log(`Ticker: ${m.ticker}`);
+  console.log(`Title: ${m.title}`);
+  console.log(`Event: ${m.event_ticker}`);
+  console.log(`Status: ${m.status}`);
+  console.log(`Last Price: ${m.last_price}¢`);
+  console.log(`Volume 24h: ${m.volume_24h}`);
+  if (m.close_time) console.log(`Closes: ${m.close_time}`);
+  console.log(`Updated: ${m.updated_at}`);
+}
+
+/**
  * Handle secmaster subcommands
  */
 export async function handleSecmaster(
@@ -187,17 +369,69 @@ export async function handleSecmaster(
       break;
     }
 
+    case "stats": {
+      try {
+        await showStats();
+      } catch (e) {
+        console.error(`Failed to get stats: ${(e as Error).message}`);
+        Deno.exit(1);
+      }
+      break;
+    }
+
+    case "events": {
+      const args = flags._ as string[];
+      const ticker = args[2]; // flags._[0]=secmaster, _[1]=events, _[2]=ticker
+      try {
+        if (ticker) {
+          await showEvent(ticker);
+        } else {
+          await listEvents(flags);
+        }
+      } catch (e) {
+        console.error(`Failed: ${(e as Error).message}`);
+        Deno.exit(1);
+      }
+      break;
+    }
+
+    case "markets": {
+      const args = flags._ as string[];
+      const ticker = args[2]; // flags._[0]=secmaster, _[1]=markets, _[2]=ticker
+      try {
+        if (ticker) {
+          await showMarket(ticker);
+        } else {
+          await listMarkets(flags);
+        }
+      } catch (e) {
+        console.error(`Failed: ${(e as Error).message}`);
+        Deno.exit(1);
+      }
+      break;
+    }
+
     default:
       console.log("Usage: ssmd secmaster <command>");
       console.log();
       console.log("Commands:");
       console.log("  sync         Sync events and markets from Kalshi API");
+      console.log("  stats        Show event and market statistics");
+      console.log("  events       List events (or show one: events <ticker>)");
+      console.log("  markets      List markets (or show one: markets <ticker>)");
       console.log();
       console.log("Options for sync:");
       console.log("  --events-only    Only sync events");
       console.log("  --markets-only   Only sync markets");
       console.log("  --no-delete      Skip soft-deleting missing records");
       console.log("  --dry-run        Fetch but don't write to database");
+      console.log();
+      console.log("Options for events/markets:");
+      console.log("  --category       Filter by category");
+      console.log("  --status         Filter by status");
+      console.log("  --series         Filter by series ticker");
+      console.log("  --event          Filter markets by event ticker");
+      console.log("  --limit          Limit results (default: 100)");
       Deno.exit(1);
   }
 }
