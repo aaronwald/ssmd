@@ -11,8 +11,8 @@ import { runBacktest as executeBacktest } from "../backtest/runner.ts";
 const API_TIMEOUT_MS = 10000; // 10 second timeout
 
 async function apiRequest<T>(path: string): Promise<T> {
-  const res = await fetch(`${config.dataUrl}${path}`, {
-    headers: { "X-API-Key": config.dataApiKey },
+  const res = await fetch(`${config.apiUrl}${path}`, {
+    headers: { "X-API-Key": config.apiKey },
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
   }).catch((err) => {
     if (err.name === "TimeoutError") {
