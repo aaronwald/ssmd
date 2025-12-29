@@ -1,33 +1,66 @@
 direction: right
 
-exchanges: Exchanges {
-  style.fill: "#e3f2fd"
-}
-
-git: Git {
-  shape: cylinder
-  style.fill: "#ffebee"
-}
-
 nats: NATS JetStream {
   shape: cylinder
   style.fill: "#ffecb3"
+
+  market_data: prod.kalshi.> {
+    shape: queue
+  }
+  fires: signals.*.fires {
+    shape: queue
+  }
 }
 
-exchanges -> nats: {style.stroke-dash: 3}
-
-runtime: Signal Runtime (planned) {
-  style.stroke-dash: 3
-  style.fill: "#f5f5f5"
-
-  subscribe: Subscribe
-  builders: State Builders
-  eval: Evaluate
-  fire: Fire Events
-
-  subscribe -> builders -> eval -> fire
+signals: signals/ {
+  style.fill: "#f3e5f5"
+  signal: signal.ts {
+    shape: document
+  }
+  manifest: backtest.yaml {
+    shape: document
+  }
 }
 
-git -> runtime: {style.stroke-dash: 3}
-nats -> runtime: {style.stroke-dash: 3}
-runtime -> nats: {style.stroke-dash: 3}
+runtime: Signal Runtime {
+  style.fill: "#e1f5fe"
+
+  source: RecordSource {
+    style.fill: "#b3e5fc"
+    nats_source: NatsRecordSource
+    file_source: FileRecordSource
+  }
+
+  runner: Runner {
+    style.fill: "#81d4fa"
+    builders: Per-Ticker State {
+      style.fill: "#4fc3f7"
+    }
+    eval: evaluate() {
+      style.fill: "#4fc3f7"
+    }
+    builders -> eval
+  }
+
+  sink: FireSink {
+    style.fill: "#b3e5fc"
+    nats_sink: NatsFireSink
+    console_sink: ConsoleFireSink
+  }
+
+  source -> runner
+  runner -> sink
+}
+
+cli: CLI {
+  style.fill: "#e8f5e9"
+  list: ssmd signal list
+  run: ssmd signal run
+  sub: ssmd signal subscribe
+}
+
+nats.market_data -> runtime.source.nats_source: subscribe
+runtime.sink.nats_sink -> nats.fires: publish
+signals -> runtime.runner: load
+cli -> runtime: executes
+cli.sub -> nats.fires: subscribe

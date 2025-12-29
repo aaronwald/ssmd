@@ -2,10 +2,20 @@ direction: right
 
 refdata: Reference Data {
   style.fill: "#e8f5e9"
+  api: ssmd-data-ts
+  postgres: PostgreSQL {
+    shape: cylinder
+  }
+  api -> postgres
 }
 
 capture: Data Capture {
   style.fill: "#fff3e0"
+  nats: NATS JetStream {
+    shape: cylinder
+  }
+  archiver: ssmd-archiver
+  nats -> archiver
 }
 
 agent: Agent (ssmd-agent) {
@@ -18,12 +28,19 @@ agent: Agent (ssmd-agent) {
 
   tools: Tools {
     style.fill: "#e0f2f1"
-    example: "list_markets, backtest, ..."
+    example: |md
+      - get_events / get_markets
+      - get_fee_schedule
+      - run_backtest
+    |
   }
 
-  builders: Builders {
+  builders: State Builders {
     style.fill: "#fff8e1"
-    example: "orderbook, price_history, ..."
+    example: |md
+      - VolumeProfileBuilder
+      - (more planned)
+    |
   }
 
   prompts -> repl
@@ -36,6 +53,6 @@ signals: signals/*.ts {
   style.fill: "#f3e5f5"
 }
 
-refdata -> agent.tools: {style.stroke-dash: 3}
-capture -> agent.builders: {style.stroke-dash: 3}
-agent -> signals
+refdata.api -> agent.tools: HTTP API
+capture.nats -> agent.builders: {style.stroke-dash: 3}
+agent -> signals: generates
