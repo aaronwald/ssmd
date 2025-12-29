@@ -19,7 +19,7 @@ capture: Data Capture {
     style.fill: "#e3f2fd"
   }
 
-  connector -> nats
+  connector -> nats: prod.kalshi.>
   nats -> archiver
 }
 
@@ -33,13 +33,21 @@ refdata: Reference Data {
     shape: cylinder
     style.fill: "#a5d6a7"
   }
-  api: ssmd-data {
+  api: ssmd-data-ts {
     shape: rectangle
     style.fill: "#c8e6c9"
   }
 
-  cli -> postgres
+  cli -> api: HTTP API
   api -> postgres
+}
+
+runtime: Signal Runtime {
+  style.fill: "#e1f5fe"
+  runner: ssmd signal run {
+    shape: rectangle
+    style.fill: "#b3e5fc"
+  }
 }
 
 agent: Agent (ssmd-agent) {
@@ -52,7 +60,9 @@ git: Git {
 }
 
 exchanges -> capture
-exchanges -> refdata
+exchanges -> refdata.cli: Kalshi API
+capture.nats -> runtime.runner: subscribe
+runtime.runner -> capture.nats: signals.*.fires
 refdata -> agent: {style.stroke-dash: 3}
 capture -> agent: {style.stroke-dash: 3}
 agent -> git

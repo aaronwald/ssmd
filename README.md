@@ -22,7 +22,7 @@ A homelab-friendly market data system. Capture, archive, and analyze market data
 
 <!-- Source: docs/agent.d2 - regenerate with: d2 docs/agent.d2 docs/agent.svg -->
 
-### Signal Runtime (planned)
+### Signal Runtime
 
 ![Signal Runtime](docs/signal-runtime.svg)
 
@@ -122,6 +122,24 @@ deno task cli backtest results <run-id>
 deno task cli backtest list
 ```
 
+#### Signal Runtime
+```bash
+# List available signals
+deno task cli signal list
+
+# Run signal against NATS stream (real-time)
+deno task cli signal run volume-1m-30min
+
+# Run with console output (no NATS publish)
+deno task cli signal run volume-1m-30min --console
+
+# Run against local file data
+deno task cli signal run volume-1m-30min --source file --dates 2025-12-29 --data data
+
+# Subscribe to signal fire stream
+deno task cli signal subscribe volume-1m-30min
+```
+
 #### Agent REPL
 ```bash
 # Start the interactive agent
@@ -138,6 +156,9 @@ deno task agent
 | `DATABASE_URL` | PostgreSQL connection string |
 | `KALSHI_API_KEY` | Kalshi API key for secmaster/fees sync |
 | `ANTHROPIC_API_KEY` | For agent REPL |
+| `SSMD_API_URL` | HTTP API endpoint (default: http://localhost:8080) |
+| `SSMD_DATA_API_KEY` | API key for ssmd-data-ts |
+| `NATS_URL` | NATS server URL (default: nats://localhost:4222) |
 
 ## Documentation
 
@@ -169,7 +190,8 @@ See [TODO.md](TODO.md) for detailed status. Summary:
 - **Phase 1** (GitOps Metadata): Complete
 - **Phase 2** (NATS Streaming): Complete
 - **Phase 3** (Agent Pipeline): Complete
-- **Phase 4+** (Gateway, Security Master, Trading Day): Planned
+- **Phase 4** (Signal Runtime): Complete
+- **Phase 5+** (Gateway, Trading Day): Planned
 
 ## License
 
