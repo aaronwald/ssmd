@@ -148,13 +148,6 @@ gh workflow run build-connector.yaml -f tag=0.4.4
 | `build-data-ts.yaml` | `ghcr.io/aaronwald/ssmd-data-ts` | `ssmd-agent/Dockerfile.data` |
 | `build-agent.yaml` | `ghcr.io/aaronwald/ssmd-agent` | `ssmd-agent/Dockerfile` |
 
-### Updating ssmd-worker (Temporal)
-
-The ssmd-worker in varlab bundles the ssmd CLI. After pushing a new CLI tag:
-
-1. Update `varlab/workers/kalshi-temporal/Dockerfile` to reference new CLI version
-2. Build and push new ssmd-worker image
-3. Update `varlab/clusters/homelab/apps/ssmd/worker/deployment.yaml`
 
 ## Instructions
 
