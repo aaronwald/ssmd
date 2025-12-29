@@ -1,11 +1,14 @@
 # Binaries
-/ssmd
-/ssmd-data
 *.exe
 
 # Local CLI config
 .ssmd/
 
-# Go
-vendor/
+# Secrets
 priv.pem
+
+# Rust
+target/
+
+# Deno
+.deno/

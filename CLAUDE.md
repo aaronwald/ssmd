@@ -11,26 +11,14 @@ ssmd - Simple/Streaming Market Data system
 All builds are done via Makefile:
 
 ```bash
-# Full validation (lint + security + test + build)
+# Full validation (lint + test + build)
 make all
 
-# Build everything (Go CLI + Rust + ssmd-data)
-make all-build
+# Run all tests (Rust + TypeScript)
+make test
 
-# Test everything (Go + Rust)
-make all-test
-
-# Lint everything (Go + Rust)
-make all-lint
-```
-
-### Go Targets
-
-```bash
-make build          # Build ssmd CLI
-make test           # Run Go tests
-make lint           # Run vet + staticcheck
-make security       # Run govulncheck
+# Run all lints (Rust clippy + Deno check)
+make lint
 ```
 
 ### Rust Targets
@@ -40,20 +28,14 @@ make rust-build     # Build all Rust crates
 make rust-test      # Run Rust tests
 make rust-clippy    # Run Clippy linter
 make rust-clean     # Clean Rust build artifacts
+make rust-all       # Clippy + test + build
 ```
 
-### ssmd-data API
+### TypeScript CLI/Agent (Deno)
 
 ```bash
-make data-build     # Build ssmd-data binary to bin/
-make data-test      # Run API handler tests
-make data-run       # Run with test config (SSMD_DATA_PATH=./testdata)
-```
-
-### ssmd-agent (Deno)
-
-```bash
-make agent-check    # Deno type check
+make cli-check      # Type check CLI
+make agent-check    # Type check CLI + agent
 make agent-test     # Run agent tests
 make agent-run      # Start agent REPL (requires ANTHROPIC_API_KEY)
 ```
@@ -66,6 +48,9 @@ sudo apt-get install -y capnproto
 
 # Install Rust (if not present)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# Install Deno (if not present)
+curl -fsSL https://deno.land/install.sh | sh
 ```
 
 ## Architecture
@@ -79,6 +64,16 @@ ssmd-rust/crates/
 ├── schema/         # Cap'n Proto message definitions
 ├── metadata/       # Feed and environment configuration
 └── ssmd-connector/ # Binary entrypoint
+```
+
+### TypeScript CLI/Agent (`ssmd-agent/`)
+
+```
+ssmd-agent/
+├── src/cli/        # CLI commands (secmaster, backtest, fees, data)
+├── src/lib/        # Shared library (db, api, types)
+├── src/agent/      # LangGraph agent with tools
+└── src/main.ts     # Agent REPL entrypoint
 ```
 
 ### Latency Optimizations
@@ -129,39 +124,39 @@ All images are built via GitHub Actions - **do not use docker/podman directly**.
 
 ### Build Triggers
 
-Images build automatically on git tag push (e.g., `v0.4.4`), or via manual workflow dispatch.
+Images build automatically on git tag push, or via manual workflow dispatch.
 
 ### Triggering a Build
 
 ```bash
-# Option 1: Tag and push (triggers build-cli.yaml, build-connector.yaml, etc.)
-git tag v0.4.4
-git push origin v0.4.4
+# Option 1: Tag and push
+git tag v0.4.4           # Rust connector/archiver
+git tag cli-ts-v0.2.4    # TypeScript CLI
+git push origin <tag>
 
 # Option 2: Manual via GitHub CLI
-gh workflow run build-cli.yaml -f tag=0.4.4
+gh workflow run build-connector.yaml -f tag=0.4.4
 ```
 
 ### Available Workflows
 
 | Workflow | Image | Dockerfile |
 |----------|-------|------------|
-| `build-cli.yaml` | `ghcr.io/aaronwald/ssmd` | `cmd/ssmd/Dockerfile` |
 | `build-connector.yaml` | `ghcr.io/aaronwald/ssmd-connector` | `ssmd-rust/Dockerfile` |
 | `build-archiver.yaml` | `ghcr.io/aaronwald/ssmd-archiver` | `ssmd-rust/crates/ssmd-archiver/Dockerfile` |
-| `build-data.yaml` | `ghcr.io/aaronwald/ssmd-data` | `cmd/ssmd-data/Dockerfile` |
+| `build-cli-ts.yaml` | `ghcr.io/aaronwald/ssmd-cli-ts` | `ssmd-agent/Dockerfile.cli` |
+| `build-data-ts.yaml` | `ghcr.io/aaronwald/ssmd-data-ts` | `ssmd-agent/Dockerfile.data` |
 | `build-agent.yaml` | `ghcr.io/aaronwald/ssmd-agent` | `ssmd-agent/Dockerfile` |
 
 ### Updating ssmd-worker (Temporal)
 
-The ssmd-worker in varlab bundles the ssmd CLI. After pushing a new ssmd tag:
+The ssmd-worker in varlab bundles the ssmd CLI. After pushing a new CLI tag:
 
-1. Update `varlab/workers/kalshi-temporal/Dockerfile` to reference new ssmd version
+1. Update `varlab/workers/kalshi-temporal/Dockerfile` to reference new CLI version
 2. Build and push new ssmd-worker image
 3. Update `varlab/clusters/homelab/apps/ssmd/worker/deployment.yaml`
 
 ## Instructions
 
 1. All code must go through pr code review.
-1. Use idiomatic go. See .github/instructions/go.instructions.md
-1. Follow the build instructions in CLAUDE. Limit freelancing unless we are in a brainstorming session.
+2. Follow the build instructions in CLAUDE.md. Limit freelancing unless we are in a brainstorming session.
