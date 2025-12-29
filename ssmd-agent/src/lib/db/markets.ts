@@ -108,3 +108,84 @@ export async function softDeleteMissingMarkets(
 
   return result.count;
 }
+
+/**
+ * Market row from database
+ */
+export interface MarketRow {
+  ticker: string;
+  event_ticker: string;
+  title: string;
+  status: string;
+  close_time: Date | null;
+  yes_bid: number;
+  yes_ask: number;
+  no_bid: number;
+  no_ask: number;
+  last_price: number;
+  volume: number;
+  volume_24h: number;
+  open_interest: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * List markets with optional filters.
+ */
+export async function listMarkets(
+  sql: ReturnType<typeof postgres>,
+  options: {
+    category?: string;
+    status?: string;
+    series?: string;
+    event?: string;
+    closing_before?: string;
+    closing_after?: string;
+    limit?: number;
+  } = {}
+): Promise<MarketRow[]> {
+  const limit = options.limit ?? 100;
+
+  const rows = await sql`
+    SELECT m.ticker, m.event_ticker, m.title, m.status, m.close_time,
+           m.yes_bid, m.yes_ask, m.no_bid, m.no_ask, m.last_price,
+           m.volume, m.volume_24h, m.open_interest, m.created_at, m.updated_at
+    FROM markets m
+    JOIN events e ON e.event_ticker = m.event_ticker
+    WHERE m.deleted_at IS NULL
+      ${options.category ? sql`AND e.category = ${options.category}` : sql``}
+      ${options.status ? sql`AND m.status = ${options.status}` : sql``}
+      ${options.series ? sql`AND e.series_ticker = ${options.series}` : sql``}
+      ${options.event ? sql`AND m.event_ticker = ${options.event}` : sql``}
+      ${options.closing_before ? sql`AND m.close_time < ${options.closing_before}` : sql``}
+      ${options.closing_after ? sql`AND m.close_time > ${options.closing_after}` : sql``}
+    ORDER BY m.updated_at DESC
+    LIMIT ${limit}
+  `;
+
+  return rows as unknown as MarketRow[];
+}
+
+/**
+ * Get a single market by ticker.
+ */
+export async function getMarket(
+  sql: ReturnType<typeof postgres>,
+  ticker: string
+): Promise<MarketRow | null> {
+  const rows = await sql`
+    SELECT ticker, event_ticker, title, status, close_time,
+           yes_bid, yes_ask, no_bid, no_ask, last_price,
+           volume, volume_24h, open_interest, created_at, updated_at
+    FROM markets
+    WHERE ticker = ${ticker}
+      AND deleted_at IS NULL
+  `;
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return rows[0] as unknown as MarketRow;
+}

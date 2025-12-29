@@ -1,8 +1,29 @@
 /**
  * Fees sync command - sync Kalshi fee schedules to PostgreSQL
  */
-import { getDb, closeDb, upsertFeeChanges, getFeeStats, listCurrentFees } from "../../lib/db/mod.ts";
+import { getDb, closeDb, upsertFeeChanges } from "../../lib/db/mod.ts";
 import { createKalshiClient } from "../../lib/api/kalshi.ts";
+
+const API_TIMEOUT_MS = 10000;
+
+function getApiUrl(): string {
+  return Deno.env.get("SSMD_API_URL") ?? "http://localhost:8080";
+}
+
+function getApiKey(): string {
+  return Deno.env.get("SSMD_DATA_API_KEY") ?? "";
+}
+
+async function apiRequest<T>(path: string): Promise<T> {
+  const res = await fetch(`${getApiUrl()}${path}`, {
+    headers: { "X-API-Key": getApiKey() },
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`API error: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
 
 /**
  * Fee sync options
@@ -74,50 +95,46 @@ export function printSyncSummary(result: FeeSyncResult): void {
 }
 
 /**
- * Show fee statistics
+ * Show fee statistics (via API)
  */
 export async function showFeeStats(): Promise<void> {
-  const sql = getDb();
+  const stats = await apiRequest<{ total: number; active: number; historical: number }>("/v1/fees/stats");
+  console.log("\n=== Fee Schedule Statistics ===");
+  console.log(`Total records:    ${stats.total}`);
+  console.log(`Active schedules: ${stats.active}`);
+  console.log(`Historical:       ${stats.historical}`);
+}
 
-  try {
-    const stats = await getFeeStats(sql);
-    console.log("\n=== Fee Schedule Statistics ===");
-    console.log(`Total records:    ${stats.total}`);
-    console.log(`Active schedules: ${stats.active}`);
-    console.log(`Historical:       ${stats.historical}`);
-  } finally {
-    await closeDb();
-  }
+interface ApiFee {
+  series_ticker: string;
+  fee_type: string;
+  fee_multiplier: number;
+  effective_from: string;
 }
 
 /**
- * List current fee schedules
+ * List current fee schedules (via API)
  */
 export async function showFeeList(limit = 50): Promise<void> {
-  const sql = getDb();
+  const result = await apiRequest<{ fees: ApiFee[] }>(`/v1/fees?limit=${limit}`);
+  const fees = result.fees;
 
-  try {
-    const fees = await listCurrentFees(sql, limit);
+  if (fees.length === 0) {
+    console.log("\nNo fee schedules found. Run 'ssmd fees sync' first.");
+    return;
+  }
 
-    if (fees.length === 0) {
-      console.log("\nNo fee schedules found. Run 'ssmd fees sync' first.");
-      return;
-    }
+  console.log(`\n=== Current Fee Schedules (${fees.length}) ===`);
+  console.log("");
+  console.log("Series Ticker       Fee Type                    Multiplier  Effective From");
+  console.log("-".repeat(80));
 
-    console.log(`\n=== Current Fee Schedules (${fees.length}) ===`);
-    console.log("");
-    console.log("Series Ticker       Fee Type                    Multiplier  Effective From");
-    console.log("-".repeat(80));
-
-    for (const fee of fees) {
-      const ticker = fee.series_ticker.padEnd(18);
-      const type = fee.fee_type.padEnd(26);
-      const mult = fee.fee_multiplier.toFixed(4).padStart(10);
-      const from = fee.effective_from.toISOString().slice(0, 10);
-      console.log(`${ticker}  ${type}  ${mult}  ${from}`);
-    }
-  } finally {
-    await closeDb();
+  for (const fee of fees) {
+    const ticker = fee.series_ticker.padEnd(18);
+    const type = fee.fee_type.padEnd(26);
+    const mult = fee.fee_multiplier.toFixed(4).padStart(10);
+    const from = fee.effective_from.slice(0, 10);
+    console.log(`${ticker}  ${type}  ${mult}  ${from}`);
   }
 }
 

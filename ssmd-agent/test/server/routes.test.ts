@@ -3,8 +3,11 @@ import { createRouter, API_VERSION, type RouteContext } from "../../src/server/r
 
 const TEST_API_KEY = "test-api-key";
 
+// Mock sql object for tests that don't use database
+const mockSql = {} as RouteContext["sql"];
+
 function createTestRouter() {
-  const ctx: RouteContext = { apiKey: TEST_API_KEY, dataDir: "/tmp/test-data" };
+  const ctx: RouteContext = { apiKey: TEST_API_KEY, dataDir: "/tmp/test-data", sql: mockSql };
   return createRouter(ctx);
 }
 
@@ -39,7 +42,7 @@ Deno.test("GET /datasets requires auth", async () => {
 Deno.test("GET /datasets with valid auth returns 200", async () => {
   const router = createTestRouter();
   const req = new Request("http://localhost/datasets", {
-    headers: { Authorization: `Bearer ${TEST_API_KEY}` },
+    headers: { "X-API-Key": TEST_API_KEY },
   });
   const res = await router(req);
 
