@@ -4,8 +4,8 @@
 export const EXPECTED_API_VERSION = "0.3.0";
 
 export const config = {
-  dataUrl: Deno.env.get("SSMD_DATA_URL") ?? "http://localhost:8080",
-  dataApiKey: Deno.env.get("SSMD_DATA_API_KEY") ?? "",
+  apiUrl: Deno.env.get("SSMD_API_URL") ?? "http://localhost:8080",
+  apiKey: Deno.env.get("SSMD_DATA_API_KEY") ?? "",
   anthropicApiKey: Deno.env.get("ANTHROPIC_API_KEY") ?? "",
   model: Deno.env.get("SSMD_MODEL") ?? "claude-sonnet-4-20250514",
   skillsPath: Deno.env.get("SSMD_SKILLS_PATH") ?? "./skills",
@@ -14,7 +14,7 @@ export const config = {
 };
 
 export function validateConfig(): void {
-  if (!config.dataApiKey) {
+  if (!config.apiKey) {
     throw new Error("SSMD_DATA_API_KEY required");
   }
   if (!config.anthropicApiKey) {
@@ -28,7 +28,7 @@ export function validateConfig(): void {
  */
 export async function checkApiVersion(): Promise<void> {
   try {
-    const res = await fetch(`${config.dataUrl}/version`, {
+    const res = await fetch(`${config.apiUrl}/version`, {
       signal: AbortSignal.timeout(5000),
     });
 
@@ -56,7 +56,7 @@ export async function checkApiVersion(): Promise<void> {
     }
   } catch (err) {
     if (err instanceof DOMException && err.name === "TimeoutError") {
-      console.warn(`⚠️  ssmd-data server not reachable at ${config.dataUrl}`);
+      console.warn(`⚠️  ssmd-data server not reachable at ${config.apiUrl}`);
     } else {
       console.warn(`⚠️  Failed to check API version: ${err}`);
     }
