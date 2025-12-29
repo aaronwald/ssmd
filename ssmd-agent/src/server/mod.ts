@@ -4,20 +4,25 @@ export { createRouter, API_VERSION, type RouteContext } from "./routes.ts";
 
 import { createRouter, type RouteContext } from "./routes.ts";
 import { logger, cors } from "./middleware.ts";
+import postgres from "postgres";
 
 export interface ServerOptions {
   port: number;
   apiKey: string;
   dataDir: string;
+  databaseUrl: string;
 }
 
 /**
  * Create and start the HTTP server
  */
 export function createServer(options: ServerOptions): Deno.HttpServer<Deno.NetAddr> {
+  const sql = postgres(options.databaseUrl);
+
   const ctx: RouteContext = {
     apiKey: options.apiKey,
     dataDir: options.dataDir,
+    sql,
   };
 
   const router = createRouter(ctx);

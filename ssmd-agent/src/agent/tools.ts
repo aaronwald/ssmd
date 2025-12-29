@@ -7,7 +7,6 @@ import { PriceHistoryBuilder, type PriceHistoryState } from "../state/price_hist
 import { VolumeProfileBuilder, type VolumeProfileState } from "../state/volume_profile.ts";
 import type { MarketRecord } from "../state/types.ts";
 import { runBacktest as executeBacktest } from "../backtest/runner.ts";
-import { getDb, closeDb, getCurrentFee, getFeeAsOf } from "../lib/db/mod.ts";
 
 const API_TIMEOUT_MS = 10000; // 10 second timeout
 
@@ -309,7 +308,7 @@ export const listMarkets = tool(
     if (closing_after) params.set("closing_after", closing_after);
     if (limit) params.set("limit", String(limit));
 
-    const path = `/markets${params.toString() ? "?" + params : ""}`;
+    const path = `/v1/markets${params.toString() ? "?" + params : ""}`;
     return JSON.stringify(await apiRequest(path));
   },
   {
@@ -328,7 +327,7 @@ export const listMarkets = tool(
 
 export const getMarket = tool(
   async ({ ticker }) => {
-    const path = `/markets/${encodeURIComponent(ticker)}`;
+    const path = `/v1/markets/${encodeURIComponent(ticker)}`;
     return JSON.stringify(await apiRequest(path));
   },
   {
@@ -344,7 +343,7 @@ export const getFees = tool(
   async ({ tier }) => {
     const params = new URLSearchParams();
     if (tier) params.set("tier", tier);
-    const path = `/fees${params.toString() ? "?" + params : ""}`;
+    const path = `/v1/fees${params.toString() ? "?" + params : ""}`;
     return JSON.stringify(await apiRequest(path));
   },
   {
@@ -364,7 +363,7 @@ export const listEvents = tool(
     if (series) params.set("series", series);
     if (limit) params.set("limit", String(limit));
 
-    const path = `/events${params.toString() ? "?" + params : ""}`;
+    const path = `/v1/events${params.toString() ? "?" + params : ""}`;
     return JSON.stringify(await apiRequest(path));
   },
   {
@@ -381,7 +380,7 @@ export const listEvents = tool(
 
 export const getEvent = tool(
   async ({ event_ticker }) => {
-    const path = `/events/${encodeURIComponent(event_ticker)}`;
+    const path = `/v1/events/${encodeURIComponent(event_ticker)}`;
     return JSON.stringify(await apiRequest(path));
   },
   {
@@ -395,29 +394,11 @@ export const getEvent = tool(
 
 export const getFeeSchedule = tool(
   async ({ series_ticker, as_of }) => {
-    const sql = getDb();
-    try {
-      const fee = as_of
-        ? await getFeeAsOf(sql, series_ticker, new Date(as_of))
-        : await getCurrentFee(sql, series_ticker);
+    const params = new URLSearchParams();
+    if (as_of) params.set("as_of", as_of);
 
-      if (!fee) {
-        return JSON.stringify({
-          error: `No fee schedule found for ${series_ticker}`,
-          hint: "Run 'ssmd fees sync' to populate fee schedules",
-        });
-      }
-
-      return JSON.stringify({
-        series_ticker: fee.series_ticker,
-        fee_type: fee.fee_type,
-        fee_multiplier: fee.fee_multiplier,
-        effective_from: fee.effective_from.toISOString(),
-        effective_to: fee.effective_to?.toISOString() ?? null,
-      });
-    } finally {
-      await closeDb();
-    }
+    const path = `/v1/fees/${encodeURIComponent(series_ticker)}${params.toString() ? "?" + params : ""}`;
+    return JSON.stringify(await apiRequest(path));
   },
   {
     name: "get_fee_schedule",

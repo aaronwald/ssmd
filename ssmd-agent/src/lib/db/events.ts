@@ -94,3 +94,76 @@ export async function softDeleteMissingEvents(
 
   return result.count;
 }
+
+/**
+ * Event row from database
+ */
+export interface EventRow {
+  event_ticker: string;
+  title: string;
+  category: string;
+  series_ticker: string | null;
+  strike_date: string | null;
+  mutually_exclusive: boolean;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * List events with optional filters.
+ */
+export async function listEvents(
+  sql: ReturnType<typeof postgres>,
+  options: {
+    category?: string;
+    status?: string;
+    series?: string;
+    limit?: number;
+  } = {}
+): Promise<EventRow[]> {
+  const limit = options.limit ?? 100;
+
+  const rows = await sql`
+    SELECT event_ticker, title, category, series_ticker, strike_date,
+           mutually_exclusive, status, created_at, updated_at
+    FROM events
+    WHERE deleted_at IS NULL
+      ${options.category ? sql`AND category = ${options.category}` : sql``}
+      ${options.status ? sql`AND status = ${options.status}` : sql``}
+      ${options.series ? sql`AND series_ticker = ${options.series}` : sql``}
+    ORDER BY updated_at DESC
+    LIMIT ${limit}
+  `;
+
+  return rows as unknown as EventRow[];
+}
+
+/**
+ * Get a single event by ticker with its market count.
+ */
+export async function getEvent(
+  sql: ReturnType<typeof postgres>,
+  eventTicker: string
+): Promise<(EventRow & { market_count: number }) | null> {
+  const rows = await sql`
+    SELECT e.event_ticker, e.title, e.category, e.series_ticker, e.strike_date,
+           e.mutually_exclusive, e.status, e.created_at, e.updated_at,
+           COUNT(m.ticker) as market_count
+    FROM events e
+    LEFT JOIN markets m ON m.event_ticker = e.event_ticker AND m.deleted_at IS NULL
+    WHERE e.event_ticker = ${eventTicker}
+      AND e.deleted_at IS NULL
+    GROUP BY e.event_ticker
+  `;
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const row = rows[0] as Record<string, unknown>;
+  return {
+    ...row,
+    market_count: Number(row.market_count),
+  } as EventRow & { market_count: number };
+}
