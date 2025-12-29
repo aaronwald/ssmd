@@ -4,6 +4,11 @@
 import { RateLimiter, retry } from "../utils/rate-limit.ts";
 import { fromKalshiEvent, type Event, type KalshiEvent } from "../types/event.ts";
 import { fromKalshiMarket, type Market, type KalshiMarket } from "../types/market.ts";
+import {
+  fromKalshiFeeChange,
+  type SeriesFeeChange,
+  type KalshiFeeChange,
+} from "../types/fee.ts";
 
 /**
  * Kalshi API client configuration
@@ -173,6 +178,25 @@ export class KalshiClient {
       }
       throw e;
     }
+  }
+
+  /**
+   * Fetch all fee changes (including historical).
+   * No pagination needed - returns all at once.
+   */
+  async fetchFeeChanges(showHistorical = true): Promise<SeriesFeeChange[]> {
+    const path = `/series/fee_changes?show_historical=${showHistorical}`;
+
+    console.log(`  [API] Fetching fee changes (historical: ${showHistorical})`);
+
+    const data = await this.fetch<{ series_fee_change_arr: KalshiFeeChange[] }>(
+      path
+    );
+
+    const changes = data.series_fee_change_arr || [];
+    console.log(`  [API] Fetched ${changes.length} fee changes`);
+
+    return changes.map(fromKalshiFeeChange);
   }
 }
 
