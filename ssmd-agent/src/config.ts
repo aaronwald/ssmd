@@ -11,6 +11,8 @@ export const config = {
   skillsPath: Deno.env.get("SSMD_SKILLS_PATH") ?? "./skills",
   promptsPath: Deno.env.get("SSMD_PROMPTS_PATH") ?? "./prompts",
   signalsPath: Deno.env.get("SSMD_SIGNALS_PATH") ?? "./signals",
+  natsUrl: Deno.env.get("NATS_URL") ?? "nats://localhost:4222",
+  natsStream: Deno.env.get("NATS_STREAM") ?? "PROD_KALSHI",
 };
 
 export function validateConfig(): void {
