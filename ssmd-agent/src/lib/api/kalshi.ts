@@ -38,7 +38,7 @@ export class KalshiClient {
   constructor(options: KalshiClientOptions) {
     this.baseUrl = options.demo
       ? "https://demo-api.kalshi.co/trade-api/v2"
-      : "https://api.kalshi.com/trade-api/v2";
+      : "https://api.elections.kalshi.com/trade-api/v2";
 
     this.headers = new Headers({
       Authorization: `Bearer ${options.apiKey}`,
