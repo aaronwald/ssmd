@@ -6,6 +6,10 @@ import {
   expandDateRange as expandRange,
   getEffectiveDates,
 } from "../../backtest/loader.ts";
+import {
+  runLocalBacktest,
+  formatResult,
+} from "../../backtest/local-runner.ts";
 import type { BacktestResult } from "../../lib/types/backtest.ts";
 import { TablePrinter } from "../utils/table.ts";
 
@@ -118,26 +122,23 @@ export async function runBacktestCommand(args: BacktestArgs): Promise<void> {
     Deno.exit(1);
   }
 
-  // Generate run ID
-  const runId = `backtest-${crypto.randomUUID().slice(0, 8)}`;
-
   console.log(`Running backtest: ${signal.id}`);
-  console.log(`  Run ID:  ${runId}`);
   console.log(`  SHA:     ${sha}${args.allowDirty ? " (dirty)" : ""}`);
   console.log(`  Feed:    ${feed}`);
   console.log(`  Dates:   ${dates.length === 1 ? dates[0] : `${dates[0]} to ${dates[dates.length - 1]} (${dates.length} days)`}`);
   console.log(`  Requires: ${signal.requires.join(", ")}`);
-
-  if (signal.manifest?.sample_limit) {
-    console.log(`  Limit:   ${signal.manifest.sample_limit} records`);
-  }
-
   console.log();
 
-  // TODO: Submit to Temporal workflow
-  console.log("[TODO: Submit BacktestWorkflow to Temporal]");
-  console.log(`\nTo check status: ssmd backtest status ${runId}`);
-  console.log(`To get results:  ssmd backtest results ${runId}`);
+  // Get state config from manifest
+  const stateConfig = signal.manifest?.state as Record<string, Record<string, unknown>> | undefined;
+
+  // Run local backtest
+  const dataDir = "data";
+  const result = await runLocalBacktest(signalPath, dataDir, dates, feed, stateConfig);
+
+  // Display results
+  console.log();
+  console.log(formatResult(result));
 }
 
 /**
