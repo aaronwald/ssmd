@@ -29,6 +29,7 @@ export class VolumeProfileBuilder implements StateBuilder<VolumeProfileState> {
   private state: VolumeProfileState = this.initialState();
   private prevVolume = 0;
   private prevDollars = 0;
+  private initialized = false; // First snapshot only establishes baseline
 
   constructor(windowMs: number = 300000) { // default 5 minutes
     this.windowMs = windowMs;
@@ -41,6 +42,15 @@ export class VolumeProfileBuilder implements StateBuilder<VolumeProfileState> {
     const volume = (record.volume as number) ?? 0;
     const dollars = (record.dollar_volume as number) ?? 0;
     const ts = record.ts;
+
+    // First snapshot establishes baseline - don't count as new volume
+    if (!this.initialized) {
+      this.prevVolume = volume;
+      this.prevDollars = dollars;
+      this.initialized = true;
+      this.recalculate(record.ticker, ts);
+      return;
+    }
 
     // Calculate delta from previous snapshot
     const volumeDelta = volume - this.prevVolume;
@@ -107,6 +117,7 @@ export class VolumeProfileBuilder implements StateBuilder<VolumeProfileState> {
     this.snapshots = [];
     this.prevVolume = 0;
     this.prevDollars = 0;
+    this.initialized = false;
     this.state = this.initialState();
   }
 
