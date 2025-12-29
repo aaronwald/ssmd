@@ -167,3 +167,42 @@ export async function getEvent(
     market_count: Number(row.market_count),
   } as EventRow & { market_count: number };
 }
+
+/**
+ * Get event statistics.
+ */
+export async function getEventStats(
+  sql: ReturnType<typeof postgres>
+): Promise<{ total: number; by_status: Record<string, number>; by_category: Record<string, number> }> {
+  const statusRows = await sql`
+    SELECT status, COUNT(*) as count
+    FROM events
+    WHERE deleted_at IS NULL
+    GROUP BY status
+  `;
+
+  const categoryRows = await sql`
+    SELECT category, COUNT(*) as count
+    FROM events
+    WHERE deleted_at IS NULL
+    GROUP BY category
+    ORDER BY count DESC
+    LIMIT 10
+  `;
+
+  const by_status: Record<string, number> = {};
+  let total = 0;
+  for (const row of statusRows) {
+    const r = row as Record<string, unknown>;
+    by_status[r.status as string] = Number(r.count);
+    total += Number(r.count);
+  }
+
+  const by_category: Record<string, number> = {};
+  for (const row of categoryRows) {
+    const r = row as Record<string, unknown>;
+    by_category[r.category as string] = Number(r.count);
+  }
+
+  return { total, by_status, by_category };
+}

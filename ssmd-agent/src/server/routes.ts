@@ -5,8 +5,10 @@ import type postgres from "postgres";
 import {
   listEvents,
   getEvent,
+  getEventStats,
   listMarkets,
   getMarket,
+  getMarketStats,
   getCurrentFee,
   getFeeAsOf,
   listCurrentFees,
@@ -117,6 +119,18 @@ route("GET", "/v1/markets/:ticker", async (req, ctx) => {
     return json({ error: "Market not found" }, 404);
   }
   return json(market);
+});
+
+// Secmaster stats endpoint (combined events + markets)
+route("GET", "/v1/secmaster/stats", async (_req, ctx) => {
+  const [eventStats, marketStats] = await Promise.all([
+    getEventStats(ctx.sql),
+    getMarketStats(ctx.sql),
+  ]);
+  return json({
+    events: eventStats,
+    markets: marketStats,
+  });
 });
 
 // Fees endpoints
