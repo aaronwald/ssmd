@@ -18,6 +18,8 @@ export const BacktestManifestSchema = z.object({
   tickers: z.array(z.string()).optional(),
   /** Optional limit on records to process (for quick testing) */
   sample_limit: z.number().optional(),
+  /** State builder configuration (e.g., { volumeProfile: { windowMs: 1800000 } }) */
+  state: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
 }).refine(
   (data) => data.dates || data.date_range,
   { message: "Either dates or date_range must be provided" }

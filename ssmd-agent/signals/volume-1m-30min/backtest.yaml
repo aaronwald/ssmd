@@ -1,0 +1,9 @@
+feed: kalshi
+date_range:
+  from: "2025-12-29"
+  to: "2025-12-29"
+
+# State builder configuration
+state:
+  volumeProfile:
+    windowMs: 1800000  # 30 minutes in milliseconds
