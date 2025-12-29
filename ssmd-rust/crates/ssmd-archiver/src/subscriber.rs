@@ -1,4 +1,4 @@
-use async_nats::jetstream::{self, consumer::PullConsumer};
+use async_nats::jetstream::{self, consumer::PullConsumer, message::Message};
 use futures_util::StreamExt;
 use tracing::{error, info, trace, warn};
 
@@ -10,9 +10,21 @@ pub struct Subscriber {
     expected_seq: Option<u64>,
 }
 
+/// A received message that must be explicitly acked after processing
 pub struct ReceivedMessage {
     pub data: Vec<u8>,
     pub seq: u64,
+    message: Message,
+}
+
+impl ReceivedMessage {
+    /// Acknowledge the message after successful processing
+    pub async fn ack(self) -> Result<(), ArchiverError> {
+        self.message
+            .ack()
+            .await
+            .map_err(|e| ArchiverError::Nats(format!("Failed to ack: {}", e)))
+    }
 }
 
 impl Subscriber {
@@ -86,12 +98,9 @@ impl Subscriber {
                     result.push(ReceivedMessage {
                         data: msg.payload.to_vec(),
                         seq,
+                        message: msg,
                     });
-
-                    // Ack the message
-                    if let Err(e) = msg.ack().await {
-                        error!(error = %e, seq = seq, "Failed to ack message");
-                    }
+                    // Note: ack deferred until after successful write
                 }
                 Err(e) => {
                     error!(error = %e, "Error receiving message");

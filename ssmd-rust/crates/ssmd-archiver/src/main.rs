@@ -149,8 +149,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
 
                             // Write to file (returns Some(FileEntry) on rotation)
-                            match writer.write(&msg.data, msg.seq, now) {
+                            let seq = msg.seq;
+                            match writer.write(&msg.data, seq, now) {
                                 Ok(Some(rotated_entry)) => {
+                                    // Ack after successful write
+                                    if let Err(e) = msg.ack().await {
+                                        error!(error = %e, seq = seq, "Failed to ack message");
+                                    }
                                     // File was rotated - update manifest immediately
                                     info!(
                                         file = %rotated_entry.name,
@@ -163,9 +168,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         error!(error = %e, "Failed to update manifest after rotation");
                                     }
                                 }
-                                Ok(None) => {} // Normal write, no rotation
+                                Ok(None) => {
+                                    // Ack after successful write
+                                    if let Err(e) = msg.ack().await {
+                                        error!(error = %e, seq = seq, "Failed to ack message");
+                                    }
+                                }
                                 Err(e) => {
-                                    error!(error = %e, "Failed to write message");
+                                    // Don't ack - message will be redelivered by NATS
+                                    warn!(error = %e, seq = seq, "Failed to write message, will be redelivered");
                                 }
                             }
                         }
