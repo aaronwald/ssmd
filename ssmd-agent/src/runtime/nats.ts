@@ -104,23 +104,25 @@ export class NatsRecordSource implements RecordSource {
 }
 
 /**
- * NATS fire sink.
- * Publishes signal fires to a subject.
+ * NATS JetStream fire sink.
+ * Publishes signal fires to a JetStream stream for durability.
  */
 export class NatsFireSink implements FireSink {
   private nc: NatsConnection | null = null;
+  private js: JetStreamClient | null = null;
 
   constructor(private servers: string) {}
 
   async publish(fire: SignalFire): Promise<void> {
     if (!this.nc) {
       this.nc = await connect({ servers: this.servers });
-      console.log(`Fire sink connected to NATS: ${this.servers}`);
+      this.js = this.nc.jetstream();
+      console.log(`Fire sink connected to NATS JetStream: ${this.servers}`);
     }
 
     const subject = `signals.${fire.signalId}.fires`;
     const data = JSON.stringify(fire);
-    this.nc.publish(subject, sc.encode(data));
+    await this.js!.publish(subject, sc.encode(data));
   }
 
   async close(): Promise<void> {
