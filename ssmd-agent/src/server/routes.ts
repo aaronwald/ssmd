@@ -1,7 +1,6 @@
 // HTTP server routes
 import { listDatasets } from "./handlers/datasets.ts";
 import { globalRegistry } from "./metrics.ts";
-import type postgres from "postgres";
 import {
   listEvents,
   getEvent,
@@ -13,6 +12,7 @@ import {
   getFeeAsOf,
   listCurrentFees,
   getFeeStats,
+  type Database,
 } from "../lib/db/mod.ts";
 
 export const API_VERSION = "1.0.0";
@@ -20,7 +20,7 @@ export const API_VERSION = "1.0.0";
 export interface RouteContext {
   apiKey: string;
   dataDir: string;
-  sql: postgres.Sql;
+  db: Database;
 }
 
 type Handler = (req: Request, ctx: RouteContext) => Promise<Response>;
@@ -79,7 +79,7 @@ route("GET", "/datasets", async (req, ctx) => {
 // Events endpoints
 route("GET", "/v1/events", async (req, ctx) => {
   const url = new URL(req.url);
-  const events = await listEvents(ctx.sql, {
+  const events = await listEvents(ctx.db, {
     category: url.searchParams.get("category") ?? undefined,
     status: url.searchParams.get("status") ?? undefined,
     series: url.searchParams.get("series") ?? undefined,
@@ -90,7 +90,7 @@ route("GET", "/v1/events", async (req, ctx) => {
 
 route("GET", "/v1/events/:ticker", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;
-  const event = await getEvent(ctx.sql, params.ticker);
+  const event = await getEvent(ctx.db, params.ticker);
   if (!event) {
     return json({ error: "Event not found" }, 404);
   }
@@ -100,13 +100,13 @@ route("GET", "/v1/events/:ticker", async (req, ctx) => {
 // Markets endpoints
 route("GET", "/v1/markets", async (req, ctx) => {
   const url = new URL(req.url);
-  const markets = await listMarkets(ctx.sql, {
+  const markets = await listMarkets(ctx.db, {
     category: url.searchParams.get("category") ?? undefined,
     status: url.searchParams.get("status") ?? undefined,
     series: url.searchParams.get("series") ?? undefined,
-    event: url.searchParams.get("event") ?? undefined,
-    closing_before: url.searchParams.get("closing_before") ?? undefined,
-    closing_after: url.searchParams.get("closing_after") ?? undefined,
+    eventTicker: url.searchParams.get("event") ?? undefined,
+    closingBefore: url.searchParams.get("closing_before") ?? undefined,
+    closingAfter: url.searchParams.get("closing_after") ?? undefined,
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   });
   return json({ markets });
@@ -114,7 +114,7 @@ route("GET", "/v1/markets", async (req, ctx) => {
 
 route("GET", "/v1/markets/:ticker", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;
-  const market = await getMarket(ctx.sql, params.ticker);
+  const market = await getMarket(ctx.db, params.ticker);
   if (!market) {
     return json({ error: "Market not found" }, 404);
   }
@@ -124,8 +124,8 @@ route("GET", "/v1/markets/:ticker", async (req, ctx) => {
 // Secmaster stats endpoint (combined events + markets)
 route("GET", "/v1/secmaster/stats", async (_req, ctx) => {
   const [eventStats, marketStats] = await Promise.all([
-    getEventStats(ctx.sql),
-    getMarketStats(ctx.sql),
+    getEventStats(ctx.db),
+    getMarketStats(ctx.db),
   ]);
   return json({
     events: eventStats,
@@ -137,12 +137,12 @@ route("GET", "/v1/secmaster/stats", async (_req, ctx) => {
 route("GET", "/v1/fees", async (req, ctx) => {
   const url = new URL(req.url);
   const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100;
-  const fees = await listCurrentFees(ctx.sql, limit);
+  const fees = await listCurrentFees(ctx.db, { limit });
   return json({ fees });
 });
 
 route("GET", "/v1/fees/stats", async (_req, ctx) => {
-  const stats = await getFeeStats(ctx.sql);
+  const stats = await getFeeStats(ctx.db);
   return json(stats);
 });
 
@@ -152,8 +152,8 @@ route("GET", "/v1/fees/:series", async (req, ctx) => {
   const asOf = url.searchParams.get("as_of");
 
   const fee = asOf
-    ? await getFeeAsOf(ctx.sql, params.series, new Date(asOf))
-    : await getCurrentFee(ctx.sql, params.series);
+    ? await getFeeAsOf(ctx.db, params.series, new Date(asOf))
+    : await getCurrentFee(ctx.db, params.series);
 
   if (!fee) {
     return json({ error: `No fee schedule found for ${params.series}` }, 404);
