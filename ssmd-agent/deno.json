@@ -18,7 +18,8 @@
     "yaml": "npm:yaml@^2.3",
     "postgres": "https://deno.land/x/postgresjs@v3.4.4/mod.js",
     "drizzle-orm": "npm:drizzle-orm@^0.38.0",
-    "drizzle-orm/postgres-js": "npm:drizzle-orm@^0.38.0/postgres-js"
+    "drizzle-orm/postgres-js": "npm:drizzle-orm@^0.38.0/postgres-js",
+    "drizzle-orm/pg-core": "npm:drizzle-orm@^0.38.0/pg-core"
   },
   "compilerOptions": {
     "strict": true
