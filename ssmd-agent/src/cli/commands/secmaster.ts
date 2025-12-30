@@ -67,7 +67,7 @@ export interface SyncResult {
 export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncResult> {
   const startTime = Date.now();
   const client = createKalshiClient();
-  const sql = getDb();
+  const db = getDb();
 
   const result: SyncResult = {
     events: { fetched: 0, upserted: 0, deleted: 0, durationMs: 0 },
@@ -89,7 +89,7 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
         allEventTickers.push(...batch.map((e) => e.event_ticker));
 
         if (!options.dryRun) {
-          await bulkUpsertEvents(sql, batch);
+          await bulkUpsertEvents(db, batch);
           batchCount++;
         }
       }
@@ -98,7 +98,7 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
       console.log(`[Events] Synced ${result.events.fetched} events in ${batchCount} batches`);
 
       if (!options.dryRun && !options.noDelete) {
-        const deleted = await softDeleteMissingEvents(sql, allEventTickers);
+        const deleted = await softDeleteMissingEvents(db, allEventTickers);
         result.events.deleted = deleted;
         if (deleted > 0) {
           console.log(`[Events] Soft-deleted ${deleted} missing events`);
@@ -121,7 +121,7 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
         allMarketTickers.push(...batch.map((m) => m.ticker));
 
         if (!options.dryRun) {
-          const batchResult = await bulkUpsertMarkets(sql, batch);
+          const batchResult = await bulkUpsertMarkets(db, batch);
           result.markets.upserted += batchResult.total;
           result.markets.skipped += batchResult.skipped;
           batchCount++;
@@ -134,7 +134,7 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
       );
 
       if (!options.dryRun && !options.noDelete) {
-        const deleted = await softDeleteMissingMarkets(sql, allMarketTickers);
+        const deleted = await softDeleteMissingMarkets(db, allMarketTickers);
         result.markets.deleted = deleted;
         if (deleted > 0) {
           console.log(`[Markets] Soft-deleted ${deleted} missing markets`);
