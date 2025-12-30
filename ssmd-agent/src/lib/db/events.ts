@@ -4,6 +4,7 @@
 import { eq, isNull, desc, sql, inArray, notInArray, count } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import { events, markets, type Event, type NewEvent } from "./schema.ts";
+import type { Event as ApiEvent } from "../types/event.ts";
 
 const BATCH_SIZE = 500;
 
@@ -13,12 +14,28 @@ export interface BulkResult {
 }
 
 /**
+ * Convert API event type (snake_case) to Drizzle schema type (camelCase)
+ */
+function toNewEvent(e: ApiEvent): NewEvent {
+  return {
+    eventTicker: e.event_ticker,
+    title: e.title,
+    category: e.category,
+    seriesTicker: e.series_ticker ?? undefined,
+    strikeDate: e.strike_date ? new Date(e.strike_date) : null,
+    mutuallyExclusive: e.mutually_exclusive ?? false,
+    status: e.status ?? "active",
+  };
+}
+
+/**
  * Bulk upsert events with 500-row batches for performance.
  * Matches Go implementation's performance characteristics.
+ * Accepts API event type (snake_case) and converts to Drizzle schema type.
  */
 export async function bulkUpsertEvents(
   db: Database,
-  eventList: NewEvent[]
+  eventList: ApiEvent[]
 ): Promise<BulkResult> {
   if (eventList.length === 0) {
     return { batches: 0, total: 0 };
@@ -28,10 +45,12 @@ export async function bulkUpsertEvents(
 
   for (let i = 0; i < eventList.length; i += BATCH_SIZE) {
     const batch = eventList.slice(i, i + BATCH_SIZE);
+    // Convert API types to Drizzle schema types
+    const drizzleBatch = batch.map(toNewEvent);
 
     await db
       .insert(events)
-      .values(batch)
+      .values(drizzleBatch)
       .onConflictDoUpdate({
         target: events.eventTicker,
         set: {
