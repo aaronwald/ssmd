@@ -1,0 +1,28 @@
+# ssmd-signal-runner container
+FROM denoland/deno:2.1.4
+
+# Create non-root user
+RUN useradd -r -s /bin/false ssmd
+
+WORKDIR /app
+
+# Copy source and signals
+COPY deno.json .
+COPY src ./src
+COPY signals ./signals
+
+# Cache dependencies
+RUN deno cache src/cli/commands/signal-runner.ts
+
+# Fix ownership for non-root user
+RUN chown -R ssmd:ssmd /app /deno-dir
+
+# Switch to non-root user
+USER ssmd
+
+# Default env vars (can be overridden)
+ENV NATS_URL=nats://nats.nats.svc.cluster.local:4222
+ENV NATS_STREAM=PROD_KALSHI
+ENV SIGNALS=volume-1m-30min
+
+CMD ["run", "--allow-net", "--allow-env", "--allow-read", "src/cli/commands/signal-runner.ts"]

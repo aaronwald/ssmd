@@ -13,6 +13,8 @@ export const config = {
   signalsPath: Deno.env.get("SSMD_SIGNALS_PATH") ?? "./signals",
   natsUrl: Deno.env.get("NATS_URL") ?? "nats://localhost:4222",
   natsStream: Deno.env.get("NATS_STREAM") ?? "PROD_KALSHI",
+  // Comma-separated list of signals to run in daemon mode
+  signals: Deno.env.get("SIGNALS")?.split(",").map(s => s.trim()).filter(Boolean) ?? [],
 };
 
 export function validateConfig(): void {
