@@ -49,7 +49,7 @@ export interface FeeSyncResult {
 export async function runFeesSync(options: FeeSyncOptions = {}): Promise<FeeSyncResult> {
   const startTime = Date.now();
   const client = createKalshiClient();
-  const sql = getDb();
+  const db = getDb();
 
   const result: FeeSyncResult = {
     fetched: 0,
@@ -69,7 +69,7 @@ export async function runFeesSync(options: FeeSyncOptions = {}): Promise<FeeSync
 
     if (!options.dryRun) {
       // Upsert to database
-      const dbResult = await upsertFeeChanges(sql, feeChanges);
+      const dbResult = await upsertFeeChanges(db, feeChanges);
       result.inserted = dbResult.inserted;
       result.skipped = dbResult.skipped;
     } else {
