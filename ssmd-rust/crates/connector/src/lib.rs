@@ -17,6 +17,7 @@ pub mod traits;
 pub mod websocket;
 // writer.rs kept for ring buffer integration tests but not exported
 // TODO: Delete in next major version when archiver replaces file writer
+#[allow(dead_code)]
 mod writer;
 
 pub use error::{ConnectorError, ResolverError, WriterError};

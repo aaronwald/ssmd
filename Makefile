@@ -28,7 +28,7 @@ agent-check:
 	cd ssmd-agent && deno check src/main.ts src/cli.ts
 
 agent-test:
-	cd ssmd-agent && deno test --allow-read --allow-net --allow-env test/
+	cd ssmd-agent && deno test --allow-read --allow-write --allow-net --allow-env test/
 
 agent-run:
 	cd ssmd-agent && deno task agent

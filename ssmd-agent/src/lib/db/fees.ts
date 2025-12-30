@@ -62,9 +62,10 @@ export async function upsertFeeChanges(
           isNull(seriesFees.effectiveTo),
           lt(seriesFees.effectiveFrom, scheduledTs)
         )
-      );
+      )
+      .returning({ seriesTicker: seriesFees.seriesTicker });
 
-    if (closed.rowCount && closed.rowCount > 0) {
+    if (closed.length > 0) {
       console.log(
         `  [DB] Closed previous fee period for ${change.series_ticker}`
       );

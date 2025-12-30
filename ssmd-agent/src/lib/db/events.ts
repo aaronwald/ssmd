@@ -106,9 +106,10 @@ export async function softDeleteMissingEvents(
     .set({ deletedAt: sql`NOW()` })
     .where(
       sql`${notInArray(events.eventTicker, currentTickers)} AND ${isNull(events.deletedAt)}`
-    );
+    )
+    .returning({ eventTicker: events.eventTicker });
 
-  return result.rowCount ?? 0;
+  return result.length;
 }
 
 /**

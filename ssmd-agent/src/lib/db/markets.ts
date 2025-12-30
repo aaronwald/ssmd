@@ -119,9 +119,10 @@ export async function softDeleteMissingMarkets(
     .set({ deletedAt: sql`NOW()` })
     .where(
       sql`${notInArray(markets.ticker, currentTickers)} AND ${isNull(markets.deletedAt)}`
-    );
+    )
+    .returning({ ticker: markets.ticker });
 
-  return result.rowCount ?? 0;
+  return result.length;
 }
 
 /**

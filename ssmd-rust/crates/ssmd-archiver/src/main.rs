@@ -222,6 +222,7 @@ fn extract_feed_from_filter(filter: &str) -> Option<String> {
 }
 
 /// Update manifest with completed files (called on every rotation)
+#[allow(clippy::too_many_arguments)]
 fn update_manifest(
     base_path: &Path,
     feed: &str,
