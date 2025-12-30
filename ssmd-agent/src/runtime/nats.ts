@@ -146,3 +146,22 @@ export class ConsoleFireSink implements FireSink {
     // Nothing to close
   }
 }
+
+/**
+ * Logging fire sink wrapper.
+ * Logs fires to console AND delegates to another sink.
+ */
+export class LoggingFireSink implements FireSink {
+  constructor(private inner: FireSink) {}
+
+  async publish(fire: SignalFire): Promise<void> {
+    const time = new Date(fire.ts * 1000).toISOString();
+    console.log(`FIRE [${fire.signalId}] ${time} ${fire.ticker}`);
+    console.log(`  ${JSON.stringify(fire.payload)}`);
+    await this.inner.publish(fire);
+  }
+
+  async close(): Promise<void> {
+    await this.inner.close();
+  }
+}
