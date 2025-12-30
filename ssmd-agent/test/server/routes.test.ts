@@ -3,11 +3,11 @@ import { createRouter, API_VERSION, type RouteContext } from "../../src/server/r
 
 const TEST_API_KEY = "test-api-key";
 
-// Mock sql object for tests that don't use database
-const mockSql = {} as RouteContext["sql"];
+// Mock db object for tests that don't use database
+const mockDb = {} as RouteContext["db"];
 
 function createTestRouter() {
-  const ctx: RouteContext = { apiKey: TEST_API_KEY, dataDir: "/tmp/test-data", sql: mockSql };
+  const ctx: RouteContext = { apiKey: TEST_API_KEY, dataDir: "/tmp/test-data", db: mockDb };
   return createRouter(ctx);
 }
 
