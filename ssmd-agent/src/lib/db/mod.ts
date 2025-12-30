@@ -1,7 +1,23 @@
 /**
  * Database module exports
  */
-export { getDb, closeDb, withTiming } from "./client.ts";
+export { getDb, getRawSql, closeDb, type Database } from "./client.ts";
+
+// Schema and types
+export {
+  events,
+  markets,
+  seriesFees,
+  feeTypeEnum,
+  type Event,
+  type NewEvent,
+  type Market,
+  type NewMarket,
+  type SeriesFee,
+  type NewSeriesFee,
+} from "./schema.ts";
+
+// Event operations
 export {
   bulkUpsertEvents,
   getExistingEventTickers,
@@ -9,22 +25,23 @@ export {
   listEvents,
   getEvent,
   getEventStats,
-  type EventRow,
+  type BulkResult,
 } from "./events.ts";
+
+// Market operations
 export {
   bulkUpsertMarkets,
   softDeleteMissingMarkets,
   listMarkets,
   getMarket,
   getMarketStats,
-  type MarketBulkResult,
-  type MarketRow,
 } from "./markets.ts";
+
+// Fee operations
 export {
   upsertFeeChanges,
   getCurrentFee,
   getFeeAsOf,
   listCurrentFees,
   getFeeStats,
-  type FeeSyncResult,
 } from "./fees.ts";
