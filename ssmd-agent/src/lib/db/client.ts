@@ -1,27 +1,44 @@
 /**
- * PostgreSQL database client using postgres.js
+ * PostgreSQL database client using Drizzle ORM over postgres.js
  */
+import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import * as schema from "./schema.ts";
 
+export type Database = ReturnType<typeof drizzle<typeof schema>>;
+
+let db: Database | null = null;
 let sql: ReturnType<typeof postgres> | null = null;
 
 /**
- * Get the database connection.
- * Creates a connection pool on first call.
+ * Get the Drizzle database instance.
+ * Creates connection pool on first call.
  */
-export function getDb(): ReturnType<typeof postgres> {
-  if (!sql) {
+export function getDb(): Database {
+  if (!db) {
     const url = Deno.env.get("DATABASE_URL");
     if (!url) {
       throw new Error("DATABASE_URL environment variable not set");
     }
     sql = postgres(url, {
-      max: 10,           // Connection pool size
-      idle_timeout: 30,  // Close idle connections after 30s
+      max: 10,
+      idle_timeout: 30,
       connect_timeout: 10,
     });
+    db = drizzle(sql, { schema });
   }
-  return sql;
+  return db;
+}
+
+/**
+ * Get the raw postgres.js client for edge cases.
+ * Prefer using getDb() for most queries.
+ */
+export function getRawSql(): ReturnType<typeof postgres> {
+  if (!sql) {
+    getDb(); // Initialize if needed
+  }
+  return sql!;
 }
 
 /**
@@ -32,6 +49,7 @@ export async function closeDb(): Promise<void> {
   if (sql) {
     await sql.end();
     sql = null;
+    db = null;
   }
 }
 
