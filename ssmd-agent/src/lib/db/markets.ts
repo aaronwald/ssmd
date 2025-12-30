@@ -1,9 +1,11 @@
 /**
- * Market database operations with bulk upsert support
+ * Market database operations with bulk upsert support (Drizzle ORM)
  */
-import type postgres from "postgres";
-import type { Market } from "../types/market.ts";
+import { eq, isNull, desc, sql, notInArray, count } from "drizzle-orm";
+import type { Database } from "./client.ts";
+import { markets, events, type Market, type NewMarket } from "./schema.ts";
 import { getExistingEventTickers } from "./events.ts";
+import type { Market as ApiMarket } from "../types/market.ts";
 
 const BATCH_SIZE = 500;
 
@@ -14,29 +16,51 @@ export interface MarketBulkResult {
 }
 
 /**
+ * Convert API market type (snake_case) to Drizzle schema type (camelCase)
+ */
+function toNewMarket(m: ApiMarket): NewMarket {
+  return {
+    ticker: m.ticker,
+    eventTicker: m.event_ticker,
+    title: m.title,
+    status: m.status,
+    closeTime: m.close_time ? new Date(m.close_time) : null,
+    yesBid: m.yes_bid ?? null,
+    yesAsk: m.yes_ask ?? null,
+    noBid: m.no_bid ?? null,
+    noAsk: m.no_ask ?? null,
+    lastPrice: m.last_price ?? null,
+    volume: m.volume ?? 0,
+    volume24h: m.volume_24h ?? 0,
+    openInterest: m.open_interest ?? 0,
+  };
+}
+
+/**
  * Bulk upsert markets with 500-row batches.
  * Pre-filters by existing events to avoid FK violations.
+ * Accepts API market type (snake_case) and converts to Drizzle schema type.
  */
 export async function bulkUpsertMarkets(
-  sql: ReturnType<typeof postgres>,
-  markets: Market[]
+  db: Database,
+  marketList: ApiMarket[]
 ): Promise<MarketBulkResult> {
-  if (markets.length === 0) {
+  if (marketList.length === 0) {
     return { batches: 0, total: 0, skipped: 0 };
   }
 
-  // Collect unique event tickers
-  const eventTickers = [...new Set(markets.map((m) => m.event_ticker))];
+  // Collect unique event tickers (using API field name)
+  const eventTickers = [...new Set(marketList.map((m) => m.event_ticker))];
 
   // Pre-filter by existing events (FK constraint)
-  const existingEvents = await getExistingEventTickers(sql, eventTickers);
+  const existingEvents = await getExistingEventTickers(db, eventTickers);
   console.log(
     `  [DB] found ${existingEvents.size}/${eventTickers.length} parent events`
   );
 
-  // Filter markets to only those with existing parent events
-  const validMarkets = markets.filter((m) => existingEvents.has(m.event_ticker));
-  const skipped = markets.length - validMarkets.length;
+  // Filter markets to only those with existing parent events (using API field name)
+  const validMarkets = marketList.filter((m) => existingEvents.has(m.event_ticker));
+  const skipped = marketList.length - validMarkets.length;
 
   if (skipped > 0) {
     console.log(`  [DB] skipping ${skipped} markets with missing events`);
@@ -50,40 +74,31 @@ export async function bulkUpsertMarkets(
 
   for (let i = 0; i < validMarkets.length; i += BATCH_SIZE) {
     const batch = validMarkets.slice(i, i + BATCH_SIZE);
+    // Convert API types to Drizzle schema types
+    const drizzleBatch = batch.map(toNewMarket);
 
-    await sql`
-      INSERT INTO markets ${sql(
-        batch,
-        "ticker",
-        "event_ticker",
-        "title",
-        "status",
-        "close_time",
-        "yes_bid",
-        "yes_ask",
-        "no_bid",
-        "no_ask",
-        "last_price",
-        "volume",
-        "volume_24h",
-        "open_interest"
-      )}
-      ON CONFLICT (ticker) DO UPDATE SET
-        event_ticker = EXCLUDED.event_ticker,
-        title = EXCLUDED.title,
-        status = EXCLUDED.status,
-        close_time = EXCLUDED.close_time,
-        yes_bid = EXCLUDED.yes_bid,
-        yes_ask = EXCLUDED.yes_ask,
-        no_bid = EXCLUDED.no_bid,
-        no_ask = EXCLUDED.no_ask,
-        last_price = EXCLUDED.last_price,
-        volume = EXCLUDED.volume,
-        volume_24h = EXCLUDED.volume_24h,
-        open_interest = EXCLUDED.open_interest,
-        updated_at = NOW(),
-        deleted_at = NULL
-    `;
+    await db
+      .insert(markets)
+      .values(drizzleBatch)
+      .onConflictDoUpdate({
+        target: markets.ticker,
+        set: {
+          eventTicker: sql`excluded.event_ticker`,
+          title: sql`excluded.title`,
+          status: sql`excluded.status`,
+          closeTime: sql`excluded.close_time`,
+          yesBid: sql`excluded.yes_bid`,
+          yesAsk: sql`excluded.yes_ask`,
+          noBid: sql`excluded.no_bid`,
+          noAsk: sql`excluded.no_ask`,
+          lastPrice: sql`excluded.last_price`,
+          volume: sql`excluded.volume`,
+          volume24h: sql`excluded.volume_24h`,
+          openInterest: sql`excluded.open_interest`,
+          updatedAt: sql`NOW()`,
+          deletedAt: sql`NULL`,
+        },
+      });
 
     batches++;
     console.log(`  [DB] markets batch ${batches}: ${batch.length} upserted`);
@@ -96,119 +111,147 @@ export async function bulkUpsertMarkets(
  * Soft delete markets that are no longer in the API response.
  */
 export async function softDeleteMissingMarkets(
-  sql: ReturnType<typeof postgres>,
+  db: Database,
   currentTickers: string[]
 ): Promise<number> {
-  const result = await sql`
-    UPDATE markets
-    SET deleted_at = NOW()
-    WHERE ticker != ALL(${currentTickers})
-    AND deleted_at IS NULL
-  `;
+  const result = await db
+    .update(markets)
+    .set({ deletedAt: sql`NOW()` })
+    .where(
+      sql`${notInArray(markets.ticker, currentTickers)} AND ${isNull(markets.deletedAt)}`
+    );
 
-  return result.count;
+  return result.rowCount ?? 0;
 }
 
 /**
- * Market row from database
+ * Market row from database (alias for schema Market type)
  */
-export interface MarketRow {
-  ticker: string;
-  event_ticker: string;
-  title: string;
-  status: string;
-  close_time: Date | null;
-  yes_bid: number;
-  yes_ask: number;
-  no_bid: number;
-  no_ask: number;
-  last_price: number;
-  volume: number;
-  volume_24h: number;
-  open_interest: number;
-  created_at: Date;
-  updated_at: Date;
-}
+export type MarketRow = Market;
 
 /**
  * List markets with optional filters.
  */
 export async function listMarkets(
-  sql: ReturnType<typeof postgres>,
+  db: Database,
   options: {
     category?: string;
     status?: string;
     series?: string;
-    event?: string;
-    closing_before?: string;
-    closing_after?: string;
+    eventTicker?: string;
+    closingBefore?: string;
+    closingAfter?: string;
     limit?: number;
   } = {}
 ): Promise<MarketRow[]> {
   const limit = options.limit ?? 100;
 
-  const rows = await sql`
-    SELECT m.ticker, m.event_ticker, m.title, m.status, m.close_time,
-           m.yes_bid, m.yes_ask, m.no_bid, m.no_ask, m.last_price,
-           m.volume, m.volume_24h, m.open_interest, m.created_at, m.updated_at
-    FROM markets m
-    JOIN events e ON e.event_ticker = m.event_ticker
-    WHERE m.deleted_at IS NULL
-      ${options.category ? sql`AND e.category = ${options.category}` : sql``}
-      ${options.status ? sql`AND m.status = ${options.status}` : sql``}
-      ${options.series ? sql`AND e.series_ticker = ${options.series}` : sql``}
-      ${options.event ? sql`AND m.event_ticker = ${options.event}` : sql``}
-      ${options.closing_before ? sql`AND m.close_time < ${options.closing_before}` : sql``}
-      ${options.closing_after ? sql`AND m.close_time > ${options.closing_after}` : sql``}
-    ORDER BY m.updated_at DESC
-    LIMIT ${limit}
-  `;
+  // Build conditions array
+  const conditions: ReturnType<typeof sql>[] = [isNull(markets.deletedAt)];
 
-  return rows as unknown as MarketRow[];
+  if (options.status) {
+    conditions.push(eq(markets.status, options.status));
+  }
+  if (options.eventTicker) {
+    conditions.push(eq(markets.eventTicker, options.eventTicker));
+  }
+  if (options.closingBefore) {
+    conditions.push(sql`${markets.closeTime} < ${options.closingBefore}`);
+  }
+  if (options.closingAfter) {
+    conditions.push(sql`${markets.closeTime} > ${options.closingAfter}`);
+  }
+
+  // If filtering by category or series, need to join events
+  if (options.category || options.series) {
+    const eventConditions: ReturnType<typeof sql>[] = [];
+    if (options.category) {
+      eventConditions.push(eq(events.category, options.category));
+    }
+    if (options.series) {
+      eventConditions.push(eq(events.seriesTicker, options.series));
+    }
+
+    const rows = await db
+      .select({
+        ticker: markets.ticker,
+        eventTicker: markets.eventTicker,
+        title: markets.title,
+        status: markets.status,
+        closeTime: markets.closeTime,
+        yesBid: markets.yesBid,
+        yesAsk: markets.yesAsk,
+        noBid: markets.noBid,
+        noAsk: markets.noAsk,
+        lastPrice: markets.lastPrice,
+        volume: markets.volume,
+        volume24h: markets.volume24h,
+        openInterest: markets.openInterest,
+        createdAt: markets.createdAt,
+        updatedAt: markets.updatedAt,
+        deletedAt: markets.deletedAt,
+      })
+      .from(markets)
+      .innerJoin(events, eq(markets.eventTicker, events.eventTicker))
+      .where(sql.join([...conditions, ...eventConditions], sql` AND `))
+      .orderBy(desc(markets.updatedAt))
+      .limit(limit);
+
+    return rows;
+  }
+
+  // Simple query without join
+  const rows = await db
+    .select()
+    .from(markets)
+    .where(sql.join(conditions, sql` AND `))
+    .orderBy(desc(markets.updatedAt))
+    .limit(limit);
+
+  return rows;
 }
 
 /**
  * Get a single market by ticker.
  */
 export async function getMarket(
-  sql: ReturnType<typeof postgres>,
+  db: Database,
   ticker: string
 ): Promise<MarketRow | null> {
-  const rows = await sql`
-    SELECT ticker, event_ticker, title, status, close_time,
-           yes_bid, yes_ask, no_bid, no_ask, last_price,
-           volume, volume_24h, open_interest, created_at, updated_at
-    FROM markets
-    WHERE ticker = ${ticker}
-      AND deleted_at IS NULL
-  `;
+  const rows = await db
+    .select()
+    .from(markets)
+    .where(
+      sql`${eq(markets.ticker, ticker)} AND ${isNull(markets.deletedAt)}`
+    );
 
   if (rows.length === 0) {
     return null;
   }
 
-  return rows[0] as unknown as MarketRow;
+  return rows[0];
 }
 
 /**
- * Get market statistics.
+ * Get market statistics by status.
  */
 export async function getMarketStats(
-  sql: ReturnType<typeof postgres>
+  db: Database
 ): Promise<{ total: number; by_status: Record<string, number> }> {
-  const statusRows = await sql`
-    SELECT status, COUNT(*) as count
-    FROM markets
-    WHERE deleted_at IS NULL
-    GROUP BY status
-  `;
+  const statusRows = await db
+    .select({
+      status: markets.status,
+      count: count(),
+    })
+    .from(markets)
+    .where(isNull(markets.deletedAt))
+    .groupBy(markets.status);
 
   const by_status: Record<string, number> = {};
   let total = 0;
   for (const row of statusRows) {
-    const r = row as Record<string, unknown>;
-    by_status[r.status as string] = Number(r.count);
-    total += Number(r.count);
+    by_status[row.status] = row.count;
+    total += row.count;
   }
 
   return { total, by_status };
