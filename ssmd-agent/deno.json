@@ -16,7 +16,9 @@
     "nats": "npm:nats@^2.29.3",
     "zod": "npm:zod@^3.23",
     "yaml": "npm:yaml@^2.3",
-    "postgres": "https://deno.land/x/postgresjs@v3.4.4/mod.js"
+    "postgres": "https://deno.land/x/postgresjs@v3.4.4/mod.js",
+    "drizzle-orm": "npm:drizzle-orm@^0.38.0",
+    "drizzle-orm/postgres-js": "npm:drizzle-orm@^0.38.0/postgres-js"
   },
   "compilerOptions": {
     "strict": true
