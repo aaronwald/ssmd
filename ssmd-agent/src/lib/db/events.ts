@@ -1,8 +1,9 @@
 /**
- * Event database operations with bulk upsert support
+ * Event database operations with bulk upsert support (Drizzle ORM)
  */
-import type postgres from "postgres";
-import type { Event } from "../types/event.ts";
+import { eq, isNull, desc, sql, inArray, notInArray, count } from "drizzle-orm";
+import type { Database } from "./client.ts";
+import { events, markets, type Event, type NewEvent } from "./schema.ts";
 
 const BATCH_SIZE = 500;
 
@@ -16,45 +17,40 @@ export interface BulkResult {
  * Matches Go implementation's performance characteristics.
  */
 export async function bulkUpsertEvents(
-  sql: ReturnType<typeof postgres>,
-  events: Event[]
+  db: Database,
+  eventList: NewEvent[]
 ): Promise<BulkResult> {
-  if (events.length === 0) {
+  if (eventList.length === 0) {
     return { batches: 0, total: 0 };
   }
 
   let batches = 0;
 
-  for (let i = 0; i < events.length; i += BATCH_SIZE) {
-    const batch = events.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < eventList.length; i += BATCH_SIZE) {
+    const batch = eventList.slice(i, i + BATCH_SIZE);
 
-    await sql`
-      INSERT INTO events ${sql(
-        batch,
-        "event_ticker",
-        "title",
-        "category",
-        "series_ticker",
-        "strike_date",
-        "mutually_exclusive",
-        "status"
-      )}
-      ON CONFLICT (event_ticker) DO UPDATE SET
-        title = EXCLUDED.title,
-        category = EXCLUDED.category,
-        series_ticker = EXCLUDED.series_ticker,
-        strike_date = EXCLUDED.strike_date,
-        mutually_exclusive = EXCLUDED.mutually_exclusive,
-        status = EXCLUDED.status,
-        updated_at = NOW(),
-        deleted_at = NULL
-    `;
+    await db
+      .insert(events)
+      .values(batch)
+      .onConflictDoUpdate({
+        target: events.eventTicker,
+        set: {
+          title: sql`excluded.title`,
+          category: sql`excluded.category`,
+          seriesTicker: sql`excluded.series_ticker`,
+          strikeDate: sql`excluded.strike_date`,
+          mutuallyExclusive: sql`excluded.mutually_exclusive`,
+          status: sql`excluded.status`,
+          updatedAt: sql`NOW()`,
+          deletedAt: sql`NULL`,
+        },
+      });
 
     batches++;
     console.log(`  [DB] events batch ${batches}: ${batch.length} upserted`);
   }
 
-  return { batches, total: events.length };
+  return { batches, total: eventList.length };
 }
 
 /**
@@ -62,59 +58,50 @@ export async function bulkUpsertEvents(
  * Used to filter markets before insert to avoid FK violations.
  */
 export async function getExistingEventTickers(
-  sql: ReturnType<typeof postgres>,
+  db: Database,
   eventTickers: string[]
 ): Promise<Set<string>> {
   if (eventTickers.length === 0) {
     return new Set();
   }
 
-  const rows = await sql`
-    SELECT event_ticker FROM events
-    WHERE event_ticker = ANY(${eventTickers})
-    AND deleted_at IS NULL
-  `;
+  const rows = await db
+    .select({ eventTicker: events.eventTicker })
+    .from(events)
+    .where(
+      sql`${inArray(events.eventTicker, eventTickers)} AND ${isNull(events.deletedAt)}`
+    );
 
-  return new Set(rows.map((r) => (r as Record<string, string>).event_ticker));
+  return new Set(rows.map((r) => r.eventTicker));
 }
 
 /**
  * Soft delete events that are no longer in the API response.
  */
 export async function softDeleteMissingEvents(
-  sql: ReturnType<typeof postgres>,
+  db: Database,
   currentTickers: string[]
 ): Promise<number> {
-  const result = await sql`
-    UPDATE events
-    SET deleted_at = NOW()
-    WHERE event_ticker != ALL(${currentTickers})
-    AND deleted_at IS NULL
-  `;
+  const result = await db
+    .update(events)
+    .set({ deletedAt: sql`NOW()` })
+    .where(
+      sql`${notInArray(events.eventTicker, currentTickers)} AND ${isNull(events.deletedAt)}`
+    );
 
-  return result.count;
+  return result.rowCount ?? 0;
 }
 
 /**
- * Event row from database
+ * Event row from database (alias for schema Event type)
  */
-export interface EventRow {
-  event_ticker: string;
-  title: string;
-  category: string;
-  series_ticker: string | null;
-  strike_date: string | null;
-  mutually_exclusive: boolean;
-  status: string;
-  created_at: Date;
-  updated_at: Date;
-}
+export type EventRow = Event;
 
 /**
  * List events with optional filters.
  */
 export async function listEvents(
-  sql: ReturnType<typeof postgres>,
+  db: Database,
   options: {
     category?: string;
     status?: string;
@@ -124,84 +111,111 @@ export async function listEvents(
 ): Promise<EventRow[]> {
   const limit = options.limit ?? 100;
 
-  const rows = await sql`
-    SELECT event_ticker, title, category, series_ticker, strike_date,
-           mutually_exclusive, status, created_at, updated_at
-    FROM events
-    WHERE deleted_at IS NULL
-      ${options.category ? sql`AND category = ${options.category}` : sql``}
-      ${options.status ? sql`AND status = ${options.status}` : sql``}
-      ${options.series ? sql`AND series_ticker = ${options.series}` : sql``}
-    ORDER BY updated_at DESC
-    LIMIT ${limit}
-  `;
+  let query = db
+    .select()
+    .from(events)
+    .where(isNull(events.deletedAt))
+    .orderBy(desc(events.updatedAt))
+    .limit(limit)
+    .$dynamic();
 
-  return rows as unknown as EventRow[];
+  if (options.category) {
+    query = query.where(
+      sql`${isNull(events.deletedAt)} AND ${eq(events.category, options.category)}`
+    );
+  }
+  if (options.status) {
+    query = query.where(
+      sql`${isNull(events.deletedAt)} AND ${eq(events.status, options.status)}`
+    );
+  }
+  if (options.series) {
+    query = query.where(
+      sql`${isNull(events.deletedAt)} AND ${eq(events.seriesTicker, options.series)}`
+    );
+  }
+
+  return await query;
 }
 
 /**
  * Get a single event by ticker with its market count.
  */
 export async function getEvent(
-  sql: ReturnType<typeof postgres>,
+  db: Database,
   eventTicker: string
-): Promise<(EventRow & { market_count: number }) | null> {
-  const rows = await sql`
-    SELECT e.event_ticker, e.title, e.category, e.series_ticker, e.strike_date,
-           e.mutually_exclusive, e.status, e.created_at, e.updated_at,
-           COUNT(m.ticker) as market_count
-    FROM events e
-    LEFT JOIN markets m ON m.event_ticker = e.event_ticker AND m.deleted_at IS NULL
-    WHERE e.event_ticker = ${eventTicker}
-      AND e.deleted_at IS NULL
-    GROUP BY e.event_ticker
-  `;
+): Promise<(EventRow & { marketCount: number }) | null> {
+  const rows = await db
+    .select({
+      eventTicker: events.eventTicker,
+      title: events.title,
+      category: events.category,
+      seriesTicker: events.seriesTicker,
+      strikeDate: events.strikeDate,
+      mutuallyExclusive: events.mutuallyExclusive,
+      status: events.status,
+      createdAt: events.createdAt,
+      updatedAt: events.updatedAt,
+      deletedAt: events.deletedAt,
+      marketCount: count(markets.ticker),
+    })
+    .from(events)
+    .leftJoin(
+      markets,
+      sql`${markets.eventTicker} = ${events.eventTicker} AND ${isNull(markets.deletedAt)}`
+    )
+    .where(
+      sql`${eq(events.eventTicker, eventTicker)} AND ${isNull(events.deletedAt)}`
+    )
+    .groupBy(events.eventTicker);
 
   if (rows.length === 0) {
     return null;
   }
 
-  const row = rows[0] as Record<string, unknown>;
-  return {
-    ...row,
-    market_count: Number(row.market_count),
-  } as EventRow & { market_count: number };
+  return rows[0];
 }
 
 /**
  * Get event statistics.
  */
 export async function getEventStats(
-  sql: ReturnType<typeof postgres>
-): Promise<{ total: number; by_status: Record<string, number>; by_category: Record<string, number> }> {
-  const statusRows = await sql`
-    SELECT status, COUNT(*) as count
-    FROM events
-    WHERE deleted_at IS NULL
-    GROUP BY status
-  `;
+  db: Database
+): Promise<{
+  total: number;
+  by_status: Record<string, number>;
+  by_category: Record<string, number>;
+}> {
+  const statusRows = await db
+    .select({
+      status: events.status,
+      count: count(),
+    })
+    .from(events)
+    .where(isNull(events.deletedAt))
+    .groupBy(events.status);
 
-  const categoryRows = await sql`
-    SELECT category, COUNT(*) as count
-    FROM events
-    WHERE deleted_at IS NULL
-    GROUP BY category
-    ORDER BY count DESC
-    LIMIT 10
-  `;
+  const categoryRows = await db
+    .select({
+      category: events.category,
+      count: count(),
+    })
+    .from(events)
+    .where(isNull(events.deletedAt))
+    .groupBy(events.category)
+    .orderBy(desc(count()))
+    .limit(10);
 
   const by_status: Record<string, number> = {};
   let total = 0;
   for (const row of statusRows) {
-    const r = row as Record<string, unknown>;
-    by_status[r.status as string] = Number(r.count);
-    total += Number(r.count);
+    by_status[row.status] = row.count;
+    total += row.count;
   }
 
   const by_category: Record<string, number> = {};
   for (const row of categoryRows) {
-    const r = row as Record<string, unknown>;
-    by_category[r.category as string] = Number(r.count);
+    by_category[row.category] = row.count;
   }
 
   return { total, by_status, by_category };
