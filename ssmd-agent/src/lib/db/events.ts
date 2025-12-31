@@ -2,7 +2,7 @@
  * Event database operations with upsert support (Drizzle ORM)
  */
 import { eq, isNull, desc, sql, inArray, notInArray, count } from "drizzle-orm";
-import type { Database } from "./client.ts";
+import { type Database, getRawSql } from "./client.ts";
 import { events, markets, type Event, type NewEvent } from "./schema.ts";
 import type { Event as ApiEvent } from "../types/event.ts";
 
@@ -90,18 +90,38 @@ export async function getExistingEventTickers(
 
 /**
  * Soft delete events that are no longer in the API response.
+ * Uses temp table approach to avoid PostgreSQL's 65534 parameter limit.
  */
 export async function softDeleteMissingEvents(
   db: Database,
   currentTickers: string[]
 ): Promise<number> {
-  const result = await db
-    .update(events)
-    .set({ deletedAt: sql`NOW()` })
-    .where(
-      sql`${notInArray(events.eventTicker, currentTickers)} AND ${isNull(events.deletedAt)}`
-    )
-    .returning({ eventTicker: events.eventTicker });
+  if (currentTickers.length === 0) {
+    return 0;
+  }
+
+  // Use raw SQL for temp table operations
+  const rawSql = getRawSql();
+
+  // Create temp table
+  await rawSql`CREATE TEMP TABLE IF NOT EXISTS temp_current_events (event_ticker TEXT PRIMARY KEY)`;
+  await rawSql`TRUNCATE temp_current_events`;
+
+  // Insert tickers in batches (10000 per batch to stay well under parameter limit)
+  const BATCH_SIZE = 10000;
+  for (let i = 0; i < currentTickers.length; i += BATCH_SIZE) {
+    const batch = currentTickers.slice(i, i + BATCH_SIZE);
+    await rawSql`INSERT INTO temp_current_events (event_ticker) VALUES ${rawSql(batch.map(t => [t]))} ON CONFLICT DO NOTHING`;
+  }
+
+  // Soft delete events not in temp table
+  const result = await rawSql`
+    UPDATE events
+    SET deleted_at = NOW()
+    WHERE deleted_at IS NULL
+      AND event_ticker NOT IN (SELECT event_ticker FROM temp_current_events)
+    RETURNING event_ticker
+  `;
 
   return result.length;
 }
