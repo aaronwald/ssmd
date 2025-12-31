@@ -1,5 +1,10 @@
 # ssmd-cli: TypeScript CLI for market data operations
-FROM denoland/deno:2.1.4
+# Uses cross-compilation to avoid QEMU emulation issues on ARM64
+
+# Build stage - always runs on native platform (amd64)
+FROM --platform=$BUILDPLATFORM denoland/deno:2.1.4 AS builder
+
+ARG TARGETPLATFORM
 
 WORKDIR /app
 
@@ -10,12 +15,28 @@ COPY src/ ./src/
 # Cache dependencies first
 RUN deno cache src/cli/main.ts
 
-# Compile to standalone binary for easy distribution
-RUN deno compile --allow-net --allow-env --allow-read --allow-write --allow-run \
-    --output /usr/local/bin/ssmd src/cli/main.ts
+# Cross-compile for target platform (avoids QEMU illegal instruction issues)
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+      deno compile --target aarch64-unknown-linux-gnu \
+        --allow-net --allow-env --allow-read --allow-write --allow-run \
+        --output /app/ssmd src/cli/main.ts; \
+    else \
+      deno compile --target x86_64-unknown-linux-gnu \
+        --allow-net --allow-env --allow-read --allow-write --allow-run \
+        --output /app/ssmd src/cli/main.ts; \
+    fi
+
+# Runtime stage - minimal image with just the compiled binary
+FROM debian:bookworm-slim
+
+# Install CA certificates for HTTPS
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Copy compiled binary
+COPY --from=builder /app/ssmd /usr/local/bin/ssmd
 
 # Create non-root user for security
+RUN useradd -m deno
 USER deno
 
-# Set up the CLI entrypoint (can use either compiled binary or deno run)
 ENTRYPOINT ["/usr/local/bin/ssmd"]
