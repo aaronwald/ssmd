@@ -1,5 +1,5 @@
 /**
- * Market database operations with bulk upsert support (Drizzle ORM)
+ * Market database operations with upsert support (Drizzle ORM)
  */
 import { eq, isNull, desc, sql, notInArray, count } from "drizzle-orm";
 import type { Database } from "./client.ts";
@@ -7,10 +7,7 @@ import { markets, events, type Market, type NewMarket } from "./schema.ts";
 import { getExistingEventTickers } from "./events.ts";
 import type { Market as ApiMarket } from "../types/market.ts";
 
-const BATCH_SIZE = 500;
-
-export interface MarketBulkResult {
-  batches: number;
+export interface UpsertResult {
   total: number;
   skipped: number;
 }
@@ -37,74 +34,68 @@ function toNewMarket(m: ApiMarket): NewMarket {
 }
 
 /**
- * Bulk upsert markets with 500-row batches.
+ * Upsert a batch of markets. Caller handles batching (e.g., API pagination).
  * Pre-filters by existing events to avoid FK violations.
- * Accepts API market type (snake_case) and converts to Drizzle schema type.
  */
-export async function bulkUpsertMarkets(
+export async function upsertMarkets(
   db: Database,
   marketList: ApiMarket[]
-): Promise<MarketBulkResult> {
+): Promise<UpsertResult> {
   if (marketList.length === 0) {
-    return { batches: 0, total: 0, skipped: 0 };
+    return { total: 0, skipped: 0 };
   }
 
-  // Collect unique event tickers (using API field name)
+  // Collect unique event tickers
   const eventTickers = [...new Set(marketList.map((m) => m.event_ticker))];
 
   // Pre-filter by existing events (FK constraint)
   const existingEvents = await getExistingEventTickers(db, eventTickers);
-  console.log(
-    `  [DB] found ${existingEvents.size}/${eventTickers.length} parent events`
-  );
 
-  // Filter markets to only those with existing parent events (using API field name)
+  // Filter markets to only those with existing parent events
   const validMarkets = marketList.filter((m) => existingEvents.has(m.event_ticker));
   const skipped = marketList.length - validMarkets.length;
 
-  if (skipped > 0) {
-    console.log(`  [DB] skipping ${skipped} markets with missing events`);
-  }
-
   if (validMarkets.length === 0) {
-    return { batches: 0, total: 0, skipped };
+    return { total: 0, skipped };
   }
 
-  let batches = 0;
+  const drizzleMarkets = validMarkets.map(toNewMarket);
 
-  for (let i = 0; i < validMarkets.length; i += BATCH_SIZE) {
-    const batch = validMarkets.slice(i, i + BATCH_SIZE);
-    // Convert API types to Drizzle schema types
-    const drizzleBatch = batch.map(toNewMarket);
+  await db
+    .insert(markets)
+    .values(drizzleMarkets)
+    .onConflictDoUpdate({
+      target: markets.ticker,
+      set: {
+        eventTicker: sql`excluded.event_ticker`,
+        title: sql`excluded.title`,
+        status: sql`excluded.status`,
+        closeTime: sql`excluded.close_time`,
+        yesBid: sql`excluded.yes_bid`,
+        yesAsk: sql`excluded.yes_ask`,
+        noBid: sql`excluded.no_bid`,
+        noAsk: sql`excluded.no_ask`,
+        lastPrice: sql`excluded.last_price`,
+        volume: sql`excluded.volume`,
+        volume24h: sql`excluded.volume_24h`,
+        openInterest: sql`excluded.open_interest`,
+        updatedAt: sql`NOW()`,
+        deletedAt: sql`NULL`,
+      },
+    });
 
-    await db
-      .insert(markets)
-      .values(drizzleBatch)
-      .onConflictDoUpdate({
-        target: markets.ticker,
-        set: {
-          eventTicker: sql`excluded.event_ticker`,
-          title: sql`excluded.title`,
-          status: sql`excluded.status`,
-          closeTime: sql`excluded.close_time`,
-          yesBid: sql`excluded.yes_bid`,
-          yesAsk: sql`excluded.yes_ask`,
-          noBid: sql`excluded.no_bid`,
-          noAsk: sql`excluded.no_ask`,
-          lastPrice: sql`excluded.last_price`,
-          volume: sql`excluded.volume`,
-          volume24h: sql`excluded.volume_24h`,
-          openInterest: sql`excluded.open_interest`,
-          updatedAt: sql`NOW()`,
-          deletedAt: sql`NULL`,
-        },
-      });
+  return { total: validMarkets.length, skipped };
+}
 
-    batches++;
-    console.log(`  [DB] markets batch ${batches}: ${batch.length} upserted`);
-  }
-
-  return { batches, total: validMarkets.length, skipped };
+/**
+ * @deprecated Use upsertMarkets instead. This wrapper exists for backward compatibility.
+ */
+export async function bulkUpsertMarkets(
+  db: Database,
+  marketList: ApiMarket[]
+): Promise<{ batches: number; total: number; skipped: number }> {
+  const result = await upsertMarkets(db, marketList);
+  return { batches: 1, ...result };
 }
 
 /**

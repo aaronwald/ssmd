@@ -2295,6 +2295,7 @@ dependencies = [
  "async-nats",
  "chrono",
  "clap",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
