@@ -3,12 +3,9 @@ FROM denoland/deno:2.1.4
 
 WORKDIR /app
 
-# Copy only necessary files for the CLI
+# Copy source files
 COPY deno.json ./
-COPY src/cli/ ./src/cli/
-COPY src/lib/ ./src/lib/
-COPY src/backtest/ ./src/backtest/
-COPY src/state/ ./src/state/
+COPY src/ ./src/
 
 # Cache dependencies first
 RUN deno cache src/cli/main.ts
