@@ -1,0 +1,26 @@
+[package]
+name = "ssmd-cdc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "PostgreSQL CDC to NATS publisher for SSMD"
+
+[[bin]]
+name = "ssmd-cdc"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+async-nats = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
