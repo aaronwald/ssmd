@@ -19,22 +19,24 @@ export {
 
 // Event operations
 export {
-  bulkUpsertEvents,
+  upsertEvents,
+  bulkUpsertEvents,  // deprecated
   getExistingEventTickers,
   softDeleteMissingEvents,
   listEvents,
   getEvent,
   getEventStats,
-  type BulkResult,
 } from "./events.ts";
 
 // Market operations
 export {
-  bulkUpsertMarkets,
+  upsertMarkets,
+  bulkUpsertMarkets,  // deprecated
   softDeleteMissingMarkets,
   listMarkets,
   getMarket,
   getMarketStats,
+  type UpsertResult,
 } from "./markets.ts";
 
 // Fee operations

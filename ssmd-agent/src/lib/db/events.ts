@@ -1,17 +1,10 @@
 /**
- * Event database operations with bulk upsert support (Drizzle ORM)
+ * Event database operations with upsert support (Drizzle ORM)
  */
 import { eq, isNull, desc, sql, inArray, notInArray, count } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import { events, markets, type Event, type NewEvent } from "./schema.ts";
 import type { Event as ApiEvent } from "../types/event.ts";
-
-const BATCH_SIZE = 500;
-
-export interface BulkResult {
-  batches: number;
-  total: number;
-}
 
 /**
  * Convert API event type (snake_case) to Drizzle schema type (camelCase)
@@ -29,47 +22,48 @@ function toNewEvent(e: ApiEvent): NewEvent {
 }
 
 /**
- * Bulk upsert events with 500-row batches for performance.
- * Matches Go implementation's performance characteristics.
- * Accepts API event type (snake_case) and converts to Drizzle schema type.
+ * Upsert a batch of events. Caller handles batching (e.g., API pagination).
+ * Uses ON CONFLICT DO UPDATE to handle existing records.
+ */
+export async function upsertEvents(
+  db: Database,
+  eventList: ApiEvent[]
+): Promise<number> {
+  if (eventList.length === 0) {
+    return 0;
+  }
+
+  const drizzleEvents = eventList.map(toNewEvent);
+
+  await db
+    .insert(events)
+    .values(drizzleEvents)
+    .onConflictDoUpdate({
+      target: events.eventTicker,
+      set: {
+        title: sql`excluded.title`,
+        category: sql`excluded.category`,
+        seriesTicker: sql`excluded.series_ticker`,
+        strikeDate: sql`excluded.strike_date`,
+        mutuallyExclusive: sql`excluded.mutually_exclusive`,
+        status: sql`excluded.status`,
+        updatedAt: sql`NOW()`,
+        deletedAt: sql`NULL`,
+      },
+    });
+
+  return eventList.length;
+}
+
+/**
+ * @deprecated Use upsertEvents instead. This wrapper exists for backward compatibility.
  */
 export async function bulkUpsertEvents(
   db: Database,
   eventList: ApiEvent[]
-): Promise<BulkResult> {
-  if (eventList.length === 0) {
-    return { batches: 0, total: 0 };
-  }
-
-  let batches = 0;
-
-  for (let i = 0; i < eventList.length; i += BATCH_SIZE) {
-    const batch = eventList.slice(i, i + BATCH_SIZE);
-    // Convert API types to Drizzle schema types
-    const drizzleBatch = batch.map(toNewEvent);
-
-    await db
-      .insert(events)
-      .values(drizzleBatch)
-      .onConflictDoUpdate({
-        target: events.eventTicker,
-        set: {
-          title: sql`excluded.title`,
-          category: sql`excluded.category`,
-          seriesTicker: sql`excluded.series_ticker`,
-          strikeDate: sql`excluded.strike_date`,
-          mutuallyExclusive: sql`excluded.mutually_exclusive`,
-          status: sql`excluded.status`,
-          updatedAt: sql`NOW()`,
-          deletedAt: sql`NULL`,
-        },
-      });
-
-    batches++;
-    console.log(`  [DB] events batch ${batches}: ${batch.length} upserted`);
-  }
-
-  return { batches, total: eventList.length };
+): Promise<{ batches: number; total: number }> {
+  const total = await upsertEvents(db, eventList);
+  return { batches: 1, total };
 }
 
 /**
