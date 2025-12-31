@@ -10,16 +10,11 @@ pub struct ReplicationSlot {
 }
 
 impl ReplicationSlot {
-    /// Connect to PostgreSQL with replication enabled
+    /// Connect to PostgreSQL for logical replication slot polling
     pub async fn connect(database_url: &str, slot_name: &str, publication_name: &str) -> Result<Self> {
-        // Add replication=database parameter for logical replication
-        let url = if database_url.contains('?') {
-            format!("{}&replication=database", database_url)
-        } else {
-            format!("{}?replication=database", database_url)
-        };
-
-        let (client, connection) = tokio_postgres::connect(&url, NoTls).await?;
+        // Note: We don't need replication=database since we poll via pg_logical_slot_get_changes
+        // rather than using the streaming replication protocol
+        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
 
         // Spawn connection handler
         tokio::spawn(async move {
