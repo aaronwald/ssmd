@@ -1,0 +1,54 @@
+import { getRedis } from "../redis/mod.ts";
+
+export const RATE_LIMITS = {
+  standard: 120,  // requests per minute
+  elevated: 1200, // requests per minute
+} as const;
+
+const WINDOW_SECONDS = 60;
+
+/**
+ * Get rate limit for a tier.
+ */
+export function getRateLimitForTier(tier: string): number {
+  return RATE_LIMITS[tier as keyof typeof RATE_LIMITS] ?? RATE_LIMITS.standard;
+}
+
+/**
+ * Check if request is within rate limit.
+ * Uses Redis sorted sets for sliding window.
+ * Returns { allowed: boolean, remaining: number, resetAt: number }
+ */
+export async function checkRateLimit(
+  keyPrefix: string,
+  tier: string
+): Promise<{ allowed: boolean; remaining: number; resetAt: number }> {
+  const redis = await getRedis();
+  const maxRequests = getRateLimitForTier(tier);
+  const now = Date.now();
+  const windowStart = now - WINDOW_SECONDS * 1000;
+  const key = `ratelimit:${keyPrefix}`;
+
+  // Use pipeline for atomic operations
+  const pipeline = redis.pipeline();
+  pipeline.zremrangebyscore(key, 0, windowStart); // Remove old entries
+  pipeline.zadd(key, { [now.toString()]: now });  // Add current request
+  pipeline.zcard(key);                             // Count requests in window
+  pipeline.expire(key, WINDOW_SECONDS);            // Set TTL
+  const results = await pipeline.flush();
+
+  const requestCount = results[2] as number;
+  const allowed = requestCount <= maxRequests;
+  const remaining = Math.max(0, maxRequests - requestCount);
+  const resetAt = now + WINDOW_SECONDS * 1000;
+
+  return { allowed, remaining, resetAt };
+}
+
+/**
+ * Increment rate limit hit counter (for metrics).
+ */
+export async function incrementRateLimitHits(keyPrefix: string): Promise<void> {
+  const redis = await getRedis();
+  await redis.incr(`ratelimit_hits:${keyPrefix}`);
+}
