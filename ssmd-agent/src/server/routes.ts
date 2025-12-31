@@ -1,6 +1,7 @@
 // HTTP server routes
 import { listDatasets } from "./handlers/datasets.ts";
 import { globalRegistry } from "./metrics.ts";
+import { validateApiKey, hasScope } from "./auth.ts";
 import {
   listEvents,
   getEvent,
@@ -18,9 +19,14 @@ import {
 export const API_VERSION = "1.0.0";
 
 export interface RouteContext {
-  apiKey: string;
   dataDir: string;
   db: Database;
+}
+
+export interface AuthInfo {
+  userId: string;
+  userEmail: string;
+  scopes: string[];
 }
 
 type Handler = (req: Request, ctx: RouteContext) => Promise<Response>;
@@ -30,6 +36,7 @@ interface Route {
   pattern: URLPattern;
   handler: Handler;
   requiresAuth: boolean;
+  requiredScope?: string;
 }
 
 const routes: Route[] = [];
@@ -38,13 +45,15 @@ function route(
   method: string,
   path: string,
   handler: Handler,
-  requiresAuth = true
+  requiresAuth = true,
+  requiredScope?: string
 ): void {
   routes.push({
     method,
     pattern: new URLPattern({ pathname: path }),
     handler,
     requiresAuth,
+    requiredScope,
   });
 }
 
@@ -74,7 +83,7 @@ route("GET", "/datasets", async (req, ctx) => {
 
   const datasets = await listDatasets(ctx.dataDir, feedFilter, fromDate, toDate);
   return json({ datasets });
-});
+}, true, "datasets:read");
 
 // Events endpoints
 route("GET", "/v1/events", async (req, ctx) => {
@@ -86,7 +95,7 @@ route("GET", "/v1/events", async (req, ctx) => {
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   });
   return json({ events });
-});
+}, true, "secmaster:read");
 
 route("GET", "/v1/events/:ticker", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;
@@ -95,7 +104,7 @@ route("GET", "/v1/events/:ticker", async (req, ctx) => {
     return json({ error: "Event not found" }, 404);
   }
   return json(event);
-});
+}, true, "secmaster:read");
 
 // Markets endpoints
 route("GET", "/v1/markets", async (req, ctx) => {
@@ -110,7 +119,7 @@ route("GET", "/v1/markets", async (req, ctx) => {
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   });
   return json({ markets });
-});
+}, true, "secmaster:read");
 
 route("GET", "/v1/markets/:ticker", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;
@@ -119,7 +128,7 @@ route("GET", "/v1/markets/:ticker", async (req, ctx) => {
     return json({ error: "Market not found" }, 404);
   }
   return json(market);
-});
+}, true, "secmaster:read");
 
 // Secmaster stats endpoint (combined events + markets)
 route("GET", "/v1/secmaster/stats", async (_req, ctx) => {
@@ -131,7 +140,7 @@ route("GET", "/v1/secmaster/stats", async (_req, ctx) => {
     events: eventStats,
     markets: marketStats,
   });
-});
+}, true, "secmaster:read");
 
 // Fees endpoints
 route("GET", "/v1/fees", async (req, ctx) => {
@@ -139,12 +148,12 @@ route("GET", "/v1/fees", async (req, ctx) => {
   const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100;
   const fees = await listCurrentFees(ctx.db, { limit });
   return json({ fees });
-});
+}, true, "secmaster:read");
 
 route("GET", "/v1/fees/stats", async (_req, ctx) => {
   const stats = await getFeeStats(ctx.db);
   return json(stats);
-});
+}, true, "secmaster:read");
 
 route("GET", "/v1/fees/:series", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;
@@ -159,7 +168,7 @@ route("GET", "/v1/fees/:series", async (req, ctx) => {
     return json({ error: `No fee schedule found for ${params.series}` }, 404);
   }
   return json(fee);
-});
+}, true, "secmaster:read");
 
 // Helper to create JSON response
 function json(data: unknown, status = 200): Response {
@@ -174,25 +183,55 @@ export function createRouter(ctx: RouteContext): (req: Request) => Promise<Respo
   return async (req: Request) => {
     const url = new URL(req.url);
 
-    for (const route of routes) {
-      if (req.method !== route.method) continue;
+    for (const r of routes) {
+      if (req.method !== r.method) continue;
 
-      const match = route.pattern.exec(url);
+      const match = r.pattern.exec(url);
       if (!match) continue;
 
       // Check auth if required
-      if (route.requiresAuth) {
-        const apiKey = req.headers.get("X-API-Key");
-        if (!apiKey || apiKey !== ctx.apiKey) {
-          return json({ error: "Unauthorized" }, 401);
+      if (r.requiresAuth) {
+        const authResult = await validateApiKey(
+          req.headers.get("X-API-Key"),
+          ctx.db
+        );
+
+        if (!authResult.valid) {
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+          };
+
+          if (authResult.rateLimitRemaining !== undefined) {
+            headers["X-RateLimit-Remaining"] = authResult.rateLimitRemaining.toString();
+            headers["X-RateLimit-Reset"] = authResult.rateLimitResetAt!.toString();
+          }
+
+          return new Response(
+            JSON.stringify({ error: authResult.error }),
+            { status: authResult.status!, headers }
+          );
         }
+
+        // Check scope
+        if (r.requiredScope && !hasScope(authResult.scopes!, r.requiredScope)) {
+          return json({ error: "Insufficient permissions" }, 403);
+        }
+
+        // Attach auth info to request for handlers that need it
+        Object.defineProperty(req, "auth", {
+          value: {
+            userId: authResult.userId,
+            userEmail: authResult.userEmail,
+            scopes: authResult.scopes,
+          } as AuthInfo,
+        });
       }
 
       // Add path params to request
       const params = match.pathname.groups;
       Object.defineProperty(req, "params", { value: params });
 
-      return route.handler(req, ctx);
+      return r.handler(req, ctx);
     }
 
     return json({ error: "Not found" }, 404);
