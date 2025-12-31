@@ -25,7 +25,10 @@ export function getDb(): Database {
       idle_timeout: 30,
       connect_timeout: 10,
     });
-    db = drizzle(sql, { schema });
+    db = drizzle(sql, {
+      schema,
+      logger: Deno.env.get("DRIZZLE_LOG") === "true"
+    });
   }
   return db;
 }

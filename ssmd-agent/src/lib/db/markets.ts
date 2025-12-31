@@ -2,7 +2,7 @@
  * Market database operations with upsert support (Drizzle ORM)
  */
 import { eq, isNull, desc, sql, notInArray, count } from "drizzle-orm";
-import type { Database } from "./client.ts";
+import { type Database, getRawSql } from "./client.ts";
 import { markets, events, type Market, type NewMarket } from "./schema.ts";
 import { getExistingEventTickers } from "./events.ts";
 import type { Market as ApiMarket } from "../types/market.ts";
@@ -100,18 +100,38 @@ export async function bulkUpsertMarkets(
 
 /**
  * Soft delete markets that are no longer in the API response.
+ * Uses temp table approach to avoid PostgreSQL's 65534 parameter limit.
  */
 export async function softDeleteMissingMarkets(
   db: Database,
   currentTickers: string[]
 ): Promise<number> {
-  const result = await db
-    .update(markets)
-    .set({ deletedAt: sql`NOW()` })
-    .where(
-      sql`${notInArray(markets.ticker, currentTickers)} AND ${isNull(markets.deletedAt)}`
-    )
-    .returning({ ticker: markets.ticker });
+  if (currentTickers.length === 0) {
+    return 0;
+  }
+
+  // Use raw SQL for temp table operations
+  const rawSql = getRawSql();
+
+  // Create temp table
+  await rawSql`CREATE TEMP TABLE IF NOT EXISTS temp_current_markets (ticker TEXT PRIMARY KEY)`;
+  await rawSql`TRUNCATE temp_current_markets`;
+
+  // Insert tickers in batches (10000 per batch to stay well under parameter limit)
+  const BATCH_SIZE = 10000;
+  for (let i = 0; i < currentTickers.length; i += BATCH_SIZE) {
+    const batch = currentTickers.slice(i, i + BATCH_SIZE);
+    await rawSql`INSERT INTO temp_current_markets (ticker) VALUES ${rawSql(batch.map(t => [t]))} ON CONFLICT DO NOTHING`;
+  }
+
+  // Soft delete markets not in temp table
+  const result = await rawSql`
+    UPDATE markets
+    SET deleted_at = NOW()
+    WHERE deleted_at IS NULL
+      AND ticker NOT IN (SELECT ticker FROM temp_current_markets)
+    RETURNING ticker
+  `;
 
   return result.length;
 }
