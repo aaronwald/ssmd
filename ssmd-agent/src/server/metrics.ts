@@ -200,3 +200,23 @@ export const datasetsScanned = globalRegistry.counter(
   "Total datasets scanned",
   ["feed"]
 );
+
+// API key and rate limit metrics
+export const apiRequestsTotal = globalRegistry.counter(
+  "ssmd_api_requests_total",
+  "Total API requests by key prefix",
+  ["key_prefix", "method", "path", "status"]
+);
+
+export const apiRateLimitHitsTotal = globalRegistry.counter(
+  "ssmd_api_rate_limit_hits_total",
+  "Total rate limit hits by key prefix",
+  ["key_prefix"]
+);
+
+export const apiRequestDuration = globalRegistry.histogram(
+  "ssmd_api_request_duration_seconds",
+  "API request duration in seconds",
+  ["method", "path"],
+  [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+);
