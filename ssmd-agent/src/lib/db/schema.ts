@@ -69,6 +69,21 @@ export const seriesFees = pgTable("series_fees", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
+// API keys table for multi-user authentication
+export const apiKeys = pgTable("api_keys", {
+  id: varchar("id", { length: 36 }).primaryKey(), // UUID as string
+  userId: varchar("user_id", { length: 255 }).notNull(),
+  userEmail: varchar("user_email", { length: 255 }).notNull(),
+  keyPrefix: varchar("key_prefix", { length: 30 }).notNull().unique(),
+  keyHash: varchar("key_hash", { length: 64 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  scopes: text("scopes").array().notNull(),
+  rateLimitTier: varchar("rate_limit_tier", { length: 20 }).notNull().default("standard"),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+});
+
 // Inferred types for select/insert
 export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
@@ -76,3 +91,5 @@ export type Market = typeof markets.$inferSelect;
 export type NewMarket = typeof markets.$inferInsert;
 export type SeriesFee = typeof seriesFees.$inferSelect;
 export type NewSeriesFee = typeof seriesFees.$inferInsert;
+export type ApiKey = typeof apiKeys.$inferSelect;
+export type NewApiKey = typeof apiKeys.$inferInsert;
