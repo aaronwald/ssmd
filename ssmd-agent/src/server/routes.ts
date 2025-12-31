@@ -13,8 +13,14 @@ import {
   getFeeAsOf,
   listCurrentFees,
   getFeeStats,
+  getApiKeyByPrefix,
+  createApiKey,
+  listApiKeysByUser,
+  listAllApiKeys,
+  revokeApiKey,
   type Database,
 } from "../lib/db/mod.ts";
+import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
 
 export const API_VERSION = "1.0.0";
 
@@ -168,6 +174,108 @@ route("GET", "/v1/fees/:series", async (req, ctx) => {
     return json({ error: `No fee schedule found for ${params.series}` }, 404);
   }
   return json(fee);
+}, true, "secmaster:read");
+
+// Key management endpoints
+const VALID_SCOPES = [
+  "secmaster:read", "datasets:read", "signals:read", "signals:write",
+  "admin:read", "admin:write",
+];
+
+route("POST", "/v1/keys", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const body = await req.json() as {
+    name: string;
+    scopes: string[];
+    rateLimitTier?: string;
+    environment?: "live" | "test";
+  };
+
+  // Validate required fields
+  if (!body.name || !body.scopes || body.scopes.length === 0) {
+    return json({ error: "name and scopes are required" }, 400);
+  }
+
+  // Validate scopes
+  for (const scope of body.scopes) {
+    if (!VALID_SCOPES.includes(scope)) {
+      return json({ error: `Invalid scope: ${scope}` }, 400);
+    }
+  }
+
+  const { fullKey, prefix, hash } = await generateApiKey(body.environment ?? "live");
+
+  const apiKey = await createApiKey(ctx.db, {
+    id: crypto.randomUUID(),
+    userId: auth.userId,
+    userEmail: auth.userEmail,
+    keyPrefix: prefix,
+    keyHash: hash,
+    name: body.name,
+    scopes: body.scopes,
+    rateLimitTier: body.rateLimitTier ?? "standard",
+  });
+
+  // Return full key ONCE
+  return json({
+    key: fullKey,
+    prefix: apiKey.keyPrefix,
+    name: apiKey.name,
+    scopes: apiKey.scopes,
+    rateLimitTier: apiKey.rateLimitTier,
+    createdAt: apiKey.createdAt,
+  }, 201);
+}, true, "admin:write");
+
+route("GET", "/v1/keys", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+
+  let keys;
+  if (hasScope(auth.scopes, "admin:read")) {
+    keys = await listAllApiKeys(ctx.db);
+  } else {
+    keys = await listApiKeysByUser(ctx.db, auth.userId);
+  }
+
+  // Never return the hash
+  return json({
+    keys: keys.map((k) => ({
+      prefix: k.keyPrefix,
+      name: k.name,
+      userId: k.userId,
+      userEmail: k.userEmail,
+      scopes: k.scopes,
+      rateLimitTier: k.rateLimitTier,
+      lastUsedAt: k.lastUsedAt,
+      createdAt: k.createdAt,
+    })),
+  });
+}, true, "secmaster:read");
+
+route("DELETE", "/v1/keys/:prefix", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const params = (req as Request & { params: Record<string, string> }).params;
+
+  // Check if key exists
+  const key = await getApiKeyByPrefix(ctx.db, params.prefix);
+  if (!key) {
+    return json({ error: "Key not found" }, 404);
+  }
+
+  // Check ownership or admin
+  const isOwner = key.userId === auth.userId;
+  const isAdmin = hasScope(auth.scopes, "admin:write");
+
+  if (!isOwner && !isAdmin) {
+    return json({ error: "Forbidden" }, 403);
+  }
+
+  const revoked = await revokeApiKey(ctx.db, params.prefix);
+  if (revoked) {
+    await invalidateKeyCache(params.prefix);
+  }
+
+  return json({ revoked });
 }, true, "secmaster:read");
 
 // Helper to create JSON response
