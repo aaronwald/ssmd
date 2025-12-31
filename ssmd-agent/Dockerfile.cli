@@ -8,6 +8,7 @@ COPY deno.json ./
 COPY src/cli/ ./src/cli/
 COPY src/lib/ ./src/lib/
 COPY src/backtest/ ./src/backtest/
+COPY src/state/ ./src/state/
 
 # Cache dependencies first
 RUN deno cache src/cli/main.ts
