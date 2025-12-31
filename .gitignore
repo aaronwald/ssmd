@@ -12,3 +12,6 @@ target/
 
 # Deno
 .deno/
+
+# Git worktrees
+.worktrees/
