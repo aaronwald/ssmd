@@ -16,4 +16,12 @@ pub enum Error {
     /// Configuration error
     #[error("Configuration error: {0}")]
     Config(String),
+
+    /// JSON serialization/deserialization error
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    /// Replication error
+    #[error("Replication error: {0}")]
+    Replication(String),
 }
