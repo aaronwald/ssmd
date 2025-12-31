@@ -11,3 +11,10 @@ export {
   invalidateKeyCache,
   type CachedKeyInfo,
 } from "./cache.ts";
+
+export {
+  checkRateLimit,
+  getRateLimitForTier,
+  incrementRateLimitHits,
+  RATE_LIMITS,
+} from "./ratelimit.ts";
