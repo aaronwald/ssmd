@@ -2,23 +2,19 @@ use redis::AsyncCommands;
 use crate::Result;
 
 pub struct RedisCache {
-    client: redis::Client,
+    conn: redis::aio::MultiplexedConnection,
 }
 
 impl RedisCache {
     pub async fn new(redis_url: &str) -> Result<Self> {
         let client = redis::Client::open(redis_url)?;
+        let mut conn = client.get_multiplexed_async_connection().await?;
 
         // Test connection
-        let mut conn = client.get_multiplexed_async_connection().await?;
         let _: String = redis::cmd("PING").query_async(&mut conn).await?;
 
         tracing::info!("Connected to Redis");
-        Ok(Self { client })
-    }
-
-    async fn conn(&self) -> Result<redis::aio::MultiplexedConnection> {
-        Ok(self.client.get_multiplexed_async_connection().await?)
+        Ok(Self { conn })
     }
 
     /// Set a secmaster record
@@ -26,7 +22,7 @@ impl RedisCache {
         let redis_key = format!("secmaster:{}:{}", table, key);
         let json = serde_json::to_string(value)?;
 
-        let mut conn = self.conn().await?;
+        let mut conn = self.conn.clone();
         conn.set::<_, _, ()>(&redis_key, &json).await?;
 
         tracing::debug!(key = %redis_key, "SET");
@@ -37,7 +33,7 @@ impl RedisCache {
     pub async fn delete(&self, table: &str, key: &str) -> Result<()> {
         let redis_key = format!("secmaster:{}:{}", table, key);
 
-        let mut conn = self.conn().await?;
+        let mut conn = self.conn.clone();
         conn.del::<_, ()>(&redis_key).await?;
 
         tracing::debug!(key = %redis_key, "DEL");
@@ -48,7 +44,7 @@ impl RedisCache {
     pub async fn count(&self, table: &str) -> Result<u64> {
         let pattern = format!("secmaster:{}:*", table);
 
-        let mut conn = self.conn().await?;
+        let mut conn = self.conn.clone();
         let keys: Vec<String> = redis::cmd("KEYS")
             .arg(&pattern)
             .query_async(&mut conn)
