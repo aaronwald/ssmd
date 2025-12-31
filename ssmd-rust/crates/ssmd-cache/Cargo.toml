@@ -1,0 +1,28 @@
+[package]
+name = "ssmd-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "NATS CDC to Redis cache updater for SSMD"
+
+[[bin]]
+name = "ssmd-cache"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+async-nats = { workspace = true }
+redis = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+futures-util = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

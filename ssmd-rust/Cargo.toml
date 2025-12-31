@@ -8,6 +8,7 @@ members = [
     "crates/schema",
     "crates/ssmd-archiver",
     "crates/ssmd-cdc",
+    "crates/ssmd-cache",
 ]
 
 [workspace.package]
