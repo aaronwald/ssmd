@@ -8,6 +8,7 @@ export {
   events,
   markets,
   seriesFees,
+  apiKeys,
   feeTypeEnum,
   type Event,
   type NewEvent,
@@ -15,6 +16,8 @@ export {
   type NewMarket,
   type SeriesFee,
   type NewSeriesFee,
+  type ApiKey,
+  type NewApiKey,
 } from "./schema.ts";
 
 // Event operations
@@ -47,3 +50,13 @@ export {
   listCurrentFees,
   getFeeStats,
 } from "./fees.ts";
+
+// API key operations
+export {
+  getApiKeyByPrefix,
+  createApiKey,
+  listApiKeysByUser,
+  listAllApiKeys,
+  revokeApiKey,
+  updateLastUsed,
+} from "./apikeys.ts";
