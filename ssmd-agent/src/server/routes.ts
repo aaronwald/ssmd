@@ -18,6 +18,8 @@ import {
   listApiKeysByUser,
   listAllApiKeys,
   revokeApiKey,
+  getAllSettings,
+  upsertSetting,
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
@@ -289,6 +291,24 @@ route("GET", "/v1/keys/usage", async (_req, ctx) => {
 
   return json({ usage });
 }, true, "admin:read");
+
+// Settings endpoints
+route("GET", "/v1/settings", async (_req, ctx) => {
+  const allSettings = await getAllSettings(ctx.db);
+  return json({ settings: allSettings });
+}, true, "admin:read");
+
+route("PUT", "/v1/settings/:key", async (req, ctx) => {
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const body = await req.json() as { value: unknown };
+
+  if (body.value === undefined) {
+    return json({ error: "value is required" }, 400);
+  }
+
+  const setting = await upsertSetting(ctx.db, params.key, body.value);
+  return json(setting);
+}, true, "admin:write");
 
 // Helper to create JSON response
 function json(data: unknown, status = 200): Response {

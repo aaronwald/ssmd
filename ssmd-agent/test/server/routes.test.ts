@@ -91,3 +91,21 @@ Deno.test("GET /unknown returns 404", async () => {
 
   assertEquals(res.status, 404);
 });
+
+Deno.test("GET /v1/settings returns 401 without API key", async () => {
+  const router = createTestRouter();
+  const req = new Request("http://localhost/v1/settings");
+  const res = await router(req);
+  assertEquals(res.status, 401);
+});
+
+Deno.test("PUT /v1/settings/:key returns 401 without API key", async () => {
+  const router = createTestRouter();
+  const req = new Request("http://localhost/v1/settings/test_key", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value: true }),
+  });
+  const res = await router(req);
+  assertEquals(res.status, 401);
+});
