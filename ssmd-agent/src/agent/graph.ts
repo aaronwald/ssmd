@@ -11,8 +11,9 @@ export async function createAgent() {
   // Use ChatOpenAI with custom baseURL pointing to ssmd-data proxy
   // This routes all LLM calls through our proxy for token tracking and guardrails
   const model = new ChatOpenAI({
-    model: config.model, // OpenRouter format: "anthropic/claude-sonnet-4-20250514"
+    model: config.model, // OpenRouter format: "anthropic/claude-sonnet-4"
     apiKey: config.apiKey,
+    streaming: false, // Disable streaming - our proxy expects JSON, not SSE chunks
     configuration: {
       baseURL: `${config.apiUrl}/v1`,
     },
