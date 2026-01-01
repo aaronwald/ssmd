@@ -9,6 +9,7 @@ export {
   markets,
   seriesFees,
   apiKeys,
+  settings,
   feeTypeEnum,
   type Event,
   type NewEvent,
@@ -18,6 +19,8 @@ export {
   type NewSeriesFee,
   type ApiKey,
   type NewApiKey,
+  type Setting,
+  type NewSetting,
 } from "./schema.ts";
 
 // Event operations

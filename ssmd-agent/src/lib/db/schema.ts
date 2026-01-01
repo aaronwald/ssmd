@@ -13,6 +13,7 @@ import {
   bigint,
   serial,
   numeric,
+  jsonb,
 } from "drizzle-orm/pg-core";
 
 // Fee type enum matching PostgreSQL
@@ -84,6 +85,13 @@ export const apiKeys = pgTable("api_keys", {
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
 
+// Settings table for key-value configuration (e.g., guardrails)
+export const settings = pgTable("settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
 // Inferred types for select/insert
 export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
@@ -93,3 +101,5 @@ export type SeriesFee = typeof seriesFees.$inferSelect;
 export type NewSeriesFee = typeof seriesFees.$inferInsert;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
+export type Setting = typeof settings.$inferSelect;
+export type NewSetting = typeof settings.$inferInsert;
