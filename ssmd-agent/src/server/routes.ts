@@ -23,7 +23,7 @@ import {
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
-import { getUsageForPrefix, trackTokenUsage } from "../lib/auth/ratelimit.ts";
+import { getUsageForPrefix, getTokenUsage, trackTokenUsage } from "../lib/auth/ratelimit.ts";
 import { getGuardrailSettings, applyGuardrails } from "../lib/guardrails/mod.ts";
 
 export const API_VERSION = "1.0.0";
@@ -286,12 +286,18 @@ route("DELETE", "/v1/keys/:prefix", async (req, ctx) => {
   return json({ revoked });
 }, true, "secmaster:read");
 
-// Usage stats endpoint - get rate limit usage for all keys
+// Usage stats endpoint - get rate limit and token usage for all keys
 route("GET", "/v1/keys/usage", async (_req, ctx) => {
   const keys = await listAllApiKeys(ctx.db);
 
   const usage = await Promise.all(
-    keys.map((k) => getUsageForPrefix(k.keyPrefix, k.rateLimitTier))
+    keys.map(async (k) => {
+      const [rateLimit, tokens] = await Promise.all([
+        getUsageForPrefix(k.keyPrefix, k.rateLimitTier),
+        getTokenUsage(k.keyPrefix),
+      ]);
+      return { ...rateLimit, ...tokens };
+    })
   );
 
   return json({ usage });
