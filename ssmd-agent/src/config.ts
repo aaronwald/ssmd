@@ -6,8 +6,8 @@ export const EXPECTED_API_VERSION = "1.0.0";
 export const config = {
   apiUrl: Deno.env.get("SSMD_API_URL") ?? "http://localhost:8080",
   apiKey: Deno.env.get("SSMD_DATA_API_KEY") ?? "",
-  anthropicApiKey: Deno.env.get("ANTHROPIC_API_KEY") ?? "",
-  model: Deno.env.get("SSMD_MODEL") ?? "claude-sonnet-4-20250514",
+  // Model name in OpenRouter format (provider/model)
+  model: Deno.env.get("SSMD_MODEL") ?? "anthropic/claude-sonnet-4-20250514",
   skillsPath: Deno.env.get("SSMD_SKILLS_PATH") ?? "./skills",
   promptsPath: Deno.env.get("SSMD_PROMPTS_PATH") ?? "./prompts",
   signalsPath: Deno.env.get("SSMD_SIGNALS_PATH") ?? "./signals",
@@ -21,9 +21,8 @@ export function validateConfig(): void {
   if (!config.apiKey) {
     throw new Error("SSMD_DATA_API_KEY required");
   }
-  if (!config.anthropicApiKey) {
-    throw new Error("ANTHROPIC_API_KEY required");
-  }
+  // Note: anthropicApiKey no longer required - all LLM calls go through
+  // the ssmd-data proxy which handles authentication with OpenRouter
 }
 
 /**
