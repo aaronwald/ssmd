@@ -24,7 +24,7 @@ import {
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
 import { getUsageForPrefix, getTokenUsage, trackTokenUsage } from "../lib/auth/ratelimit.ts";
-import { getGuardrailSettings, applyGuardrails } from "../lib/guardrails/mod.ts";
+import { getGuardrailSettings, applyGuardrails, checkModelAllowed } from "../lib/guardrails/mod.ts";
 
 export const API_VERSION = "1.0.0";
 
@@ -348,6 +348,12 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
   }
   if (!Array.isArray(body.messages)) {
     return json({ error: "messages must be an array" }, 400);
+  }
+
+  // Check model allowlist
+  const modelCheck = checkModelAllowed(body.model);
+  if (!modelCheck.allowed) {
+    return json({ error: modelCheck.reason }, 403);
   }
 
   // Apply guardrails
