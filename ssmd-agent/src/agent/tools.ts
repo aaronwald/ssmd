@@ -40,9 +40,9 @@ export const listDatasets = tool(
     name: "list_datasets",
     description: "List available market data datasets. Returns feed, date, record count, ticker count.",
     schema: z.object({
-      feed: z.string().optional().describe("Filter by feed name (e.g., 'kalshi')"),
-      from: z.string().optional().describe("Start date YYYY-MM-DD"),
-      to: z.string().optional().describe("End date YYYY-MM-DD"),
+      feed: z.string().optional().nullable().describe("Filter by feed name (e.g., 'kalshi')"),
+      from: z.string().optional().nullable().describe("Start date YYYY-MM-DD"),
+      to: z.string().optional().nullable().describe("End date YYYY-MM-DD"),
     }),
   }
 );
@@ -63,9 +63,9 @@ export const sampleData = tool(
     schema: z.object({
       feed: z.string().describe("Feed name (e.g., 'kalshi')"),
       date: z.string().describe("Date YYYY-MM-DD"),
-      ticker: z.string().optional().describe("Filter by ticker"),
-      type: z.string().optional().describe("Message type: trade, ticker, orderbook"),
-      limit: z.number().optional().describe("Max records (default 10)"),
+      ticker: z.string().optional().nullable().describe("Filter by ticker"),
+      type: z.string().optional().nullable().describe("Message type: trade, ticker, orderbook"),
+      limit: z.number().optional().nullable().describe("Max records (default 10)"),
     }),
   }
 );
@@ -178,7 +178,7 @@ export const priceHistoryBuilder = tool(
     description: "Process trade records through PriceHistory builder. Returns rolling window stats: last, high, low, vwap, returns, volatility.",
     schema: z.object({
       records: z.array(z.any()).describe("Array of trade records from sample_data"),
-      windowSize: z.number().optional().describe("Number of trades in rolling window (default 100)"),
+      windowSize: z.number().optional().nullable().describe("Number of trades in rolling window (default 100)"),
     }),
   }
 );
@@ -215,7 +215,7 @@ export const volumeProfileBuilder = tool(
     description: "Process market records through VolumeProfile builder. Tracks contract and USD volume over a sliding time window.",
     schema: z.object({
       records: z.array(z.any()).describe("Array of market records from sample_data"),
-      windowMs: z.number().optional().describe("Time window in milliseconds (default 300000 = 5 min)"),
+      windowMs: z.number().optional().nullable().describe("Time window in milliseconds (default 300000 = 5 min)"),
     }),
   }
 );
@@ -315,12 +315,12 @@ export const listMarkets = tool(
     name: "list_markets",
     description: "List markets from secmaster with filters. Returns markets with event metadata.",
     schema: z.object({
-      category: z.string().optional().describe("Filter by category (e.g., 'Economics')"),
-      status: z.string().optional().describe("Filter by status: open, closed, settled"),
-      series: z.string().optional().describe("Filter by series ticker (e.g., 'INXD')"),
-      closing_before: z.string().optional().describe("ISO timestamp - markets closing before this time"),
-      closing_after: z.string().optional().describe("ISO timestamp - markets closing after this time"),
-      limit: z.number().optional().describe("Max results (default 100)"),
+      category: z.string().optional().nullable().describe("Filter by category (e.g., 'Economics')"),
+      status: z.string().optional().nullable().describe("Filter by status: open, closed, settled"),
+      series: z.string().optional().nullable().describe("Filter by series ticker (e.g., 'INXD')"),
+      closing_before: z.string().optional().nullable().describe("ISO timestamp - markets closing before this time"),
+      closing_after: z.string().optional().nullable().describe("ISO timestamp - markets closing after this time"),
+      limit: z.number().optional().nullable().describe("Max results (default 100)"),
     }),
   }
 );
@@ -350,7 +350,7 @@ export const getFees = tool(
     name: "get_fees",
     description: "Get fee schedule (maker/taker fees) for a tier.",
     schema: z.object({
-      tier: z.string().optional().describe("Fee tier (default: 'default')"),
+      tier: z.string().optional().nullable().describe("Fee tier (default: 'default')"),
     }),
   }
 );
@@ -370,10 +370,10 @@ export const listEvents = tool(
     name: "list_events",
     description: "List events from secmaster with market counts. Events are containers for related markets.",
     schema: z.object({
-      category: z.string().optional().describe("Filter by category (e.g., 'Economics')"),
-      status: z.string().optional().describe("Filter by status: open, closed, settled"),
-      series: z.string().optional().describe("Filter by series ticker (e.g., 'INXD')"),
-      limit: z.number().optional().describe("Max results (default 100)"),
+      category: z.string().optional().nullable().describe("Filter by category (e.g., 'Economics')"),
+      status: z.string().optional().nullable().describe("Filter by status: open, closed, settled"),
+      series: z.string().optional().nullable().describe("Filter by series ticker (e.g., 'INXD')"),
+      limit: z.number().optional().nullable().describe("Max results (default 100)"),
     }),
   }
 );
@@ -410,7 +410,7 @@ export const getFeeSchedule = tool(
         .describe("Series ticker, e.g., 'KXBTC' or 'INXD'"),
       as_of: z
         .string()
-        .optional()
+        .optional().nullable()
         .describe(
           "Point-in-time query (ISO timestamp), defaults to current schedule"
         ),
