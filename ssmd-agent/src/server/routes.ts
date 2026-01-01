@@ -382,6 +382,7 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
         ...body,
         messages,
         max_tokens: maxTokens,
+        stream: false, // Force non-streaming - we need JSON response, not SSE chunks
       }),
     });
   } catch (error) {
