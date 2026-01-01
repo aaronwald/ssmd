@@ -391,30 +391,21 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
   }
 
   // Parse response with error handling
-  let data: Record<string, unknown>;
+  // deno-lint-ignore no-explicit-any
+  let data: any;
   try {
     const text = await response.text();
-    console.log("OpenRouter response status:", response.status, "body length:", text.length);
-    // Log key fields for debugging
-    try {
-      const parsed = JSON.parse(text);
-      console.log("OpenRouter choices:", JSON.stringify(parsed.choices));
-      console.log("OpenRouter error:", JSON.stringify(parsed.error));
+    data = JSON.parse(text);
 
-      // Fix empty arguments: OpenRouter returns "" but OpenAI expects "{}"
-      if (parsed.choices?.[0]?.message?.tool_calls) {
-        for (const tc of parsed.choices[0].message.tool_calls) {
-          if (tc.function?.arguments === "") {
-            tc.function.arguments = "{}";
-          }
+    // Fix empty arguments: OpenRouter returns "" but OpenAI expects "{}"
+    if (data.choices?.[0]?.message?.tool_calls) {
+      for (const tc of data.choices[0].message.tool_calls) {
+        if (tc.function?.arguments === "") {
+          tc.function.arguments = "{}";
         }
       }
-      data = parsed;
-    } catch {
-      data = JSON.parse(text);
     }
-  } catch (error) {
-    console.error("OpenRouter response parse failed:", error);
+  } catch {
     return json({ error: "LLM service returned invalid response" }, 502);
   }
 
