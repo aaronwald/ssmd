@@ -21,6 +21,7 @@ import {
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
+import { getUsageForPrefix } from "../lib/auth/ratelimit.ts";
 
 export const API_VERSION = "1.0.0";
 
@@ -277,6 +278,17 @@ route("DELETE", "/v1/keys/:prefix", async (req, ctx) => {
 
   return json({ revoked });
 }, true, "secmaster:read");
+
+// Usage stats endpoint - get rate limit usage for all keys
+route("GET", "/v1/keys/usage", async (_req, ctx) => {
+  const keys = await listAllApiKeys(ctx.db);
+
+  const usage = await Promise.all(
+    keys.map((k) => getUsageForPrefix(k.keyPrefix, k.rateLimitTier))
+  );
+
+  return json({ usage });
+}, true, "admin:read");
 
 // Helper to create JSON response
 function json(data: unknown, status = 200): Response {
