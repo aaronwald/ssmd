@@ -20,6 +20,7 @@ export interface AuthResult {
   userId?: string;
   userEmail?: string;
   scopes?: string[];
+  keyPrefix?: string;
   rateLimitRemaining?: number;
   rateLimitResetAt?: number;
 }
@@ -97,6 +98,7 @@ export async function validateApiKey(
     userId: keyInfo.userId,
     userEmail: keyInfo.userEmail,
     scopes: keyInfo.scopes,
+    keyPrefix: prefix,
     rateLimitRemaining: rateLimit.remaining,
     rateLimitResetAt: rateLimit.resetAt,
   };

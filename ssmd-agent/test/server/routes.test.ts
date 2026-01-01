@@ -109,3 +109,14 @@ Deno.test("PUT /v1/settings/:key returns 401 without API key", async () => {
   const res = await router(req);
   assertEquals(res.status, 401);
 });
+
+Deno.test("POST /v1/chat/completions returns 401 without API key", async () => {
+  const router = createTestRouter();
+  const req = new Request("http://localhost/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "test", messages: [] }),
+  });
+  const res = await router(req);
+  assertEquals(res.status, 401);
+});
