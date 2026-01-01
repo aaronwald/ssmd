@@ -182,7 +182,7 @@ route("GET", "/v1/fees/:series", async (req, ctx) => {
 // Key management endpoints
 const VALID_SCOPES = [
   "secmaster:read", "datasets:read", "signals:read", "signals:write",
-  "admin:read", "admin:write",
+  "admin:read", "admin:write", "llm:chat",
 ];
 
 route("POST", "/v1/keys", async (req, ctx) => {
