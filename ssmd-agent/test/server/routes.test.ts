@@ -60,6 +60,18 @@ Deno.test("GET /datasets returns 401 with invalid API key format", async () => {
   assertEquals(body.error, "Invalid API key format");
 });
 
+Deno.test("GET /datasets returns 401 with invalid Bearer token format", async () => {
+  const router = createTestRouter();
+  const req = new Request("http://localhost/datasets", {
+    headers: { "Authorization": "Bearer invalid-key" },
+  });
+  const res = await router(req);
+
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertEquals(body.error, "Invalid API key format");
+});
+
 Deno.test("GET /v1/events returns 401 without valid API key", async () => {
   const router = createTestRouter();
   const req = new Request("http://localhost/v1/events");
