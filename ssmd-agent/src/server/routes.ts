@@ -398,9 +398,8 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
     // Log key fields for debugging
     try {
       const parsed = JSON.parse(text);
-      console.log("OpenRouter choices[0] keys:", Object.keys(parsed.choices?.[0] || {}));
-      console.log("OpenRouter message keys:", Object.keys(parsed.choices?.[0]?.message || {}));
-      console.log("OpenRouter content length:", parsed.choices?.[0]?.message?.content?.length ?? "NO CONTENT");
+      console.log("OpenRouter choices:", JSON.stringify(parsed.choices));
+      console.log("OpenRouter error:", JSON.stringify(parsed.error));
     } catch { /* ignore parse errors in debug */ }
     data = JSON.parse(text);
   } catch (error) {
