@@ -14,8 +14,12 @@ export async function createAgent() {
     model: config.model, // OpenRouter format: "anthropic/claude-sonnet-4"
     apiKey: config.apiKey,
     streaming: false, // Disable streaming - our proxy expects JSON, not SSE chunks
+    temperature: 0, // Explicit to avoid any defaults
     configuration: {
       baseURL: `${config.apiUrl}/v1`,
+      defaultHeaders: {
+        "HTTP-Referer": "https://ssmd.varshtat.com",
+      },
     },
   });
 

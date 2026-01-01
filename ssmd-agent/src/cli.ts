@@ -1,4 +1,5 @@
 // ssmd-agent/src/cli.ts
+import { parseArgs } from "jsr:@std/cli/parse-args";
 import { checkApiVersion, validateConfig } from "./config.ts";
 import { createAgent } from "./agent/graph.ts";
 import { EventLogger } from "./audit/events.ts";
@@ -7,6 +8,11 @@ interface TokenUsage {
   input: number;
   output: number;
 }
+
+const args = parseArgs(Deno.args, {
+  string: ["prompt", "p"],
+  alias: { p: "prompt" },
+});
 
 function formatArgs(input: unknown): string {
   if (typeof input === "object" && input !== null) {
@@ -61,10 +67,18 @@ async function main() {
   await logger.init();
   console.log(`[audit] ${logger.getLogFile()}`);
 
-  console.log("Type 'quit' to exit\n");
-
   const agent = await createAgent();
   const encoder = new TextEncoder();
+
+  // Single prompt mode: run once and exit
+  const singlePrompt = args.prompt;
+  if (singlePrompt) {
+    await runPrompt(agent, singlePrompt, logger, encoder);
+    await logger.close();
+    return;
+  }
+
+  console.log("Type 'quit' to exit\n");
 
   while (true) {
     const input = prompt("ssmd-agent>");
@@ -74,7 +88,17 @@ async function main() {
       break;
     }
 
-    try {
+    await runPrompt(agent, input, logger, encoder);
+  }
+}
+
+async function runPrompt(
+  agent: Awaited<ReturnType<typeof createAgent>>,
+  input: string,
+  logger: EventLogger,
+  encoder: TextEncoder
+) {
+  try {
       await logger.logEvent({ event: "user_input", data: { content: input } });
       const usage: TokenUsage = { input: 0, output: 0 };
 
@@ -134,9 +158,8 @@ async function main() {
         console.log(`\n[tokens] in: ${usage.input.toLocaleString()}, out: ${usage.output.toLocaleString()}`);
       }
       console.log("");
-    } catch (e) {
-      console.error(`\nError: ${(e as Error).message}\n`);
-    }
+  } catch (e) {
+    console.error(`\nError: ${(e as Error).message}\n`);
   }
 }
 
