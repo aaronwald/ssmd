@@ -11,6 +11,7 @@
   },
   "imports": {
     "@langchain/anthropic": "npm:@langchain/anthropic@^0.3",
+    "@langchain/openai": "npm:@langchain/openai@^0.3",
     "@langchain/langgraph": "npm:@langchain/langgraph@^0.2",
     "@langchain/core": "npm:@langchain/core@^0.3",
     "nats": "npm:nats@^2.29.3",
