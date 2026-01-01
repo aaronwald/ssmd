@@ -322,12 +322,27 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
   }
 
   const auth = (req as Request & { auth: AuthInfo }).auth;
-  const body = await req.json() as {
+
+  // Parse request body with error handling
+  let body: {
     model: string;
     messages: Array<{ role: string; content: string }>;
     max_tokens?: number;
     [key: string]: unknown;
   };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid JSON in request body" }, 400);
+  }
+
+  // Validate required fields
+  if (!body.model || typeof body.model !== "string") {
+    return json({ error: "model is required" }, 400);
+  }
+  if (!Array.isArray(body.messages)) {
+    return json({ error: "messages must be an array" }, 400);
+  }
 
   // Apply guardrails
   const settings = await getGuardrailSettings(ctx.db);
@@ -346,30 +361,48 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
     maxTokens = settings.maxTokens;
   }
 
-  // Forward to OpenRouter
-  const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://ssmd.varshtat.com",
-      "X-Title": "ssmd-agent",
-    },
-    body: JSON.stringify({
-      ...body,
-      messages,
-      max_tokens: maxTokens,
-    }),
-  });
-
-  const data = await response.json();
-
-  // Track token usage
-  if (data.usage) {
-    await trackTokenUsage(auth.keyPrefix, {
-      promptTokens: data.usage.prompt_tokens ?? 0,
-      completionTokens: data.usage.completion_tokens ?? 0,
+  // Forward to OpenRouter with error handling
+  let response: Response;
+  try {
+    response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://ssmd.varshtat.com",
+        "X-Title": "ssmd-agent",
+      },
+      body: JSON.stringify({
+        ...body,
+        messages,
+        max_tokens: maxTokens,
+      }),
     });
+  } catch (error) {
+    console.error("OpenRouter fetch failed:", error);
+    return json({ error: "LLM service unavailable" }, 503);
+  }
+
+  // Parse response with error handling
+  let data: Record<string, unknown>;
+  try {
+    data = await response.json();
+  } catch (error) {
+    console.error("OpenRouter response parse failed:", error);
+    return json({ error: "LLM service returned invalid response" }, 502);
+  }
+
+  // Track token usage (best effort - don't fail if tracking fails)
+  if (data.usage) {
+    try {
+      await trackTokenUsage(auth.keyPrefix, {
+        promptTokens: (data.usage as Record<string, number>).prompt_tokens ?? 0,
+        completionTokens: (data.usage as Record<string, number>).completion_tokens ?? 0,
+      });
+    } catch (error) {
+      console.error("Token usage tracking failed:", error);
+      // Continue anyway - don't fail the request
+    }
   }
 
   return new Response(JSON.stringify(data), {
