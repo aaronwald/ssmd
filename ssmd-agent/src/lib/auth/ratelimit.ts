@@ -52,3 +52,39 @@ export async function incrementRateLimitHits(keyPrefix: string): Promise<void> {
   const redis = await getRedis();
   await redis.incr(`ratelimit_hits:${keyPrefix}`);
 }
+
+/**
+ * Get usage stats for a key prefix.
+ * Returns current request count in window and total rate limit hits.
+ */
+export async function getUsageForPrefix(
+  keyPrefix: string,
+  tier: string
+): Promise<{
+  keyPrefix: string;
+  requestsInWindow: number;
+  rateLimitHits: number;
+  windowSeconds: number;
+  limit: number;
+  tier: string;
+}> {
+  const redis = await getRedis();
+  const now = Date.now();
+  const windowStart = now - WINDOW_SECONDS * 1000;
+  const key = `ratelimit:${keyPrefix}`;
+  const hitsKey = `ratelimit_hits:${keyPrefix}`;
+
+  // Clean old entries and get count
+  await redis.zremrangebyscore(key, 0, windowStart);
+  const requestsInWindow = await redis.zcard(key) ?? 0;
+  const rateLimitHits = parseInt(await redis.get(hitsKey) ?? "0", 10);
+
+  return {
+    keyPrefix,
+    requestsInWindow,
+    rateLimitHits,
+    windowSeconds: WINDOW_SECONDS,
+    limit: getRateLimitForTier(tier),
+    tier,
+  };
+}
