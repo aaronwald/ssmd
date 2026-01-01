@@ -96,68 +96,50 @@ async function runPrompt(
   agent: Awaited<ReturnType<typeof createAgent>>,
   input: string,
   logger: EventLogger,
-  encoder: TextEncoder
+  _encoder: TextEncoder
 ) {
   try {
-      await logger.logEvent({ event: "user_input", data: { content: input } });
-      const usage: TokenUsage = { input: 0, output: 0 };
+    await logger.logEvent({ event: "user_input", data: { content: input } });
 
-      for await (const event of agent.streamEvents(
-        { messages: [{ role: "user", content: input }] },
-        { version: "v2" }
-      )) {
-        await logger.logEvent(event);
-        switch (event.event) {
-          case "on_chat_model_stream": {
-            const chunk = event.data?.chunk;
-            if (chunk?.content) {
-              // Handle both string content and array of content blocks
-              if (typeof chunk.content === "string") {
-                Deno.stdout.writeSync(encoder.encode(chunk.content));
-              } else if (Array.isArray(chunk.content)) {
-                for (const block of chunk.content) {
-                  if (typeof block === "string") {
-                    Deno.stdout.writeSync(encoder.encode(block));
-                  } else if (block?.text) {
-                    Deno.stdout.writeSync(encoder.encode(block.text));
-                  } else if (block?.type === "text" && block?.text) {
-                    Deno.stdout.writeSync(encoder.encode(block.text));
-                  }
-                }
-              }
-            }
-            // Track usage from chunk if available
-            if (chunk?.usage_metadata) {
-              usage.input += chunk.usage_metadata.input_tokens ?? 0;
-              usage.output += chunk.usage_metadata.output_tokens ?? 0;
-            }
-            break;
-          }
-          case "on_chat_model_end": {
-            // Get final usage from the completed response
-            const output = event.data?.output;
-            if (output?.usage_metadata) {
-              usage.input = output.usage_metadata.input_tokens ?? usage.input;
-              usage.output = output.usage_metadata.output_tokens ?? usage.output;
-            }
-            break;
-          }
-          case "on_tool_start": {
-            console.log(`\n[tool] ${event.name}(${formatArgs(event.data?.input)})`);
-            break;
-          }
-          case "on_tool_end": {
-            console.log(`  → ${formatResult(event.data?.output)}`);
-            break;
-          }
+    // Use invoke instead of streamEvents (streamEvents has issues with non-streaming proxy)
+    const result = await agent.invoke({ messages: [{ role: "user", content: input }] });
+    await logger.logEvent({ event: "agent_result", data: result });
+
+    // Process messages to show tool calls and final response
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+
+    for (const msg of result.messages) {
+      // Track token usage
+      if (msg.usage_metadata) {
+        totalInputTokens += msg.usage_metadata.input_tokens ?? 0;
+        totalOutputTokens += msg.usage_metadata.output_tokens ?? 0;
+      }
+
+      // Show tool calls
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        for (const tc of msg.tool_calls) {
+          console.log(`[tool] ${tc.name}(${formatArgs(tc.args)})`);
         }
       }
 
-      // Show token usage
-      if (usage.input > 0 || usage.output > 0) {
-        console.log(`\n[tokens] in: ${usage.input.toLocaleString()}, out: ${usage.output.toLocaleString()}`);
+      // Show tool results
+      if (msg._getType?.() === "tool") {
+        console.log(`  → ${formatResult(msg.content)}`);
       }
-      console.log("");
+    }
+
+    // Show final AI response
+    const lastMsg = result.messages[result.messages.length - 1];
+    if (lastMsg.content) {
+      console.log(lastMsg.content);
+    }
+
+    // Show token usage
+    if (totalInputTokens > 0 || totalOutputTokens > 0) {
+      console.log(`\n[tokens] in: ${totalInputTokens.toLocaleString()}, out: ${totalOutputTokens.toLocaleString()}`);
+    }
+    console.log("");
   } catch (e) {
     console.error(`\nError: ${(e as Error).message}\n`);
   }
