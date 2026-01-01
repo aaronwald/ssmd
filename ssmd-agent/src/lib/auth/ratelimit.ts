@@ -23,26 +23,33 @@ export async function checkRateLimit(
   keyPrefix: string,
   tier: string
 ): Promise<{ allowed: boolean; remaining: number; resetAt: number }> {
-  const redis = await getRedis();
-  const maxRequests = getRateLimitForTier(tier);
-  const now = Date.now();
-  const windowStart = now - WINDOW_SECONDS * 1000;
-  const key = `ratelimit:${keyPrefix}`;
+  try {
+    const redis = await getRedis();
+    const maxRequests = getRateLimitForTier(tier);
+    const now = Date.now();
+    const windowStart = now - WINDOW_SECONDS * 1000;
+    const key = `ratelimit:${keyPrefix}`;
 
-  // Use pipeline for atomic operations
-  const pipeline = redis.pipeline();
-  pipeline.zremrangebyscore(key, 0, windowStart); // Remove old entries
-  pipeline.zadd(key, { [now.toString()]: now });  // Add current request
-  pipeline.zcard(key);                             // Count requests in window
-  pipeline.expire(key, WINDOW_SECONDS);            // Set TTL
-  const results = await pipeline.flush();
+    // Use pipeline for atomic operations
+    const pipeline = redis.pipeline();
+    pipeline.zremrangebyscore(key, 0, windowStart); // Remove old entries
+    pipeline.zadd(key, { [now.toString()]: now });  // Add current request
+    pipeline.zcard(key);                             // Count requests in window
+    pipeline.expire(key, WINDOW_SECONDS);            // Set TTL
+    const results = await pipeline.flush();
 
-  const requestCount = results[2] as number;
-  const allowed = requestCount <= maxRequests;
-  const remaining = Math.max(0, maxRequests - requestCount);
-  const resetAt = now + WINDOW_SECONDS * 1000;
+    const requestCount = results[2] as number;
+    const allowed = requestCount <= maxRequests;
+    const remaining = Math.max(0, maxRequests - requestCount);
+    const resetAt = now + WINDOW_SECONDS * 1000;
 
-  return { allowed, remaining, resetAt };
+    return { allowed, remaining, resetAt };
+  } catch (error) {
+    console.error("Rate limit check failed:", error);
+    throw error;
+    // On error, allow the request to avoid blocking
+    // return { allowed: false, remaining: 0, resetAt: Date.now() + WINDOW_SECONDS * 1000 };
+  }
 }
 
 /**
