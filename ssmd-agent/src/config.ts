@@ -7,7 +7,7 @@ export const config = {
   apiUrl: Deno.env.get("SSMD_API_URL") ?? "http://localhost:8080",
   apiKey: Deno.env.get("SSMD_DATA_API_KEY") ?? "",
   // Model name in OpenRouter format (provider/model)
-  model: Deno.env.get("SSMD_MODEL") ?? "anthropic/claude-sonnet-4-20250514",
+  model: Deno.env.get("SSMD_MODEL") ?? "anthropic/claude-sonnet-4",
   skillsPath: Deno.env.get("SSMD_SKILLS_PATH") ?? "./skills",
   promptsPath: Deno.env.get("SSMD_PROMPTS_PATH") ?? "./prompts",
   signalsPath: Deno.env.get("SSMD_SIGNALS_PATH") ?? "./signals",
