@@ -61,6 +61,44 @@ export async function incrementRateLimitHits(keyPrefix: string): Promise<void> {
 }
 
 /**
+ * Track token usage for a key prefix.
+ * Increments prompt tokens, completion tokens, and request count.
+ */
+export async function trackTokenUsage(
+  keyPrefix: string,
+  usage: { promptTokens: number; completionTokens: number }
+): Promise<void> {
+  const redis = await getRedis();
+  const pipeline = redis.pipeline();
+  pipeline.incrby(`tokens:${keyPrefix}:prompt`, usage.promptTokens);
+  pipeline.incrby(`tokens:${keyPrefix}:completion`, usage.completionTokens);
+  pipeline.incr(`tokens:${keyPrefix}:requests`);
+  await pipeline.flush();
+}
+
+/**
+ * Get token usage stats for a key prefix.
+ * Returns total prompt tokens, completion tokens, and request count.
+ */
+export async function getTokenUsage(keyPrefix: string): Promise<{
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  totalLlmRequests: number;
+}> {
+  const redis = await getRedis();
+  const [prompt, completion, requests] = await Promise.all([
+    redis.get(`tokens:${keyPrefix}:prompt`),
+    redis.get(`tokens:${keyPrefix}:completion`),
+    redis.get(`tokens:${keyPrefix}:requests`),
+  ]);
+  return {
+    totalPromptTokens: parseInt(prompt ?? "0", 10),
+    totalCompletionTokens: parseInt(completion ?? "0", 10),
+    totalLlmRequests: parseInt(requests ?? "0", 10),
+  };
+}
+
+/**
  * Get usage stats for a key prefix.
  * Returns current request count in window and total rate limit hits.
  */
