@@ -70,5 +70,4 @@ export {
   getAllSettings,
   upsertSetting,
   getSettingValue,
-  deleteSetting,
 } from "./settings.ts";
