@@ -59,18 +59,3 @@ export async function getSettingValue<T>(
   const setting = await getSetting(db, key);
   return (setting?.value as T) ?? defaultValue;
 }
-
-/**
- * Delete a setting by key.
- */
-export async function deleteSetting(
-  db: Database,
-  key: string
-): Promise<boolean> {
-  const result = await db
-    .delete(settings)
-    .where(eq(settings.key, key))
-    .returning();
-
-  return result.length > 0;
-}
