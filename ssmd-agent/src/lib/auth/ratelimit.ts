@@ -47,8 +47,6 @@ export async function checkRateLimit(
   } catch (error) {
     console.error("Rate limit check failed:", error);
     throw error;
-    // On error, allow the request to avoid blocking
-    // return { allowed: false, remaining: 0, resetAt: Date.now() + WINDOW_SECONDS * 1000 };
   }
 }
 
@@ -68,12 +66,17 @@ export async function trackTokenUsage(
   keyPrefix: string,
   usage: { promptTokens: number; completionTokens: number }
 ): Promise<void> {
-  const redis = await getRedis();
-  const pipeline = redis.pipeline();
-  pipeline.incrby(`tokens:${keyPrefix}:prompt`, usage.promptTokens);
-  pipeline.incrby(`tokens:${keyPrefix}:completion`, usage.completionTokens);
-  pipeline.incr(`tokens:${keyPrefix}:requests`);
-  await pipeline.flush();
+  try {
+    const redis = await getRedis();
+    const pipeline = redis.pipeline();
+    pipeline.incrby(`tokens:${keyPrefix}:prompt`, usage.promptTokens);
+    pipeline.incrby(`tokens:${keyPrefix}:completion`, usage.completionTokens);
+    pipeline.incr(`tokens:${keyPrefix}:requests`);
+    await pipeline.flush();
+  } catch (error) {
+    console.error("Token usage tracking failed:", error);
+    throw error;
+  }
 }
 
 /**
@@ -85,17 +88,22 @@ export async function getTokenUsage(keyPrefix: string): Promise<{
   totalCompletionTokens: number;
   totalLlmRequests: number;
 }> {
-  const redis = await getRedis();
-  const [prompt, completion, requests] = await Promise.all([
-    redis.get(`tokens:${keyPrefix}:prompt`),
-    redis.get(`tokens:${keyPrefix}:completion`),
-    redis.get(`tokens:${keyPrefix}:requests`),
-  ]);
-  return {
-    totalPromptTokens: parseInt(prompt ?? "0", 10),
-    totalCompletionTokens: parseInt(completion ?? "0", 10),
-    totalLlmRequests: parseInt(requests ?? "0", 10),
-  };
+  try {
+    const redis = await getRedis();
+    const [prompt, completion, requests] = await Promise.all([
+      redis.get(`tokens:${keyPrefix}:prompt`),
+      redis.get(`tokens:${keyPrefix}:completion`),
+      redis.get(`tokens:${keyPrefix}:requests`),
+    ]);
+    return {
+      totalPromptTokens: parseInt(prompt ?? "0", 10),
+      totalCompletionTokens: parseInt(completion ?? "0", 10),
+      totalLlmRequests: parseInt(requests ?? "0", 10),
+    };
+  } catch (error) {
+    console.error("Get token usage failed:", error);
+    throw error;
+  }
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   RATE_LIMITS,
   trackTokenUsage,
 } from "../../../src/lib/auth/ratelimit.ts";
+import { getRedis } from "../../../src/lib/redis/mod.ts";
 
 Deno.test("getRateLimitForTier returns correct limits", () => {
   assertEquals(getRateLimitForTier("standard"), RATE_LIMITS.standard);
@@ -27,4 +28,12 @@ Deno.test("trackTokenUsage and getTokenUsage work together", async () => {
   assertEquals(usage.totalPromptTokens, 300);
   assertEquals(usage.totalCompletionTokens, 150);
   assertEquals(usage.totalLlmRequests, 2);
+
+  // Cleanup test keys
+  const redis = await getRedis();
+  await redis.del(
+    `tokens:${testPrefix}:prompt`,
+    `tokens:${testPrefix}:completion`,
+    `tokens:${testPrefix}:requests`
+  );
 });
