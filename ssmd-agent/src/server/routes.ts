@@ -23,9 +23,13 @@ import {
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
-import { getUsageForPrefix } from "../lib/auth/ratelimit.ts";
+import { getUsageForPrefix, trackTokenUsage } from "../lib/auth/ratelimit.ts";
+import { getGuardrailSettings, applyGuardrails } from "../lib/guardrails/mod.ts";
 
 export const API_VERSION = "1.0.0";
+
+const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY") ?? "";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 export interface RouteContext {
   dataDir: string;
@@ -36,6 +40,7 @@ export interface AuthInfo {
   userId: string;
   userEmail: string;
   scopes: string[];
+  keyPrefix: string;
 }
 
 type Handler = (req: Request, ctx: RouteContext) => Promise<Response>;
@@ -310,6 +315,69 @@ route("PUT", "/v1/settings/:key", async (req, ctx) => {
   return json(setting);
 }, true, "admin:write");
 
+// Chat completions proxy (OpenRouter)
+route("POST", "/v1/chat/completions", async (req, ctx) => {
+  if (!OPENROUTER_API_KEY) {
+    return json({ error: "OpenRouter API key not configured" }, 503);
+  }
+
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const body = await req.json() as {
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+    max_tokens?: number;
+    [key: string]: unknown;
+  };
+
+  // Apply guardrails
+  const settings = await getGuardrailSettings(ctx.db);
+  const guardrailResult = applyGuardrails(body.messages, settings);
+
+  if (!guardrailResult.allowed) {
+    return json({ error: guardrailResult.reason }, 403);
+  }
+
+  // Use modified messages if PII was redacted
+  const messages = guardrailResult.modifiedMessages ?? body.messages;
+
+  // Clamp max_tokens if limit is set
+  let maxTokens = body.max_tokens;
+  if (settings.maxTokens && (!maxTokens || maxTokens > settings.maxTokens)) {
+    maxTokens = settings.maxTokens;
+  }
+
+  // Forward to OpenRouter
+  const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://ssmd.varshtat.com",
+      "X-Title": "ssmd-agent",
+    },
+    body: JSON.stringify({
+      ...body,
+      messages,
+      max_tokens: maxTokens,
+    }),
+  });
+
+  const data = await response.json();
+
+  // Track token usage
+  if (data.usage) {
+    await trackTokenUsage(auth.keyPrefix, {
+      promptTokens: data.usage.prompt_tokens ?? 0,
+      completionTokens: data.usage.completion_tokens ?? 0,
+    });
+  }
+
+  return new Response(JSON.stringify(data), {
+    status: response.status,
+    headers: { "Content-Type": "application/json" },
+  });
+}, true, "llm:chat");
+
 // Helper to create JSON response
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -363,6 +431,7 @@ export function createRouter(ctx: RouteContext): (req: Request) => Promise<Respo
             userId: authResult.userId,
             userEmail: authResult.userEmail,
             scopes: authResult.scopes,
+            keyPrefix: authResult.keyPrefix,
           } as AuthInfo,
         });
       }
