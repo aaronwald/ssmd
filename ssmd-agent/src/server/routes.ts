@@ -425,6 +425,21 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+// Extract API key from either X-API-Key header or Authorization: Bearer header
+function extractApiKey(req: Request): string | null {
+  // Check X-API-Key first (our custom header)
+  const xApiKey = req.headers.get("X-API-Key");
+  if (xApiKey) return xApiKey;
+
+  // Check Authorization header (OpenAI-compatible format)
+  const authHeader = req.headers.get("Authorization");
+  if (authHeader?.startsWith("Bearer ")) {
+    return authHeader.slice(7); // Remove "Bearer " prefix
+  }
+
+  return null;
+}
+
 // Router function
 export function createRouter(ctx: RouteContext): (req: Request) => Promise<Response> {
   return async (req: Request) => {
@@ -439,7 +454,7 @@ export function createRouter(ctx: RouteContext): (req: Request) => Promise<Respo
       // Check auth if required
       if (r.requiresAuth) {
         const authResult = await validateApiKey(
-          req.headers.get("X-API-Key"),
+          extractApiKey(req),
           ctx.db
         );
 
