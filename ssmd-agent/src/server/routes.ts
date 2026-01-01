@@ -393,7 +393,12 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
   // Parse response with error handling
   let data: Record<string, unknown>;
   try {
-    data = await response.json();
+    const text = await response.text();
+    console.log("OpenRouter response status:", response.status, "body length:", text.length);
+    if (text.length < 500) {
+      console.log("OpenRouter response body:", text);
+    }
+    data = JSON.parse(text);
   } catch (error) {
     console.error("OpenRouter response parse failed:", error);
     return json({ error: "LLM service returned invalid response" }, 502);
