@@ -14,6 +14,7 @@ export { detectInjection } from "./injection.ts";
 const ALLOWED_MODELS: ReadonlySet<string> = new Set([
   "anthropic/claude-sonnet-4.5",
   "qwen/qwen3-embedding-8b",
+  "x-ai/grok-code-fast-1"
 ]);
 
 /**
