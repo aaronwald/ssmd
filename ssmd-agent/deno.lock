@@ -1,6 +1,7 @@
 {
   "version": "5",
   "specifiers": {
+    "jsr:@std/cli@*": "1.0.25",
     "npm:@langchain/anthropic@0.3": "0.3.34_@langchain+core@0.3.80__zod@3.25.76_zod@3.25.76",
     "npm:@langchain/core@0.3": "0.3.80_zod@3.25.76",
     "npm:@langchain/langgraph@0.2": "0.2.74_@langchain+core@0.3.80__zod@3.25.76",
@@ -11,6 +12,11 @@
     "npm:postgres@^3.4.4": "3.4.7",
     "npm:yaml@^2.3.0": "2.8.2",
     "npm:zod@^3.23.0": "3.25.76"
+  },
+  "jsr": {
+    "@std/cli@1.0.25": {
+      "integrity": "1f85051b370c97a7a9dfc6ba626e7ed57a91bea8c081597276d1e78d929d8c91"
+    }
   },
   "npm": {
     "@anthropic-ai/sdk@0.65.0_zod@3.25.76": {
