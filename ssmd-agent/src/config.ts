@@ -1,7 +1,7 @@
 // ssmd-agent/src/config.ts
 
 // Expected API version - update when adding tools that require new endpoints
-export const EXPECTED_API_VERSION = "0.3.0";
+export const EXPECTED_API_VERSION = "1.0.0";
 
 export const config = {
   apiUrl: Deno.env.get("SSMD_API_URL") ?? "http://localhost:8080",
