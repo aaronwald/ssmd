@@ -63,3 +63,12 @@ export {
   revokeApiKey,
   updateLastUsed,
 } from "./apikeys.ts";
+
+// Settings operations
+export {
+  getSetting,
+  getAllSettings,
+  upsertSetting,
+  getSettingValue,
+  deleteSetting,
+} from "./settings.ts";
