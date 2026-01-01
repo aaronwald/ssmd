@@ -6,6 +6,30 @@ import { getSettingValue } from "../db/mod.ts";
 export { detectPII, redactPII, hasPII } from "./pii.ts";
 export { detectInjection } from "./injection.ts";
 
+// ============================================================================
+// MODEL ALLOWLIST
+// Add models here to allow them through the proxy. Format: "provider/model-name"
+// See https://openrouter.ai/models for available models
+// ============================================================================
+const ALLOWED_MODELS: ReadonlySet<string> = new Set([
+  "anthropic/claude-sonnet-4.5",
+  "qwen/qwen3-embedding-8b",
+]);
+
+/**
+ * Check if a model is allowed through the proxy.
+ * Returns { allowed: true } or { allowed: false, reason: string }
+ */
+export function checkModelAllowed(model: string): { allowed: boolean; reason?: string } {
+  if (ALLOWED_MODELS.has(model)) {
+    return { allowed: true };
+  }
+  return {
+    allowed: false,
+    reason: `Model "${model}" is not in the allowlist. Allowed: ${[...ALLOWED_MODELS].join(", ")}`,
+  };
+}
+
 export interface GuardrailSettings {
   piiEnabled: boolean;
   piiAction: "block" | "redact";
