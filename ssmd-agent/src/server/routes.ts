@@ -395,9 +395,7 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
   try {
     const text = await response.text();
     console.log("OpenRouter response status:", response.status, "body length:", text.length);
-    if (text.length < 500) {
-      console.log("OpenRouter response body:", text);
-    }
+    console.log("OpenRouter response preview:", text.slice(0, 500));
     data = JSON.parse(text);
   } catch (error) {
     console.error("OpenRouter response parse failed:", error);
