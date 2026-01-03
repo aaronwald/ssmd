@@ -3,6 +3,11 @@ import { parseArgs } from "jsr:@std/cli/parse-args";
 import { checkApiVersion, validateConfig } from "./config.ts";
 import { createAgent } from "./agent/graph.ts";
 import { EventLogger } from "./audit/events.ts";
+import {
+  applyOutputGuardrail,
+  applyToolGuardrail,
+  type ToolCall,
+} from "./agent/middleware/mod.ts";
 
 interface TokenUsage {
   input: number;
@@ -116,10 +121,30 @@ async function runPrompt(
         totalOutputTokens += msg.usage_metadata.output_tokens ?? 0;
       }
 
-      // Show tool calls
+      // Show tool calls with guardrail check
       if (msg.tool_calls && msg.tool_calls.length > 0) {
-        for (const tc of msg.tool_calls) {
+        // Convert to ToolCall format for guardrail
+        const toolCalls: ToolCall[] = msg.tool_calls.map((tc: { name: string; args: Record<string, unknown> }) => ({
+          name: tc.name,
+          args: tc.args ?? {},
+        }));
+
+        const toolGuardResult = applyToolGuardrail(toolCalls);
+
+        // Show approved tool calls
+        for (const tc of toolGuardResult.approvedCalls ?? []) {
           console.log(`[tool] ${tc.name}(${formatArgs(tc.args)})`);
+        }
+
+        // Warn about trading tools requiring approval
+        for (const tc of toolGuardResult.pendingApproval ?? []) {
+          console.log(`[guardrail] ⚠️  Trading tool blocked: ${tc.name}(${formatArgs(tc.args)})`);
+          console.log(`[guardrail] Trading operations require human approval`);
+        }
+
+        // Show rejected tools
+        for (const tc of toolGuardResult.rejectedCalls ?? []) {
+          console.log(`[guardrail] ❌ Unknown tool rejected: ${tc.name} - ${tc.reason}`);
         }
       }
 
@@ -129,10 +154,16 @@ async function runPrompt(
       }
     }
 
-    // Show final AI response
+    // Show final AI response with output guardrail
     const lastMsg = result.messages[result.messages.length - 1];
     if (lastMsg.content) {
-      console.log(lastMsg.content);
+      const outputGuardResult = applyOutputGuardrail(String(lastMsg.content));
+      if (outputGuardResult.allowed) {
+        console.log(lastMsg.content);
+      } else {
+        console.log(`[guardrail] ❌ Response blocked: ${outputGuardResult.reason}`);
+        await logger.logEvent({ event: "guardrail_block", data: { reason: outputGuardResult.reason } });
+      }
     }
 
     // Show token usage
