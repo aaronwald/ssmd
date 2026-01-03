@@ -8,51 +8,27 @@ import {
   applyToolGuardrail,
   type ToolCall,
 } from "./agent/middleware/mod.ts";
+import { formatArgs, formatResult } from "./cli-utils.ts";
 
-interface TokenUsage {
-  input: number;
-  output: number;
+// Extended message interface for LangChain messages with optional runtime properties
+// BaseMessage doesn't include these, but AIMessage has them at runtime
+interface AgentMessage {
+  content: string | unknown;
+  _getType?: () => string;
+  usage_metadata?: {
+    input_tokens?: number;
+    output_tokens?: number;
+  };
+  tool_calls?: Array<{
+    name: string;
+    args?: Record<string, unknown>;
+  }>;
 }
 
 const args = parseArgs(Deno.args, {
   string: ["prompt", "p"],
   alias: { p: "prompt" },
 });
-
-function formatArgs(input: unknown): string {
-  if (typeof input === "object" && input !== null) {
-    const obj = input as Record<string, unknown>;
-    const parts = Object.entries(obj)
-      .filter(([_, v]) => v !== undefined)
-      .map(([k, v]) => `${k}=${JSON.stringify(v)}`);
-    return parts.join(", ");
-  }
-  return String(input);
-}
-
-function formatResult(output: unknown): string {
-  if (typeof output === "string") {
-    try {
-      const parsed = JSON.parse(output);
-      if (Array.isArray(parsed)) {
-        return `${parsed.length} items`;
-      }
-      if (parsed.count !== undefined) {
-        return `${parsed.count} snapshots`;
-      }
-      if (parsed.fires !== undefined) {
-        return `${parsed.fires} fires, ${parsed.errors?.length ?? 0} errors`;
-      }
-      if (parsed.sha) {
-        return `Committed: ${parsed.sha}`;
-      }
-      return output.slice(0, 100) + (output.length > 100 ? "..." : "");
-    } catch {
-      return output.slice(0, 100) + (output.length > 100 ? "..." : "");
-    }
-  }
-  return String(output);
-}
 
 async function main() {
   try {
@@ -114,7 +90,10 @@ async function runPrompt(
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
 
-    for (const msg of result.messages) {
+    // Cast messages to AgentMessage for type-safe access to runtime properties
+    const messages = result.messages as AgentMessage[];
+
+    for (const msg of messages) {
       // Track token usage
       if (msg.usage_metadata) {
         totalInputTokens += msg.usage_metadata.input_tokens ?? 0;
@@ -124,7 +103,7 @@ async function runPrompt(
       // Show tool calls with guardrail check
       if (msg.tool_calls && msg.tool_calls.length > 0) {
         // Convert to ToolCall format for guardrail
-        const toolCalls: ToolCall[] = msg.tool_calls.map((tc: { name: string; args: Record<string, unknown> }) => ({
+        const toolCalls: ToolCall[] = msg.tool_calls.map((tc) => ({
           name: tc.name,
           args: tc.args ?? {},
         }));
@@ -155,7 +134,7 @@ async function runPrompt(
     }
 
     // Show final AI response with output guardrail
-    const lastMsg = result.messages[result.messages.length - 1];
+    const lastMsg = messages[messages.length - 1];
     if (lastMsg.content) {
       const outputGuardResult = applyOutputGuardrail(String(lastMsg.content));
       if (outputGuardResult.allowed) {
