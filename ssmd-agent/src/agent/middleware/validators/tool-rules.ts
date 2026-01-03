@@ -17,10 +17,32 @@ export const TRADING_TOOLS: readonly string[] = [
 ];
 
 const KNOWN_SAFE_TOOLS: readonly string[] = [
+  // Data exploration
+  "list_datasets",
+  "sample_data",
+  "list_tickers",
+  "get_schema",
+  // State builders
+  "list_builders",
+  "orderbook_builder",
+  "price_history_builder",
+  "volume_profile_builder",
+  // Backtesting
+  "run_backtest",
+  "deploy_signal",
+  // Date/calendar
+  "get_today",
+  // Market data (local API)
+  "list_markets",
+  "get_market",
+  "list_events",
+  "get_event",
+  "get_fees",
+  "get_fee_schedule",
+  // Kalshi API (read-only)
   "get_markets",
   "search_markets",
   "get_market_details",
-  "get_fee_schedule",
   "get_portfolio",
   "get_positions",
   "get_order_history",
