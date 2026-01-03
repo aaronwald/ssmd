@@ -22,6 +22,16 @@ Deno.test("validateToolCall - allows safe tools", () => {
   assertEquals(result.allowed, true);
 });
 
+Deno.test("validateToolCall - allows agent tools", () => {
+  // Data exploration
+  assertEquals(validateToolCall({ name: "list_datasets", args: {} }).allowed, true);
+  assertEquals(validateToolCall({ name: "get_today", args: {} }).allowed, true);
+  // State builders
+  assertEquals(validateToolCall({ name: "orderbook_builder", args: {} }).allowed, true);
+  // Market data
+  assertEquals(validateToolCall({ name: "list_markets", args: {} }).allowed, true);
+});
+
 Deno.test("validateToolCall - flags trading tools for approval", () => {
   const result = validateToolCall({ name: "place_order", args: { ticker: "TEST" } });
   assertEquals(result.allowed, false);
