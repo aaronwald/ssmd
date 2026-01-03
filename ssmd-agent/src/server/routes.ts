@@ -358,6 +358,8 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
 
   // Apply guardrails
   const settings = await getGuardrailSettings(ctx.db);
+
+  // trivial regex guardrails for poc.
   const guardrailResult = applyGuardrails(body.messages, settings);
 
   if (!guardrailResult.allowed) {
@@ -418,10 +420,14 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
   // Track token usage (best effort - don't fail if tracking fails)
   if (data.usage) {
     try {
-      await trackTokenUsage(auth.keyPrefix, {
-        promptTokens: (data.usage as Record<string, number>).prompt_tokens ?? 0,
-        completionTokens: (data.usage as Record<string, number>).completion_tokens ?? 0,
-      });
+      await trackTokenUsage(
+        auth.keyPrefix,
+        {
+          promptTokens: (data.usage as Record<string, number>).prompt_tokens ?? 0,
+          completionTokens: (data.usage as Record<string, number>).completion_tokens ?? 0,
+        },
+        body.model
+      );
     } catch (error) {
       console.error("Token usage tracking failed:", error);
       // Continue anyway - don't fail the request
