@@ -25,6 +25,10 @@ import {
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
 import { getUsageForPrefix, getTokenUsage, trackTokenUsage } from "../lib/auth/ratelimit.ts";
 import { getGuardrailSettings, applyGuardrails, checkModelAllowed } from "../lib/guardrails/mod.ts";
+import { getRedis } from "../lib/redis/mod.ts";
+
+const USAGE_CACHE_KEY = "cache:keys:usage";
+const USAGE_CACHE_TTL = 120; // 2 minutes
 
 export const API_VERSION = "1.0.0";
 
@@ -287,7 +291,18 @@ route("DELETE", "/v1/keys/:prefix", async (req, ctx) => {
 }, true, "secmaster:read");
 
 // Usage stats endpoint - get rate limit and token usage for all keys
+// Cached for 2 minutes because SCAN on large key sets is slow
 route("GET", "/v1/keys/usage", async (_req, ctx) => {
+  const redis = await getRedis();
+
+  // Check cache first
+  const cached = await redis.get(USAGE_CACHE_KEY);
+  if (cached) {
+    return new Response(cached, {
+      headers: { "Content-Type": "application/json", "X-Cache": "HIT" },
+    });
+  }
+
   const keys = await listAllApiKeys(ctx.db);
 
   const usage = await Promise.all(
@@ -300,7 +315,14 @@ route("GET", "/v1/keys/usage", async (_req, ctx) => {
     })
   );
 
-  return json({ usage });
+  const responseBody = JSON.stringify({ usage });
+
+  // Cache the result
+  await redis.set(USAGE_CACHE_KEY, responseBody, { ex: USAGE_CACHE_TTL });
+
+  return new Response(responseBody, {
+    headers: { "Content-Type": "application/json", "X-Cache": "MISS" },
+  });
 }, true, "admin:read");
 
 // Settings endpoints
