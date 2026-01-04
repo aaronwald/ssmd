@@ -50,10 +50,12 @@ export class KalshiClient {
       "Content-Type": "application/json",
     });
 
+    // Conservative rate: 1 req/sec to avoid 429s during bulk sync
+    // Kalshi's limit is ~10 req/sec but bulk syncs hit it easily
     this.limiter = new RateLimiter(
-      options.minDelayMs ?? 250,
+      options.minDelayMs ?? 1000,
       options.maxRetries ?? 10,
-      5000 // Min retry wait
+      10000 // Min retry wait (10s) with exponential backoff
     );
   }
 

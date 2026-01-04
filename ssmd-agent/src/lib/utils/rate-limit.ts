@@ -46,7 +46,15 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Retry a function with exponential backoff.
+ * Add jitter to a delay value (±25%)
+ */
+function addJitter(delayMs: number): number {
+  const jitter = delayMs * 0.25 * (Math.random() * 2 - 1);
+  return Math.round(delayMs + jitter);
+}
+
+/**
+ * Retry a function with exponential backoff and jitter.
  */
 export async function retry<T>(
   fn: () => Promise<T>,
@@ -60,7 +68,7 @@ export async function retry<T>(
   const {
     maxRetries = 3,
     initialDelayMs = 1000,
-    maxDelayMs = 30000,
+    maxDelayMs = 60000,
     shouldRetry = () => true,
   } = options;
 
@@ -77,8 +85,9 @@ export async function retry<T>(
         throw lastError;
       }
 
-      console.log(`  Retry ${attempt + 1}/${maxRetries} after ${delay}ms: ${lastError.message}`);
-      await sleep(delay);
+      const jitteredDelay = addJitter(delay);
+      console.log(`  Retry ${attempt + 1}/${maxRetries} after ${jitteredDelay}ms: ${lastError.message}`);
+      await sleep(jitteredDelay);
       delay = Math.min(delay * 2, maxDelayMs);
     }
   }
