@@ -51,7 +51,7 @@ type ConnectorReconciler struct {
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=connectors/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the cluster state toward the desired state for a Connector
 func (r *ConnectorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -79,6 +79,11 @@ func (r *ConnectorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if err := r.Update(ctx, connector); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	// Reconcile the ConfigMap (feed and env configs)
+	if _, err := r.reconcileConfigMap(ctx, connector); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Reconcile the Deployment
@@ -112,6 +117,16 @@ func (r *ConnectorReconciler) reconcileDelete(ctx context.Context, connector *ss
 			log.Info("Deleted Deployment", "name", deploymentName)
 		}
 
+		// Delete the ConfigMap
+		configMapName := r.configMapName(connector)
+		configMap := &corev1.ConfigMap{}
+		if err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: connector.Namespace}, configMap); err == nil {
+			if err := r.Delete(ctx, configMap); err != nil && !errors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			log.Info("Deleted ConfigMap", "name", configMapName)
+		}
+
 		// Remove finalizer
 		controllerutil.RemoveFinalizer(connector, connectorFinalizer)
 		if err := r.Update(ctx, connector); err != nil {
@@ -120,6 +135,103 @@ func (r *ConnectorReconciler) reconcileDelete(ctx context.Context, connector *ss
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// reconcileConfigMap ensures the ConfigMap with feed and env configs exists
+func (r *ConnectorReconciler) reconcileConfigMap(ctx context.Context, connector *ssmdv1alpha1.Connector) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	configMapName := r.configMapName(connector)
+	configMap := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: connector.Namespace}, configMap)
+
+	desiredConfigMap := r.constructConfigMap(connector)
+
+	if errors.IsNotFound(err) {
+		if err := controllerutil.SetControllerReference(connector, desiredConfigMap, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Creating ConfigMap", "name", configMapName)
+		if err := r.Create(ctx, desiredConfigMap); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else if err != nil {
+		return ctrl.Result{}, err
+	} else {
+		// Update if changed
+		if configMap.Data["feed.yaml"] != desiredConfigMap.Data["feed.yaml"] ||
+			configMap.Data["env.yaml"] != desiredConfigMap.Data["env.yaml"] {
+			configMap.Data = desiredConfigMap.Data
+			log.Info("Updating ConfigMap", "name", configMapName)
+			if err := r.Update(ctx, configMap); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// constructConfigMap builds the ConfigMap with feed and env configuration
+func (r *ConnectorReconciler) constructConfigMap(connector *ssmdv1alpha1.Connector) *corev1.ConfigMap {
+	// Build feed config YAML
+	feedConfig := fmt.Sprintf(`name: %s
+display_name: %s Exchange
+type: websocket
+status: active
+versions:
+  - version: "1.0"
+    effective_from: "%s"
+    protocol:
+      transport: wss
+      message: json
+    endpoint: wss://api.elections.kalshi.com/trade-api/ws/v2
+    auth_method: api_key
+`, connector.Spec.Feed, connector.Spec.Feed, connector.Spec.Date)
+
+	// Build env config YAML
+	natsURL := "nats://nats.nats.svc.cluster.local:4222"
+	stream := "PROD_KALSHI"
+	subjectPrefix := "prod.kalshi"
+	if connector.Spec.Transport != nil {
+		if connector.Spec.Transport.URL != "" {
+			natsURL = connector.Spec.Transport.URL
+		}
+		if connector.Spec.Transport.Stream != "" {
+			stream = connector.Spec.Transport.Stream
+		}
+		if connector.Spec.Transport.SubjectPrefix != "" {
+			subjectPrefix = connector.Spec.Transport.SubjectPrefix
+		}
+	}
+
+	envConfig := fmt.Sprintf(`name: prod
+feed: %s
+schema: trade:v1
+transport:
+  type: nats
+  url: %s
+  stream: %s
+  subject_prefix: %s
+storage:
+  type: local
+`, connector.Spec.Feed, natsURL, stream, subjectPrefix)
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      r.configMapName(connector),
+			Namespace: connector.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "ssmd-connector",
+				"app.kubernetes.io/instance":   connector.Name,
+				"app.kubernetes.io/managed-by": "ssmd-operator",
+			},
+		},
+		Data: map[string]string{
+			"feed.yaml": feedConfig,
+			"env.yaml":  envConfig,
+		},
+	}
 }
 
 // reconcileDeployment ensures the Deployment exists and matches the desired state
@@ -181,65 +293,15 @@ func (r *ConnectorReconciler) constructDeployment(connector *ssmdv1alpha1.Connec
 
 	// Build environment variables
 	env := []corev1.EnvVar{
-		{Name: "FEED", Value: connector.Spec.Feed},
-		{Name: "DATE", Value: connector.Spec.Date},
+		{Name: "RUST_LOG", Value: "info,ssmd_connector=debug"},
 	}
 
-	// Add transport config
-	if connector.Spec.Transport != nil {
-		if connector.Spec.Transport.URL != "" {
-			env = append(env, corev1.EnvVar{Name: "NATS_URL", Value: connector.Spec.Transport.URL})
-		}
-		if connector.Spec.Transport.Stream != "" {
-			env = append(env, corev1.EnvVar{Name: "NATS_STREAM", Value: connector.Spec.Transport.Stream})
-		}
-		if connector.Spec.Transport.SubjectPrefix != "" {
-			env = append(env, corev1.EnvVar{Name: "NATS_SUBJECT_PREFIX", Value: connector.Spec.Transport.SubjectPrefix})
-		}
+	// Add NATS URL as env var (connector reads it from env)
+	natsURL := "nats://nats.nats.svc.cluster.local:4222"
+	if connector.Spec.Transport != nil && connector.Spec.Transport.URL != "" {
+		natsURL = connector.Spec.Transport.URL
 	}
-
-	// Add categories if specified
-	if len(connector.Spec.Categories) > 0 {
-		env = append(env, corev1.EnvVar{Name: "CATEGORIES", Value: joinStrings(connector.Spec.Categories)})
-	}
-	if len(connector.Spec.ExcludeCategories) > 0 {
-		env = append(env, corev1.EnvVar{Name: "EXCLUDE_CATEGORIES", Value: joinStrings(connector.Spec.ExcludeCategories)})
-	}
-
-	// Build container
-	container := corev1.Container{
-		Name:  "connector",
-		Image: image,
-		Env:   env,
-		Ports: []corev1.ContainerPort{
-			{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
-		},
-		LivenessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/health",
-					Port: intstr.FromInt(9090),
-				},
-			},
-			InitialDelaySeconds: 10,
-			PeriodSeconds:       30,
-		},
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/ready",
-					Port: intstr.FromInt(9090),
-				},
-			},
-			InitialDelaySeconds: 5,
-			PeriodSeconds:       10,
-		},
-	}
-
-	// Add resource requirements if specified
-	if connector.Spec.Resources != nil {
-		container.Resources = *connector.Spec.Resources
-	}
+	env = append(env, corev1.EnvVar{Name: "NATS_URL", Value: natsURL})
 
 	// Add secret env vars if secretRef specified
 	if connector.Spec.SecretRef != nil {
@@ -252,9 +314,9 @@ func (r *ConnectorReconciler) constructDeployment(connector *ssmdv1alpha1.Connec
 			privateKeyField = connector.Spec.SecretRef.PrivateKeyField
 		}
 
-		container.Env = append(container.Env,
+		env = append(env,
 			corev1.EnvVar{
-				Name: "API_KEY",
+				Name: "KALSHI_API_KEY",
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: connector.Spec.SecretRef.Name},
@@ -263,7 +325,7 @@ func (r *ConnectorReconciler) constructDeployment(connector *ssmdv1alpha1.Connec
 				},
 			},
 			corev1.EnvVar{
-				Name: "PRIVATE_KEY",
+				Name: "KALSHI_PRIVATE_KEY",
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: connector.Spec.SecretRef.Name},
@@ -274,6 +336,52 @@ func (r *ConnectorReconciler) constructDeployment(connector *ssmdv1alpha1.Connec
 		)
 	}
 
+	// Build container with args pointing to config files
+	container := corev1.Container{
+		Name:  "connector",
+		Image: image,
+		Args: []string{
+			"--feed", "/config/feed.yaml",
+			"--env", "/config/env.yaml",
+		},
+		Env: env,
+		Ports: []corev1.ContainerPort{
+			{Name: "health", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "config",
+				MountPath: "/config",
+				ReadOnly:  true,
+			},
+		},
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/health",
+					Port: intstr.FromString("health"),
+				},
+			},
+			InitialDelaySeconds: 30,
+			PeriodSeconds:       10,
+		},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/health",
+					Port: intstr.FromString("health"),
+				},
+			},
+			InitialDelaySeconds: 10,
+			PeriodSeconds:       5,
+		},
+	}
+
+	// Add resource requirements if specified
+	if connector.Spec.Resources != nil {
+		container.Resources = *connector.Spec.Resources
+	}
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      r.deploymentName(connector),
@@ -282,6 +390,9 @@ func (r *ConnectorReconciler) constructDeployment(connector *ssmdv1alpha1.Connec
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RecreateDeploymentStrategyType,
+			},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -290,7 +401,22 @@ func (r *ConnectorReconciler) constructDeployment(connector *ssmdv1alpha1.Connec
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					ImagePullSecrets: []corev1.LocalObjectReference{
+						{Name: "ghcr-secret"},
+					},
 					Containers: []corev1.Container{container},
+					Volumes: []corev1.Volume{
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: r.configMapName(connector),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -362,16 +488,9 @@ func (r *ConnectorReconciler) deploymentName(connector *ssmdv1alpha1.Connector) 
 	return fmt.Sprintf("%s-connector", connector.Name)
 }
 
-// joinStrings joins a slice of strings with commas
-func joinStrings(s []string) string {
-	result := ""
-	for i, v := range s {
-		if i > 0 {
-			result += ","
-		}
-		result += v
-	}
-	return result
+// configMapName returns the ConfigMap name for a Connector
+func (r *ConnectorReconciler) configMapName(connector *ssmdv1alpha1.Connector) string {
+	return fmt.Sprintf("%s-config", connector.Name)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -379,6 +498,7 @@ func (r *ConnectorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&ssmdv1alpha1.Connector{}).
 		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.ConfigMap{}).
 		Named("connector").
 		Complete(r)
 }
