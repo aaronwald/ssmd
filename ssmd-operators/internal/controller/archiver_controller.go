@@ -29,7 +29,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -429,6 +428,7 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 	}
 
 	// Build container with config file args
+	// Note: archiver doesn't expose health endpoints, so no probes
 	container := corev1.Container{
 		Name:  "archiver",
 		Image: image,
@@ -437,29 +437,6 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 		},
 		Env:          env,
 		VolumeMounts: volumeMounts,
-		Ports: []corev1.ContainerPort{
-			{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
-		},
-		LivenessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/health",
-					Port: intstr.FromInt(9090),
-				},
-			},
-			InitialDelaySeconds: 10,
-			PeriodSeconds:       30,
-		},
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/ready",
-					Port: intstr.FromInt(9090),
-				},
-			},
-			InitialDelaySeconds: 5,
-			PeriodSeconds:       10,
-		},
 	}
 
 	// Add resource requirements if specified
