@@ -129,9 +129,11 @@ Images build automatically on git tag push, or via manual workflow dispatch.
 ### Triggering a Build
 
 ```bash
-# Option 1: Tag and push
-git tag v0.4.4           # Rust connector/archiver
-git tag cli-ts-v0.2.4    # TypeScript CLI
+# Option 1: Tag and push (use the correct tag format per workflow)
+git tag v0.4.4           # Rust connector/archiver (triggers: v*)
+git tag cli-ts-v0.2.15   # TypeScript CLI (triggers: cli-ts-v*)
+git tag data-ts-v0.1.0   # TypeScript data server (triggers: data-ts-v*)
+git tag agent-v0.1.0     # TypeScript agent (triggers: agent-v*)
 git push origin <tag>
 
 # Option 2: Manual via GitHub CLI
@@ -140,13 +142,13 @@ gh workflow run build-connector.yaml -f tag=0.4.4
 
 ### Available Workflows
 
-| Workflow | Image | Dockerfile |
-|----------|-------|------------|
-| `build-connector.yaml` | `ghcr.io/aaronwald/ssmd-connector` | `ssmd-rust/Dockerfile` |
-| `build-archiver.yaml` | `ghcr.io/aaronwald/ssmd-archiver` | `ssmd-rust/crates/ssmd-archiver/Dockerfile` |
-| `build-cli-ts.yaml` | `ghcr.io/aaronwald/ssmd-cli-ts` | `ssmd-agent/Dockerfile.cli` |
-| `build-data-ts.yaml` | `ghcr.io/aaronwald/ssmd-data-ts` | `ssmd-agent/Dockerfile.data` |
-| `build-agent.yaml` | `ghcr.io/aaronwald/ssmd-agent` | `ssmd-agent/Dockerfile` |
+| Workflow | Image | Tag Format | Dockerfile |
+|----------|-------|------------|------------|
+| `build-connector.yaml` | `ghcr.io/aaronwald/ssmd-connector` | `v*` | `ssmd-rust/Dockerfile` |
+| `build-archiver.yaml` | `ghcr.io/aaronwald/ssmd-archiver` | `v*` | `ssmd-rust/crates/ssmd-archiver/Dockerfile` |
+| `build-cli-ts.yaml` | `ghcr.io/aaronwald/ssmd-cli-ts` | `cli-ts-v*` | `ssmd-agent/Dockerfile.cli` |
+| `build-data-ts.yaml` | `ghcr.io/aaronwald/ssmd-data-ts` | `data-ts-v*` | `ssmd-agent/Dockerfile.data` |
+| `build-agent.yaml` | `ghcr.io/aaronwald/ssmd-agent` | `agent-v*` | `ssmd-agent/Dockerfile` |
 
 
 ## Instructions
