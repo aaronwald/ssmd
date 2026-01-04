@@ -6,26 +6,17 @@ metadata:
 spec:
   feed: kalshi
   date: "2026-01-04"
-  image: ghcr.io/aaronwald/ssmd-archiver:0.4.7
+  image: ghcr.io/aaronwald/ssmd-archiver:0.4.8
   source:
     stream: PROD_KALSHI
-    natsUrl: nats://nats.nats:4222
+    url: nats://nats.nats:4222
+    consumer: archiver-2026-01-04
   storage:
     local:
-      path: /data/archive
-      volumeSize: 10Gi
-    remote:
-      bucket: ssmd-archive
-      prefix: kalshi/2026/01/04
-      credentialsSecretRef:
-        name: ssmd-gcs-credentials
-        keyField: key.json
+      path: /data/ssmd
+      pvcName: ssmd-archiver-data
   rotation:
-    maxSizeMB: 100
-    maxAgeMinutes: 60
-  sync:
-    enabled: true
-    intervalMinutes: 15
+    maxFileAge: "15m"
   resources:
     requests:
       cpu: 100m

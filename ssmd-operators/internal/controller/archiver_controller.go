@@ -52,6 +52,7 @@ type ArchiverReconciler struct {
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=archivers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=archivers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 
@@ -88,6 +89,11 @@ func (r *ArchiverReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if _, err := r.reconcilePVC(ctx, archiver); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	// Reconcile ConfigMap
+	if _, err := r.reconcileConfigMap(ctx, archiver); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Reconcile the Deployment
@@ -209,6 +215,101 @@ func (r *ArchiverReconciler) constructPVC(archiver *ssmdv1alpha1.Archiver) *core
 	return pvc
 }
 
+// reconcileConfigMap ensures the ConfigMap exists for archiver config
+func (r *ArchiverReconciler) reconcileConfigMap(ctx context.Context, archiver *ssmdv1alpha1.Archiver) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	configMapName := r.configMapName(archiver)
+	configMap := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: archiver.Namespace}, configMap)
+
+	desiredConfigMap := r.constructConfigMap(archiver)
+
+	if errors.IsNotFound(err) {
+		if err := controllerutil.SetControllerReference(archiver, desiredConfigMap, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Creating ConfigMap", "name", configMapName)
+		if err := r.Create(ctx, desiredConfigMap); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	} else if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Update if changed
+	if configMap.Data["archiver.yaml"] != desiredConfigMap.Data["archiver.yaml"] {
+		configMap.Data = desiredConfigMap.Data
+		log.Info("Updating ConfigMap", "name", configMapName)
+		if err := r.Update(ctx, configMap); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// constructConfigMap builds the ConfigMap with archiver.yaml
+func (r *ArchiverReconciler) constructConfigMap(archiver *ssmdv1alpha1.Archiver) *corev1.ConfigMap {
+	labels := map[string]string{
+		"app.kubernetes.io/name":       "ssmd-archiver",
+		"app.kubernetes.io/instance":   archiver.Name,
+		"app.kubernetes.io/managed-by": "ssmd-operator",
+	}
+
+	// Build archiver.yaml content
+	var archiverYAML strings.Builder
+
+	// NATS config
+	archiverYAML.WriteString("nats:\n")
+	if archiver.Spec.Source != nil {
+		if archiver.Spec.Source.URL != "" {
+			archiverYAML.WriteString(fmt.Sprintf("  url: %s\n", archiver.Spec.Source.URL))
+		}
+		if archiver.Spec.Source.Stream != "" {
+			archiverYAML.WriteString(fmt.Sprintf("  stream: %s\n", archiver.Spec.Source.Stream))
+		}
+		if archiver.Spec.Source.Consumer != "" {
+			archiverYAML.WriteString(fmt.Sprintf("  consumer: %s\n", archiver.Spec.Source.Consumer))
+		}
+		// Add filter based on feed
+		archiverYAML.WriteString(fmt.Sprintf("  filter: \"prod.%s.json.>\"\n", archiver.Spec.Feed))
+	}
+
+	// Storage config
+	archiverYAML.WriteString("\nstorage:\n")
+	if archiver.Spec.Storage != nil && archiver.Spec.Storage.Local != nil && archiver.Spec.Storage.Local.Path != "" {
+		archiverYAML.WriteString(fmt.Sprintf("  path: %s\n", archiver.Spec.Storage.Local.Path))
+	} else {
+		archiverYAML.WriteString("  path: /data/ssmd\n")
+	}
+
+	// Rotation config
+	archiverYAML.WriteString("\nrotation:\n")
+	if archiver.Spec.Rotation != nil && archiver.Spec.Rotation.MaxFileAge != "" {
+		archiverYAML.WriteString(fmt.Sprintf("  interval: %s\n", archiver.Spec.Rotation.MaxFileAge))
+	} else {
+		archiverYAML.WriteString("  interval: 15m\n")
+	}
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      r.configMapName(archiver),
+			Namespace: archiver.Namespace,
+			Labels:    labels,
+		},
+		Data: map[string]string{
+			"archiver.yaml": archiverYAML.String(),
+		},
+	}
+}
+
+// configMapName returns the ConfigMap name for an Archiver
+func (r *ArchiverReconciler) configMapName(archiver *ssmdv1alpha1.Archiver) string {
+	return fmt.Sprintf("%s-config", archiver.Name)
+}
+
 // reconcileDeployment ensures the Deployment exists and matches the desired state
 func (r *ArchiverReconciler) reconcileDeployment(ctx context.Context, archiver *ssmdv1alpha1.Archiver) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -268,56 +369,74 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 
 	// Build environment variables
 	env := []corev1.EnvVar{
-		{Name: "FEED", Value: archiver.Spec.Feed},
-		{Name: "DATE", Value: archiver.Spec.Date},
+		{Name: "RUST_LOG", Value: "info,ssmd_archiver=debug"},
 	}
 
-	// Add source config
-	if archiver.Spec.Source != nil {
-		if archiver.Spec.Source.URL != "" {
-			env = append(env, corev1.EnvVar{Name: "NATS_URL", Value: archiver.Spec.Source.URL})
-		}
-		if archiver.Spec.Source.Stream != "" {
-			env = append(env, corev1.EnvVar{Name: "NATS_STREAM", Value: archiver.Spec.Source.Stream})
-		}
-		if archiver.Spec.Source.Consumer != "" {
-			env = append(env, corev1.EnvVar{Name: "NATS_CONSUMER", Value: archiver.Spec.Source.Consumer})
-		}
+	// Build volumes - always include config volume
+	volumes := []corev1.Volume{
+		{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: r.configMapName(archiver),
+					},
+				},
+			},
+		},
 	}
 
-	// Add storage config
-	if archiver.Spec.Storage != nil {
-		if archiver.Spec.Storage.Local != nil && archiver.Spec.Storage.Local.Path != "" {
-			env = append(env, corev1.EnvVar{Name: "DATA_PATH", Value: archiver.Spec.Storage.Local.Path})
-		}
-		if archiver.Spec.Storage.Remote != nil {
-			if archiver.Spec.Storage.Remote.Type != "" {
-				env = append(env, corev1.EnvVar{Name: "REMOTE_TYPE", Value: archiver.Spec.Storage.Remote.Type})
-			}
-			if archiver.Spec.Storage.Remote.Bucket != "" {
-				env = append(env, corev1.EnvVar{Name: "REMOTE_BUCKET", Value: archiver.Spec.Storage.Remote.Bucket})
-			}
-			if archiver.Spec.Storage.Remote.Prefix != "" {
-				env = append(env, corev1.EnvVar{Name: "REMOTE_PREFIX", Value: archiver.Spec.Storage.Remote.Prefix})
-			}
-		}
+	// Build volume mounts - always include config mount
+	volumeMounts := []corev1.VolumeMount{
+		{Name: "config", MountPath: "/config", ReadOnly: true},
 	}
 
-	// Add rotation config
-	if archiver.Spec.Rotation != nil {
-		if archiver.Spec.Rotation.MaxFileSize != nil {
-			env = append(env, corev1.EnvVar{Name: "MAX_FILE_SIZE", Value: archiver.Spec.Rotation.MaxFileSize.String()})
-		}
-		if archiver.Spec.Rotation.MaxFileAge != "" {
-			env = append(env, corev1.EnvVar{Name: "MAX_FILE_AGE", Value: archiver.Spec.Rotation.MaxFileAge})
-		}
+	// Add PVC volume mount if local storage configured
+	if archiver.Spec.Storage != nil && archiver.Spec.Storage.Local != nil && archiver.Spec.Storage.Local.PVCName != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "data",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: archiver.Spec.Storage.Local.PVCName,
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "data",
+			MountPath: "/data",
+		})
 	}
 
-	// Build container
+	// Add GCS credentials secret volume if specified
+	if archiver.Spec.Storage != nil && archiver.Spec.Storage.Remote != nil && archiver.Spec.Storage.Remote.SecretRef != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "gcs-credentials",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: archiver.Spec.Storage.Remote.SecretRef,
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "gcs-credentials",
+			MountPath: "/etc/gcs",
+			ReadOnly:  true,
+		})
+		env = append(env, corev1.EnvVar{
+			Name:  "GOOGLE_APPLICATION_CREDENTIALS",
+			Value: "/etc/gcs/key.json",
+		})
+	}
+
+	// Build container with config file args
 	container := corev1.Container{
 		Name:  "archiver",
 		Image: image,
-		Env:   env,
+		Args: []string{
+			"--config", "/config/archiver.yaml",
+		},
+		Env:          env,
+		VolumeMounts: volumeMounts,
 		Ports: []corev1.ContainerPort{
 			{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 		},
@@ -348,48 +467,6 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 		container.Resources = *archiver.Spec.Resources
 	}
 
-	// Build volumes
-	var volumes []corev1.Volume
-	var volumeMounts []corev1.VolumeMount
-
-	// Add PVC volume mount if local storage configured
-	if archiver.Spec.Storage != nil && archiver.Spec.Storage.Local != nil && archiver.Spec.Storage.Local.PVCName != "" {
-		volumes = append(volumes, corev1.Volume{
-			Name: "data",
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: archiver.Spec.Storage.Local.PVCName,
-				},
-			},
-		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "data",
-			MountPath: "/data",
-		})
-		container.VolumeMounts = volumeMounts
-	}
-
-	// Add GCS credentials secret volume if specified
-	if archiver.Spec.Storage != nil && archiver.Spec.Storage.Remote != nil && archiver.Spec.Storage.Remote.SecretRef != "" {
-		volumes = append(volumes, corev1.Volume{
-			Name: "gcs-credentials",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: archiver.Spec.Storage.Remote.SecretRef,
-				},
-			},
-		})
-		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-			Name:      "gcs-credentials",
-			MountPath: "/secrets/gcs",
-			ReadOnly:  true,
-		})
-		container.Env = append(container.Env, corev1.EnvVar{
-			Name:  "GOOGLE_APPLICATION_CREDENTIALS",
-			Value: "/secrets/gcs/key.json",
-		})
-	}
-
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      r.deploymentName(archiver),
@@ -406,8 +483,9 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{container},
-					Volumes:    volumes,
+					Containers:       []corev1.Container{container},
+					Volumes:          volumes,
+					ImagePullSecrets: []corev1.LocalObjectReference{{Name: "ghcr-secret"}},
 				},
 			},
 		},
@@ -511,6 +589,7 @@ func (r *ArchiverReconciler) dataPath(archiver *ssmdv1alpha1.Archiver) string {
 func (r *ArchiverReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&ssmdv1alpha1.Archiver{}).
+		Owns(&corev1.ConfigMap{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Named("archiver").

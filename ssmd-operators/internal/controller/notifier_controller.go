@@ -346,8 +346,9 @@ func (r *NotifierReconciler) constructDeployment(notifier *ssmdv1alpha1.Notifier
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{container},
-					Volumes:    volumes,
+					Containers:       []corev1.Container{container},
+					Volumes:          volumes,
+					ImagePullSecrets: []corev1.LocalObjectReference{{Name: "ghcr-secret"}},
 				},
 			},
 		},
