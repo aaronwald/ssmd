@@ -139,12 +139,12 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
           }
         }
 
-        // 2. Fetch markets closed in the last 7 days
+        // 2. Fetch markets settled in the last 7 days (to catch recently resolved)
         const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
-        console.log(`  Fetching markets closed in last 7 days...`);
+        console.log(`  Fetching markets settled in last 7 days...`);
         const seenTickers = new Set(allMarketTickers);
 
-        for await (const batch of client.fetchAllMarkets({ minCloseTs: sevenDaysAgo })) {
+        for await (const batch of client.fetchAllMarkets({ minSettledTs: sevenDaysAgo })) {
           // Deduplicate - skip markets we already fetched
           const newMarkets = batch.filter((m) => !seenTickers.has(m.ticker));
           for (const m of newMarkets) {
