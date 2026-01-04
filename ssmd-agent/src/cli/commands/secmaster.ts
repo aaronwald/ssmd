@@ -124,38 +124,21 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
       let batchCount = 0;
 
       if (options.activeOnly) {
-        // Incremental sync: fetch open markets + recently closed/settled
-        // 1. Fetch all open markets
-        console.log(`  Fetching open markets...`);
-        for await (const batch of client.fetchAllMarkets({ status: "open" })) {
+        // Incremental sync: fetch open markets created in last 7 days (excludes MVE)
+        // This catches all new markets without fetching the entire 90k+ open market set
+        const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
+        console.log(`  Fetching open markets created in last 7 days (excluding MVE)...`);
+
+        for await (const batch of client.fetchAllMarkets({
+          status: "open",
+          minCreatedTs: sevenDaysAgo,
+          mveFilter: "exclude",
+        })) {
           result.markets.fetched += batch.length;
           allMarketTickers.push(...batch.map((m) => m.ticker));
 
           if (!options.dryRun) {
             const batchResult = await bulkUpsertMarkets(db, batch);
-            result.markets.upserted += batchResult.total;
-            result.markets.skipped += batchResult.skipped;
-            batchCount++;
-          }
-        }
-
-        // 2. Fetch markets settled in the last 7 days (to catch recently resolved)
-        const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
-        console.log(`  Fetching markets settled in last 7 days...`);
-        const seenTickers = new Set(allMarketTickers);
-
-        for await (const batch of client.fetchAllMarkets({ minSettledTs: sevenDaysAgo })) {
-          // Deduplicate - skip markets we already fetched
-          const newMarkets = batch.filter((m) => !seenTickers.has(m.ticker));
-          for (const m of newMarkets) {
-            seenTickers.add(m.ticker);
-          }
-
-          result.markets.fetched += newMarkets.length;
-          allMarketTickers.push(...newMarkets.map((m) => m.ticker));
-
-          if (!options.dryRun && newMarkets.length > 0) {
-            const batchResult = await bulkUpsertMarkets(db, newMarkets);
             result.markets.upserted += batchResult.total;
             result.markets.skipped += batchResult.skipped;
             batchCount++;

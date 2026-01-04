@@ -26,16 +26,25 @@ export interface KalshiClientOptions {
 
 /**
  * Market query filters
+ *
+ * Note on filter compatibility (per Kalshi API docs):
+ * - min_created_ts, max_created_ts: compatible with status=unopened, open, or empty
+ * - min_close_ts, max_close_ts: compatible with status=closed or empty
+ * - min_settled_ts, max_settled_ts: compatible with status=settled or empty
  */
 export interface MarketFilters {
   /** Status filter (e.g., 'open', 'closed', 'settled') */
   status?: string;
+  /** Minimum created timestamp (Unix seconds) - for recently created markets */
+  minCreatedTs?: number;
   /** Minimum close timestamp (Unix seconds) - for recently closed markets */
   minCloseTs?: number;
   /** Maximum close timestamp (Unix seconds) */
   maxCloseTs?: number;
   /** Minimum settled timestamp (Unix seconds) - for recently settled markets */
   minSettledTs?: number;
+  /** MVE filter: 'exclude' to exclude multiverse markets */
+  mveFilter?: "exclude" | "only";
 }
 
 /**
@@ -149,9 +158,11 @@ export class KalshiClient {
     // Build query params from filters
     const params: string[] = [];
     if (filters?.status) params.push(`status=${filters.status}`);
+    if (filters?.minCreatedTs) params.push(`min_created_ts=${filters.minCreatedTs}`);
     if (filters?.minCloseTs) params.push(`min_close_ts=${filters.minCloseTs}`);
     if (filters?.maxCloseTs) params.push(`max_close_ts=${filters.maxCloseTs}`);
     if (filters?.minSettledTs) params.push(`min_settled_ts=${filters.minSettledTs}`);
+    if (filters?.mveFilter) params.push(`mve_filter=${filters.mveFilter}`);
     const filterParams = params.length > 0 ? "&" + params.join("&") : "";
 
     do {
