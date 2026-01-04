@@ -1,135 +1,311 @@
-# ssmd-operators
-// TODO(user): Add simple overview of use/purpose
+# SSMD Operators
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+Kubernetes operators for managing SSMD market data pipeline components.
 
-## Getting Started
+## Overview
+
+The SSMD operator manages four Custom Resource types:
+
+| CRD | Purpose | Creates |
+|-----|---------|---------|
+| **Connector** | WebSocket data ingestion | ConfigMap, Deployment |
+| **Archiver** | NATS → JSONL.gz storage | ConfigMap, Deployment, PVC |
+| **Signal** | Real-time signal computation | Deployment |
+| **Notifier** | Alert routing to destinations | ConfigMap, Deployment |
+
+## Installation
+
+The operator is deployed via Flux GitOps in the `ssmd` namespace.
+
+**Current version:** `ghcr.io/aaronwald/ssmd-operator:0.1.3`
 
 ### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+- Kubernetes cluster with RBAC enabled
+- `ghcr-secret` ImagePullSecret in `ssmd` namespace
+- NATS JetStream available at `nats://nats.nats:4222`
 
-```sh
-make docker-build docker-push IMG=<some-registry>/ssmd-operators:tag
+## Custom Resources
+
+### Connector
+
+Manages WebSocket connections to market data feeds.
+
+```yaml
+apiVersion: ssmd.ssmd.io/v1alpha1
+kind: Connector
+metadata:
+  name: kalshi-2026-01-04
+  namespace: ssmd
+spec:
+  feed: kalshi                    # Feed name
+  date: "2026-01-04"              # Trading day
+  image: ghcr.io/aaronwald/ssmd-connector:0.4.7
+  transport:
+    type: nats
+    url: nats://nats.nats:4222
+    stream: PROD_KALSHI
+    subjectPrefix: prod.kalshi
+  secretRef:
+    name: ssmd-kalshi-credentials
+    apiKeyField: api-key
+    privateKeyField: private-key
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+**Status fields:**
+- `phase`: Pending | Starting | Running | Failed | Terminated
+- `deployment`: Name of created Deployment
+- `conditions`: Ready condition with deployment status
 
-**Install the CRDs into the cluster:**
+**What the controller creates:**
+1. ConfigMap with `feed.yaml` and `env.yaml` configuration
+2. Deployment with config mounted at `/config`
+3. Container args: `--feed /config/feed.yaml --env /config/env.yaml`
 
-```sh
-make install
+---
+
+### Archiver
+
+Archives NATS messages to local storage (and optionally GCS).
+
+```yaml
+apiVersion: ssmd.ssmd.io/v1alpha1
+kind: Archiver
+metadata:
+  name: kalshi-2026-01-04
+  namespace: ssmd
+spec:
+  feed: kalshi
+  date: "2026-01-04"
+  image: ghcr.io/aaronwald/ssmd-archiver:0.4.8
+  source:
+    stream: PROD_KALSHI
+    url: nats://nats.nats:4222
+    consumer: archiver-2026-01-04
+  storage:
+    local:
+      path: /data/ssmd
+      pvcName: ssmd-archiver-data    # Existing or new PVC
+      pvcSize: 10Gi                   # Size if creating
+    remote:                           # Optional GCS sync
+      type: gcs
+      bucket: ssmd-archive
+      prefix: kalshi/2026/01/04
+      secretRef: ssmd-gcs-credentials
+  rotation:
+    maxFileAge: "15m"
+  sync:
+    enabled: true
+    onDelete: final                   # Sync before cleanup
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+**Status fields:**
+- `phase`: Pending | Starting | Running | Syncing | Failed | Terminated
+- `deployment`: Name of created Deployment
+- `conditions`: Ready, StorageHealthy
 
-```sh
-make deploy IMG=<some-registry>/ssmd-operators:tag
+**What the controller creates:**
+1. ConfigMap with `archiver.yaml` configuration
+2. PVC if `pvcName` specified and doesn't exist
+3. Deployment with config at `/config`, data at `/data`
+4. Container args: `--config /config/archiver.yaml`
+
+---
+
+### Signal
+
+Runs real-time signal computations on market data.
+
+```yaml
+apiVersion: ssmd.ssmd.io/v1alpha1
+kind: Signal
+metadata:
+  name: kalshi-momentum
+  namespace: ssmd
+spec:
+  signals:
+    - momentum
+    - volatility
+    - spread-tracker
+  image: ghcr.io/aaronwald/ssmd-signal-runner:0.1.1
+  source:
+    stream: PROD_KALSHI
+    natsUrl: nats://nats.nats:4222
+    categories:
+      - Politics
+    tickers:
+      - KXBTC
+  outputPrefix: signals.kalshi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+**Status fields:**
+- `phase`: Pending | Running | Failed
+- `deployment`: Name of created Deployment
+- `signalMetrics`: Per-signal metrics (eventsProcessed, signalsGenerated)
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+**What the controller creates:**
+1. Deployment with environment variables for configuration
+2. Env vars: `SIGNALS`, `NATS_STREAM`, `NATS_URL`, `CATEGORIES`, `TICKERS`
 
-```sh
-kubectl apply -k config/samples/
+---
+
+### Notifier
+
+Routes alerts and notifications to external destinations.
+
+```yaml
+apiVersion: ssmd.ssmd.io/v1alpha1
+kind: Notifier
+metadata:
+  name: kalshi-alerts
+  namespace: ssmd
+spec:
+  image: ghcr.io/aaronwald/ssmd-notifier:0.1.0
+  source:
+    subjects:
+      - signals.kalshi.momentum.>
+      - signals.kalshi.volatility.>
+    natsUrl: nats://nats.nats:4222
+  destinations:
+    - name: slack-trading
+      type: slack
+      config:
+        channel: "#trading-alerts"
+      secretRef:
+        name: slack-webhook
+        key: url
+    - name: email-ops
+      type: email
+      config:
+        to: ops@example.com
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+**Status fields:**
+- `phase`: Pending | Running | Failed
+- `destinationMetrics`: Per-destination delivery stats
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+**What the controller creates:**
+1. ConfigMap with `destinations.json` configuration
+2. Deployment with config mounted at `/config`
+3. Secret volumes for each destination with `secretRef`
 
-```sh
-kubectl delete -k config/samples/
+---
+
+## Development
+
+### Building
+
+```bash
+cd ssmd-operators
+
+# Build locally
+go build ./...
+
+# Run tests
+go test ./...
+
+# Generate CRD manifests
+make manifests
+
+# Build container (via GitHub Actions)
+git tag operator-v0.1.4
+git push origin operator-v0.1.4
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+### Project Structure
 
-```sh
-make uninstall
+```
+ssmd-operators/
+├── api/v1alpha1/           # CRD type definitions
+│   ├── connector_types.go
+│   ├── archiver_types.go
+│   ├── signal_types.go
+│   └── notifier_types.go
+├── internal/controller/    # Reconciliation logic
+│   ├── connector_controller.go
+│   ├── archiver_controller.go
+│   ├── signal_controller.go
+│   └── notifier_controller.go
+├── config/
+│   ├── crd/                # Generated CRD YAML
+│   ├── rbac/               # RBAC manifests
+│   └── samples/            # Example CRs
+└── cmd/main.go             # Operator entrypoint
 ```
 
-**UnDeploy the controller from the cluster:**
+### Deploying Updates
 
-```sh
-make undeploy
+1. Make changes to controllers
+2. Build and verify: `go build ./...`
+3. Commit and tag: `git tag operator-v0.x.y`
+4. Push tag: `git push origin operator-v0.x.y`
+5. Wait for GitHub Actions build
+6. Update varlab deployment image version
+7. Push varlab and reconcile Flux
+
+## RBAC
+
+The operator requires these permissions:
+
+| Resource | Verbs |
+|----------|-------|
+| connectors, archivers, signals, notifiers | get, list, watch, create, update, patch, delete |
+| */status, */finalizers | get, update, patch |
+| deployments | get, list, watch, create, update, patch, delete |
+| configmaps | get, list, watch, create, update, patch, delete |
+| persistentvolumeclaims | get, list, watch, create, update, patch, delete |
+| secrets | get, list, watch |
+
+## Troubleshooting
+
+### Check operator logs
+
+```bash
+kubectl logs -n ssmd -l control-plane=controller-manager --tail=50
 ```
 
-## Project Distribution
+### Check CR status
 
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/ssmd-operators:tag
+```bash
+kubectl get connector,archiver,signal,notifier -n ssmd
+kubectl describe connector kalshi-2026-01-04 -n ssmd
 ```
 
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
+### Common issues
 
-2. Using the installer
+**Pod stuck in ContainerCreating:**
+- Check PVC availability (ReadWriteOnce can only attach to one node)
+- Check imagePullSecrets exist
 
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
+**Connector CrashLoopBackOff:**
+- Check credentials secret exists with correct keys
+- Check NATS connectivity
 
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/ssmd-operators/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+**Archiver not archiving:**
+- Verify NATS stream and consumer exist
+- Check storage path permissions
 
 ## License
 
 Copyright 2026.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Licensed under the Apache License, Version 2.0.
