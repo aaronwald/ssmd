@@ -1,0 +1,41 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ssmd.ssmd.io
+  resources:
+  - archivers
+  - connectors
+  - notifiers
+  - signals
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ssmd.ssmd.io
+  resources:
+  - archivers/finalizers
+  - connectors/finalizers
+  - notifiers/finalizers
+  - signals/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - ssmd.ssmd.io
+  resources:
+  - archivers/status
+  - connectors/status
+  - notifiers/status
+  - signals/status
+  verbs:
+  - get
+  - patch
+  - update

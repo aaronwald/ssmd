@@ -1,0 +1,7 @@
+## Append samples of your project ##
+resources:
+- ssmd_v1alpha1_connector.yaml
+- ssmd_v1alpha1_archiver.yaml
+- ssmd_v1alpha1_signal.yaml
+- ssmd_v1alpha1_notifier.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
