@@ -39,6 +39,8 @@ export interface SyncOptions {
   noDelete?: boolean;
   /** Dry run - don't write to database */
   dryRun?: boolean;
+  /** Only sync active/open records (faster incremental sync) */
+  activeOnly?: boolean;
 }
 
 /**
@@ -75,16 +77,20 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
     totalDurationMs: 0,
   };
 
+  // Status filter for incremental sync
+  const statusFilter = options.activeOnly ? "open" : undefined;
+  const syncMode = options.activeOnly ? "incremental (active only)" : "full";
+
   try {
     // Sync events - upsert each batch as it arrives
     if (!options.marketsOnly) {
-      console.log("\n[Events] Starting sync...");
+      console.log(`\n[Events] Starting ${syncMode} sync...`);
       const eventStart = Date.now();
 
       const allEventTickers: string[] = [];
       let batchCount = 0;
 
-      for await (const batch of client.fetchAllEvents()) {
+      for await (const batch of client.fetchAllEvents(statusFilter)) {
         result.events.fetched += batch.length;
         allEventTickers.push(...batch.map((e) => e.event_ticker));
 
@@ -97,7 +103,8 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
       result.events.upserted = result.events.fetched;
       console.log(`[Events] Synced ${result.events.fetched} events in ${batchCount} batches`);
 
-      if (!options.dryRun && !options.noDelete) {
+      // Skip soft-delete for incremental sync (we only fetched a subset)
+      if (!options.dryRun && !options.noDelete && !options.activeOnly) {
         const deleted = await softDeleteMissingEvents(db, allEventTickers);
         result.events.deleted = deleted;
         if (deleted > 0) {
@@ -110,13 +117,13 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
 
     // Sync markets - upsert each batch as it arrives
     if (!options.eventsOnly) {
-      console.log("\n[Markets] Starting sync...");
+      console.log(`\n[Markets] Starting ${syncMode} sync...`);
       const marketStart = Date.now();
 
       const allMarketTickers: string[] = [];
       let batchCount = 0;
 
-      for await (const batch of client.fetchAllMarkets()) {
+      for await (const batch of client.fetchAllMarkets(statusFilter)) {
         result.markets.fetched += batch.length;
         allMarketTickers.push(...batch.map((m) => m.ticker));
 
@@ -133,7 +140,8 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
           (result.markets.skipped > 0 ? ` (${result.markets.skipped} skipped)` : "")
       );
 
-      if (!options.dryRun && !options.noDelete) {
+      // Skip soft-delete for incremental sync (we only fetched a subset)
+      if (!options.dryRun && !options.noDelete && !options.activeOnly) {
         const deleted = await softDeleteMissingMarkets(db, allMarketTickers);
         result.markets.deleted = deleted;
         if (deleted > 0) {
@@ -352,6 +360,7 @@ export async function handleSecmaster(
         marketsOnly: Boolean(flags["markets-only"]),
         noDelete: Boolean(flags["no-delete"]),
         dryRun: Boolean(flags["dry-run"]),
+        activeOnly: Boolean(flags["active-only"]),
       };
 
       if (options.eventsOnly && options.marketsOnly) {
@@ -421,6 +430,7 @@ export async function handleSecmaster(
       console.log("  markets      List markets (or show one: markets <ticker>)");
       console.log();
       console.log("Options for sync:");
+      console.log("  --active-only    Only sync active/open records (fast incremental)");
       console.log("  --events-only    Only sync events");
       console.log("  --markets-only   Only sync markets");
       console.log("  --no-delete      Skip soft-deleting missing records");

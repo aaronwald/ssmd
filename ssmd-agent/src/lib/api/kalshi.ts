@@ -98,15 +98,17 @@ export class KalshiClient {
 
   /**
    * Fetch all events with automatic pagination
+   * @param status - Optional status filter (e.g., 'open' for active only)
    */
-  async *fetchAllEvents(): AsyncGenerator<Event[]> {
+  async *fetchAllEvents(status?: string): AsyncGenerator<Event[]> {
     let cursor: string | undefined;
     let page = 0;
+    const statusParam = status ? `&status=${status}` : "";
 
     do {
       const path = cursor
-        ? `/events?cursor=${cursor}&limit=200`
-        : "/events?limit=200";
+        ? `/events?cursor=${cursor}&limit=200${statusParam}`
+        : `/events?limit=200${statusParam}`;
 
       const data = await this.fetch<PaginatedResponse<KalshiEvent>>(path);
       const events = (data.events as KalshiEvent[]) || [];
@@ -124,15 +126,17 @@ export class KalshiClient {
 
   /**
    * Fetch all markets with automatic pagination
+   * @param status - Optional status filter (e.g., 'open' for active only)
    */
-  async *fetchAllMarkets(): AsyncGenerator<Market[]> {
+  async *fetchAllMarkets(status?: string): AsyncGenerator<Market[]> {
     let cursor: string | undefined;
     let page = 0;
+    const statusParam = status ? `&status=${status}` : "";
 
     do {
       const path = cursor
-        ? `/markets?cursor=${cursor}&limit=200`
-        : "/markets?limit=200";
+        ? `/markets?cursor=${cursor}&limit=200${statusParam}`
+        : `/markets?limit=200${statusParam}`;
 
       const data = await this.fetch<PaginatedResponse<KalshiMarket>>(path);
       const markets = (data.markets as KalshiMarket[]) || [];
