@@ -18,13 +18,28 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	ssmdv1alpha1 "github.com/aaronwald/ssmd/ssmd-operators/api/v1alpha1"
+)
+
+const (
+	archiverFinalizer = "ssmd.ssmd.io/archiver-finalizer"
 )
 
 // ArchiverReconciler reconciles a Archiver object
@@ -36,28 +51,468 @@ type ArchiverReconciler struct {
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=archivers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=archivers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=archivers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Archiver object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.4/pkg/reconcile
+// Reconcile moves the cluster state toward the desired state for an Archiver
 func (r *ArchiverReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	// Fetch the Archiver instance
+	archiver := &ssmdv1alpha1.Archiver{}
+	if err := r.Get(ctx, req.NamespacedName, archiver); err != nil {
+		if errors.IsNotFound(err) {
+			log.Info("Archiver resource not found, likely deleted")
+			return ctrl.Result{}, nil
+		}
+		log.Error(err, "Failed to get Archiver")
+		return ctrl.Result{}, err
+	}
+
+	// Handle deletion
+	if !archiver.ObjectMeta.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, archiver)
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(archiver, archiverFinalizer) {
+		controllerutil.AddFinalizer(archiver, archiverFinalizer)
+		if err := r.Update(ctx, archiver); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Reconcile PVC if local storage is configured
+	if archiver.Spec.Storage != nil && archiver.Spec.Storage.Local != nil {
+		if _, err := r.reconcilePVC(ctx, archiver); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Reconcile the Deployment
+	result, err := r.reconcileDeployment(ctx, archiver)
+	if err != nil {
+		return result, err
+	}
+
+	// Update status
+	if err := r.updateStatus(ctx, archiver); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
+}
+
+// reconcileDelete handles cleanup when the Archiver is deleted
+func (r *ArchiverReconciler) reconcileDelete(ctx context.Context, archiver *ssmdv1alpha1.Archiver) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if controllerutil.ContainsFinalizer(archiver, archiverFinalizer) {
+		log.Info("Cleaning up Archiver resources", "name", archiver.Name)
+
+		// TODO: Trigger final GCS sync if sync.onDelete == "final"
+		// For now, just clean up resources
+
+		// Delete the Deployment
+		deploymentName := r.deploymentName(archiver)
+		deployment := &appsv1.Deployment{}
+		if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: archiver.Namespace}, deployment); err == nil {
+			if err := r.Delete(ctx, deployment); err != nil && !errors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			log.Info("Deleted Deployment", "name", deploymentName)
+		}
+
+		// Note: We don't delete the PVC to preserve data
+
+		// Remove finalizer
+		controllerutil.RemoveFinalizer(archiver, archiverFinalizer)
+		if err := r.Update(ctx, archiver); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// reconcilePVC ensures the PVC exists for local storage
+func (r *ArchiverReconciler) reconcilePVC(ctx context.Context, archiver *ssmdv1alpha1.Archiver) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	local := archiver.Spec.Storage.Local
+	if local.PVCName == "" {
+		return ctrl.Result{}, nil // No PVC to create
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	err := r.Get(ctx, types.NamespacedName{Name: local.PVCName, Namespace: archiver.Namespace}, pvc)
+
+	if errors.IsNotFound(err) {
+		// Create new PVC
+		pvc = r.constructPVC(archiver)
+		if err := controllerutil.SetControllerReference(archiver, pvc, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Creating PVC", "name", local.PVCName)
+		if err := r.Create(ctx, pvc); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// constructPVC builds the PVC spec for an Archiver
+func (r *ArchiverReconciler) constructPVC(archiver *ssmdv1alpha1.Archiver) *corev1.PersistentVolumeClaim {
+	local := archiver.Spec.Storage.Local
+
+	labels := map[string]string{
+		"app.kubernetes.io/name":       "ssmd-archiver",
+		"app.kubernetes.io/instance":   archiver.Name,
+		"app.kubernetes.io/managed-by": "ssmd-operator",
+		"ssmd.io/feed":                 archiver.Spec.Feed,
+		"ssmd.io/date":                 archiver.Spec.Date,
+	}
+
+	// Default size if not specified
+	size := resource.MustParse("10Gi")
+	if local.PVCSize != nil {
+		size = *local.PVCSize
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      local.PVCName,
+			Namespace: archiver.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{
+				corev1.ReadWriteOnce,
+			},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: size,
+				},
+			},
+		},
+	}
+
+	// Set storage class if specified
+	if local.StorageClass != "" {
+		pvc.Spec.StorageClassName = &local.StorageClass
+	}
+
+	return pvc
+}
+
+// reconcileDeployment ensures the Deployment exists and matches the desired state
+func (r *ArchiverReconciler) reconcileDeployment(ctx context.Context, archiver *ssmdv1alpha1.Archiver) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	deploymentName := r.deploymentName(archiver)
+	deployment := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: archiver.Namespace}, deployment)
+
+	if errors.IsNotFound(err) {
+		// Create new Deployment
+		deployment = r.constructDeployment(archiver)
+		if err := controllerutil.SetControllerReference(archiver, deployment, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Creating Deployment", "name", deploymentName)
+		if err := r.Create(ctx, deployment); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	} else if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Update existing Deployment if needed
+	desired := r.constructDeployment(archiver)
+	if r.deploymentNeedsUpdate(deployment, desired) {
+		deployment.Spec = desired.Spec
+		log.Info("Updating Deployment", "name", deploymentName)
+		if err := r.Update(ctx, deployment); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// constructDeployment builds the Deployment spec for an Archiver
+func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver) *appsv1.Deployment {
+	labels := map[string]string{
+		"app.kubernetes.io/name":       "ssmd-archiver",
+		"app.kubernetes.io/instance":   archiver.Name,
+		"app.kubernetes.io/managed-by": "ssmd-operator",
+		"ssmd.io/feed":                 archiver.Spec.Feed,
+		"ssmd.io/date":                 archiver.Spec.Date,
+	}
+
+	replicas := int32(1)
+	if archiver.Spec.Replicas != nil {
+		replicas = *archiver.Spec.Replicas
+	}
+
+	// Default image if not specified
+	image := archiver.Spec.Image
+	if image == "" {
+		image = "ghcr.io/aaronwald/ssmd-archiver:latest"
+	}
+
+	// Build environment variables
+	env := []corev1.EnvVar{
+		{Name: "FEED", Value: archiver.Spec.Feed},
+		{Name: "DATE", Value: archiver.Spec.Date},
+	}
+
+	// Add source config
+	if archiver.Spec.Source != nil {
+		if archiver.Spec.Source.URL != "" {
+			env = append(env, corev1.EnvVar{Name: "NATS_URL", Value: archiver.Spec.Source.URL})
+		}
+		if archiver.Spec.Source.Stream != "" {
+			env = append(env, corev1.EnvVar{Name: "NATS_STREAM", Value: archiver.Spec.Source.Stream})
+		}
+		if archiver.Spec.Source.Consumer != "" {
+			env = append(env, corev1.EnvVar{Name: "NATS_CONSUMER", Value: archiver.Spec.Source.Consumer})
+		}
+	}
+
+	// Add storage config
+	if archiver.Spec.Storage != nil {
+		if archiver.Spec.Storage.Local != nil && archiver.Spec.Storage.Local.Path != "" {
+			env = append(env, corev1.EnvVar{Name: "DATA_PATH", Value: archiver.Spec.Storage.Local.Path})
+		}
+		if archiver.Spec.Storage.Remote != nil {
+			if archiver.Spec.Storage.Remote.Type != "" {
+				env = append(env, corev1.EnvVar{Name: "REMOTE_TYPE", Value: archiver.Spec.Storage.Remote.Type})
+			}
+			if archiver.Spec.Storage.Remote.Bucket != "" {
+				env = append(env, corev1.EnvVar{Name: "REMOTE_BUCKET", Value: archiver.Spec.Storage.Remote.Bucket})
+			}
+			if archiver.Spec.Storage.Remote.Prefix != "" {
+				env = append(env, corev1.EnvVar{Name: "REMOTE_PREFIX", Value: archiver.Spec.Storage.Remote.Prefix})
+			}
+		}
+	}
+
+	// Add rotation config
+	if archiver.Spec.Rotation != nil {
+		if archiver.Spec.Rotation.MaxFileSize != nil {
+			env = append(env, corev1.EnvVar{Name: "MAX_FILE_SIZE", Value: archiver.Spec.Rotation.MaxFileSize.String()})
+		}
+		if archiver.Spec.Rotation.MaxFileAge != "" {
+			env = append(env, corev1.EnvVar{Name: "MAX_FILE_AGE", Value: archiver.Spec.Rotation.MaxFileAge})
+		}
+	}
+
+	// Build container
+	container := corev1.Container{
+		Name:  "archiver",
+		Image: image,
+		Env:   env,
+		Ports: []corev1.ContainerPort{
+			{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
+		},
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/health",
+					Port: intstr.FromInt(9090),
+				},
+			},
+			InitialDelaySeconds: 10,
+			PeriodSeconds:       30,
+		},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/ready",
+					Port: intstr.FromInt(9090),
+				},
+			},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       10,
+		},
+	}
+
+	// Add resource requirements if specified
+	if archiver.Spec.Resources != nil {
+		container.Resources = *archiver.Spec.Resources
+	}
+
+	// Build volumes
+	var volumes []corev1.Volume
+	var volumeMounts []corev1.VolumeMount
+
+	// Add PVC volume mount if local storage configured
+	if archiver.Spec.Storage != nil && archiver.Spec.Storage.Local != nil && archiver.Spec.Storage.Local.PVCName != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "data",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: archiver.Spec.Storage.Local.PVCName,
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "data",
+			MountPath: "/data",
+		})
+		container.VolumeMounts = volumeMounts
+	}
+
+	// Add GCS credentials secret volume if specified
+	if archiver.Spec.Storage != nil && archiver.Spec.Storage.Remote != nil && archiver.Spec.Storage.Remote.SecretRef != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "gcs-credentials",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: archiver.Spec.Storage.Remote.SecretRef,
+				},
+			},
+		})
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      "gcs-credentials",
+			MountPath: "/secrets/gcs",
+			ReadOnly:  true,
+		})
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name:  "GOOGLE_APPLICATION_CREDENTIALS",
+			Value: "/secrets/gcs/key.json",
+		})
+	}
+
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      r.deploymentName(archiver),
+			Namespace: archiver.Namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{container},
+					Volumes:    volumes,
+				},
+			},
+		},
+	}
+}
+
+// deploymentNeedsUpdate checks if the Deployment needs to be updated
+func (r *ArchiverReconciler) deploymentNeedsUpdate(current, desired *appsv1.Deployment) bool {
+	// Simple check: compare replicas and image
+	if *current.Spec.Replicas != *desired.Spec.Replicas {
+		return true
+	}
+	if len(current.Spec.Template.Spec.Containers) > 0 && len(desired.Spec.Template.Spec.Containers) > 0 {
+		if current.Spec.Template.Spec.Containers[0].Image != desired.Spec.Template.Spec.Containers[0].Image {
+			return true
+		}
+	}
+	return false
+}
+
+// updateStatus updates the Archiver status based on Deployment state
+func (r *ArchiverReconciler) updateStatus(ctx context.Context, archiver *ssmdv1alpha1.Archiver) error {
+	deploymentName := r.deploymentName(archiver)
+	deployment := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: archiver.Namespace}, deployment)
+
+	if errors.IsNotFound(err) {
+		archiver.Status.Phase = ssmdv1alpha1.ArchiverPhasePending
+		archiver.Status.Deployment = ""
+	} else if err != nil {
+		return err
+	} else {
+		archiver.Status.Deployment = deploymentName
+
+		// Determine phase from Deployment status
+		if deployment.Status.ReadyReplicas > 0 {
+			archiver.Status.Phase = ssmdv1alpha1.ArchiverPhaseRunning
+		} else if deployment.Status.Replicas > 0 {
+			archiver.Status.Phase = ssmdv1alpha1.ArchiverPhaseStarting
+		} else {
+			archiver.Status.Phase = ssmdv1alpha1.ArchiverPhasePending
+		}
+
+		// Update conditions
+		condition := metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "NotReady",
+			Message:            "Deployment is not ready",
+			LastTransitionTime: metav1.Now(),
+		}
+		if deployment.Status.ReadyReplicas > 0 && deployment.Status.ReadyReplicas == deployment.Status.Replicas {
+			condition.Status = metav1.ConditionTrue
+			condition.Reason = "DeploymentReady"
+			condition.Message = "Deployment is ready"
+		}
+		meta.SetStatusCondition(&archiver.Status.Conditions, condition)
+
+		// Check storage health
+		storageCondition := metav1.Condition{
+			Type:               "StorageHealthy",
+			Status:             metav1.ConditionTrue,
+			Reason:             "StorageOK",
+			Message:            "Storage is configured",
+			LastTransitionTime: metav1.Now(),
+		}
+		if archiver.Spec.Storage != nil && archiver.Spec.Storage.Local != nil && archiver.Spec.Storage.Local.PVCName != "" {
+			pvc := &corev1.PersistentVolumeClaim{}
+			if pvcErr := r.Get(ctx, types.NamespacedName{Name: archiver.Spec.Storage.Local.PVCName, Namespace: archiver.Namespace}, pvc); pvcErr != nil {
+				storageCondition.Status = metav1.ConditionFalse
+				storageCondition.Reason = "PVCNotFound"
+				storageCondition.Message = "PVC not found"
+			} else if pvc.Status.Phase != corev1.ClaimBound {
+				storageCondition.Status = metav1.ConditionFalse
+				storageCondition.Reason = "PVCNotBound"
+				storageCondition.Message = "PVC is not bound"
+			}
+		}
+		meta.SetStatusCondition(&archiver.Status.Conditions, storageCondition)
+	}
+
+	return r.Status().Update(ctx, archiver)
+}
+
+// deploymentName returns the Deployment name for an Archiver
+func (r *ArchiverReconciler) deploymentName(archiver *ssmdv1alpha1.Archiver) string {
+	return fmt.Sprintf("%s-archiver", archiver.Name)
+}
+
+// dataPath returns the day-partitioned data path for an Archiver
+func (r *ArchiverReconciler) dataPath(archiver *ssmdv1alpha1.Archiver) string {
+	// Convert date YYYY-MM-DD to path /data/feed/YYYY/MM/DD
+	parts := strings.Split(archiver.Spec.Date, "-")
+	if len(parts) == 3 {
+		return fmt.Sprintf("/data/%s/%s/%s/%s", archiver.Spec.Feed, parts[0], parts[1], parts[2])
+	}
+	return fmt.Sprintf("/data/%s/%s", archiver.Spec.Feed, archiver.Spec.Date)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ArchiverReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&ssmdv1alpha1.Archiver{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
 		Named("archiver").
 		Complete(r)
 }
