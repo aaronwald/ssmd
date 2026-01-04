@@ -143,6 +143,8 @@ export type MarketRow = Market;
 
 /**
  * List markets with optional filters.
+ * @param options.asOf - Point-in-time filter (ISO timestamp). Returns markets that existed
+ *                       and were tradeable at this time. Defaults to now.
  */
 export async function listMarkets(
   db: Database,
@@ -153,13 +155,22 @@ export async function listMarkets(
     eventTicker?: string;
     closingBefore?: string;
     closingAfter?: string;
+    asOf?: string;
     limit?: number;
   } = {}
 ): Promise<MarketRow[]> {
   const limit = options.limit ?? 100;
+  const asOf = options.asOf ?? new Date().toISOString();
 
-  // Build conditions array
-  const conditions: ReturnType<typeof sql>[] = [isNull(markets.deletedAt)];
+  // Build conditions array with point-in-time filtering
+  const conditions: ReturnType<typeof sql>[] = [
+    // Market existed at this time
+    sql`${markets.createdAt} <= ${asOf}`,
+    // Market was still tradeable (hadn't closed yet)
+    sql`(${markets.closeTime} > ${asOf} OR ${markets.closeTime} IS NULL)`,
+    // Market wasn't soft-deleted yet
+    sql`(${markets.deletedAt} IS NULL OR ${markets.deletedAt} > ${asOf})`,
+  ];
 
   if (options.status) {
     conditions.push(eq(markets.status, options.status));
