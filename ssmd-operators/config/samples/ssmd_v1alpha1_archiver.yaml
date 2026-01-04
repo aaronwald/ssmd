@@ -1,9 +1,35 @@
 apiVersion: ssmd.ssmd.io/v1alpha1
 kind: Archiver
 metadata:
-  labels:
-    app.kubernetes.io/name: ssmd-operators
-    app.kubernetes.io/managed-by: kustomize
-  name: archiver-sample
+  name: kalshi-2026-01-04
+  namespace: ssmd
 spec:
-  # TODO(user): Add fields here
+  feed: kalshi
+  date: "2026-01-04"
+  image: ghcr.io/aaronwald/ssmd-archiver:0.4.7
+  source:
+    stream: PROD_KALSHI
+    natsUrl: nats://nats.nats:4222
+  storage:
+    local:
+      path: /data/archive
+      volumeSize: 10Gi
+    remote:
+      bucket: ssmd-archive
+      prefix: kalshi/2026/01/04
+      credentialsSecretRef:
+        name: ssmd-gcs-credentials
+        keyField: key.json
+  rotation:
+    maxSizeMB: 100
+    maxAgeMinutes: 60
+  sync:
+    enabled: true
+    intervalMinutes: 15
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

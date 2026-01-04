@@ -1,9 +1,28 @@
 apiVersion: ssmd.ssmd.io/v1alpha1
 kind: Signal
 metadata:
-  labels:
-    app.kubernetes.io/name: ssmd-operators
-    app.kubernetes.io/managed-by: kustomize
-  name: signal-sample
+  name: kalshi-momentum
+  namespace: ssmd
 spec:
-  # TODO(user): Add fields here
+  signals:
+    - momentum
+    - volatility
+    - spread-tracker
+  image: ghcr.io/aaronwald/ssmd-signal-runner:0.1.0
+  source:
+    stream: PROD_KALSHI
+    natsUrl: nats://nats.nats:4222
+    categories:
+      - Politics
+      - Economics
+    tickers:
+      - KXBTC
+      - KXETH
+  outputPrefix: signals.kalshi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
