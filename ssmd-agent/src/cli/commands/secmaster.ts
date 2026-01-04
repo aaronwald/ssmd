@@ -123,15 +123,56 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
       const allMarketTickers: string[] = [];
       let batchCount = 0;
 
-      for await (const batch of client.fetchAllMarkets(statusFilter)) {
-        result.markets.fetched += batch.length;
-        allMarketTickers.push(...batch.map((m) => m.ticker));
+      if (options.activeOnly) {
+        // Incremental sync: fetch open markets + recently closed/settled
+        // 1. Fetch all open markets
+        console.log(`  Fetching open markets...`);
+        for await (const batch of client.fetchAllMarkets({ status: "open" })) {
+          result.markets.fetched += batch.length;
+          allMarketTickers.push(...batch.map((m) => m.ticker));
 
-        if (!options.dryRun) {
-          const batchResult = await bulkUpsertMarkets(db, batch);
-          result.markets.upserted += batchResult.total;
-          result.markets.skipped += batchResult.skipped;
-          batchCount++;
+          if (!options.dryRun) {
+            const batchResult = await bulkUpsertMarkets(db, batch);
+            result.markets.upserted += batchResult.total;
+            result.markets.skipped += batchResult.skipped;
+            batchCount++;
+          }
+        }
+
+        // 2. Fetch markets closed in the last 7 days
+        const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
+        console.log(`  Fetching markets closed in last 7 days...`);
+        const seenTickers = new Set(allMarketTickers);
+
+        for await (const batch of client.fetchAllMarkets({ minCloseTs: sevenDaysAgo })) {
+          // Deduplicate - skip markets we already fetched
+          const newMarkets = batch.filter((m) => !seenTickers.has(m.ticker));
+          for (const m of newMarkets) {
+            seenTickers.add(m.ticker);
+          }
+
+          result.markets.fetched += newMarkets.length;
+          allMarketTickers.push(...newMarkets.map((m) => m.ticker));
+
+          if (!options.dryRun && newMarkets.length > 0) {
+            const batchResult = await bulkUpsertMarkets(db, newMarkets);
+            result.markets.upserted += batchResult.total;
+            result.markets.skipped += batchResult.skipped;
+            batchCount++;
+          }
+        }
+      } else {
+        // Full sync: fetch all markets
+        for await (const batch of client.fetchAllMarkets()) {
+          result.markets.fetched += batch.length;
+          allMarketTickers.push(...batch.map((m) => m.ticker));
+
+          if (!options.dryRun) {
+            const batchResult = await bulkUpsertMarkets(db, batch);
+            result.markets.upserted += batchResult.total;
+            result.markets.skipped += batchResult.skipped;
+            batchCount++;
+          }
         }
       }
 

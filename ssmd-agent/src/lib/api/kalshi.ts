@@ -25,6 +25,20 @@ export interface KalshiClientOptions {
 }
 
 /**
+ * Market query filters
+ */
+export interface MarketFilters {
+  /** Status filter (e.g., 'open', 'closed', 'settled') */
+  status?: string;
+  /** Minimum close timestamp (Unix seconds) - for recently closed markets */
+  minCloseTs?: number;
+  /** Maximum close timestamp (Unix seconds) */
+  maxCloseTs?: number;
+  /** Minimum settled timestamp (Unix seconds) - for recently settled markets */
+  minSettledTs?: number;
+}
+
+/**
  * Paginated response from Kalshi API
  */
 interface PaginatedResponse<T> {
@@ -126,17 +140,24 @@ export class KalshiClient {
 
   /**
    * Fetch all markets with automatic pagination
-   * @param status - Optional status filter (e.g., 'open' for active only)
+   * @param filters - Optional filters (status, minCloseTs, etc.)
    */
-  async *fetchAllMarkets(status?: string): AsyncGenerator<Market[]> {
+  async *fetchAllMarkets(filters?: MarketFilters): AsyncGenerator<Market[]> {
     let cursor: string | undefined;
     let page = 0;
-    const statusParam = status ? `&status=${status}` : "";
+
+    // Build query params from filters
+    const params: string[] = [];
+    if (filters?.status) params.push(`status=${filters.status}`);
+    if (filters?.minCloseTs) params.push(`min_close_ts=${filters.minCloseTs}`);
+    if (filters?.maxCloseTs) params.push(`max_close_ts=${filters.maxCloseTs}`);
+    if (filters?.minSettledTs) params.push(`min_settled_ts=${filters.minSettledTs}`);
+    const filterParams = params.length > 0 ? "&" + params.join("&") : "";
 
     do {
       const path = cursor
-        ? `/markets?cursor=${cursor}&limit=200${statusParam}`
-        : `/markets?limit=200${statusParam}`;
+        ? `/markets?cursor=${cursor}&limit=200${filterParams}`
+        : `/markets?limit=200${filterParams}`;
 
       const data = await this.fetch<PaginatedResponse<KalshiMarket>>(path);
       const markets = (data.markets as KalshiMarket[]) || [];
