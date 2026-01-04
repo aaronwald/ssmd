@@ -1,0 +1,9 @@
+apiVersion: ssmd.ssmd.io/v1alpha1
+kind: Archiver
+metadata:
+  labels:
+    app.kubernetes.io/name: ssmd-operators
+    app.kubernetes.io/managed-by: kustomize
+  name: archiver-sample
+spec:
+  # TODO(user): Add fields here

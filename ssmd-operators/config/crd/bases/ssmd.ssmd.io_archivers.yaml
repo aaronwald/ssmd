@@ -1,0 +1,352 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: archivers.ssmd.ssmd.io
+spec:
+  group: ssmd.ssmd.io
+  names:
+    kind: Archiver
+    listKind: ArchiverList
+    plural: archivers
+    singular: archiver
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.feed
+      name: Feed
+      type: string
+    - jsonPath: .spec.date
+      name: Date
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.messagesArchived
+      name: Archived
+      type: integer
+    - jsonPath: .status.bytesWritten
+      name: Bytes
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Archiver is the Schema for the archivers API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of Archiver
+            properties:
+              date:
+                description: Date is the trading day in YYYY-MM-DD format
+                pattern: ^\d{4}-\d{2}-\d{2}$
+                type: string
+              feed:
+                description: Feed references the feed ConfigMap (e.g., "kalshi" →
+                  feed-kalshi ConfigMap)
+                type: string
+              image:
+                description: Image is the container image to use (optional, defaults
+                  from feed ConfigMap)
+                type: string
+              replicas:
+                default: 1
+                description: Replicas is the number of archiver pods (optional, defaults
+                  to 1)
+                format: int32
+                type: integer
+              resources:
+                description: Resources configures CPU/memory for the archiver pod
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              rotation:
+                description: Rotation configures file rotation settings
+                properties:
+                  maxFileAge:
+                    description: MaxFileAge is the maximum file age before rotation
+                      (e.g., "1h")
+                    type: string
+                  maxFileSize:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: MaxFileSize is the maximum file size before rotation
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                type: object
+              source:
+                description: Source configures what to archive from NATS
+                properties:
+                  consumer:
+                    description: Consumer is the durable consumer name
+                    type: string
+                  stream:
+                    description: Stream is the JetStream stream name
+                    type: string
+                  type:
+                    default: nats
+                    description: Type is the source type (currently only "nats" supported)
+                    type: string
+                  url:
+                    description: URL is the NATS server URL
+                    type: string
+                type: object
+              storage:
+                description: Storage configures local and remote storage
+                properties:
+                  local:
+                    description: Local configures local PVC storage
+                    properties:
+                      path:
+                        description: Path is the local storage path (day-partitioned)
+                        type: string
+                      pvcName:
+                        description: PVCName is the name of an existing PVC, or one
+                          to create
+                        type: string
+                      pvcSize:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: PVCSize is the size of the PVC to create (if
+                          creating)
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      storageClass:
+                        description: StorageClass is the storage class to use for
+                          PVC creation
+                        type: string
+                    type: object
+                  remote:
+                    description: Remote configures remote storage (GCS, S3, etc.)
+                    properties:
+                      bucket:
+                        description: Bucket is the bucket name
+                        type: string
+                      prefix:
+                        description: Prefix is the key prefix for objects
+                        type: string
+                      secretRef:
+                        description: SecretRef references the credentials secret
+                        type: string
+                      type:
+                        description: Type is the remote storage type (gcs, s3)
+                        enum:
+                        - gcs
+                        - s3
+                        type: string
+                    type: object
+                type: object
+              sync:
+                description: Sync configures remote sync settings
+                properties:
+                  enabled:
+                    default: true
+                    description: Enabled enables periodic sync to remote storage
+                    type: boolean
+                  onDelete:
+                    default: final
+                    description: OnDelete specifies behavior on CR deletion ("final"
+                      = sync before cleanup)
+                    enum:
+                    - final
+                    - skip
+                    type: string
+                  schedule:
+                    description: Schedule is the cron schedule for sync (e.g., "0
+                      * * * *" for hourly)
+                    type: string
+                type: object
+            required:
+            - date
+            - feed
+            type: object
+          status:
+            description: status defines the observed state of Archiver
+            properties:
+              bytesWritten:
+                description: BytesWritten is the total bytes written to local storage
+                format: int64
+                type: integer
+              conditions:
+                description: Conditions represent the current state of the Archiver
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              deployment:
+                description: Deployment is the name of the created Deployment
+                type: string
+              filesWritten:
+                description: FilesWritten is the number of files written
+                format: int32
+                type: integer
+              lastFlushAt:
+                description: LastFlushAt is the timestamp of the last file flush
+                format: date-time
+                type: string
+              lastSyncAt:
+                description: LastSyncAt is the timestamp of the last remote sync
+                format: date-time
+                type: string
+              lastSyncFiles:
+                description: LastSyncFiles is the number of files synced in the last
+                  sync
+                format: int32
+                type: integer
+              messagesArchived:
+                description: MessagesArchived is the total messages archived
+                format: int64
+                type: integer
+              pendingSyncBytes:
+                description: PendingSyncBytes is the bytes waiting to be synced
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the current lifecycle phase
+                enum:
+                - Pending
+                - Starting
+                - Running
+                - Syncing
+                - Failed
+                - Terminated
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
