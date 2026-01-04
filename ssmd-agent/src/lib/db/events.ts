@@ -140,6 +140,8 @@ export type EventRow = Event;
 
 /**
  * List events with optional filters.
+ * @param options.asOf - Point-in-time filter (ISO timestamp). Returns events that existed
+ *                       at this time. Defaults to now.
  */
 export async function listEvents(
   db: Database,
@@ -147,36 +149,37 @@ export async function listEvents(
     category?: string;
     status?: string;
     series?: string;
+    asOf?: string;
     limit?: number;
   } = {}
 ): Promise<EventRow[]> {
   const limit = options.limit ?? 100;
+  const asOf = options.asOf ?? new Date().toISOString();
 
-  let query = db
-    .select()
-    .from(events)
-    .where(isNull(events.deletedAt))
-    .orderBy(desc(events.updatedAt))
-    .limit(limit)
-    .$dynamic();
+  // Build conditions array with point-in-time filtering
+  const conditions: ReturnType<typeof sql>[] = [
+    // Event existed at this time
+    sql`${events.createdAt} <= ${asOf}`,
+    // Event wasn't soft-deleted yet
+    sql`(${events.deletedAt} IS NULL OR ${events.deletedAt} > ${asOf})`,
+  ];
 
   if (options.category) {
-    query = query.where(
-      sql`${isNull(events.deletedAt)} AND ${eq(events.category, options.category)}`
-    );
+    conditions.push(eq(events.category, options.category));
   }
   if (options.status) {
-    query = query.where(
-      sql`${isNull(events.deletedAt)} AND ${eq(events.status, options.status)}`
-    );
+    conditions.push(eq(events.status, options.status));
   }
   if (options.series) {
-    query = query.where(
-      sql`${isNull(events.deletedAt)} AND ${eq(events.seriesTicker, options.series)}`
-    );
+    conditions.push(eq(events.seriesTicker, options.series));
   }
 
-  return await query;
+  return await db
+    .select()
+    .from(events)
+    .where(sql.join(conditions, sql` AND `))
+    .orderBy(desc(events.updatedAt))
+    .limit(limit);
 }
 
 /**

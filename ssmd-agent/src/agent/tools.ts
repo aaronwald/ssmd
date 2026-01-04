@@ -299,13 +299,14 @@ export const getToday = tool(
 );
 
 export const listMarkets = tool(
-  async ({ category, status, series, closing_before, closing_after, limit }) => {
+  async ({ category, status, series, closing_before, closing_after, as_of, limit }) => {
     const params = new URLSearchParams();
     if (category) params.set("category", category);
     if (status) params.set("status", status);
     if (series) params.set("series", series);
     if (closing_before) params.set("closing_before", closing_before);
     if (closing_after) params.set("closing_after", closing_after);
+    if (as_of) params.set("as_of", as_of);
     if (limit) params.set("limit", String(limit));
 
     const path = `/v1/markets${params.toString() ? "?" + params : ""}`;
@@ -313,13 +314,14 @@ export const listMarkets = tool(
   },
   {
     name: "list_markets",
-    description: "List markets from secmaster with filters. Returns markets with event metadata.",
+    description: "List markets from secmaster with filters. Supports point-in-time queries to see what markets were tradeable at a specific time.",
     schema: z.object({
       category: z.string().optional().nullable().describe("Filter by category (e.g., 'Economics')"),
       status: z.string().optional().nullable().describe("Filter by status: open, closed, settled"),
       series: z.string().optional().nullable().describe("Filter by series ticker (e.g., 'INXD')"),
       closing_before: z.string().optional().nullable().describe("ISO timestamp - markets closing before this time"),
       closing_after: z.string().optional().nullable().describe("ISO timestamp - markets closing after this time"),
+      as_of: z.string().optional().nullable().describe("Point-in-time query: ISO timestamp to see markets that were tradeable at that time (defaults to now)"),
       limit: z.number().optional().nullable().describe("Max results (default 100)"),
     }),
   }
@@ -356,11 +358,12 @@ export const getFees = tool(
 );
 
 export const listEvents = tool(
-  async ({ category, status, series, limit }) => {
+  async ({ category, status, series, as_of, limit }) => {
     const params = new URLSearchParams();
     if (category) params.set("category", category);
     if (status) params.set("status", status);
     if (series) params.set("series", series);
+    if (as_of) params.set("as_of", as_of);
     if (limit) params.set("limit", String(limit));
 
     const path = `/v1/events${params.toString() ? "?" + params : ""}`;
@@ -368,11 +371,12 @@ export const listEvents = tool(
   },
   {
     name: "list_events",
-    description: "List events from secmaster with market counts. Events are containers for related markets.",
+    description: "List events from secmaster with market counts. Supports point-in-time queries to see what events existed at a specific time.",
     schema: z.object({
       category: z.string().optional().nullable().describe("Filter by category (e.g., 'Economics')"),
       status: z.string().optional().nullable().describe("Filter by status: open, closed, settled"),
       series: z.string().optional().nullable().describe("Filter by series ticker (e.g., 'INXD')"),
+      as_of: z.string().optional().nullable().describe("Point-in-time query: ISO timestamp to see events that existed at that time (defaults to now)"),
       limit: z.number().optional().nullable().describe("Max results (default 100)"),
     }),
   }

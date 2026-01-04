@@ -110,6 +110,7 @@ route("GET", "/v1/events", async (req, ctx) => {
     category: url.searchParams.get("category") ?? undefined,
     status: url.searchParams.get("status") ?? undefined,
     series: url.searchParams.get("series") ?? undefined,
+    asOf: url.searchParams.get("as_of") ?? undefined,
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   });
   return json({ events });
@@ -134,6 +135,7 @@ route("GET", "/v1/markets", async (req, ctx) => {
     eventTicker: url.searchParams.get("event") ?? undefined,
     closingBefore: url.searchParams.get("closing_before") ?? undefined,
     closingAfter: url.searchParams.get("closing_after") ?? undefined,
+    asOf: url.searchParams.get("as_of") ?? undefined,
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   });
   return json({ markets });
