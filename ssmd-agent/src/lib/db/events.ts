@@ -33,7 +33,14 @@ export async function upsertEvents(
     return 0;
   }
 
-  const drizzleEvents = eventList.map(toNewEvent);
+  // Deduplicate by event_ticker (keep last occurrence)
+  const seen = new Map<string, ApiEvent>();
+  for (const e of eventList) {
+    seen.set(e.event_ticker, e);
+  }
+  const dedupedList = Array.from(seen.values());
+
+  const drizzleEvents = dedupedList.map(toNewEvent);
 
   await db
     .insert(events)
@@ -52,7 +59,7 @@ export async function upsertEvents(
       },
     });
 
-  return eventList.length;
+  return dedupedList.length;
 }
 
 /**
