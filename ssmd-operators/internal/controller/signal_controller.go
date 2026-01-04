@@ -247,7 +247,8 @@ func (r *SignalReconciler) constructDeployment(signal *ssmdv1alpha1.Signal) *app
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{container},
+					Containers:       []corev1.Container{container},
+					ImagePullSecrets: []corev1.LocalObjectReference{{Name: "ghcr-secret"}},
 				},
 			},
 		},
