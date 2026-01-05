@@ -11,7 +11,7 @@ spec:
     type: nats
     url: nats://nats.nats.svc.cluster.local:4222
     stream: PROD_KALSHI
-    subjectPrefix: prod.kalshi
+    subjectPrefix: prod.kalshi.main
   secretRef:
     name: ssmd-kalshi-credentials
     apiKeyField: api-key
