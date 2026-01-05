@@ -25,39 +25,7 @@ capture: Data Capture {
 
 refdata: Reference Data {
   style.fill: "#e8f5e9"
-  cli: ssmd CLI {
-    shape: rectangle
-    style.fill: "#c8e6c9"
-  }
-  postgres: PostgreSQL {
-    shape: cylinder
-    style.fill: "#a5d6a7"
-  }
-  cdc: ssmd-cdc {
-    shape: rectangle
-    style.fill: "#c8e6c9"
-  }
-  cache: ssmd-cache {
-    shape: rectangle
-    style.fill: "#c8e6c9"
-  }
-  redis: Redis {
-    shape: cylinder
-    style.fill: "#ffcdd2"
-  }
-  api: ssmd-data-ts {
-    shape: rectangle
-    style.fill: "#c8e6c9"
-  }
-
-  cli -> api: HTTP API
-  api -> postgres
-  api -> redis: cache reads
-  postgres -> cdc: CDC stream
-  cdc -> capture.nats: cdc.>
-  capture.nats -> cache: CDC events
-  cache -> redis: populate
-  cache -> postgres: warm from DB
+  shape: rectangle
 }
 
 runtime: Signal Runtime {
@@ -88,11 +56,12 @@ git: Git {
 }
 
 exchanges -> capture
-exchanges -> refdata.cli: Kalshi API
+exchanges -> refdata: Kalshi API
 capture.nats -> runtime.runner: subscribe
 runtime.runner -> capture.nats: signals.*.fires
 refdata -> agent: {style.stroke-dash: 3}
+refdata -> capture.nats: cdc.> {style.stroke-dash: 3}
 capture -> agent: {style.stroke-dash: 3}
 agent -> git
-admin -> refdata.api: HTTP API
+admin -> refdata: HTTP API
 operators -> capture: manages CRs {style.stroke-dash: 3}
