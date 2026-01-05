@@ -178,7 +178,6 @@ func (r *ArchiverReconciler) constructPVC(archiver *ssmdv1alpha1.Archiver) *core
 		"app.kubernetes.io/name":       "ssmd-archiver",
 		"app.kubernetes.io/instance":   archiver.Name,
 		"app.kubernetes.io/managed-by": "ssmd-operator",
-		"ssmd.io/feed":                 archiver.Spec.Feed,
 		"ssmd.io/date":                 archiver.Spec.Date,
 	}
 
@@ -272,8 +271,9 @@ func (r *ArchiverReconciler) constructConfigMap(archiver *ssmdv1alpha1.Archiver)
 		if archiver.Spec.Source.Consumer != "" {
 			archiverYAML.WriteString(fmt.Sprintf("  consumer: %s\n", archiver.Spec.Source.Consumer))
 		}
-		// Add filter based on feed
-		archiverYAML.WriteString(fmt.Sprintf("  filter: \"prod.%s.json.>\"\n", archiver.Spec.Feed))
+		if archiver.Spec.Source.Filter != "" {
+			archiverYAML.WriteString(fmt.Sprintf("  filter: %s\n", archiver.Spec.Source.Filter))
+		}
 	}
 
 	// Storage config
@@ -351,7 +351,6 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 		"app.kubernetes.io/name":       "ssmd-archiver",
 		"app.kubernetes.io/instance":   archiver.Name,
 		"app.kubernetes.io/managed-by": "ssmd-operator",
-		"ssmd.io/feed":                 archiver.Spec.Feed,
 		"ssmd.io/date":                 archiver.Spec.Date,
 	}
 
@@ -550,16 +549,6 @@ func (r *ArchiverReconciler) updateStatus(ctx context.Context, archiver *ssmdv1a
 // deploymentName returns the Deployment name for an Archiver
 func (r *ArchiverReconciler) deploymentName(archiver *ssmdv1alpha1.Archiver) string {
 	return fmt.Sprintf("%s-archiver", archiver.Name)
-}
-
-// dataPath returns the day-partitioned data path for an Archiver
-func (r *ArchiverReconciler) dataPath(archiver *ssmdv1alpha1.Archiver) string {
-	// Convert date YYYY-MM-DD to path /data/feed/YYYY/MM/DD
-	parts := strings.Split(archiver.Spec.Date, "-")
-	if len(parts) == 3 {
-		return fmt.Sprintf("/data/%s/%s/%s/%s", archiver.Spec.Feed, parts[0], parts[1], parts[2])
-	}
-	return fmt.Sprintf("/data/%s/%s", archiver.Spec.Feed, archiver.Spec.Date)
 }
 
 // SetupWithManager sets up the controller with the Manager.
