@@ -372,6 +372,16 @@ func (r *NotifierReconciler) deploymentNeedsUpdate(current, desired *appsv1.Depl
 	return false
 }
 
+// getEnvValue returns the value of an env var by name
+func getEnvValue(envs []corev1.EnvVar, name string) string {
+	for _, e := range envs {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
+}
+
 // updateStatus updates the Notifier status based on Deployment state
 func (r *NotifierReconciler) updateStatus(ctx context.Context, notifier *ssmdv1alpha1.Notifier) error {
 	deploymentName := r.deploymentName(notifier)
