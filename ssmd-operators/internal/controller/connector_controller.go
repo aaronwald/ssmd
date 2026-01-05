@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -98,7 +99,8 @@ func (r *ConnectorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	// Requeue every 30 seconds to update metrics
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 // reconcileDelete handles cleanup when the Connector is deleted
