@@ -14,13 +14,15 @@ import { handleBacktest } from "./backtest.ts";
 import { handleSecmaster } from "./secmaster.ts";
 import { handleFees } from "./fees.ts";
 import { handleSignal } from "./signal.ts";
+import { handleSignalDeploy } from "./signal-deploy.ts";
+import { handleNotifierDeploy } from "./notifier-deploy.ts";
 import { handleDay } from "./day.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
-    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image"],
-    boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait"],
-    alias: { h: "help", v: "version", t: "type", e: "endpoint" },
+    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail"],
+    boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait", "follow"],
+    alias: { h: "help", v: "version", t: "type", e: "endpoint", f: "follow" },
     default: { wait: true },
   });
 
@@ -65,12 +67,23 @@ export async function run(args: string[]): Promise<void> {
       await handleFees(subcommand, flags);
       break;
 
-    case "signal":
-      await handleSignal(subcommand, flags);
+    case "signal": {
+      // CR management commands go to signal-deploy
+      if (["deploy", "status", "logs", "delete"].includes(subcommand)) {
+        await handleSignalDeploy(subcommand, flags);
+      } else {
+        // Local signal commands (list, run, subscribe)
+        await handleSignal(subcommand, flags);
+      }
       break;
+    }
 
     case "day":
       await handleDay(subcommand, flags);
+      break;
+
+    case "notifier":
+      await handleNotifierDeploy(subcommand, flags);
       break;
 
     case "agent":
@@ -152,7 +165,8 @@ function printHelp(): void {
   console.log("  secmaster         Security master database operations");
   console.log("  fees              Fee schedule database operations");
   console.log("  backtest          Run signal backtests");
-  console.log("  signal            Run signals in real-time");
+  console.log("  signal            Run signals locally or manage Signal CRs");
+  console.log("  notifier          Manage Notifier CRs in Kubernetes");
   console.log("  day               Manage trading day lifecycle");
   console.log("  agent             Start interactive agent REPL");
   console.log("");

@@ -4,7 +4,7 @@
 interface SignalDeployFlags {
   _: (string | number)[];
   follow?: boolean;
-  tail?: number;
+  tail?: string;
   namespace?: string;
 }
 
