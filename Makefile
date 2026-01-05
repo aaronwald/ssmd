@@ -1,6 +1,6 @@
 .PHONY: rust-build rust-test rust-clippy rust-clean rust-all
 .PHONY: agent-check agent-test agent-run cli-check
-.PHONY: all test lint clean
+.PHONY: all test lint clean generate-k8s
 
 CARGO := . $$HOME/.cargo/env && cargo
 RUST_DIR := ssmd-rust
@@ -41,3 +41,7 @@ test: rust-test agent-test
 lint: rust-clippy agent-check
 
 clean: rust-clean
+
+# Kubernetes manifest generation
+generate-k8s: ## Generate Kubernetes manifests from feeds
+	@./scripts/generate-k8s.sh
