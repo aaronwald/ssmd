@@ -60,6 +60,11 @@ pub struct TransportConfig {
     #[serde(rename = "type")]
     pub transport_type: TransportType,
     pub url: Option<String>,
+    /// NATS JetStream stream name (e.g., "PROD_KALSHI")
+    pub stream: Option<String>,
+    /// Subject prefix for NATS publishing (e.g., "prod.kalshi.main")
+    /// If not set, defaults to "{env_name}.{feed_name}"
+    pub subject_prefix: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

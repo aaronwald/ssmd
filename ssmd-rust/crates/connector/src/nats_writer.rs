@@ -24,6 +24,7 @@ pub struct NatsWriter {
 }
 
 impl NatsWriter {
+    /// Create a new NatsWriter with default subject prefix: {env_name}.{feed_name}
     pub fn new(
         transport: Arc<dyn Transport>,
         env_name: impl Into<String>,
@@ -32,6 +33,26 @@ impl NatsWriter {
         Self {
             transport,
             subjects: SubjectBuilder::new(env_name, feed_name),
+            message_count: 0,
+        }
+    }
+
+    /// Create a new NatsWriter with a custom subject prefix and stream name.
+    /// Use this for sharding connectors to different NATS streams.
+    ///
+    /// Example:
+    /// ```ignore
+    /// let writer = NatsWriter::with_prefix(transport, "prod.kalshi.main", "PROD_KALSHI");
+    /// // Publishes to: prod.kalshi.main.json.trade.<ticker>
+    /// ```
+    pub fn with_prefix(
+        transport: Arc<dyn Transport>,
+        subject_prefix: impl Into<String>,
+        stream_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            transport,
+            subjects: SubjectBuilder::with_prefix(subject_prefix, stream_name),
             message_count: 0,
         }
     }

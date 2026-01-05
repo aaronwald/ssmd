@@ -95,6 +95,8 @@ mod tests {
             transport: TransportConfig {
                 transport_type: TransportType::Memory,
                 url: None,
+                stream: None,
+                subject_prefix: None,
             },
             storage: StorageConfig {
                 storage_type: StorageType::Local,

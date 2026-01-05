@@ -146,7 +146,7 @@ async fn run_kalshi_connector(
         TransportType::Nats => {
             info!(transport = "nats", "Using NATS writer (raw JSON)");
             let transport = MiddlewareFactory::create_transport(env_config).await?;
-            let writer = NatsWriter::new(transport, &env_config.name, &feed.name);
+            let writer = create_nats_writer(transport, env_config, feed);
             run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
         }
         TransportType::Memory => {
@@ -158,6 +158,33 @@ async fn run_kalshi_connector(
             error!("MQTT transport not yet supported");
             Err("MQTT transport not yet supported".into())
         }
+    }
+}
+
+/// Create NatsWriter with optional custom subject prefix for sharding
+fn create_nats_writer(
+    transport: Arc<dyn ssmd_middleware::Transport>,
+    env_config: &Environment,
+    feed: &Feed,
+) -> NatsWriter {
+    // Use custom subject_prefix and stream if configured, otherwise default
+    if let (Some(ref prefix), Some(ref stream)) = (
+        &env_config.transport.subject_prefix,
+        &env_config.transport.stream,
+    ) {
+        info!(
+            subject_prefix = %prefix,
+            stream = %stream,
+            "Using custom subject prefix for sharding"
+        );
+        NatsWriter::with_prefix(transport, prefix.clone(), stream.clone())
+    } else {
+        // Default: use {env_name}.{feed_name} as prefix
+        info!(
+            subject_prefix = format!("{}.{}", env_config.name, feed.name),
+            "Using default subject prefix"
+        );
+        NatsWriter::new(transport, &env_config.name, &feed.name)
     }
 }
 
@@ -251,7 +278,7 @@ async fn run_generic_connector(
             info!(transport = "nats", "Using NATS writer (raw JSON)");
             let transport = MiddlewareFactory::create_transport(env_config).await?;
             let connector = WebSocketConnector::new(&url, creds);
-            let writer = NatsWriter::new(transport, &env_config.name, &feed.name);
+            let writer = create_nats_writer(transport, env_config, feed);
             run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
         }
         TransportType::Memory => {
