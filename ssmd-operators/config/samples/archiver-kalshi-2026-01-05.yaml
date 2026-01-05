@@ -4,13 +4,13 @@ metadata:
   name: kalshi-2026-01-05
   namespace: ssmd
 spec:
-  feed: kalshi
   date: "2026-01-05"
   image: ghcr.io/aaronwald/ssmd-archiver:0.4.8
   source:
     stream: PROD_KALSHI
     url: nats://nats.nats.svc.cluster.local:4222
     consumer: archiver-2026-01-05
+    filter: "prod.kalshi.json.>"
   storage:
     local:
       path: /data/ssmd/kalshi/2026/01/05
