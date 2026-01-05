@@ -1,0 +1,25 @@
+apiVersion: ssmd.ssmd.io/v1alpha1
+kind: Connector
+metadata:
+  name: kalshi-2026-01-05
+  namespace: ssmd
+spec:
+  feed: kalshi
+  date: "2026-01-05"
+  image: ghcr.io/aaronwald/ssmd-connector:0.4.7
+  transport:
+    type: nats
+    url: nats://nats.nats.svc.cluster.local:4222
+    stream: PROD_KALSHI
+    subjectPrefix: prod.kalshi
+  secretRef:
+    name: ssmd-kalshi-credentials
+    apiKeyField: api-key
+    privateKeyField: private-key
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
