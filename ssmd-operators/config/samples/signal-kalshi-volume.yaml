@@ -1,0 +1,20 @@
+apiVersion: ssmd.ssmd.io/v1alpha1
+kind: Signal
+metadata:
+  name: kalshi-volume
+  namespace: ssmd
+spec:
+  signals:
+    - volume-1m-30min
+  image: ghcr.io/aaronwald/ssmd-signal-runner:0.1.1
+  source:
+    stream: PROD_KALSHI
+    natsUrl: nats://nats.nats.svc.cluster.local:4222
+  outputPrefix: signals
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

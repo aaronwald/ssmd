@@ -211,6 +211,13 @@ versions:
 	envConfig := fmt.Sprintf(`name: prod
 feed: %s
 schema: trade:v1
+keys:
+  %s:
+    type: api_key
+    fields:
+      - api_key
+      - private_key
+    source: "env:KALSHI_API_KEY,KALSHI_PRIVATE_KEY"
 transport:
   type: nats
   url: %s
@@ -218,7 +225,7 @@ transport:
   subject_prefix: %s
 storage:
   type: local
-`, connector.Spec.Feed, natsURL, stream, subjectPrefix)
+`, connector.Spec.Feed, connector.Spec.Feed, natsURL, stream, subjectPrefix)
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
