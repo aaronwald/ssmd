@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -51,6 +52,7 @@ type ArchiverReconciler struct {
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=archivers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=archivers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
@@ -116,8 +118,19 @@ func (r *ArchiverReconciler) reconcileDelete(ctx context.Context, archiver *ssmd
 	if controllerutil.ContainsFinalizer(archiver, archiverFinalizer) {
 		log.Info("Cleaning up Archiver resources", "name", archiver.Name)
 
-		// TODO: Trigger final GCS sync if sync.onDelete == "final"
-		// For now, just clean up resources
+		// Create final sync job if sync is enabled and onDelete == "final"
+		if archiver.Spec.Sync != nil && archiver.Spec.Sync.Enabled && archiver.Spec.Sync.OnDelete == "final" {
+			if archiver.Spec.Storage != nil && archiver.Spec.Storage.Remote != nil && archiver.Spec.Storage.Remote.Bucket != "" {
+				log.Info("Creating final sync job before cleanup")
+				job := r.constructSyncJob(archiver)
+				if err := r.Create(ctx, job); err != nil && !errors.IsAlreadyExists(err) {
+					log.Error(err, "Failed to create final sync job")
+					// Don't block deletion, just log the error
+				} else {
+					log.Info("Final sync job created", "job", job.Name)
+				}
+			}
+		}
 
 		// Delete the Deployment
 		deploymentName := r.deploymentName(archiver)
@@ -549,6 +562,83 @@ func (r *ArchiverReconciler) updateStatus(ctx context.Context, archiver *ssmdv1a
 // deploymentName returns the Deployment name for an Archiver
 func (r *ArchiverReconciler) deploymentName(archiver *ssmdv1alpha1.Archiver) string {
 	return fmt.Sprintf("%s-archiver", archiver.Name)
+}
+
+// constructSyncJob builds a Job to sync local data to GCS on archiver deletion
+func (r *ArchiverReconciler) constructSyncJob(archiver *ssmdv1alpha1.Archiver) *batchv1.Job {
+	labels := map[string]string{
+		"app.kubernetes.io/name":       "ssmd-archiver-sync",
+		"app.kubernetes.io/instance":   archiver.Name,
+		"app.kubernetes.io/managed-by": "ssmd-operator",
+		"ssmd.io/date":                 archiver.Spec.Date,
+	}
+
+	// Build the gsutil rsync command
+	localPath := "/data/ssmd/"
+	if archiver.Spec.Storage.Local != nil && archiver.Spec.Storage.Local.Path != "" {
+		localPath = archiver.Spec.Storage.Local.Path
+		if !strings.HasSuffix(localPath, "/") {
+			localPath += "/"
+		}
+	}
+
+	remotePath := fmt.Sprintf("gs://%s/", archiver.Spec.Storage.Remote.Bucket)
+	if archiver.Spec.Storage.Remote.Prefix != "" {
+		remotePath = fmt.Sprintf("gs://%s/%s/", archiver.Spec.Storage.Remote.Bucket, archiver.Spec.Storage.Remote.Prefix)
+	}
+
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-final-sync", archiver.Name),
+			Namespace: archiver.Namespace,
+			Labels:    labels,
+		},
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					RestartPolicy: corev1.RestartPolicyNever,
+					Containers: []corev1.Container{{
+						Name:  "sync",
+						Image: "gcr.io/google.com/cloudsdktool/google-cloud-cli:slim",
+						Command: []string{
+							"gsutil", "-m", "rsync", "-r",
+							localPath,
+							remotePath,
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "data", MountPath: "/data"},
+							{Name: "gcs-credentials", MountPath: "/etc/gcs", ReadOnly: true},
+						},
+						Env: []corev1.EnvVar{{
+							Name:  "GOOGLE_APPLICATION_CREDENTIALS",
+							Value: "/etc/gcs/key.json",
+						}},
+					}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "data",
+							VolumeSource: corev1.VolumeSource{
+								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+									ClaimName: archiver.Spec.Storage.Local.PVCName,
+								},
+							},
+						},
+						{
+							Name: "gcs-credentials",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: archiver.Spec.Storage.Remote.SecretRef,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
