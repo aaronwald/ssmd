@@ -6,7 +6,7 @@ metadata:
 spec:
   feed: kalshi
   date: "2026-01-05"
-  image: ghcr.io/aaronwald/ssmd-connector:0.4.7
+  image: ghcr.io/aaronwald/ssmd-connector:0.4.9
   transport:
     type: nats
     url: nats://nats.nats.svc.cluster.local:4222
