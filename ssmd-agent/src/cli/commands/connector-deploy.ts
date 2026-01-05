@@ -6,6 +6,13 @@ interface ConnectorDeployFlags {
   follow?: boolean;
   tail?: string;
   namespace?: string;
+  // Flags for 'new' command
+  feed?: string;
+  date?: string;
+  stream?: string;
+  "subject-prefix"?: string;
+  image?: string;
+  output?: string;
 }
 
 const DEFAULT_NAMESPACE = "ssmd";
@@ -17,6 +24,9 @@ export async function handleConnectorDeploy(
   const ns = flags.namespace ?? DEFAULT_NAMESPACE;
 
   switch (subcommand) {
+    case "new":
+      await newConnector(flags, ns);
+      break;
     case "deploy":
       await deployConnector(flags, ns);
       break;
@@ -36,6 +46,83 @@ export async function handleConnectorDeploy(
       console.error(`Unknown connector-deploy command: ${subcommand}`);
       printConnectorDeployHelp();
       Deno.exit(1);
+  }
+}
+
+const DEFAULT_IMAGE = "ghcr.io/aaronwald/ssmd-connector:0.4.9";
+
+async function newConnector(flags: ConnectorDeployFlags, ns: string): Promise<void> {
+  const name = flags._[2] as string;
+
+  if (!name) {
+    console.error("Usage: ssmd connector new <name> --feed <feed> --stream <stream> --subject-prefix <prefix> [options]");
+    console.error("\nRequired flags:");
+    console.error("  --feed            Feed name (e.g., kalshi)");
+    console.error("  --stream          NATS stream name (e.g., PROD_KALSHI)");
+    console.error("  --subject-prefix  Subject prefix (e.g., prod.kalshi.main)");
+    console.error("\nOptional flags:");
+    console.error("  --date            Date (default: today, YYYY-MM-DD)");
+    console.error("  --image           Container image (default: " + DEFAULT_IMAGE + ")");
+    console.error("  --output          Output file (default: stdout)");
+    Deno.exit(1);
+  }
+
+  const feed = flags.feed;
+  const stream = flags.stream;
+  const subjectPrefix = flags["subject-prefix"];
+
+  if (!feed || !stream || !subjectPrefix) {
+    console.error("Error: --feed, --stream, and --subject-prefix are required");
+    console.error("\nExample:");
+    console.error("  ssmd connector new kalshi-economics-2026-01-05 \\");
+    console.error("    --feed kalshi \\");
+    console.error("    --stream PROD_KALSHI_ECONOMICS \\");
+    console.error("    --subject-prefix prod.kalshi.economics");
+    Deno.exit(1);
+  }
+
+  // Default date to today
+  const date = flags.date ?? new Date().toISOString().split("T")[0];
+  const image = flags.image ?? DEFAULT_IMAGE;
+
+  const yaml = `apiVersion: ssmd.ssmd.io/v1alpha1
+kind: Connector
+metadata:
+  name: ${name}
+  namespace: ${ns}
+spec:
+  feed: ${feed}
+  date: "${date}"
+  image: ${image}
+  # Add feed-specific fields here (e.g., categories for Kalshi)
+  # categories:
+  #   - Politics
+  transport:
+    type: nats
+    url: nats://nats.nats.svc.cluster.local:4222
+    stream: ${stream}
+    subjectPrefix: ${subjectPrefix}
+  secretRef:
+    name: ssmd-${feed}-credentials
+    apiKeyField: api-key
+    privateKeyField: private-key
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+`;
+
+  if (flags.output) {
+    await Deno.writeTextFile(flags.output, yaml);
+    console.log(`Wrote connector YAML to ${flags.output}`);
+    console.log("\nNext steps:");
+    console.log(`  1. Edit ${flags.output} to add feed-specific fields (e.g., categories)`);
+    console.log(`  2. ssmd connector deploy ${flags.output}`);
+  } else {
+    console.log(yaml);
   }
 }
 
@@ -325,24 +412,36 @@ export function formatAge(timestamp: string): string {
 }
 
 export function printConnectorDeployHelp(): void {
-  console.log("Usage: ssmd connector <deploy-command> [options]");
+  console.log("Usage: ssmd connector <command> [options]");
   console.log();
   console.log("Kubernetes Connector CR Management Commands:");
+  console.log("  new <name>             Generate a new Connector CR YAML");
   console.log("  deploy <file.yaml>     Deploy a Connector CR from YAML file");
   console.log("  list                   List all Connector CRs");
   console.log("  status <name>          Show detailed Connector status");
   console.log("  logs <name>            Show logs from Connector pod");
   console.log("  delete <name>          Delete a Connector CR");
   console.log();
-  console.log("Options:");
+  console.log("Options for 'new':");
+  console.log("  --feed <feed>          Feed name (required, e.g., kalshi)");
+  console.log("  --stream <stream>      NATS stream name (required, e.g., PROD_KALSHI)");
+  console.log("  --subject-prefix <p>   Subject prefix (required, e.g., prod.kalshi.main)");
+  console.log("  --date <YYYY-MM-DD>    Date (default: today)");
+  console.log("  --image <image>        Container image (default: latest)");
+  console.log("  --output <file>        Output file (default: stdout)");
+  console.log();
+  console.log("Options for other commands:");
   console.log("  --namespace NS         Kubernetes namespace (default: ssmd)");
   console.log("  --follow, -f           Follow log output (logs command)");
   console.log("  --tail N               Number of lines to show (logs command)");
   console.log();
   console.log("Examples:");
-  console.log("  ssmd connector deploy connectors/kalshi-2026-01-04.yaml");
+  console.log("  ssmd connector new kalshi-economics-2026-01-05 \\");
+  console.log("    --feed kalshi --stream PROD_KALSHI_ECONOMICS \\");
+  console.log("    --subject-prefix prod.kalshi.economics --output connector.yaml");
+  console.log("  ssmd connector deploy connector.yaml");
   console.log("  ssmd connector list");
-  console.log("  ssmd connector status kalshi-2026-01-04");
-  console.log("  ssmd connector logs kalshi-2026-01-04 --follow --tail 100");
-  console.log("  ssmd connector delete kalshi-2026-01-04");
+  console.log("  ssmd connector status kalshi-2026-01-05");
+  console.log("  ssmd connector logs kalshi-2026-01-05 --follow --tail 100");
+  console.log("  ssmd connector delete kalshi-2026-01-05");
 }

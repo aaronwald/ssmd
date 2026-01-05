@@ -6,6 +6,16 @@ interface ArchiverDeployFlags {
   follow?: boolean;
   tail?: string;
   namespace?: string;
+  // Flags for 'new' command
+  date?: string;
+  stream?: string;
+  filter?: string;
+  "local-path"?: string;
+  "pvc-name"?: string;
+  "gcs-bucket"?: string;
+  "gcs-prefix"?: string;
+  image?: string;
+  output?: string;
 }
 
 const DEFAULT_NAMESPACE = "ssmd";
@@ -17,6 +27,9 @@ export async function handleArchiverDeploy(
   const ns = flags.namespace ?? DEFAULT_NAMESPACE;
 
   switch (subcommand) {
+    case "new":
+      await newArchiver(flags, ns);
+      break;
     case "deploy":
       await deployArchiver(flags, ns);
       break;
@@ -36,6 +49,94 @@ export async function handleArchiverDeploy(
       console.error(`Unknown archiver-deploy command: ${subcommand}`);
       printArchiverDeployHelp();
       Deno.exit(1);
+  }
+}
+
+const DEFAULT_IMAGE = "ghcr.io/aaronwald/ssmd-archiver:0.4.8";
+
+async function newArchiver(flags: ArchiverDeployFlags, ns: string): Promise<void> {
+  const name = flags._[2] as string;
+
+  if (!name) {
+    console.error("Usage: ssmd archiver new <name> --stream <stream> --filter <filter> [options]");
+    console.error("\nRequired flags:");
+    console.error("  --stream          NATS stream name (e.g., PROD_KALSHI)");
+    console.error("  --filter          NATS subject filter (e.g., prod.kalshi.main.json.>)");
+    console.error("\nOptional flags:");
+    console.error("  --date            Date (default: today, YYYY-MM-DD)");
+    console.error("  --local-path      Local storage path (default: /data/ssmd/<feed>/<date>)");
+    console.error("  --pvc-name        PVC name (default: ssmd-archiver-data)");
+    console.error("  --gcs-bucket      GCS bucket for remote sync");
+    console.error("  --gcs-prefix      GCS prefix (default: derived from date)");
+    console.error("  --image           Container image (default: " + DEFAULT_IMAGE + ")");
+    console.error("  --output          Output file (default: stdout)");
+    Deno.exit(1);
+  }
+
+  const stream = flags.stream;
+  const filter = flags.filter;
+
+  if (!stream || !filter) {
+    console.error("Error: --stream and --filter are required");
+    console.error("\nExample:");
+    console.error("  ssmd archiver new kalshi-2026-01-05 \\");
+    console.error("    --stream PROD_KALSHI \\");
+    console.error("    --filter prod.kalshi.main.json.>");
+    Deno.exit(1);
+  }
+
+  // Default date to today
+  const date = flags.date ?? new Date().toISOString().split("T")[0];
+  const [year, month, day] = date.split("-");
+  const image = flags.image ?? DEFAULT_IMAGE;
+  const localPath = flags["local-path"] ?? `/data/ssmd/kalshi/${year}/${month}/${day}`;
+  const pvcName = flags["pvc-name"] ?? "ssmd-archiver-data";
+  const gcsBucket = flags["gcs-bucket"] ?? "ssmd-archive";
+  const gcsPrefix = flags["gcs-prefix"] ?? `kalshi/${year}/${month}/${day}`;
+
+  const yaml = `apiVersion: ssmd.ssmd.io/v1alpha1
+kind: Archiver
+metadata:
+  name: ${name}
+  namespace: ${ns}
+spec:
+  date: "${date}"
+  image: ${image}
+  source:
+    stream: ${stream}
+    url: nats://nats.nats.svc.cluster.local:4222
+    consumer: archiver-${date}
+    filter: "${filter}"
+  storage:
+    local:
+      path: ${localPath}
+      pvcName: ${pvcName}
+    remote:
+      type: gcs
+      bucket: ${gcsBucket}
+      prefix: ${gcsPrefix}
+      secretRef: gcs-credentials
+  rotation:
+    maxFileAge: "15m"
+  sync:
+    enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+`;
+
+  if (flags.output) {
+    await Deno.writeTextFile(flags.output, yaml);
+    console.log(`Wrote archiver YAML to ${flags.output}`);
+    console.log("\nNext steps:");
+    console.log(`  1. Review ${flags.output} and adjust settings as needed`);
+    console.log(`  2. ssmd archiver deploy ${flags.output}`);
+  } else {
+    console.log(yaml);
   }
 }
 
@@ -377,24 +478,39 @@ function formatBytes(bytes: number): string {
 }
 
 export function printArchiverDeployHelp(): void {
-  console.log("Usage: ssmd archiver <deploy-command> [options]");
+  console.log("Usage: ssmd archiver <command> [options]");
   console.log();
   console.log("Kubernetes Archiver CR Management Commands:");
+  console.log("  new <name>             Generate a new Archiver CR YAML");
   console.log("  deploy <file.yaml>     Deploy an Archiver CR from YAML file");
   console.log("  list                   List all Archiver CRs");
   console.log("  status <name>          Show detailed Archiver status");
   console.log("  logs <name>            Show logs from Archiver pod");
   console.log("  delete <name>          Delete an Archiver CR");
   console.log();
-  console.log("Options:");
+  console.log("Options for 'new':");
+  console.log("  --stream <stream>      NATS stream name (required, e.g., PROD_KALSHI)");
+  console.log("  --filter <filter>      NATS subject filter (required, e.g., prod.kalshi.main.json.>)");
+  console.log("  --date <YYYY-MM-DD>    Date (default: today)");
+  console.log("  --local-path <path>    Local storage path");
+  console.log("  --pvc-name <name>      PVC name (default: ssmd-archiver-data)");
+  console.log("  --gcs-bucket <bucket>  GCS bucket (default: ssmd-archive)");
+  console.log("  --gcs-prefix <prefix>  GCS prefix");
+  console.log("  --image <image>        Container image (default: latest)");
+  console.log("  --output <file>        Output file (default: stdout)");
+  console.log();
+  console.log("Options for other commands:");
   console.log("  --namespace NS         Kubernetes namespace (default: ssmd)");
   console.log("  --follow, -f           Follow log output (logs command)");
   console.log("  --tail N               Number of lines to show (logs command)");
   console.log();
   console.log("Examples:");
-  console.log("  ssmd archiver deploy archivers/kalshi-2026-01-04.yaml");
+  console.log("  ssmd archiver new kalshi-2026-01-05 \\");
+  console.log("    --stream PROD_KALSHI --filter prod.kalshi.main.json.> \\");
+  console.log("    --output archiver.yaml");
+  console.log("  ssmd archiver deploy archiver.yaml");
   console.log("  ssmd archiver list");
-  console.log("  ssmd archiver status kalshi-2026-01-04");
-  console.log("  ssmd archiver logs kalshi-2026-01-04 --follow --tail 100");
-  console.log("  ssmd archiver delete kalshi-2026-01-04");
+  console.log("  ssmd archiver status kalshi-2026-01-05");
+  console.log("  ssmd archiver logs kalshi-2026-01-05 --follow --tail 100");
+  console.log("  ssmd archiver delete kalshi-2026-01-05");
 }
