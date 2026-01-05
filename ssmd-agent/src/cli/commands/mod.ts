@@ -14,12 +14,14 @@ import { handleBacktest } from "./backtest.ts";
 import { handleSecmaster } from "./secmaster.ts";
 import { handleFees } from "./fees.ts";
 import { handleSignal } from "./signal.ts";
+import { handleDay } from "./day.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
-    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject"],
-    boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console"],
+    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image"],
+    boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait"],
     alias: { h: "help", v: "version", t: "type", e: "endpoint" },
+    default: { wait: true },
   });
 
   const command = flags._[0] as string;
@@ -65,6 +67,10 @@ export async function run(args: string[]): Promise<void> {
 
     case "signal":
       await handleSignal(subcommand, flags);
+      break;
+
+    case "day":
+      await handleDay(subcommand, flags);
       break;
 
     case "agent":
@@ -147,6 +153,7 @@ function printHelp(): void {
   console.log("  fees              Fee schedule database operations");
   console.log("  backtest          Run signal backtests");
   console.log("  signal            Run signals in real-time");
+  console.log("  day               Manage trading day lifecycle");
   console.log("  agent             Start interactive agent REPL");
   console.log("");
   console.log("OPTIONS:");
