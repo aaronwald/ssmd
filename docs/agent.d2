@@ -6,7 +6,12 @@ refdata: Reference Data {
   postgres: PostgreSQL {
     shape: cylinder
   }
+  redis: Redis {
+    shape: cylinder
+    style.fill: "#ffcdd2"
+  }
   api -> postgres
+  api -> redis: cache
 }
 
 capture: Data Capture {
@@ -18,6 +23,14 @@ capture: Data Capture {
   nats -> archiver
 }
 
+llm: LLM Providers {
+  style.fill: "#fce4ec"
+  anthropic: Anthropic API
+  openrouter: OpenRouter Proxy {
+    style.fill: "#f8bbd9"
+  }
+}
+
 agent: Agent (ssmd-agent) {
   style.fill: "#f3e5f5"
 
@@ -26,12 +39,22 @@ agent: Agent (ssmd-agent) {
   }
   repl: LangGraph REPL
 
+  guardrails: Guardrails {
+    style.fill: "#ffebee"
+    example: |md
+      - Input: message trimming
+      - Output: toxicity, hallucination
+      - Tool: trading approval
+    |
+  }
+
   tools: Tools {
     style.fill: "#e0f2f1"
     example: |md
-      - get_events / get_markets
+      - list_events / list_markets
       - get_fee_schedule
       - run_backtest
+      - get_today
     |
   }
 
@@ -39,12 +62,13 @@ agent: Agent (ssmd-agent) {
     style.fill: "#fff8e1"
     example: |md
       - VolumeProfileBuilder
-      - (more planned)
+      - OrderbookBuilder
     |
   }
 
   prompts -> repl
-  repl -> tools
+  repl -> guardrails
+  guardrails -> tools
   repl -> builders
 }
 
@@ -53,6 +77,13 @@ signals: signals/*.ts {
   style.fill: "#f3e5f5"
 }
 
+usage: Usage Tracking {
+  style.fill: "#e3f2fd"
+  shape: cylinder
+}
+
 refdata.api -> agent.tools: HTTP API
 capture.nats -> agent.builders: {style.stroke-dash: 3}
 agent -> signals: generates
+llm -> agent.repl: completions
+agent.repl -> usage: track tokens

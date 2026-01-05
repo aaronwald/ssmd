@@ -33,6 +33,18 @@ refdata: Reference Data {
     shape: cylinder
     style.fill: "#a5d6a7"
   }
+  cdc: ssmd-cdc {
+    shape: rectangle
+    style.fill: "#c8e6c9"
+  }
+  cache: ssmd-cache {
+    shape: rectangle
+    style.fill: "#c8e6c9"
+  }
+  redis: Redis {
+    shape: cylinder
+    style.fill: "#ffcdd2"
+  }
   api: ssmd-data-ts {
     shape: rectangle
     style.fill: "#c8e6c9"
@@ -40,11 +52,17 @@ refdata: Reference Data {
 
   cli -> api: HTTP API
   api -> postgres
+  api -> redis: cache reads
+  postgres -> cdc: CDC stream
+  cdc -> capture.nats: cdc.>
+  capture.nats -> cache: CDC events
+  cache -> redis: populate
+  cache -> postgres: warm from DB
 }
 
 runtime: Signal Runtime {
   style.fill: "#e1f5fe"
-  runner: ssmd signal run {
+  runner: ssmd-signal-runner {
     shape: rectangle
     style.fill: "#b3e5fc"
   }
@@ -52,6 +70,16 @@ runtime: Signal Runtime {
 
 agent: Agent (ssmd-agent) {
   style.fill: "#f3e5f5"
+}
+
+admin: ssmd-admin {
+  style.fill: "#ede7f6"
+  shape: rectangle
+}
+
+operators: ssmd-operators {
+  style.fill: "#e0f7fa"
+  shape: hexagon
 }
 
 git: Git {
@@ -66,3 +94,5 @@ runtime.runner -> capture.nats: signals.*.fires
 refdata -> agent: {style.stroke-dash: 3}
 capture -> agent: {style.stroke-dash: 3}
 agent -> git
+admin -> refdata.api: HTTP API
+operators -> capture: manages CRs {style.stroke-dash: 3}
