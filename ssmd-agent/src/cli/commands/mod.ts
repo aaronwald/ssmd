@@ -16,6 +16,8 @@ import { handleFees } from "./fees.ts";
 import { handleSignal } from "./signal.ts";
 import { handleSignalDeploy } from "./signal-deploy.ts";
 import { handleNotifierDeploy } from "./notifier-deploy.ts";
+import { handleConnectorDeploy } from "./connector-deploy.ts";
+import { handleArchiverDeploy } from "./archiver-deploy.ts";
 import { handleDay } from "./day.ts";
 
 export async function run(args: string[]): Promise<void> {
@@ -84,6 +86,14 @@ export async function run(args: string[]): Promise<void> {
 
     case "notifier":
       await handleNotifierDeploy(subcommand, flags);
+      break;
+
+    case "connector":
+      await handleConnectorDeploy(subcommand, flags);
+      break;
+
+    case "archiver":
+      await handleArchiverDeploy(subcommand, flags);
       break;
 
     case "agent":
@@ -167,6 +177,8 @@ function printHelp(): void {
   console.log("  backtest          Run signal backtests");
   console.log("  signal            Run signals locally or manage Signal CRs");
   console.log("  notifier          Manage Notifier CRs in Kubernetes");
+  console.log("  connector         Manage Connector CRs in Kubernetes");
+  console.log("  archiver          Manage Archiver CRs in Kubernetes");
   console.log("  day               Manage trading day lifecycle");
   console.log("  agent             Start interactive agent REPL");
   console.log("");
