@@ -283,10 +283,18 @@ func (r *SignalReconciler) constructDeployment(signal *ssmdv1alpha1.Signal) *app
 	replicas := int32(1)
 
 	// Build container with config file mount
+	// Note: Args override CMD in Dockerfile, so we must include the full deno run command
 	container := corev1.Container{
 		Name:  "signal-runner",
 		Image: signal.Spec.Image,
-		Args:  []string{"--config", "/config/signal.yaml"},
+		Args: []string{
+			"run",
+			"--allow-net",
+			"--allow-env",
+			"--allow-read",
+			"src/cli/commands/signal-runner.ts",
+			"--config", "/config/signal.yaml",
+		},
 		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:      "config",
