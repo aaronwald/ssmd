@@ -4,11 +4,13 @@ nats: NATS JetStream {
   shape: cylinder
   style.fill: "#ffecb3"
 
-  market_data: prod.kalshi.> {
+  market_data: PROD_KALSHI {
     shape: queue
+    label: prod.kalshi.>
   }
-  fires: signals.*.fires {
+  fires: SIGNAL_FIRES {
     shape: queue
+    label: signals.*.fires
   }
 }
 
@@ -52,15 +54,30 @@ runtime: Signal Runtime {
   runner -> sink
 }
 
+daemon: ssmd-signal-runner {
+  style.fill: "#c5cae9"
+  shape: hexagon
+  label: Daemon Mode
+}
+
 cli: CLI {
   style.fill: "#e8f5e9"
   list: ssmd signal list
   run: ssmd signal run
+  runner_cmd: ssmd signal runner
   sub: ssmd signal subscribe
 }
 
+archives: JSONL.gz Archives {
+  style.fill: "#fff8e1"
+  shape: cylinder
+}
+
 nats.market_data -> runtime.source.nats_source: subscribe
+archives -> runtime.source.file_source: backtest
 runtime.sink.nats_sink -> nats.fires: publish
 signals -> runtime.runner: load
-cli -> runtime: executes
+cli.run -> runtime: ad-hoc
+cli.runner_cmd -> daemon: multi-signal
+daemon -> runtime: executes
 cli.sub -> nats.fires: subscribe

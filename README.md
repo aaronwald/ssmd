@@ -30,13 +30,37 @@ A homelab-friendly market data system. Capture, archive, and analyze market data
 
 ## Components
 
-| Component | Language | Purpose |
-|-----------|----------|---------|
-| **ssmd** | Deno/TypeScript | CLI for metadata, syncs, and backtesting |
-| **ssmd-connector** | Rust | WebSocket → NATS publisher |
-| **ssmd-archiver** | Rust | NATS → JSONL.gz files |
-| **ssmd-data-ts** | Deno/TypeScript | HTTP API for archived data |
-| **ssmd-agent** | Deno/TypeScript | LangGraph REPL for signal development |
+### Core Pipeline (Rust)
+
+| Component | Image | Purpose |
+|-----------|-------|---------|
+| **ssmd-connector** | `ghcr.io/aaronwald/ssmd-connector` | WebSocket → NATS publisher |
+| **ssmd-archiver** | `ghcr.io/aaronwald/ssmd-archiver` | NATS → JSONL.gz files |
+| **ssmd-cdc** | `ghcr.io/aaronwald/ssmd-cdc` | PostgreSQL CDC → NATS publisher |
+| **ssmd-cache** | `ghcr.io/aaronwald/ssmd-cache` | Redis cache warmer from CDC/PostgreSQL |
+
+### TypeScript Services (Deno)
+
+| Component | Image | Purpose |
+|-----------|-------|---------|
+| **ssmd** (CLI) | `ghcr.io/aaronwald/ssmd-cli-ts` | CLI for metadata, syncs, and backtesting |
+| **ssmd-data-ts** | `ghcr.io/aaronwald/ssmd-data-ts` | HTTP API for market data and secmaster |
+| **ssmd-agent** | `ghcr.io/aaronwald/ssmd-agent` | LangGraph REPL for signal development |
+| **ssmd-signal-runner** | `ghcr.io/aaronwald/ssmd-signal-runner` | Real-time signal computation daemon |
+
+### Operators (Go)
+
+| Component | Image | Purpose |
+|-----------|-------|---------|
+| **ssmd-operators** | `ghcr.io/aaronwald/ssmd-operator` | Kubernetes operators for pipeline CRDs |
+
+### Admin UI (Next.js)
+
+| Component | Image | Purpose |
+|-----------|-------|---------|
+| **ssmd-admin** | `ghcr.io/aaronwald/ssmd-admin` | Web UI for API keys, stats, settings |
+
+> **Note:** ssmd-admin source is in varlab repo (`varlab/apps/ssmd-admin`)
 
 ## Quick Start
 
