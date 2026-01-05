@@ -1,0 +1,348 @@
+// connector-deploy.ts - Connector CR deployment management
+// Manages Connector CRs via kubectl (kubernetes deployment lifecycle)
+
+interface ConnectorDeployFlags {
+  _: (string | number)[];
+  follow?: boolean;
+  tail?: string;
+  namespace?: string;
+}
+
+const DEFAULT_NAMESPACE = "ssmd";
+
+export async function handleConnectorDeploy(
+  subcommand: string,
+  flags: ConnectorDeployFlags
+): Promise<void> {
+  const ns = flags.namespace ?? DEFAULT_NAMESPACE;
+
+  switch (subcommand) {
+    case "deploy":
+      await deployConnector(flags, ns);
+      break;
+    case "list":
+      await listConnectors(ns);
+      break;
+    case "status":
+      await statusConnector(flags, ns);
+      break;
+    case "logs":
+      await logsConnector(flags, ns);
+      break;
+    case "delete":
+      await deleteConnector(flags, ns);
+      break;
+    default:
+      console.error(`Unknown connector-deploy command: ${subcommand}`);
+      printConnectorDeployHelp();
+      Deno.exit(1);
+  }
+}
+
+async function deployConnector(flags: ConnectorDeployFlags, ns: string): Promise<void> {
+  const file = flags._[2] as string;
+
+  if (!file) {
+    console.error("Usage: ssmd connector deploy <file.yaml>");
+    Deno.exit(1);
+  }
+
+  // Check if file exists
+  try {
+    await Deno.stat(file);
+  } catch {
+    console.error(`File not found: ${file}`);
+    Deno.exit(1);
+  }
+
+  console.log(`Deploying Connector from ${file}...`);
+
+  try {
+    const output = await kubectl(["apply", "-f", file, "-n", ns]);
+    console.log(output.trim());
+  } catch (e) {
+    console.error(`Failed to deploy: ${e instanceof Error ? e.message : e}`);
+    Deno.exit(1);
+  }
+}
+
+async function listConnectors(ns: string): Promise<void> {
+  console.log("Connector CRs:\n");
+  console.log(
+    "NAME".padEnd(30) +
+    "FEED".padEnd(10) +
+    "DATE".padEnd(12) +
+    "PHASE".padEnd(12) +
+    "MESSAGES".padEnd(12) +
+    "AGE"
+  );
+  console.log(
+    "----".padEnd(30) +
+    "----".padEnd(10) +
+    "----".padEnd(12) +
+    "-----".padEnd(12) +
+    "--------".padEnd(12) +
+    "---"
+  );
+
+  try {
+    // Get connectors with all needed fields
+    const connectors = await kubectl([
+      "get", "connector", "-n", ns,
+      "-o", "jsonpath={range .items[*]}{.metadata.name}|{.spec.feed}|{.spec.date}|{.status.phase}|{.status.messagesPublished}|{.metadata.creationTimestamp}\\n{end}"
+    ]).catch(() => "");
+
+    if (!connectors.trim()) {
+      console.log("(no connectors found)");
+      return;
+    }
+
+    for (const line of connectors.split("\n").filter(Boolean)) {
+      const [name, feed, date, phase, messages, createdAt] = line.split("|");
+
+      const age = createdAt ? formatAge(createdAt) : "-";
+      const msgCount = messages ? Number(messages).toLocaleString() : "0";
+
+      console.log(
+        (name || "-").padEnd(30) +
+        (feed || "-").padEnd(10) +
+        (date || "-").padEnd(12) +
+        (phase || "-").padEnd(12) +
+        msgCount.padEnd(12) +
+        age
+      );
+    }
+  } catch (e) {
+    console.error(`Failed to list connectors: ${e instanceof Error ? e.message : e}`);
+    Deno.exit(1);
+  }
+}
+
+async function statusConnector(flags: ConnectorDeployFlags, ns: string): Promise<void> {
+  const name = flags._[2] as string;
+
+  if (!name) {
+    console.error("Usage: ssmd connector status <name>");
+    Deno.exit(1);
+  }
+
+  try {
+    // Get full Connector CR as JSON
+    const connectorJson = await kubectl([
+      "get", "connector", name, "-n", ns, "-o", "json"
+    ]);
+
+    const connector = JSON.parse(connectorJson);
+
+    console.log(`Connector: ${connector.metadata.name}`);
+    console.log(`Namespace: ${connector.metadata.namespace}`);
+    console.log(`Created: ${connector.metadata.creationTimestamp} (${formatAge(connector.metadata.creationTimestamp)})`);
+    console.log();
+
+    // Spec
+    console.log("Spec:");
+    console.log(`  Feed: ${connector.spec.feed || "-"}`);
+    console.log(`  Date: ${connector.spec.date || "-"}`);
+    console.log(`  Image: ${connector.spec.image || "(from feed ConfigMap)"}`);
+    if (connector.spec.replicas !== undefined) {
+      console.log(`  Replicas: ${connector.spec.replicas}`);
+    }
+    if (connector.spec.categories?.length) {
+      console.log(`  Categories: ${connector.spec.categories.join(", ")}`);
+    }
+    if (connector.spec.excludeCategories?.length) {
+      console.log(`  Exclude Categories: ${connector.spec.excludeCategories.join(", ")}`);
+    }
+    console.log();
+
+    // Transport
+    if (connector.spec.transport) {
+      console.log("  Transport:");
+      console.log(`    Type: ${connector.spec.transport.type || "nats"}`);
+      if (connector.spec.transport.url) {
+        console.log(`    URL: ${connector.spec.transport.url}`);
+      }
+      if (connector.spec.transport.stream) {
+        console.log(`    Stream: ${connector.spec.transport.stream}`);
+      }
+      if (connector.spec.transport.subjectPrefix) {
+        console.log(`    Subject Prefix: ${connector.spec.transport.subjectPrefix}`);
+      }
+      console.log();
+    }
+
+    // Secret Reference
+    if (connector.spec.secretRef) {
+      console.log("  Secret Reference:");
+      console.log(`    Name: ${connector.spec.secretRef.name}`);
+      if (connector.spec.secretRef.apiKeyField) {
+        console.log(`    API Key Field: ${connector.spec.secretRef.apiKeyField}`);
+      }
+      if (connector.spec.secretRef.privateKeyField) {
+        console.log(`    Private Key Field: ${connector.spec.secretRef.privateKeyField}`);
+      }
+      console.log();
+    }
+
+    // Status
+    console.log("Status:");
+    console.log(`  Phase: ${connector.status?.phase || "Unknown"}`);
+    if (connector.status?.deployment) {
+      console.log(`  Deployment: ${connector.status.deployment}`);
+    }
+    if (connector.status?.startedAt) {
+      console.log(`  Started At: ${connector.status.startedAt} (${formatAge(connector.status.startedAt)})`);
+    }
+    console.log(`  Messages Published: ${(connector.status?.messagesPublished || 0).toLocaleString()}`);
+    if (connector.status?.lastMessageAt) {
+      console.log(`  Last Message At: ${connector.status.lastMessageAt} (${formatAge(connector.status.lastMessageAt)})`);
+    }
+    if (connector.status?.connectionState) {
+      console.log(`  Connection State: ${connector.status.connectionState}`);
+    }
+    console.log();
+
+    // Conditions
+    if (connector.status?.conditions?.length) {
+      console.log("Conditions:");
+      for (const cond of connector.status.conditions) {
+        const status = cond.status === "True" ? "+" : "-";
+        console.log(`  [${status}] ${cond.type}: ${cond.reason}`);
+        if (cond.message) {
+          console.log(`      ${cond.message}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.error(`Failed to get connector status: ${e instanceof Error ? e.message : e}`);
+    Deno.exit(1);
+  }
+}
+
+async function logsConnector(flags: ConnectorDeployFlags, ns: string): Promise<void> {
+  const name = flags._[2] as string;
+
+  if (!name) {
+    console.error("Usage: ssmd connector logs <name> [--follow] [--tail N]");
+    Deno.exit(1);
+  }
+
+  try {
+    // First get the deployment name from the Connector CR
+    const deploymentName = await kubectl([
+      "get", "connector", name, "-n", ns,
+      "-o", "jsonpath={.status.deployment}"
+    ]).catch(() => "");
+
+    // If no deployment in status, try the conventional name
+    const targetDeployment = deploymentName.trim() || `connector-${name}`;
+
+    // Build kubectl logs args
+    const logsArgs = ["logs", "-n", ns, `deployment/${targetDeployment}`];
+
+    if (flags.follow) {
+      logsArgs.push("-f");
+    }
+
+    if (flags.tail !== undefined) {
+      logsArgs.push("--tail", String(flags.tail));
+    }
+
+    // Stream logs directly to stdout/stderr
+    await kubectlStream(logsArgs);
+  } catch (e) {
+    console.error(`Failed to get logs: ${e instanceof Error ? e.message : e}`);
+    Deno.exit(1);
+  }
+}
+
+async function deleteConnector(flags: ConnectorDeployFlags, ns: string): Promise<void> {
+  const name = flags._[2] as string;
+
+  if (!name) {
+    console.error("Usage: ssmd connector delete <name>");
+    Deno.exit(1);
+  }
+
+  console.log(`Deleting Connector ${name}...`);
+
+  try {
+    await kubectl(["delete", "connector", name, "-n", ns]);
+    console.log(`Connector ${name} deleted`);
+  } catch (e) {
+    console.error(`Failed to delete connector: ${e instanceof Error ? e.message : e}`);
+    Deno.exit(1);
+  }
+}
+
+// Helper functions
+
+async function kubectl(args: string[]): Promise<string> {
+  const cmd = new Deno.Command("kubectl", { args, stdout: "piped", stderr: "piped" });
+  const { stdout, stderr, code } = await cmd.output();
+
+  if (code !== 0) {
+    const err = new TextDecoder().decode(stderr);
+    throw new Error(`kubectl failed: ${err}`);
+  }
+
+  return new TextDecoder().decode(stdout);
+}
+
+async function kubectlStream(args: string[]): Promise<void> {
+  const cmd = new Deno.Command("kubectl", {
+    args,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+
+  const { code } = await cmd.output();
+
+  if (code !== 0) {
+    throw new Error(`kubectl logs failed with code ${code}`);
+  }
+}
+
+export function formatAge(timestamp: string): string {
+  const created = new Date(timestamp);
+  const now = new Date();
+  const diffMs = now.getTime() - created.getTime();
+
+  const seconds = Math.floor(diffMs / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) {
+    return `${days}d`;
+  } else if (hours > 0) {
+    return `${hours}h`;
+  } else if (minutes > 0) {
+    return `${minutes}m`;
+  } else {
+    return `${seconds}s`;
+  }
+}
+
+export function printConnectorDeployHelp(): void {
+  console.log("Usage: ssmd connector <deploy-command> [options]");
+  console.log();
+  console.log("Kubernetes Connector CR Management Commands:");
+  console.log("  deploy <file.yaml>     Deploy a Connector CR from YAML file");
+  console.log("  list                   List all Connector CRs");
+  console.log("  status <name>          Show detailed Connector status");
+  console.log("  logs <name>            Show logs from Connector pod");
+  console.log("  delete <name>          Delete a Connector CR");
+  console.log();
+  console.log("Options:");
+  console.log("  --namespace NS         Kubernetes namespace (default: ssmd)");
+  console.log("  --follow, -f           Follow log output (logs command)");
+  console.log("  --tail N               Number of lines to show (logs command)");
+  console.log();
+  console.log("Examples:");
+  console.log("  ssmd connector deploy connectors/kalshi-2026-01-04.yaml");
+  console.log("  ssmd connector list");
+  console.log("  ssmd connector status kalshi-2026-01-04");
+  console.log("  ssmd connector logs kalshi-2026-01-04 --follow --tail 100");
+  console.log("  ssmd connector delete kalshi-2026-01-04");
+}
