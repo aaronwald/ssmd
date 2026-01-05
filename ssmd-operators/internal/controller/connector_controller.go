@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/yaml"
 
 	ssmdv1alpha1 "github.com/aaronwald/ssmd/ssmd-operators/api/v1alpha1"
 )
@@ -244,7 +245,7 @@ func (r *ConnectorReconciler) reconcileDeployment(ctx context.Context, connector
 
 	if errors.IsNotFound(err) {
 		// Create new Deployment
-		deployment = r.constructDeployment(connector)
+		deployment = r.constructDeployment(ctx, connector)
 		if err := controllerutil.SetControllerReference(connector, deployment, r.Scheme); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -258,7 +259,7 @@ func (r *ConnectorReconciler) reconcileDeployment(ctx context.Context, connector
 	}
 
 	// Update existing Deployment if needed
-	desired := r.constructDeployment(connector)
+	desired := r.constructDeployment(ctx, connector)
 	if r.deploymentNeedsUpdate(deployment, desired) {
 		deployment.Spec = desired.Spec
 		log.Info("Updating Deployment", "name", deploymentName)
@@ -271,7 +272,9 @@ func (r *ConnectorReconciler) reconcileDeployment(ctx context.Context, connector
 }
 
 // constructDeployment builds the Deployment spec for a Connector
-func (r *ConnectorReconciler) constructDeployment(connector *ssmdv1alpha1.Connector) *appsv1.Deployment {
+func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector *ssmdv1alpha1.Connector) *appsv1.Deployment {
+	log := logf.FromContext(ctx)
+
 	labels := map[string]string{
 		"app.kubernetes.io/name":       "ssmd-connector",
 		"app.kubernetes.io/instance":   connector.Name,
@@ -285,10 +288,22 @@ func (r *ConnectorReconciler) constructDeployment(connector *ssmdv1alpha1.Connec
 		replicas = *connector.Spec.Replicas
 	}
 
-	// Default image if not specified
+	// Determine image: spec > feed defaults > hardcoded default
 	image := connector.Spec.Image
 	if image == "" {
-		image = "ghcr.io/aaronwald/ssmd-connector:latest"
+		// Try to get defaults from feed ConfigMap
+		if defaults, err := r.getFeedDefaults(ctx, connector.Namespace, connector.Spec.Feed); err == nil && defaults != nil {
+			if img, ok := defaults["image"].(string); ok {
+				if ver, ok := defaults["version"].(string); ok {
+					image = fmt.Sprintf("%s:%s", img, ver)
+					log.Info("Using image from feed defaults", "image", image)
+				}
+			}
+		}
+		// Fall back to hardcoded default
+		if image == "" {
+			image = "ghcr.io/aaronwald/ssmd-connector:latest"
+		}
 	}
 
 	// Build environment variables
@@ -501,4 +516,40 @@ func (r *ConnectorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Named("connector").
 		Complete(r)
+}
+
+// getFeedDefaults reads the feed ConfigMap and returns connector defaults
+func (r *ConnectorReconciler) getFeedDefaults(ctx context.Context, namespace, feedName string) (map[string]interface{}, error) {
+	configMapName := fmt.Sprintf("feed-%s", feedName)
+	configMap := &corev1.ConfigMap{}
+
+	err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: namespace}, configMap)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil // No defaults ConfigMap, that's ok
+		}
+		return nil, err
+	}
+
+	feedYAML, ok := configMap.Data["feed.yaml"]
+	if !ok {
+		return nil, nil
+	}
+
+	var feed map[string]interface{}
+	if err := yaml.Unmarshal([]byte(feedYAML), &feed); err != nil {
+		return nil, err
+	}
+
+	defaults, ok := feed["defaults"].(map[string]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	connectorDefaults, ok := defaults["connector"].(map[string]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	return connectorDefaults, nil
 }
