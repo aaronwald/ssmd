@@ -27,7 +27,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -302,29 +301,8 @@ func (r *SignalReconciler) constructDeployment(signal *ssmdv1alpha1.Signal) *app
 				ReadOnly:  true,
 			},
 		},
-		Ports: []corev1.ContainerPort{
-			{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
-		},
-		LivenessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/health",
-					Port: intstr.FromInt(9090),
-				},
-			},
-			InitialDelaySeconds: 10,
-			PeriodSeconds:       30,
-		},
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/ready",
-					Port: intstr.FromInt(9090),
-				},
-			},
-			InitialDelaySeconds: 5,
-			PeriodSeconds:       10,
-		},
+		// Note: signal-runner is a CLI tool without HTTP endpoints
+		// Health is determined by process running (restartPolicy handles failures)
 	}
 
 	// Add resource requirements if specified
