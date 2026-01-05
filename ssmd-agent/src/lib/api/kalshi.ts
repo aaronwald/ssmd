@@ -239,15 +239,29 @@ export class KalshiClient {
 }
 
 /**
- * Create a Kalshi client from environment variables
+ * Options for creating a Kalshi client from environment variables
  */
-export function createKalshiClient(): KalshiClient {
-  const apiKey = Deno.env.get("KALSHI_API_KEY");
+export interface CreateKalshiClientOptions {
+  /** Environment variable name for API key (default: KALSHI_API_KEY) */
+  apiKeyEnvVar?: string;
+  /** Environment variable name for demo mode flag (default: KALSHI_DEMO) */
+  demoEnvVar?: string;
+}
+
+/**
+ * Create a Kalshi client from environment variables
+ * @param options Optional configuration for env var names
+ */
+export function createKalshiClient(options?: CreateKalshiClientOptions): KalshiClient {
+  const apiKeyEnvVar = options?.apiKeyEnvVar ?? "KALSHI_API_KEY";
+  const demoEnvVar = options?.demoEnvVar ?? "KALSHI_DEMO";
+
+  const apiKey = Deno.env.get(apiKeyEnvVar);
   if (!apiKey) {
-    throw new Error("KALSHI_API_KEY environment variable not set");
+    throw new Error(`${apiKeyEnvVar} environment variable not set`);
   }
 
-  const demo = Deno.env.get("KALSHI_DEMO") === "true";
+  const demo = Deno.env.get(demoEnvVar) === "true";
 
   return new KalshiClient({ apiKey, demo });
 }
