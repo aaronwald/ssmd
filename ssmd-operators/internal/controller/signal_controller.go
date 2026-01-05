@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -51,6 +50,7 @@ type SignalReconciler struct {
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=signals/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=signals/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the cluster state toward the desired state for a Signal
 func (r *SignalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -78,6 +78,11 @@ func (r *SignalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if err := r.Update(ctx, signal); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	// Reconcile the ConfigMap
+	if _, err := r.reconcileConfigMap(ctx, signal); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Reconcile the Deployment
@@ -111,6 +116,16 @@ func (r *SignalReconciler) reconcileDelete(ctx context.Context, signal *ssmdv1al
 			log.Info("Deleted Deployment", "name", deploymentName)
 		}
 
+		// Delete the ConfigMap
+		configMapName := r.configMapName(signal)
+		configMap := &corev1.ConfigMap{}
+		if err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: signal.Namespace}, configMap); err == nil {
+			if err := r.Delete(ctx, configMap); err != nil && !errors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			log.Info("Deleted ConfigMap", "name", configMapName)
+		}
+
 		// Remove finalizer
 		controllerutil.RemoveFinalizer(signal, signalFinalizer)
 		if err := r.Update(ctx, signal); err != nil {
@@ -119,6 +134,106 @@ func (r *SignalReconciler) reconcileDelete(ctx context.Context, signal *ssmdv1al
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// reconcileConfigMap ensures the ConfigMap with signal config exists
+func (r *SignalReconciler) reconcileConfigMap(ctx context.Context, signal *ssmdv1alpha1.Signal) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	configMapName := r.configMapName(signal)
+	configMap := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: signal.Namespace}, configMap)
+
+	desiredConfigMap := r.constructConfigMap(signal)
+
+	if errors.IsNotFound(err) {
+		if err := controllerutil.SetControllerReference(signal, desiredConfigMap, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Creating ConfigMap", "name", configMapName)
+		if err := r.Create(ctx, desiredConfigMap); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else if err != nil {
+		return ctrl.Result{}, err
+	} else {
+		// Update if changed
+		if configMap.Data["signal.yaml"] != desiredConfigMap.Data["signal.yaml"] {
+			configMap.Data = desiredConfigMap.Data
+			log.Info("Updating ConfigMap", "name", configMapName)
+			if err := r.Update(ctx, configMap); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// constructConfigMap builds the ConfigMap with signal configuration
+func (r *SignalReconciler) constructConfigMap(signal *ssmdv1alpha1.Signal) *corev1.ConfigMap {
+	labels := map[string]string{
+		"app.kubernetes.io/name":       "ssmd-signal",
+		"app.kubernetes.io/instance":   signal.Name,
+		"app.kubernetes.io/managed-by": "ssmd-operator",
+	}
+
+	// Build signal config YAML
+	natsURL := signal.Spec.Source.NATSURL
+	if natsURL == "" {
+		natsURL = "nats://nats.nats.svc.cluster.local:4222"
+	}
+
+	signalConfig := fmt.Sprintf(`nats:
+  url: %s
+  stream: %s
+`, natsURL, signal.Spec.Source.Stream)
+
+	// Add signals list
+	signalConfig += "\nsignals:\n"
+	for _, s := range signal.Spec.Signals {
+		signalConfig += fmt.Sprintf("  - %s\n", s)
+	}
+
+	// Add output prefix
+	outputPrefix := signal.Spec.OutputPrefix
+	if outputPrefix == "" {
+		outputPrefix = "signals"
+	}
+	signalConfig += fmt.Sprintf("\noutput:\n  prefix: %s\n", outputPrefix)
+
+	// Add filters if specified
+	if len(signal.Spec.Source.Categories) > 0 || len(signal.Spec.Source.Tickers) > 0 {
+		signalConfig += "\nfilters:\n"
+		if len(signal.Spec.Source.Categories) > 0 {
+			signalConfig += "  categories:\n"
+			for _, c := range signal.Spec.Source.Categories {
+				signalConfig += fmt.Sprintf("    - %s\n", c)
+			}
+		}
+		if len(signal.Spec.Source.Tickers) > 0 {
+			signalConfig += "  tickers:\n"
+			for _, t := range signal.Spec.Source.Tickers {
+				signalConfig += fmt.Sprintf("    - %s\n", t)
+			}
+		}
+	}
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      r.configMapName(signal),
+			Namespace: signal.Namespace,
+			Labels:    labels,
+		},
+		Data: map[string]string{
+			"signal.yaml": signalConfig,
+		},
+	}
+}
+
+// configMapName returns the ConfigMap name for a Signal
+func (r *SignalReconciler) configMapName(signal *ssmdv1alpha1.Signal) string {
+	return signal.Name + "-config"
 }
 
 // reconcileDeployment ensures the Deployment exists and matches the desired state
@@ -167,40 +282,18 @@ func (r *SignalReconciler) constructDeployment(signal *ssmdv1alpha1.Signal) *app
 
 	replicas := int32(1)
 
-	// Build environment variables
-	env := []corev1.EnvVar{
-		// Comma-separated list of signal IDs
-		{Name: "SIGNALS", Value: strings.Join(signal.Spec.Signals, ",")},
-	}
-
-	// Add source config
-	if signal.Spec.Source.Stream != "" {
-		env = append(env, corev1.EnvVar{Name: "NATS_STREAM", Value: signal.Spec.Source.Stream})
-	}
-	if signal.Spec.Source.NATSURL != "" {
-		env = append(env, corev1.EnvVar{Name: "NATS_URL", Value: signal.Spec.Source.NATSURL})
-	}
-
-	// Add category and ticker filters
-	if len(signal.Spec.Source.Categories) > 0 {
-		env = append(env, corev1.EnvVar{Name: "CATEGORIES", Value: strings.Join(signal.Spec.Source.Categories, ",")})
-	}
-	if len(signal.Spec.Source.Tickers) > 0 {
-		env = append(env, corev1.EnvVar{Name: "TICKERS", Value: strings.Join(signal.Spec.Source.Tickers, ",")})
-	}
-
-	// Add output prefix
-	outputPrefix := "signals"
-	if signal.Spec.OutputPrefix != "" {
-		outputPrefix = signal.Spec.OutputPrefix
-	}
-	env = append(env, corev1.EnvVar{Name: "OUTPUT_PREFIX", Value: outputPrefix})
-
-	// Build container
+	// Build container with config file mount
 	container := corev1.Container{
 		Name:  "signal-runner",
 		Image: signal.Spec.Image,
-		Env:   env,
+		Args:  []string{"--config", "/config/signal.yaml"},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "config",
+				MountPath: "/config",
+				ReadOnly:  true,
+			},
+		},
 		Ports: []corev1.ContainerPort{
 			{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 		},
@@ -249,6 +342,18 @@ func (r *SignalReconciler) constructDeployment(signal *ssmdv1alpha1.Signal) *app
 				Spec: corev1.PodSpec{
 					Containers:       []corev1.Container{container},
 					ImagePullSecrets: []corev1.LocalObjectReference{{Name: "ghcr-secret"}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: r.configMapName(signal),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -258,28 +363,12 @@ func (r *SignalReconciler) constructDeployment(signal *ssmdv1alpha1.Signal) *app
 // deploymentNeedsUpdate checks if the Deployment needs to be updated
 func (r *SignalReconciler) deploymentNeedsUpdate(current, desired *appsv1.Deployment) bool {
 	if len(current.Spec.Template.Spec.Containers) > 0 && len(desired.Spec.Template.Spec.Containers) > 0 {
-		// Check image
+		// Check image - config changes are handled by ConfigMap reconciliation
 		if current.Spec.Template.Spec.Containers[0].Image != desired.Spec.Template.Spec.Containers[0].Image {
-			return true
-		}
-		// Check SIGNALS env var (signals list changed)
-		currentSignals := getEnvValue(current.Spec.Template.Spec.Containers[0].Env, "SIGNALS")
-		desiredSignals := getEnvValue(desired.Spec.Template.Spec.Containers[0].Env, "SIGNALS")
-		if currentSignals != desiredSignals {
 			return true
 		}
 	}
 	return false
-}
-
-// getEnvValue returns the value of an env var by name
-func getEnvValue(envs []corev1.EnvVar, name string) string {
-	for _, e := range envs {
-		if e.Name == name {
-			return e.Value
-		}
-	}
-	return ""
 }
 
 // updateStatus updates the Signal status based on Deployment state

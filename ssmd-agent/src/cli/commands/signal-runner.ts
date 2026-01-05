@@ -2,33 +2,60 @@
 // Daemon mode for running multiple signals against NATS
 
 import { join } from "https://deno.land/std@0.224.0/path/mod.ts";
-import { config } from "../../config.ts";
+import { parseArgs } from "https://deno.land/std@0.224.0/cli/parse_args.ts";
+import { config, loadSignalRunnerConfig, type SignalRunnerConfig } from "../../config.ts";
 import { runSignals } from "../../runtime/runner.ts";
 import { NatsRecordSource, NatsFireSink, LoggingFireSink } from "../../runtime/nats.ts";
 
 /**
  * Run the signal runner daemon.
- * Reads SIGNALS env var and runs all specified signals.
+ * Reads configuration from --config file or falls back to env vars.
  */
-export async function runDaemon(): Promise<void> {
+export async function runDaemon(args: string[] = Deno.args): Promise<void> {
+  const flags = parseArgs(args, {
+    string: ["config"],
+    alias: { c: "config" },
+  });
+
   console.log("=== SSMD Signal Runner ===");
   console.log();
 
-  // Get signals from config
-  const signalNames = config.signals;
-  if (signalNames.length === 0) {
-    console.error("No signals specified. Set SIGNALS env var (comma-separated)");
+  // Load configuration from file or env vars
+  const configPath = flags.config;
+  let runnerConfig: SignalRunnerConfig;
+
+  if (configPath) {
+    console.log(`Config: ${configPath}`);
+    runnerConfig = await loadSignalRunnerConfig(configPath);
+  } else {
+    console.log("Config: environment variables");
+    runnerConfig = await loadSignalRunnerConfig();
+  }
+
+  // Validate signals are specified
+  if (runnerConfig.signals.length === 0) {
+    console.error("No signals specified.");
+    console.error("Use --config /path/to/signal.yaml or set SIGNALS env var");
     console.error("Example: SIGNALS=volume-1m-30min,other-signal");
     Deno.exit(1);
   }
 
-  console.log(`Signals: ${signalNames.join(", ")}`);
-  console.log(`NATS: ${config.natsUrl}`);
-  console.log(`Stream: ${config.natsStream}`);
+  console.log(`Signals: ${runnerConfig.signals.join(", ")}`);
+  console.log(`NATS: ${runnerConfig.nats.url}`);
+  console.log(`Stream: ${runnerConfig.nats.stream}`);
+  if (runnerConfig.nats.filter) {
+    console.log(`Filter: ${runnerConfig.nats.filter}`);
+  }
+  if (runnerConfig.filters?.categories) {
+    console.log(`Categories: ${runnerConfig.filters.categories.join(", ")}`);
+  }
+  if (runnerConfig.filters?.tickers) {
+    console.log(`Tickers: ${runnerConfig.filters.tickers.join(", ")}`);
+  }
   console.log();
 
   // Build signal paths
-  const signalPaths = signalNames.map(name => join(config.signalsPath, name));
+  const signalPaths = runnerConfig.signals.map(name => join(config.signalsPath, name));
 
   // Verify all signals exist
   for (const path of signalPaths) {
@@ -40,15 +67,16 @@ export async function runDaemon(): Promise<void> {
     }
   }
 
-  // Create NATS source and sink
+  // Create NATS source with filter from config
+  const filter = runnerConfig.nats.filter ?? "prod.kalshi.>";
   const source = new NatsRecordSource(
-    config.natsUrl,
-    config.natsStream,
-    "prod.kalshi.>" // Subscribe to all Kalshi data
+    runnerConfig.nats.url,
+    runnerConfig.nats.stream,
+    filter
   );
 
   // Wrap NATS sink with logging
-  const natsSink = new NatsFireSink(config.natsUrl);
+  const natsSink = new NatsFireSink(runnerConfig.nats.url);
   const sink = new LoggingFireSink(natsSink);
 
   // Run signals
