@@ -15,11 +15,11 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.feed
-      name: Feed
-      type: string
     - jsonPath: .spec.date
       name: Date
+      type: string
+    - jsonPath: .spec.source.stream
+      name: Stream
       type: string
     - jsonPath: .status.phase
       name: Phase
@@ -61,10 +61,6 @@ spec:
               date:
                 description: Date is the trading day in YYYY-MM-DD format
                 pattern: ^\d{4}-\d{2}-\d{2}$
-                type: string
-              feed:
-                description: Feed references the feed ConfigMap (e.g., "kalshi" →
-                  feed-kalshi ConfigMap)
                 type: string
               image:
                 description: Image is the container image to use (optional, defaults
@@ -156,6 +152,10 @@ spec:
                   consumer:
                     description: Consumer is the durable consumer name
                     type: string
+                  filter:
+                    description: Filter is the NATS subject filter pattern (e.g.,
+                      "prod.kalshi.json.>")
+                    type: string
                   stream:
                     description: Stream is the JetStream stream name
                     type: string
@@ -235,7 +235,6 @@ spec:
                 type: object
             required:
             - date
-            - feed
             type: object
           status:
             description: status defines the observed state of Archiver

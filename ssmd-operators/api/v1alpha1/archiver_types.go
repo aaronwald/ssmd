@@ -24,10 +24,6 @@ import (
 
 // ArchiverSpec defines the desired state of Archiver
 type ArchiverSpec struct {
-	// Feed references the feed ConfigMap (e.g., "kalshi" → feed-kalshi ConfigMap)
-	// +kubebuilder:validation:Required
-	Feed string `json:"feed"`
-
 	// Date is the trading day in YYYY-MM-DD format
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^\d{4}-\d{2}-\d{2}$`
@@ -81,6 +77,10 @@ type ArchiverSourceConfig struct {
 	// Consumer is the durable consumer name
 	// +optional
 	Consumer string `json:"consumer,omitempty"`
+
+	// Filter is the NATS subject filter pattern (e.g., "prod.kalshi.json.>")
+	// +optional
+	Filter string `json:"filter,omitempty"`
 }
 
 // StorageConfig defines local and remote storage settings
@@ -222,8 +222,8 @@ type ArchiverStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Feed",type="string",JSONPath=".spec.feed"
 // +kubebuilder:printcolumn:name="Date",type="string",JSONPath=".spec.date"
+// +kubebuilder:printcolumn:name="Stream",type="string",JSONPath=".spec.source.stream"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Archived",type="integer",JSONPath=".status.messagesArchived"
 // +kubebuilder:printcolumn:name="Bytes",type="integer",JSONPath=".status.bytesWritten"
