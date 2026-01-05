@@ -277,7 +277,7 @@ async function kubectlStream(args: string[]): Promise<void> {
   }
 }
 
-function formatAge(timestamp: string): string {
+export function formatAge(timestamp: string): string {
   const created = new Date(timestamp);
   const now = new Date();
   const diffMs = now.getTime() - created.getTime();
