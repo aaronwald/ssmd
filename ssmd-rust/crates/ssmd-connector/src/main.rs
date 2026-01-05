@@ -86,20 +86,60 @@ async fn run_kalshi_connector(
     health_addr: SocketAddr,
     shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Load Kalshi config from environment
-    let config = KalshiConfig::from_env().map_err(|e| {
-        error!(error = %e, "Failed to load Kalshi config");
-        e
-    })?;
+    // Resolve credentials from env config keys (preferred) or fall back to hardcoded env vars
+    let (api_key, private_key_pem) = if let Some(ref keys) = env_config.keys {
+        let api_key_spec = keys.values().find(|k| k.key_type == KeyType::ApiKey);
 
-    let credentials = KalshiCredentials::new(config.api_key, &config.private_key_pem).map_err(|e| {
+        if let Some(key_spec) = api_key_spec {
+            if let Some(ref source) = key_spec.source {
+                let resolver = EnvResolver::new();
+                let resolved = resolver.resolve(source).map_err(|e| {
+                    error!(error = %e, source = %source, "Failed to resolve credentials from env config");
+                    e
+                })?;
+
+                // Extract KALSHI_API_KEY and KALSHI_PRIVATE_KEY from resolved HashMap
+                let api_key = resolved.get("KALSHI_API_KEY")
+                    .ok_or("KALSHI_API_KEY not found in resolved keys")?
+                    .clone();
+                let private_key = resolved.get("KALSHI_PRIVATE_KEY")
+                    .ok_or("KALSHI_PRIVATE_KEY not found in resolved keys")?
+                    .clone();
+
+                info!("Loaded credentials from env config keys");
+                (api_key, private_key)
+            } else {
+                // No source specified, fall back to hardcoded env vars
+                info!("No key source in env config, falling back to environment variables");
+                let config = KalshiConfig::from_env()?;
+                (config.api_key, config.private_key_pem)
+            }
+        } else {
+            // No api_key type found, fall back
+            info!("No api_key type in env config, falling back to environment variables");
+            let config = KalshiConfig::from_env()?;
+            (config.api_key, config.private_key_pem)
+        }
+    } else {
+        // No keys section, fall back to hardcoded env vars (backwards compatibility)
+        info!("No keys in env config, falling back to environment variables");
+        let config = KalshiConfig::from_env()?;
+        (config.api_key, config.private_key_pem)
+    };
+
+    let credentials = KalshiCredentials::new(api_key, &private_key_pem).map_err(|e| {
         error!(error = %e, "Failed to create Kalshi credentials");
         e
     })?;
 
-    info!(use_demo = config.use_demo, "Creating Kalshi connector");
+    // Check for demo mode from environment
+    let use_demo = std::env::var("KALSHI_USE_DEMO")
+        .map(|v| v.to_lowercase() == "true" || v == "1")
+        .unwrap_or(false);
 
-    let connector = KalshiConnector::new(credentials, config.use_demo);
+    info!(use_demo = use_demo, "Creating Kalshi connector");
+
+    let connector = KalshiConnector::new(credentials, use_demo);
 
     // NATS transport required
     match env_config.transport.transport_type {

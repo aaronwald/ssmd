@@ -1,0 +1,64 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feed-kalshi
+  namespace: ssmd
+  labels:
+    ssmd.io/feed: kalshi
+    ssmd.io/generated: 'true'
+data:
+  feed.yaml: |
+    name: kalshi
+    display_name: Kalshi Exchange
+    type: websocket
+    status: active
+    versions:
+      - version: v1
+        effective_from: "2025-12-22"
+        protocol:
+          transport: wss
+          message: json
+        endpoint: wss://api.kalshi.com/trade-api/ws/v2
+        auth_method: api_key
+        rate_limit_per_second: 10
+
+    # Component defaults for operators
+    defaults:
+      connector:
+        image: ghcr.io/aaronwald/ssmd-connector
+        version: "0.4.7"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        transport:
+          type: nats
+          stream: PROD_KALSHI
+          subjectPrefix: prod.kalshi
+
+      archiver:
+        image: ghcr.io/aaronwald/ssmd-archiver
+        version: "0.4.8"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        rotation:
+          interval: 15m
+
+      signal:
+        image: ghcr.io/aaronwald/ssmd-signal-runner
+        version: "0.1.1"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
