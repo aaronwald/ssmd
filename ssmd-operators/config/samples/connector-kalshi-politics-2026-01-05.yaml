@@ -12,8 +12,8 @@ spec:
   transport:
     type: nats
     url: nats://nats.nats.svc.cluster.local:4222
-    stream: PROD_KALSHI
-    subjectPrefix: prod.kalshi
+    stream: PROD_KALSHI_POLITICS
+    subjectPrefix: prod.kalshi.politics
   secretRef:
     name: ssmd-kalshi-credentials
     apiKeyField: api-key
