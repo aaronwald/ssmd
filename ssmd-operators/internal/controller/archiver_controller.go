@@ -319,7 +319,7 @@ func (r *ArchiverReconciler) constructConfigMap(archiver *ssmdv1alpha1.Archiver)
 
 // configMapName returns the ConfigMap name for an Archiver
 func (r *ArchiverReconciler) configMapName(archiver *ssmdv1alpha1.Archiver) string {
-	return fmt.Sprintf("%s-config", archiver.Name)
+	return fmt.Sprintf("%s-archiver-config", archiver.Name)
 }
 
 // reconcileDeployment ensures the Deployment exists and matches the desired state
