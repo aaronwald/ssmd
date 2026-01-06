@@ -12,4 +12,6 @@ pub use auth::{AuthError, KalshiCredentials};
 pub use config::{ConfigError, KalshiConfig};
 pub use connector::KalshiConnector;
 pub use messages::{OrderbookData, TickerData, TradeData, WsMessage};
-pub use websocket::{KalshiWebSocket, WebSocketError, KALSHI_WS_DEMO_URL, KALSHI_WS_URL};
+pub use websocket::{
+    KalshiWebSocket, SubscriptionResult, WebSocketError, KALSHI_WS_DEMO_URL, KALSHI_WS_URL,
+};
