@@ -101,6 +101,50 @@ impl NatsTransport {
 
         Ok(())
     }
+
+    /// Validate that a subject prefix will be captured by a stream
+    pub async fn validate_stream_subjects(
+        &self,
+        stream_name: &str,
+        subject_prefix: &str,
+    ) -> Result<(), TransportError> {
+        use tracing::info;
+
+        // 1. Get stream (errors if stream doesn't exist)
+        let mut stream = self.jetstream
+            .get_stream(stream_name)
+            .await
+            .map_err(|e| TransportError::ValidationFailed(
+                format!("Stream '{}' not found: {}", stream_name, e)
+            ))?;
+
+        // 2. Get stream's subject patterns
+        let info = stream.info().await
+            .map_err(|e| TransportError::ValidationFailed(
+                format!("Failed to get stream info: {}", e)
+            ))?;
+
+        // 3. Check if subject_prefix matches any stream subject
+        let subjects = &info.config.subjects;
+        let matches = subjects.iter().any(|pattern| {
+            subject_matches_pattern(subject_prefix, pattern)
+        });
+
+        if !matches {
+            return Err(TransportError::ValidationFailed(format!(
+                "Subject prefix '{}' won't be captured by stream '{}' (subjects: {:?})",
+                subject_prefix, stream_name, subjects
+            )));
+        }
+
+        info!(
+            stream = %stream_name,
+            subject_prefix = %subject_prefix,
+            "Stream subject validation passed"
+        );
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -158,6 +202,26 @@ impl Transport for NatsTransport {
             timestamp: now_tsc(),
             sequence: None,
         })
+    }
+}
+
+/// Check if subjects starting with `prefix` will match `pattern`
+///
+/// Examples:
+///   - prefix="prod.kalshi.politics", pattern="prod.kalshi.politics.>" -> true
+///   - prefix="prod.kalshi.gov", pattern="prod.kalshi.politics.>" -> false
+///   - prefix="prod.kalshi", pattern="prod.>" -> true
+fn subject_matches_pattern(prefix: &str, pattern: &str) -> bool {
+    // Handle wildcard patterns ending in ">"
+    if let Some(base) = pattern.strip_suffix(".>") {
+        // prefix must equal base or start with base + "."
+        prefix == base || prefix.starts_with(&format!("{}.", base))
+    } else if pattern.ends_with(">") {
+        // Pattern is just ">" - matches everything
+        true
+    } else {
+        // Exact match or single-token wildcard patterns
+        prefix == pattern || pattern == "*"
     }
 }
 
