@@ -88,6 +88,8 @@ pub struct CacheConfig {
 pub struct SecmasterConfig {
     pub url: String,
     #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
     pub categories: Vec<String>,
 }
 

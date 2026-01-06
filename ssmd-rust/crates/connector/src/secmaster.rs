@@ -30,6 +30,7 @@ struct MarketResponse {
 pub struct SecmasterClient {
     client: Client,
     base_url: String,
+    api_key: Option<String>,
     retry_attempts: u32,
     retry_delay_ms: u64,
 }
@@ -37,11 +38,21 @@ pub struct SecmasterClient {
 impl SecmasterClient {
     /// Create a new secmaster client with default retry config (3 attempts, 1000ms base delay)
     pub fn new(base_url: &str) -> Self {
-        Self::with_retry(base_url, 3, 1000)
+        Self::with_config(base_url, None, 3, 1000)
     }
 
     /// Create a new secmaster client with custom retry configuration
     pub fn with_retry(base_url: &str, retry_attempts: u32, retry_delay_ms: u64) -> Self {
+        Self::with_config(base_url, None, retry_attempts, retry_delay_ms)
+    }
+
+    /// Create a new secmaster client with full configuration including API key
+    pub fn with_config(
+        base_url: &str,
+        api_key: Option<String>,
+        retry_attempts: u32,
+        retry_delay_ms: u64,
+    ) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -50,6 +61,7 @@ impl SecmasterClient {
         Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
+            api_key,
             retry_attempts,
             retry_delay_ms,
         }
@@ -82,7 +94,12 @@ impl SecmasterClient {
 
             debug!(url = %url, category = %category, attempt = attempt, "Fetching markets from secmaster");
 
-            match self.client.get(&url).send().await {
+            let mut request = self.client.get(&url);
+            if let Some(ref api_key) = self.api_key {
+                request = request.header("X-Api-Key", api_key);
+            }
+
+            match request.send().await {
                 Ok(response) => {
                     if response.status().is_success() {
                         let markets: Vec<MarketResponse> = response.json().await?;
@@ -177,5 +194,18 @@ mod tests {
         assert_eq!(client.base_url, "http://localhost:3000");
         assert_eq!(client.retry_attempts, 5);
         assert_eq!(client.retry_delay_ms, 500);
+        assert!(client.api_key.is_none());
+    }
+
+    #[test]
+    fn test_client_with_api_key() {
+        let client = SecmasterClient::with_config(
+            "http://localhost:3000",
+            Some("test-api-key".to_string()),
+            3,
+            1000,
+        );
+        assert_eq!(client.base_url, "http://localhost:3000");
+        assert_eq!(client.api_key, Some("test-api-key".to_string()));
     }
 }
