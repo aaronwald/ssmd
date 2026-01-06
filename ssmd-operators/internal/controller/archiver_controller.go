@@ -281,9 +281,12 @@ func (r *ArchiverReconciler) constructConfigMap(archiver *ssmdv1alpha1.Archiver)
 		if archiver.Spec.Source.Stream != "" {
 			archiverYAML.WriteString(fmt.Sprintf("  stream: %s\n", archiver.Spec.Source.Stream))
 		}
-		if archiver.Spec.Source.Consumer != "" {
-			archiverYAML.WriteString(fmt.Sprintf("  consumer: %s\n", archiver.Spec.Source.Consumer))
+		// Consumer is required - default to archiver name if not specified
+		consumer := archiver.Spec.Source.Consumer
+		if consumer == "" {
+			consumer = fmt.Sprintf("%s-archiver", archiver.Name)
 		}
+		archiverYAML.WriteString(fmt.Sprintf("  consumer: %s\n", consumer))
 		if archiver.Spec.Source.Filter != "" {
 			archiverYAML.WriteString(fmt.Sprintf("  filter: %s\n", archiver.Spec.Source.Filter))
 		}

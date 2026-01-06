@@ -8,6 +8,7 @@ spec:
   image: ghcr.io/aaronwald/ssmd-archiver:0.4.8
   source:
     stream: PROD_KALSHI
+    consumer: kalshi-archiver
     url: nats://nats.nats.svc.cluster.local:4222
     filter: "prod.kalshi.main.json.>"
   storage:
