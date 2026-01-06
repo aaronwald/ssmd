@@ -58,6 +58,10 @@ spec:
                 items:
                   type: string
                 type: array
+              date:
+                description: Date is the trading date (optional, used for historical
+                  backfill)
+                type: string
               excludeCategories:
                 description: ExcludeCategories excludes specific categories (for sharding)
                 items:
