@@ -33,6 +33,14 @@ type ArchiverSpec struct {
 	// +optional
 	Image string `json:"image,omitempty"`
 
+	// Feed is the feed name for directory structure (e.g., "kalshi")
+	// +optional
+	Feed string `json:"feed,omitempty"`
+
+	// Sources configures multiple stream sources to archive
+	// +optional
+	Sources []SourceConfig `json:"sources,omitempty"`
+
 	// Replicas is the number of archiver pods (optional, defaults to 1)
 	// +kubebuilder:default=1
 	// +optional
@@ -81,6 +89,25 @@ type ArchiverSourceConfig struct {
 	// Filter is the NATS subject filter pattern (e.g., "prod.kalshi.json.>")
 	// +optional
 	Filter string `json:"filter,omitempty"`
+}
+
+// SourceConfig defines a single stream source
+type SourceConfig struct {
+	// Name is the identifier for this source (used in directory paths)
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Stream is the JetStream stream name
+	// +kubebuilder:validation:Required
+	Stream string `json:"stream"`
+
+	// Consumer is the durable consumer name
+	// +kubebuilder:validation:Required
+	Consumer string `json:"consumer"`
+
+	// Filter is the NATS subject filter pattern
+	// +kubebuilder:validation:Required
+	Filter string `json:"filter"`
 }
 
 // StorageConfig defines local and remote storage settings
@@ -223,7 +250,7 @@ type ArchiverStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Date",type="string",JSONPath=".spec.date"
-// +kubebuilder:printcolumn:name="Stream",type="string",JSONPath=".spec.source.stream"
+// +kubebuilder:printcolumn:name="Stream",type="string",JSONPath=".spec.sources[0].stream"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Archived",type="integer",JSONPath=".status.messagesArchived"
 // +kubebuilder:printcolumn:name="Bytes",type="integer",JSONPath=".status.bytesWritten"
