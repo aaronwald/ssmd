@@ -237,7 +237,7 @@ storage:
 		}
 
 		envConfig += fmt.Sprintf(`secmaster:
-  url: "http://ssmd-data-ts.ssmd.svc.cluster.local:3000"
+  url: "http://ssmd-data-ts.ssmd.svc.cluster.local:8080"
   categories:
 %ssubscription:
   batch_size: 100
