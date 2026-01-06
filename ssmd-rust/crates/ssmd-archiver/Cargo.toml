@@ -24,6 +24,7 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 futures-util = { workspace = true }
 flate2 = "1.0"
+tokio-util = { version = "0.7", features = ["rt"] }
 
 ssmd-middleware = { path = "../middleware" }
 
