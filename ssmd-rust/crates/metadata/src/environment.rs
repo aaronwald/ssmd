@@ -101,16 +101,27 @@ pub struct SubscriptionConfig {
     pub retry_delay_ms: u64,
 }
 
+/// Default batch size for subscription requests
+pub const DEFAULT_BATCH_SIZE: usize = 100;
+/// Minimum allowed batch size
+pub const MIN_BATCH_SIZE: usize = 1;
+/// Maximum allowed batch size (Kalshi limit)
+pub const MAX_BATCH_SIZE: usize = 500;
+/// Default retry attempts for transient failures
+pub const DEFAULT_RETRY_ATTEMPTS: u32 = 3;
+/// Default retry delay in milliseconds
+pub const DEFAULT_RETRY_DELAY_MS: u64 = 1000;
+
 fn default_batch_size() -> usize {
-    100
+    DEFAULT_BATCH_SIZE
 }
 
 fn default_retry_attempts() -> u32 {
-    3
+    DEFAULT_RETRY_ATTEMPTS
 }
 
 fn default_retry_delay_ms() -> u64 {
-    1000
+    DEFAULT_RETRY_DELAY_MS
 }
 
 impl Default for SubscriptionConfig {
@@ -120,6 +131,22 @@ impl Default for SubscriptionConfig {
             retry_attempts: default_retry_attempts(),
             retry_delay_ms: default_retry_delay_ms(),
         }
+    }
+}
+
+impl SubscriptionConfig {
+    /// Validate the configuration, clamping batch_size to valid range.
+    /// Returns a tuple of (validated_config, was_clamped).
+    pub fn validated(mut self) -> (Self, bool) {
+        let mut clamped = false;
+        if self.batch_size < MIN_BATCH_SIZE {
+            self.batch_size = MIN_BATCH_SIZE;
+            clamped = true;
+        } else if self.batch_size > MAX_BATCH_SIZE {
+            self.batch_size = MAX_BATCH_SIZE;
+            clamped = true;
+        }
+        (self, clamped)
     }
 }
 
@@ -233,5 +260,41 @@ storage:
         let subscription = env.subscription.unwrap();
         assert_eq!(subscription.batch_size, 50);
         assert_eq!(subscription.retry_attempts, 5);
+    }
+
+    #[test]
+    fn test_subscription_config_validation_clamps_high() {
+        let config = SubscriptionConfig {
+            batch_size: 1000, // Above MAX_BATCH_SIZE
+            retry_attempts: 3,
+            retry_delay_ms: 1000,
+        };
+        let (validated, clamped) = config.validated();
+        assert_eq!(validated.batch_size, MAX_BATCH_SIZE);
+        assert!(clamped);
+    }
+
+    #[test]
+    fn test_subscription_config_validation_clamps_low() {
+        let config = SubscriptionConfig {
+            batch_size: 0, // Below MIN_BATCH_SIZE
+            retry_attempts: 3,
+            retry_delay_ms: 1000,
+        };
+        let (validated, clamped) = config.validated();
+        assert_eq!(validated.batch_size, MIN_BATCH_SIZE);
+        assert!(clamped);
+    }
+
+    #[test]
+    fn test_subscription_config_validation_keeps_valid() {
+        let config = SubscriptionConfig {
+            batch_size: 200,
+            retry_attempts: 3,
+            retry_delay_ms: 1000,
+        };
+        let (validated, clamped) = config.validated();
+        assert_eq!(validated.batch_size, 200);
+        assert!(!clamped);
     }
 }

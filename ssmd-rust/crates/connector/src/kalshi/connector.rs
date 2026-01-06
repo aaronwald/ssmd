@@ -1,6 +1,19 @@
 //! Kalshi connector implementation
 //!
 //! Implements the ssmd Connector trait for Kalshi WebSocket.
+//!
+//! ## Subscription Modes
+//!
+//! - **Global mode**: Subscribes to all markets (original behavior)
+//! - **Filtered mode**: Subscribes only to markets in configured categories
+//!
+//! ## TODO: CDC Dynamic Updates
+//!
+//! Currently, filtered subscriptions are static - markets are fetched once at startup.
+//! Future enhancement: Subscribe to CDC stream from secmaster to dynamically add/remove
+//! market subscriptions as markets are added/removed from categories.
+//!
+//! See: <https://github.com/aaronwald/ssmd/issues/TBD>
 
 use crate::error::ConnectorError;
 use crate::kalshi::auth::KalshiCredentials;
@@ -45,11 +58,19 @@ impl KalshiConnector {
         subscription_config: Option<SubscriptionConfig>,
     ) -> Self {
         let (tx, rx) = mpsc::channel(1000);
+        // Validate subscription config to clamp batch_size to valid range
+        let (validated_config, was_clamped) = subscription_config.unwrap_or_default().validated();
+        if was_clamped {
+            tracing::warn!(
+                batch_size = validated_config.batch_size,
+                "batch_size was out of range and was clamped"
+            );
+        }
         Self {
             credentials,
             use_demo,
             secmaster_config: Some(secmaster_config),
-            subscription_config: subscription_config.unwrap_or_default(),
+            subscription_config: validated_config,
             tx: Some(tx),
             rx: Some(rx),
         }
@@ -132,6 +153,17 @@ impl KalshiConnector {
             return Err(ConnectorError::ConnectionFailed(
                 "All subscriptions failed".to_string(),
             ));
+        }
+
+        // Warn about partial failures (some markets subscribed, some failed)
+        let total_failed = ticker_result.failed + trade_result.failed;
+        if total_failed > 0 {
+            tracing::warn!(
+                ticker_failed = ticker_result.failed,
+                trade_failed = trade_result.failed,
+                failed_tickers = ?ticker_result.failed_tickers,
+                "Some subscriptions failed - continuing with partial coverage"
+            );
         }
 
         Ok(())
