@@ -92,6 +92,8 @@ mod tests {
             schema: "trade:v1".to_string(),
             schedule: None,
             keys: None,
+            secmaster: None,
+            subscription: None,
             transport: TransportConfig {
                 transport_type: TransportType::Memory,
                 url: None,

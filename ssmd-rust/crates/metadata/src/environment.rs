@@ -84,6 +84,45 @@ pub struct CacheConfig {
     pub url: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SecmasterConfig {
+    pub url: String,
+    #[serde(default)]
+    pub categories: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionConfig {
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+    #[serde(default = "default_retry_attempts")]
+    pub retry_attempts: u32,
+    #[serde(default = "default_retry_delay_ms")]
+    pub retry_delay_ms: u64,
+}
+
+fn default_batch_size() -> usize {
+    100
+}
+
+fn default_retry_attempts() -> u32 {
+    3
+}
+
+fn default_retry_delay_ms() -> u64 {
+    1000
+}
+
+impl Default for SubscriptionConfig {
+    fn default() -> Self {
+        Self {
+            batch_size: default_batch_size(),
+            retry_attempts: default_retry_attempts(),
+            retry_delay_ms: default_retry_delay_ms(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Environment {
     pub name: String,
@@ -91,6 +130,10 @@ pub struct Environment {
     pub schema: String,
     pub schedule: Option<Schedule>,
     pub keys: Option<HashMap<String, KeySpec>>,
+    #[serde(default)]
+    pub secmaster: Option<SecmasterConfig>,
+    #[serde(default)]
+    pub subscription: Option<SubscriptionConfig>,
     pub transport: TransportConfig,
     pub storage: StorageConfig,
     pub cache: Option<CacheConfig>,
@@ -149,5 +192,46 @@ storage:
         assert_eq!(env.feed, "kalshi");
         assert_eq!(env.get_schema_name(), "trade");
         assert_eq!(env.get_schema_version(), "v1");
+    }
+
+    #[test]
+    fn test_load_environment_with_secmaster() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+name: kalshi-politics
+feed: kalshi
+schema: trade:v1
+secmaster:
+  url: "http://ssmd-data-ts:3000"
+  categories:
+    - Politics
+    - Economics
+subscription:
+  batch_size: 50
+  retry_attempts: 5
+transport:
+  type: nats
+  url: nats://localhost:4222
+  stream: PROD_KALSHI_GOV
+  subject_prefix: prod.kalshi.gov
+storage:
+  type: local
+  path: /var/lib/ssmd/data
+"#
+        )
+        .unwrap();
+
+        let env = Environment::load(file.path()).unwrap();
+        assert_eq!(env.name, "kalshi-politics");
+
+        let secmaster = env.secmaster.unwrap();
+        assert_eq!(secmaster.url, "http://ssmd-data-ts:3000");
+        assert_eq!(secmaster.categories, vec!["Politics", "Economics"]);
+
+        let subscription = env.subscription.unwrap();
+        assert_eq!(subscription.batch_size, 50);
+        assert_eq!(subscription.retry_attempts, 5);
     }
 }
