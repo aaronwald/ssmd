@@ -104,9 +104,10 @@ impl KalshiConnector {
             "Using filtered subscription mode"
         );
 
-        // Fetch markets from secmaster with retry config
-        let client = SecmasterClient::with_retry(
+        // Fetch markets from secmaster with retry config and API key
+        let client = SecmasterClient::with_config(
             &secmaster.url,
+            secmaster.api_key.clone(),
             self.subscription_config.retry_attempts,
             self.subscription_config.retry_delay_ms,
         );

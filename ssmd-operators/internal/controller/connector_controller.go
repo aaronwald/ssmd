@@ -378,6 +378,21 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 		)
 	}
 
+	// Add ssmd-data API key for secmaster queries when categories are specified
+	if len(connector.Spec.Categories) > 0 {
+		env = append(env,
+			corev1.EnvVar{
+				Name: "SSMD_DATA_API_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "ssmd-data-api-key"},
+						Key:                  "api-key",
+					},
+				},
+			},
+		)
+	}
+
 	// Build container with args pointing to config files
 	container := corev1.Container{
 		Name:  "connector",

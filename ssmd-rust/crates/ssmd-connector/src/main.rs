@@ -140,15 +140,23 @@ async fn run_kalshi_connector(
     // Create connector with optional secmaster filtering
     let connector = if let Some(ref secmaster) = env_config.secmaster {
         if !secmaster.categories.is_empty() {
+            // Inject API key from environment variable if not set in config
+            let mut secmaster_config = secmaster.clone();
+            if secmaster_config.api_key.is_none() {
+                if let Ok(api_key) = std::env::var("SSMD_DATA_API_KEY") {
+                    secmaster_config.api_key = Some(api_key);
+                }
+            }
+
             info!(
-                categories = ?secmaster.categories,
+                categories = ?secmaster_config.categories,
                 use_demo = use_demo,
                 "Creating Kalshi connector with category filtering"
             );
             KalshiConnector::with_secmaster(
                 credentials,
                 use_demo,
-                secmaster.clone(),
+                secmaster_config,
                 env_config.subscription.clone(),
             )
         } else {
