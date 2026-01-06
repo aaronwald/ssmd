@@ -20,10 +20,16 @@ pub enum SecmasterError {
     ApiError { status: u16, message: String },
 }
 
-/// Market response from secmaster API (minimal fields needed)
+/// Market item from secmaster API (minimal fields needed)
 #[derive(Debug, Deserialize)]
-struct MarketResponse {
+struct MarketItem {
     ticker: String,
+}
+
+/// Wrapper for markets API response
+#[derive(Debug, Deserialize)]
+struct MarketsResponse {
+    markets: Vec<MarketItem>,
 }
 
 /// Client for querying secmaster API
@@ -102,8 +108,8 @@ impl SecmasterClient {
             match request.send().await {
                 Ok(response) => {
                     if response.status().is_success() {
-                        let markets: Vec<MarketResponse> = response.json().await?;
-                        let tickers: Vec<String> = markets.into_iter().map(|m| m.ticker).collect();
+                        let response_body: MarketsResponse = response.json().await?;
+                        let tickers: Vec<String> = response_body.markets.into_iter().map(|m| m.ticker).collect();
 
                         info!(
                             category = %category,
