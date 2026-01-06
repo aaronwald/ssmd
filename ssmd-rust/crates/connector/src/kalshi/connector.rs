@@ -126,47 +126,20 @@ impl KalshiConnector {
         // Log market list at debug level
         debug!(markets = ?tickers, "Market ticker list");
 
-        let batch_size = self.subscription_config.batch_size;
-        let batch_delay_ms = self.subscription_config.batch_delay_ms;
-
         // Subscribe to ticker channel for these markets
-        let ticker_result = ws
-            .subscribe_markets("ticker", &tickers, batch_size, batch_delay_ms)
+        ws.subscribe_markets("ticker", &tickers)
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(format!("ticker subscription: {}", e)))?;
 
         // Subscribe to trade channel for these markets
-        let trade_result = ws
-            .subscribe_markets("trade", &tickers, batch_size, batch_delay_ms)
+        ws.subscribe_markets("trade", &tickers)
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(format!("trade subscription: {}", e)))?;
 
         info!(
-            ticker_subs = ticker_result.successful,
-            trade_subs = trade_result.successful,
             total_markets = tickers.len(),
-            ticker_failed = ticker_result.failed,
-            trade_failed = trade_result.failed,
             "Subscription complete"
         );
-
-        // Fail if no subscriptions succeeded
-        if ticker_result.successful == 0 && trade_result.successful == 0 {
-            return Err(ConnectorError::ConnectionFailed(
-                "All subscriptions failed".to_string(),
-            ));
-        }
-
-        // Warn about partial failures (some markets subscribed, some failed)
-        let total_failed = ticker_result.failed + trade_result.failed;
-        if total_failed > 0 {
-            tracing::warn!(
-                ticker_failed = ticker_result.failed,
-                trade_failed = trade_result.failed,
-                failed_tickers = ?ticker_result.failed_tickers,
-                "Some subscriptions failed - continuing with partial coverage"
-            );
-        }
 
         Ok(())
     }

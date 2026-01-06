@@ -188,80 +188,57 @@ impl KalshiWebSocket {
         self.wait_for_subscription(self.command_id).await
     }
 
-    /// Subscribe to a channel for multiple markets in batches
+    /// Maximum markets per subscription (Kalshi limit)
+    pub const MAX_MARKETS_PER_SUBSCRIPTION: usize = 500;
+
+    /// Subscribe to a channel for multiple markets
     ///
-    /// Kalshi supports `market_tickers` array for batch subscription.
-    /// We batch to avoid overwhelming the WebSocket, with a delay between batches.
+    /// Kalshi supports up to 500 markets per subscription.
+    /// If you need more markets, deploy multiple connectors with different filters.
     pub async fn subscribe_markets(
         &mut self,
         channel: &str,
         tickers: &[String],
-        batch_size: usize,
-        batch_delay_ms: u64,
-    ) -> Result<SubscriptionResult, WebSocketError> {
-        let mut result = SubscriptionResult::default();
-        let batches: Vec<_> = tickers.chunks(batch_size).collect();
-        let total_batches = batches.len();
-
-        for (batch_idx, batch) in batches.iter().enumerate() {
-            // Delay between batches (not before first batch)
-            if batch_idx > 0 && batch_delay_ms > 0 {
-                debug!(
-                    delay_ms = batch_delay_ms,
-                    batch = batch_idx + 1,
-                    "Waiting before next batch"
-                );
-                tokio::time::sleep(Duration::from_millis(batch_delay_ms)).await;
-            }
-
-            self.command_id += 1;
-            let cmd = WsCommand {
-                id: self.command_id,
-                cmd: "subscribe".to_string(),
-                params: WsParams {
-                    channels: vec![channel.to_string()],
-                    market_ticker: None,
-                    market_tickers: Some(batch.to_vec()),
-                },
-            };
-
-            let msg = serde_json::to_string(&cmd)?;
-            info!(
-                channel = %channel,
-                batch = batch_idx + 1,
-                total_batches = total_batches,
-                markets = batch.len(),
-                "Subscribing to channel"
-            );
-
-            self.ws.send(Message::Text(msg)).await?;
-
-            match self.wait_for_subscription(self.command_id).await {
-                Ok(()) => {
-                    info!(
-                        channel = %channel,
-                        batch = batch_idx + 1,
-                        cmd_id = self.command_id,
-                        "Subscription confirmed by Kalshi"
-                    );
-                    result.successful += batch.len();
-                    self.subscribed_markets.extend(batch.iter().cloned());
-                }
-                Err(e) => {
-                    warn!(
-                        channel = %channel,
-                        batch = batch_idx + 1,
-                        cmd_id = self.command_id,
-                        error = %e,
-                        "Subscription batch failed"
-                    );
-                    result.failed += batch.len();
-                    result.failed_tickers.extend(batch.iter().cloned());
-                }
-            }
+    ) -> Result<(), WebSocketError> {
+        if tickers.len() > Self::MAX_MARKETS_PER_SUBSCRIPTION {
+            return Err(WebSocketError::SubscriptionFailed(format!(
+                "Too many markets ({}) - Kalshi limit is {}. Deploy multiple connectors with different category filters.",
+                tickers.len(),
+                Self::MAX_MARKETS_PER_SUBSCRIPTION
+            )));
         }
 
-        Ok(result)
+        self.command_id += 1;
+        let cmd = WsCommand {
+            id: self.command_id,
+            cmd: "subscribe".to_string(),
+            params: WsParams {
+                channels: vec![channel.to_string()],
+                market_ticker: None,
+                market_tickers: Some(tickers.to_vec()),
+            },
+        };
+
+        let msg = serde_json::to_string(&cmd)?;
+        info!(
+            channel = %channel,
+            markets = tickers.len(),
+            "Subscribing to channel"
+        );
+
+        self.ws.send(Message::Text(msg)).await?;
+
+        self.wait_for_subscription(self.command_id).await?;
+
+        info!(
+            channel = %channel,
+            cmd_id = self.command_id,
+            markets = tickers.len(),
+            "Subscription confirmed by Kalshi"
+        );
+        self.subscribed_markets.extend(tickers.iter().cloned());
+
+        Ok(())
     }
 
     /// Wait for subscription confirmation
