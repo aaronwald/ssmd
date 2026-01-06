@@ -272,33 +272,61 @@ func (r *ArchiverReconciler) constructConfigMap(archiver *ssmdv1alpha1.Archiver)
 	// Build archiver.yaml content
 	var archiverYAML strings.Builder
 
-	// NATS config
+	// NATS config with streams array
 	archiverYAML.WriteString("nats:\n")
-	if archiver.Spec.Source != nil {
-		if archiver.Spec.Source.URL != "" {
-			archiverYAML.WriteString(fmt.Sprintf("  url: %s\n", archiver.Spec.Source.URL))
+
+	// Get URL from first source or legacy source
+	natsURL := "nats://nats.nats.svc.cluster.local:4222"
+	if archiver.Spec.Source != nil && archiver.Spec.Source.URL != "" {
+		natsURL = archiver.Spec.Source.URL
+	}
+	archiverYAML.WriteString(fmt.Sprintf("  url: %s\n", natsURL))
+
+	// Build streams array
+	archiverYAML.WriteString("  streams:\n")
+
+	if len(archiver.Spec.Sources) > 0 {
+		// New multi-stream format
+		for _, source := range archiver.Spec.Sources {
+			archiverYAML.WriteString(fmt.Sprintf("    - name: %s\n", source.Name))
+			archiverYAML.WriteString(fmt.Sprintf("      stream: %s\n", source.Stream))
+			archiverYAML.WriteString(fmt.Sprintf("      consumer: %s\n", source.Consumer))
+			archiverYAML.WriteString(fmt.Sprintf("      filter: %s\n", source.Filter))
 		}
+	} else if archiver.Spec.Source != nil {
+		// Legacy single-source format - convert to streams array
+		name := "main"
 		if archiver.Spec.Source.Stream != "" {
-			archiverYAML.WriteString(fmt.Sprintf("  stream: %s\n", archiver.Spec.Source.Stream))
+			// Extract name from stream (e.g., PROD_KALSHI_POLITICS -> politics)
+			parts := strings.Split(archiver.Spec.Source.Stream, "_")
+			if len(parts) > 2 {
+				name = strings.ToLower(parts[len(parts)-1])
+			}
 		}
-		// Consumer is required - default to archiver name if not specified
 		consumer := archiver.Spec.Source.Consumer
 		if consumer == "" {
 			consumer = fmt.Sprintf("%s-archiver", archiver.Name)
 		}
-		archiverYAML.WriteString(fmt.Sprintf("  consumer: %s\n", consumer))
-		if archiver.Spec.Source.Filter != "" {
-			archiverYAML.WriteString(fmt.Sprintf("  filter: %s\n", archiver.Spec.Source.Filter))
-		}
+		archiverYAML.WriteString(fmt.Sprintf("    - name: %s\n", name))
+		archiverYAML.WriteString(fmt.Sprintf("      stream: %s\n", archiver.Spec.Source.Stream))
+		archiverYAML.WriteString(fmt.Sprintf("      consumer: %s\n", consumer))
+		archiverYAML.WriteString(fmt.Sprintf("      filter: %s\n", archiver.Spec.Source.Filter))
 	}
 
-	// Storage config
+	// Storage config with feed
 	archiverYAML.WriteString("\nstorage:\n")
 	if archiver.Spec.Storage != nil && archiver.Spec.Storage.Local != nil && archiver.Spec.Storage.Local.Path != "" {
 		archiverYAML.WriteString(fmt.Sprintf("  path: %s\n", archiver.Spec.Storage.Local.Path))
 	} else {
 		archiverYAML.WriteString("  path: /data/ssmd\n")
 	}
+
+	// Feed from spec or default
+	feed := archiver.Spec.Feed
+	if feed == "" {
+		feed = "kalshi" // Default for backward compatibility
+	}
+	archiverYAML.WriteString(fmt.Sprintf("  feed: %s\n", feed))
 
 	// Rotation config
 	archiverYAML.WriteString("\nrotation:\n")
