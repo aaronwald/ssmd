@@ -250,4 +250,53 @@ mod tests {
         ).await;
         assert!(result.is_ok());
     }
+
+    // Tests for subject_matches_pattern helper function
+    #[test]
+    fn test_subject_matches_pattern_with_multi_level_wildcard() {
+        // prefix matches pattern base exactly
+        assert!(subject_matches_pattern("prod.kalshi.politics", "prod.kalshi.politics.>"));
+        // prefix doesn't match pattern base
+        assert!(!subject_matches_pattern("prod.kalshi.gov", "prod.kalshi.politics.>"));
+    }
+
+    #[test]
+    fn test_subject_matches_pattern_prefix_under_wildcard_base() {
+        // prefix is under the pattern's base
+        assert!(subject_matches_pattern("prod.kalshi", "prod.>"));
+    }
+
+    #[test]
+    fn test_subject_matches_pattern_global_wildcard() {
+        // ">" matches everything
+        assert!(subject_matches_pattern("prod.kalshi.politics", ">"));
+    }
+
+    #[test]
+    fn test_subject_matches_pattern_exact_match() {
+        // exact match
+        assert!(subject_matches_pattern("exact.match", "exact.match"));
+        // no match
+        assert!(!subject_matches_pattern("exact.nomatch", "exact.match"));
+    }
+
+    #[test]
+    fn test_subject_matches_pattern_single_token_wildcard() {
+        // "*" matches any single token
+        assert!(subject_matches_pattern("anything", "*"));
+    }
+
+    #[test]
+    fn test_subject_matches_pattern_edge_cases() {
+        // Empty strings
+        assert!(!subject_matches_pattern("", "prod.>"));
+        assert!(!subject_matches_pattern("prod", ""));
+
+        // Partial prefix that doesn't match
+        assert!(!subject_matches_pattern("prod", "prod.kalshi.>"));
+        assert!(!subject_matches_pattern("pro", "prod.>"));
+
+        // Prefix longer than base shouldn't match exact pattern
+        assert!(!subject_matches_pattern("prod.kalshi.extra", "prod.kalshi"));
+    }
 }
