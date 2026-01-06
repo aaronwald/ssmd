@@ -5,15 +5,20 @@ metadata:
   namespace: ssmd
 spec:
   date: "2026-01-06"
-  image: ghcr.io/aaronwald/ssmd-archiver:0.4.8
-  source:
-    stream: PROD_KALSHI
-    consumer: kalshi-archiver
-    url: nats://nats.nats.svc.cluster.local:4222
-    filter: "prod.kalshi.main.json.>"
+  image: ghcr.io/aaronwald/ssmd-archiver:0.5.0
+  feed: kalshi
+  sources:
+    - name: politics
+      stream: PROD_KALSHI_POLITICS
+      consumer: politics-archiver
+      filter: "prod.kalshi.politics.json.>"
+    - name: economics
+      stream: PROD_KALSHI_ECONOMICS
+      consumer: economics-archiver
+      filter: "prod.kalshi.economics.json.>"
   storage:
     local:
-      path: /data/ssmd/kalshi
+      path: /data/ssmd
       pvcName: ssmd-archiver-data
     remote:
       type: gcs
@@ -24,6 +29,7 @@ spec:
     maxFileAge: "15m"
   sync:
     enabled: true
+    onDelete: final
   resources:
     requests:
       cpu: 100m
