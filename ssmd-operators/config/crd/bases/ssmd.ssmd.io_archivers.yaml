@@ -18,7 +18,7 @@ spec:
     - jsonPath: .spec.date
       name: Date
       type: string
-    - jsonPath: .spec.source.stream
+    - jsonPath: .spec.sources[0].stream
       name: Stream
       type: string
     - jsonPath: .status.phase
@@ -61,6 +61,10 @@ spec:
               date:
                 description: Date is the trading day in YYYY-MM-DD format
                 pattern: ^\d{4}-\d{2}-\d{2}$
+                type: string
+              feed:
+                description: Feed is the feed name for directory structure (e.g.,
+                  "kalshi")
                 type: string
               image:
                 description: Image is the container image to use (optional, defaults
@@ -167,6 +171,31 @@ spec:
                     description: URL is the NATS server URL
                     type: string
                 type: object
+              sources:
+                description: Sources configures multiple stream sources to archive
+                items:
+                  description: SourceConfig defines a single stream source
+                  properties:
+                    consumer:
+                      description: Consumer is the durable consumer name
+                      type: string
+                    filter:
+                      description: Filter is the NATS subject filter pattern
+                      type: string
+                    name:
+                      description: Name is the identifier for this source (used in
+                        directory paths)
+                      type: string
+                    stream:
+                      description: Stream is the JetStream stream name
+                      type: string
+                  required:
+                  - consumer
+                  - filter
+                  - name
+                  - stream
+                  type: object
+                type: array
               storage:
                 description: Storage configures local and remote storage
                 properties:
