@@ -27,6 +27,10 @@ type ConnectorSpec struct {
 	// +kubebuilder:validation:Required
 	Feed string `json:"feed"`
 
+	// Date is the trading date (optional, used for historical backfill)
+	// +optional
+	Date string `json:"date,omitempty"`
+
 	// Image is the container image to use (optional, defaults from feed ConfigMap)
 	// +optional
 	Image string `json:"image,omitempty"`
