@@ -137,9 +137,28 @@ async fn run_kalshi_connector(
         .map(|v| v.to_lowercase() == "true" || v == "1")
         .unwrap_or(false);
 
-    info!(use_demo = use_demo, "Creating Kalshi connector");
-
-    let connector = KalshiConnector::new(credentials, use_demo);
+    // Create connector with optional secmaster filtering
+    let connector = if let Some(ref secmaster) = env_config.secmaster {
+        if !secmaster.categories.is_empty() {
+            info!(
+                categories = ?secmaster.categories,
+                use_demo = use_demo,
+                "Creating Kalshi connector with category filtering"
+            );
+            KalshiConnector::with_secmaster(
+                credentials,
+                use_demo,
+                secmaster.clone(),
+                env_config.subscription.clone(),
+            )
+        } else {
+            info!(use_demo = use_demo, "Creating Kalshi connector (global mode)");
+            KalshiConnector::new(credentials, use_demo)
+        }
+    } else {
+        info!(use_demo = use_demo, "Creating Kalshi connector (global mode)");
+        KalshiConnector::new(credentials, use_demo)
+    };
 
     // NATS transport required
     match env_config.transport.transport_type {
