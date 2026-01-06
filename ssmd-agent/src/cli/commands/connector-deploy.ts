@@ -48,7 +48,7 @@ export async function handleConnectorDeploy(
   }
 }
 
-const DEFAULT_IMAGE = "ghcr.io/aaronwald/ssmd-connector:0.4.9";
+const DEFAULT_IMAGE = "ghcr.io/aaronwald/ssmd-connector:0.5.5";
 
 async function newConnector(flags: ConnectorDeployFlags, ns: string): Promise<void> {
   const name = flags._[2] as string;
