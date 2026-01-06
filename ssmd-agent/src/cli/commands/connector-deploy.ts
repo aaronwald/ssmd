@@ -154,40 +154,40 @@ async function listConnectors(ns: string): Promise<void> {
     "NAME".padEnd(30) +
     "FEED".padEnd(10) +
     "PHASE".padEnd(12) +
-    "MESSAGES".padEnd(12) +
     "AGE"
   );
   console.log(
     "----".padEnd(30) +
     "----".padEnd(10) +
     "-----".padEnd(12) +
-    "--------".padEnd(12) +
     "---"
   );
 
   try {
-    // Get connectors with all needed fields
-    const connectors = await kubectl([
-      "get", "connector", "-n", ns,
-      "-o", "jsonpath={range .items[*]}{.metadata.name}|{.spec.feed}|{.status.phase}|{.status.messagesPublished}|{.metadata.creationTimestamp}\\n{end}"
-    ]).catch(() => "");
+    // Get connectors as JSON and parse
+    const output = await kubectl([
+      "get", "connector", "-n", ns, "-o", "json"
+    ]).catch(() => '{"items":[]}');
 
-    if (!connectors.trim()) {
+    const data = JSON.parse(output);
+    const items = data.items || [];
+
+    if (items.length === 0) {
       console.log("(no connectors found)");
       return;
     }
 
-    for (const line of connectors.split("\n").filter(Boolean)) {
-      const [name, feed, phase, messages, createdAt] = line.split("|");
-
+    for (const connector of items) {
+      const name = connector.metadata?.name || "-";
+      const feed = connector.spec?.feed || "-";
+      const phase = connector.status?.phase || "-";
+      const createdAt = connector.metadata?.creationTimestamp;
       const age = createdAt ? formatAge(createdAt) : "-";
-      const msgCount = messages ? Number(messages).toLocaleString() : "0";
 
       console.log(
-        (name || "-").padEnd(30) +
-        (feed || "-").padEnd(10) +
-        (phase || "-").padEnd(12) +
-        msgCount.padEnd(12) +
+        name.padEnd(30) +
+        feed.padEnd(10) +
+        phase.padEnd(12) +
         age
       );
     }
