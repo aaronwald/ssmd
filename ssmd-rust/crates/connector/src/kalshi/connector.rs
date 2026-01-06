@@ -127,16 +127,17 @@ impl KalshiConnector {
         debug!(markets = ?tickers, "Market ticker list");
 
         let batch_size = self.subscription_config.batch_size;
+        let batch_delay_ms = self.subscription_config.batch_delay_ms;
 
         // Subscribe to ticker channel for these markets
         let ticker_result = ws
-            .subscribe_markets("ticker", &tickers, batch_size)
+            .subscribe_markets("ticker", &tickers, batch_size, batch_delay_ms)
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(format!("ticker subscription: {}", e)))?;
 
         // Subscribe to trade channel for these markets
         let trade_result = ws
-            .subscribe_markets("trade", &tickers, batch_size)
+            .subscribe_markets("trade", &tickers, batch_size, batch_delay_ms)
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(format!("trade subscription: {}", e)))?;
 
