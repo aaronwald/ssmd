@@ -97,6 +97,8 @@ pub struct SecmasterConfig {
 pub struct SubscriptionConfig {
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    #[serde(default = "default_batch_delay_ms")]
+    pub batch_delay_ms: u64,
     #[serde(default = "default_retry_attempts")]
     pub retry_attempts: u32,
     #[serde(default = "default_retry_delay_ms")]
@@ -113,6 +115,8 @@ pub const MAX_BATCH_SIZE: usize = 500;
 pub const DEFAULT_RETRY_ATTEMPTS: u32 = 3;
 /// Default retry delay in milliseconds
 pub const DEFAULT_RETRY_DELAY_MS: u64 = 1000;
+/// Default delay between subscription batches in milliseconds
+pub const DEFAULT_BATCH_DELAY_MS: u64 = 1000;
 
 fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
@@ -126,10 +130,15 @@ fn default_retry_delay_ms() -> u64 {
     DEFAULT_RETRY_DELAY_MS
 }
 
+fn default_batch_delay_ms() -> u64 {
+    DEFAULT_BATCH_DELAY_MS
+}
+
 impl Default for SubscriptionConfig {
     fn default() -> Self {
         Self {
             batch_size: default_batch_size(),
+            batch_delay_ms: default_batch_delay_ms(),
             retry_attempts: default_retry_attempts(),
             retry_delay_ms: default_retry_delay_ms(),
         }
@@ -268,6 +277,7 @@ storage:
     fn test_subscription_config_validation_clamps_high() {
         let config = SubscriptionConfig {
             batch_size: 1000, // Above MAX_BATCH_SIZE
+            batch_delay_ms: 1000,
             retry_attempts: 3,
             retry_delay_ms: 1000,
         };
@@ -280,6 +290,7 @@ storage:
     fn test_subscription_config_validation_clamps_low() {
         let config = SubscriptionConfig {
             batch_size: 0, // Below MIN_BATCH_SIZE
+            batch_delay_ms: 1000,
             retry_attempts: 3,
             retry_delay_ms: 1000,
         };
@@ -292,6 +303,7 @@ storage:
     fn test_subscription_config_validation_keeps_valid() {
         let config = SubscriptionConfig {
             batch_size: 200,
+            batch_delay_ms: 1000,
             retry_attempts: 3,
             retry_delay_ms: 1000,
         };

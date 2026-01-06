@@ -191,18 +191,29 @@ impl KalshiWebSocket {
     /// Subscribe to a channel for multiple markets in batches
     ///
     /// Kalshi supports `market_tickers` array for batch subscription.
-    /// We batch to avoid overwhelming the WebSocket.
+    /// We batch to avoid overwhelming the WebSocket, with a delay between batches.
     pub async fn subscribe_markets(
         &mut self,
         channel: &str,
         tickers: &[String],
         batch_size: usize,
+        batch_delay_ms: u64,
     ) -> Result<SubscriptionResult, WebSocketError> {
         let mut result = SubscriptionResult::default();
         let batches: Vec<_> = tickers.chunks(batch_size).collect();
         let total_batches = batches.len();
 
         for (batch_idx, batch) in batches.iter().enumerate() {
+            // Delay between batches (not before first batch)
+            if batch_idx > 0 && batch_delay_ms > 0 {
+                debug!(
+                    delay_ms = batch_delay_ms,
+                    batch = batch_idx + 1,
+                    "Waiting before next batch"
+                );
+                tokio::time::sleep(Duration::from_millis(batch_delay_ms)).await;
+            }
+
             self.command_id += 1;
             let cmd = WsCommand {
                 id: self.command_id,
