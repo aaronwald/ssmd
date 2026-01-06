@@ -1,24 +1,23 @@
 apiVersion: ssmd.ssmd.io/v1alpha1
 kind: Archiver
 metadata:
-  name: kalshi-2026-01-05
+  name: kalshi-archiver
   namespace: ssmd
 spec:
-  date: "2026-01-05"
+  date: "2026-01-06"
   image: ghcr.io/aaronwald/ssmd-archiver:0.4.8
   source:
     stream: PROD_KALSHI
     url: nats://nats.nats.svc.cluster.local:4222
-    consumer: archiver-2026-01-05
     filter: "prod.kalshi.main.json.>"
   storage:
     local:
-      path: /data/ssmd/kalshi/2026/01/05
+      path: /data/ssmd/kalshi
       pvcName: ssmd-archiver-data
     remote:
       type: gcs
       bucket: ssmd-archive
-      prefix: kalshi/2026/01/05
+      prefix: kalshi
       secretRef: gcs-credentials
   rotation:
     maxFileAge: "15m"
