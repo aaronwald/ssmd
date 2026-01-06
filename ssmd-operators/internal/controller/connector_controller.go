@@ -228,6 +228,8 @@ storage:
 `, connector.Spec.Feed, connector.Spec.Feed, natsURL, stream, subjectPrefix)
 
 	// Add secmaster config if categories specified
+	// TODO: Make secmaster URL configurable via Connector CR spec.secmaster.url
+	// Currently hardcoded to cluster-internal service address
 	if len(connector.Spec.Categories) > 0 {
 		categoriesYAML := ""
 		for _, cat := range connector.Spec.Categories {
