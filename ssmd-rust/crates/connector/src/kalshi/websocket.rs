@@ -15,6 +15,14 @@ use tokio_tungstenite::{
 };
 use tracing::{debug, info, trace, warn};
 
+/// Result of a batch subscription operation
+#[derive(Debug, Default)]
+pub struct SubscriptionResult {
+    pub successful: usize,
+    pub failed: usize,
+    pub failed_tickers: Vec<String>,
+}
+
 /// Production WebSocket URL
 pub const KALSHI_WS_URL: &str = "wss://api.elections.kalshi.com/trade-api/ws/v2";
 
@@ -107,6 +115,7 @@ impl KalshiWebSocket {
             params: WsParams {
                 channels: vec!["ticker".to_string()],
                 market_ticker: None,
+                market_tickers: None,
             },
         };
 
@@ -127,6 +136,7 @@ impl KalshiWebSocket {
             params: WsParams {
                 channels: vec!["trade".to_string()],
                 market_ticker: Some(market_ticker.to_string()),
+                market_tickers: None,
             },
         };
 
@@ -148,6 +158,7 @@ impl KalshiWebSocket {
             params: WsParams {
                 channels: vec!["trade".to_string()],
                 market_ticker: None,
+                market_tickers: None,
             },
         };
 
@@ -167,6 +178,7 @@ impl KalshiWebSocket {
             params: WsParams {
                 channels: vec!["orderbook_delta".to_string()],
                 market_ticker: Some(market_ticker.to_string()),
+                market_tickers: None,
             },
         };
 
@@ -174,6 +186,71 @@ impl KalshiWebSocket {
         self.ws.send(Message::Text(msg)).await?;
 
         self.wait_for_subscription(self.command_id).await
+    }
+
+    /// Subscribe to a channel for multiple markets in batches
+    ///
+    /// Kalshi supports `market_tickers` array for batch subscription.
+    /// We batch to avoid overwhelming the WebSocket.
+    pub async fn subscribe_markets(
+        &mut self,
+        channel: &str,
+        tickers: &[String],
+        batch_size: usize,
+    ) -> Result<SubscriptionResult, WebSocketError> {
+        let mut result = SubscriptionResult::default();
+        let batches: Vec<_> = tickers.chunks(batch_size).collect();
+        let total_batches = batches.len();
+
+        for (batch_idx, batch) in batches.iter().enumerate() {
+            self.command_id += 1;
+            let cmd = WsCommand {
+                id: self.command_id,
+                cmd: "subscribe".to_string(),
+                params: WsParams {
+                    channels: vec![channel.to_string()],
+                    market_ticker: None,
+                    market_tickers: Some(batch.to_vec()),
+                },
+            };
+
+            let msg = serde_json::to_string(&cmd)?;
+            info!(
+                channel = %channel,
+                batch = batch_idx + 1,
+                total_batches = total_batches,
+                markets = batch.len(),
+                "Subscribing to channel"
+            );
+
+            self.ws.send(Message::Text(msg)).await?;
+
+            match self.wait_for_subscription(self.command_id).await {
+                Ok(()) => {
+                    info!(
+                        channel = %channel,
+                        batch = batch_idx + 1,
+                        cmd_id = self.command_id,
+                        "Subscription confirmed by Kalshi"
+                    );
+                    result.successful += batch.len();
+                    self.subscribed_markets.extend(batch.iter().cloned());
+                }
+                Err(e) => {
+                    warn!(
+                        channel = %channel,
+                        batch = batch_idx + 1,
+                        cmd_id = self.command_id,
+                        error = %e,
+                        "Subscription batch failed"
+                    );
+                    result.failed += batch.len();
+                    result.failed_tickers.extend(batch.iter().cloned());
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Wait for subscription confirmation

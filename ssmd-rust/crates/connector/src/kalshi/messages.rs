@@ -82,6 +82,8 @@ pub struct WsParams {
     pub channels: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub market_ticker: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub market_tickers: Option<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -203,6 +205,7 @@ mod tests {
             params: WsParams {
                 channels: vec!["ticker".to_string()],
                 market_ticker: None,
+                market_tickers: None,
             },
         };
 
@@ -222,10 +225,29 @@ mod tests {
             params: WsParams {
                 channels: vec!["trade".to_string()],
                 market_ticker: Some("KXTEST-123".to_string()),
+                market_tickers: None,
             },
         };
 
         let json = serde_json::to_string(&cmd).expect("Failed to serialize");
         assert!(json.contains(r#""market_ticker":"KXTEST-123""#));
+    }
+
+    #[test]
+    fn test_ws_command_with_market_tickers_array() {
+        let cmd = WsCommand {
+            id: 3,
+            cmd: "subscribe".to_string(),
+            params: WsParams {
+                channels: vec!["ticker".to_string()],
+                market_ticker: None,
+                market_tickers: Some(vec!["KXTEST-1".to_string(), "KXTEST-2".to_string()]),
+            },
+        };
+
+        let json = serde_json::to_string(&cmd).expect("Failed to serialize");
+        assert!(json.contains(r#""market_tickers":["KXTEST-1","KXTEST-2"]"#));
+        // market_ticker should be omitted when None
+        assert!(!json.contains(r#""market_ticker""#));
     }
 }
