@@ -12,6 +12,8 @@ pub enum TransportError {
     RequestFailed(String),
     #[error("timeout")]
     Timeout,
+    #[error("validation failed: {0}")]
+    ValidationFailed(String),
 }
 
 #[derive(Error, Debug)]
