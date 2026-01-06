@@ -44,6 +44,51 @@ impl MiddlewareFactory {
         }
     }
 
+    /// Create a NATS transport with optional stream/subject validation
+    ///
+    /// If both stream and subject_prefix are specified in the environment config,
+    /// validates that the subject prefix will be captured by the stream.
+    pub async fn create_nats_transport_validated(
+        env: &Environment,
+    ) -> Result<Arc<NatsTransport>, FactoryError> {
+        use tracing::{error, info};
+
+        let url = env
+            .transport
+            .url
+            .as_ref()
+            .ok_or_else(|| FactoryError::ConfigError("NATS URL required".to_string()))?;
+
+        let transport = NatsTransport::connect(url)
+            .await
+            .map_err(|e| FactoryError::ConfigError(e.to_string()))?;
+
+        // Validate stream/subject configuration if both are specified
+        if let (Some(stream), Some(prefix)) = (
+            &env.transport.stream,
+            &env.transport.subject_prefix,
+        ) {
+            info!(stream = %stream, subject_prefix = %prefix, "Validating NATS stream configuration");
+
+            transport
+                .validate_stream_subjects(stream, prefix)
+                .await
+                .map_err(|e| {
+                    error!(
+                        stream = %stream,
+                        subject_prefix = %prefix,
+                        error = %e,
+                        "Stream validation failed - check stream exists and subject prefix matches"
+                    );
+                    FactoryError::ConfigError(e.to_string())
+                })?;
+
+            info!(stream = %stream, subject_prefix = %prefix, "Stream validation passed");
+        }
+
+        Ok(Arc::new(transport))
+    }
+
     /// Create a storage based on environment configuration
     pub fn create_storage(env: &Environment) -> Result<Arc<dyn Storage>, FactoryError> {
         match env.storage.storage_type {

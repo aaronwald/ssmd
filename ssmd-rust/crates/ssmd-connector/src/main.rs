@@ -172,7 +172,7 @@ async fn run_kalshi_connector(
     match env_config.transport.transport_type {
         TransportType::Nats => {
             info!(transport = "nats", "Using NATS writer (raw JSON)");
-            let transport = MiddlewareFactory::create_transport(env_config).await?;
+            let transport = MiddlewareFactory::create_nats_transport_validated(env_config).await?;
             let writer = create_nats_writer(transport, env_config, feed);
             run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
         }
@@ -303,7 +303,7 @@ async fn run_generic_connector(
     match env_config.transport.transport_type {
         TransportType::Nats => {
             info!(transport = "nats", "Using NATS writer (raw JSON)");
-            let transport = MiddlewareFactory::create_transport(env_config).await?;
+            let transport = MiddlewareFactory::create_nats_transport_validated(env_config).await?;
             let connector = WebSocketConnector::new(&url, creds);
             let writer = create_nats_writer(transport, env_config, feed);
             run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
