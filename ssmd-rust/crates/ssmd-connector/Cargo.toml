@@ -1,5 +1,6 @@
 [package]
 name = "ssmd-connector"
+# v0.5.5 - single subscription per channel (max 500 markets)
 version.workspace = true
 edition.workspace = true
 
