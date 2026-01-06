@@ -1,12 +1,19 @@
-# ssmd-archiver configuration example
+# Multi-stream archiver configuration
 nats:
-  url: nats://localhost:4222
-  stream: MARKETDATA
-  consumer: archiver-kalshi
-  filter: "prod.kalshi.json.>"
+  url: nats://nats.nats.svc.cluster.local:4222
+  streams:
+    - name: politics
+      stream: PROD_KALSHI_POLITICS
+      consumer: politics-archiver
+      filter: "prod.kalshi.politics.json.>"
+    - name: economics
+      stream: PROD_KALSHI_ECONOMICS
+      consumer: economics-archiver
+      filter: "prod.kalshi.economics.json.>"
 
 storage:
   path: /data/ssmd
+  feed: kalshi
 
 rotation:
-  interval: 15m   # 15m for testing, 1h or 1d for production
+  interval: 15m
