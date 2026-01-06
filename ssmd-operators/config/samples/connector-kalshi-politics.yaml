@@ -1,25 +1,26 @@
 apiVersion: ssmd.ssmd.io/v1alpha1
 kind: Connector
 metadata:
-  name: kalshi-2026-01-05
+  name: kalshi-politics
   namespace: ssmd
 spec:
   feed: kalshi
-  date: "2026-01-05"
   image: ghcr.io/aaronwald/ssmd-connector:0.4.9
+  categories:
+    - Politics
   transport:
     type: nats
     url: nats://nats.nats.svc.cluster.local:4222
-    stream: PROD_KALSHI
-    subjectPrefix: prod.kalshi.main
+    stream: PROD_KALSHI_POLITICS
+    subjectPrefix: prod.kalshi.politics
   secretRef:
     name: ssmd-kalshi-credentials
     apiKeyField: api-key
     privateKeyField: private-key
   resources:
     requests:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 50m
+      memory: 64Mi
     limits:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 200m
+      memory: 256Mi

@@ -8,7 +8,6 @@ interface ConnectorDeployFlags {
   namespace?: string;
   // Flags for 'new' command
   feed?: string;
-  date?: string;
   stream?: string;
   "subject-prefix"?: string;
   image?: string;
@@ -61,7 +60,6 @@ async function newConnector(flags: ConnectorDeployFlags, ns: string): Promise<vo
     console.error("  --stream          NATS stream name (e.g., PROD_KALSHI)");
     console.error("  --subject-prefix  Subject prefix (e.g., prod.kalshi.main)");
     console.error("\nOptional flags:");
-    console.error("  --date            Date (default: today, YYYY-MM-DD)");
     console.error("  --image           Container image (default: " + DEFAULT_IMAGE + ")");
     console.error("  --output          Output file (default: stdout)");
     Deno.exit(1);
@@ -74,15 +72,13 @@ async function newConnector(flags: ConnectorDeployFlags, ns: string): Promise<vo
   if (!feed || !stream || !subjectPrefix) {
     console.error("Error: --feed, --stream, and --subject-prefix are required");
     console.error("\nExample:");
-    console.error("  ssmd connector new kalshi-economics-2026-01-05 \\");
+    console.error("  ssmd connector new kalshi-economics \\");
     console.error("    --feed kalshi \\");
     console.error("    --stream PROD_KALSHI_ECONOMICS \\");
     console.error("    --subject-prefix prod.kalshi.economics");
     Deno.exit(1);
   }
 
-  // Default date to today
-  const date = flags.date ?? new Date().toISOString().split("T")[0];
   const image = flags.image ?? DEFAULT_IMAGE;
 
   const yaml = `apiVersion: ssmd.ssmd.io/v1alpha1
@@ -92,7 +88,6 @@ metadata:
   namespace: ${ns}
 spec:
   feed: ${feed}
-  date: "${date}"
   image: ${image}
   # Add feed-specific fields here (e.g., categories for Kalshi)
   # categories:
@@ -158,7 +153,6 @@ async function listConnectors(ns: string): Promise<void> {
   console.log(
     "NAME".padEnd(30) +
     "FEED".padEnd(10) +
-    "DATE".padEnd(12) +
     "PHASE".padEnd(12) +
     "MESSAGES".padEnd(12) +
     "AGE"
@@ -166,7 +160,6 @@ async function listConnectors(ns: string): Promise<void> {
   console.log(
     "----".padEnd(30) +
     "----".padEnd(10) +
-    "----".padEnd(12) +
     "-----".padEnd(12) +
     "--------".padEnd(12) +
     "---"
@@ -176,7 +169,7 @@ async function listConnectors(ns: string): Promise<void> {
     // Get connectors with all needed fields
     const connectors = await kubectl([
       "get", "connector", "-n", ns,
-      "-o", "jsonpath={range .items[*]}{.metadata.name}|{.spec.feed}|{.spec.date}|{.status.phase}|{.status.messagesPublished}|{.metadata.creationTimestamp}\\n{end}"
+      "-o", "jsonpath={range .items[*]}{.metadata.name}|{.spec.feed}|{.status.phase}|{.status.messagesPublished}|{.metadata.creationTimestamp}\\n{end}"
     ]).catch(() => "");
 
     if (!connectors.trim()) {
@@ -185,7 +178,7 @@ async function listConnectors(ns: string): Promise<void> {
     }
 
     for (const line of connectors.split("\n").filter(Boolean)) {
-      const [name, feed, date, phase, messages, createdAt] = line.split("|");
+      const [name, feed, phase, messages, createdAt] = line.split("|");
 
       const age = createdAt ? formatAge(createdAt) : "-";
       const msgCount = messages ? Number(messages).toLocaleString() : "0";
@@ -193,7 +186,6 @@ async function listConnectors(ns: string): Promise<void> {
       console.log(
         (name || "-").padEnd(30) +
         (feed || "-").padEnd(10) +
-        (date || "-").padEnd(12) +
         (phase || "-").padEnd(12) +
         msgCount.padEnd(12) +
         age
@@ -229,7 +221,6 @@ async function statusConnector(flags: ConnectorDeployFlags, ns: string): Promise
     // Spec
     console.log("Spec:");
     console.log(`  Feed: ${connector.spec.feed || "-"}`);
-    console.log(`  Date: ${connector.spec.date || "-"}`);
     console.log(`  Image: ${connector.spec.image || "(from feed ConfigMap)"}`);
     if (connector.spec.replicas !== undefined) {
       console.log(`  Replicas: ${connector.spec.replicas}`);
@@ -426,7 +417,6 @@ export function printConnectorDeployHelp(): void {
   console.log("  --feed <feed>          Feed name (required, e.g., kalshi)");
   console.log("  --stream <stream>      NATS stream name (required, e.g., PROD_KALSHI)");
   console.log("  --subject-prefix <p>   Subject prefix (required, e.g., prod.kalshi.main)");
-  console.log("  --date <YYYY-MM-DD>    Date (default: today)");
   console.log("  --image <image>        Container image (default: latest)");
   console.log("  --output <file>        Output file (default: stdout)");
   console.log();
@@ -436,12 +426,12 @@ export function printConnectorDeployHelp(): void {
   console.log("  --tail N               Number of lines to show (logs command)");
   console.log();
   console.log("Examples:");
-  console.log("  ssmd connector new kalshi-economics-2026-01-05 \\");
+  console.log("  ssmd connector new kalshi-economics \\");
   console.log("    --feed kalshi --stream PROD_KALSHI_ECONOMICS \\");
   console.log("    --subject-prefix prod.kalshi.economics --output connector.yaml");
   console.log("  ssmd connector deploy connector.yaml");
   console.log("  ssmd connector list");
-  console.log("  ssmd connector status kalshi-2026-01-05");
-  console.log("  ssmd connector logs kalshi-2026-01-05 --follow --tail 100");
-  console.log("  ssmd connector delete kalshi-2026-01-05");
+  console.log("  ssmd connector status kalshi-main");
+  console.log("  ssmd connector logs kalshi-main --follow --tail 100");
+  console.log("  ssmd connector delete kalshi-main");
 }

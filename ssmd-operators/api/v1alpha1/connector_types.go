@@ -27,11 +27,6 @@ type ConnectorSpec struct {
 	// +kubebuilder:validation:Required
 	Feed string `json:"feed"`
 
-	// Date is the trading day in YYYY-MM-DD format
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^\d{4}-\d{2}-\d{2}$`
-	Date string `json:"date"`
-
 	// Image is the container image to use (optional, defaults from feed ConfigMap)
 	// +optional
 	Image string `json:"image,omitempty"`
@@ -157,7 +152,6 @@ type ConnectorStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Feed",type="string",JSONPath=".spec.feed"
-// +kubebuilder:printcolumn:name="Date",type="string",JSONPath=".spec.date"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Messages",type="integer",JSONPath=".status.messagesPublished"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"

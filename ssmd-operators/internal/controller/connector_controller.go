@@ -184,13 +184,13 @@ type: websocket
 status: active
 versions:
   - version: "1.0"
-    effective_from: "%s"
+    effective_from: "2024-01-01"
     protocol:
       transport: wss
       message: json
     endpoint: wss://api.elections.kalshi.com/trade-api/ws/v2
     auth_method: api_key
-`, connector.Spec.Feed, connector.Spec.Feed, connector.Spec.Date)
+`, connector.Spec.Feed, connector.Spec.Feed)
 
 	// Build env config YAML
 	natsURL := "nats://nats.nats.svc.cluster.local:4222"
@@ -289,7 +289,6 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 		"app.kubernetes.io/instance":   connector.Name,
 		"app.kubernetes.io/managed-by": "ssmd-operator",
 		"ssmd.io/feed":                 connector.Spec.Feed,
-		"ssmd.io/date":                 connector.Spec.Date,
 	}
 
 	replicas := int32(1)
