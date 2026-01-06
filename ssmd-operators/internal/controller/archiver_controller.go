@@ -608,7 +608,7 @@ func (r *ArchiverReconciler) constructSyncJob(archiver *ssmdv1alpha1.Archiver) *
 						Image: "gcr.io/google.com/cloudsdktool/google-cloud-cli:slim",
 						Command: []string{
 							"sh", "-c",
-							fmt.Sprintf(`if [ -d "%s" ] && [ "$(ls -A %s 2>/dev/null)" ]; then echo "Syncing %s to %s"; gsutil -m rsync -r %s %s; else echo "No data at %s, skipping"; fi`, localPath, localPath, localPath, remotePath, localPath, remotePath, localPath),
+							fmt.Sprintf(`gcloud auth activate-service-account --key-file=/etc/gcs/key.json && if [ -d "%s" ] && [ "$(ls -A %s 2>/dev/null)" ]; then echo "Syncing %s to %s"; gsutil -m rsync -r %s %s; else echo "No data at %s, skipping"; fi`, localPath, localPath, localPath, remotePath, localPath, remotePath, localPath),
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "data", MountPath: "/data"},
