@@ -12,19 +12,31 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 pub struct NatsConfig {
     pub url: String,
+    pub streams: Vec<StreamConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct StreamConfig {
+    /// Directory name for output (e.g., "politics")
+    pub name: String,
+    /// NATS JetStream stream name
     pub stream: String,
+    /// Durable consumer name
     pub consumer: String,
+    /// Subject filter pattern
     pub filter: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct StorageConfig {
     pub path: PathBuf,
+    /// Feed name for directory structure
+    pub feed: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RotationConfig {
-    pub interval: String, // "15m", "1h", "1d"
+    pub interval: String,
 }
 
 impl Config {
@@ -68,12 +80,15 @@ mod tests {
         let yaml = r#"
 nats:
   url: nats://localhost:4222
-  stream: MARKETDATA
-  consumer: archiver-kalshi
-  filter: "prod.kalshi.json.>"
+  streams:
+    - name: main
+      stream: MARKETDATA
+      consumer: archiver-kalshi
+      filter: "prod.kalshi.json.>"
 
 storage:
   path: /data/ssmd
+  feed: kalshi
 
 rotation:
   interval: 15m
@@ -83,7 +98,9 @@ rotation:
 
         let config = Config::load(file.path()).unwrap();
         assert_eq!(config.nats.url, "nats://localhost:4222");
-        assert_eq!(config.nats.stream, "MARKETDATA");
+        assert_eq!(config.nats.streams.len(), 1);
+        assert_eq!(config.nats.streams[0].stream, "MARKETDATA");
+        assert_eq!(config.storage.feed, "kalshi");
         assert_eq!(config.rotation.interval, "15m");
     }
 
@@ -97,5 +114,39 @@ rotation:
 
         let config = RotationConfig { interval: "1d".to_string() };
         assert_eq!(config.parse_interval().unwrap(), Duration::from_secs(24 * 60 * 60));
+    }
+
+    #[test]
+    fn test_load_multi_stream_config() {
+        let yaml = r#"
+nats:
+  url: nats://localhost:4222
+  streams:
+    - name: politics
+      stream: PROD_KALSHI_POLITICS
+      consumer: politics-archiver
+      filter: "prod.kalshi.politics.json.>"
+    - name: economics
+      stream: PROD_KALSHI_ECONOMICS
+      consumer: economics-archiver
+      filter: "prod.kalshi.economics.json.>"
+
+storage:
+  path: /data/ssmd
+  feed: kalshi
+
+rotation:
+  interval: 15m
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(yaml.as_bytes()).unwrap();
+
+        let config = Config::load(file.path()).unwrap();
+        assert_eq!(config.nats.url, "nats://localhost:4222");
+        assert_eq!(config.nats.streams.len(), 2);
+        assert_eq!(config.nats.streams[0].name, "politics");
+        assert_eq!(config.nats.streams[0].stream, "PROD_KALSHI_POLITICS");
+        assert_eq!(config.nats.streams[1].name, "economics");
+        assert_eq!(config.storage.feed, "kalshi");
     }
 }

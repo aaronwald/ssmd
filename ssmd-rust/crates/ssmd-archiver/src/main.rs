@@ -37,10 +37,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         e
     })?;
 
+    // For now, use first stream in the config (multi-stream support coming in future task)
+    let stream_config = config.nats.streams.first()
+        .ok_or("No streams configured")?;
+
     info!(
         nats_url = %config.nats.url,
-        stream = %config.nats.stream,
-        filter = %config.nats.filter,
+        stream = %stream_config.stream,
+        filter = %stream_config.filter,
         rotation = %config.rotation.interval,
         storage = ?config.storage.path,
         "Starting archiver"
@@ -49,12 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rotation_duration = config.rotation.parse_interval()?;
     let rotation_minutes = (rotation_duration.as_secs() / 60) as u32;
 
-    // Extract feed name from filter (e.g., "prod.kalshi.json.>" -> "kalshi")
-    let feed = extract_feed_from_filter(&config.nats.filter)
-        .ok_or("Could not extract feed from filter")?;
+    // Use feed from config
+    let feed = &config.storage.feed;
 
     // Connect to NATS
-    let mut subscriber = Subscriber::connect(&config.nats).await?;
+    let mut subscriber = Subscriber::connect(&config.nats.url, stream_config).await?;
 
     // Create writer
     let mut writer = ArchiveWriter::new(
@@ -209,16 +212,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Archiver stopped");
     Ok(())
-}
-
-fn extract_feed_from_filter(filter: &str) -> Option<String> {
-    // Filter format: "{env}.{feed}.json.>" or "{env}.{feed}.json.{type}.>"
-    let parts: Vec<&str> = filter.split('.').collect();
-    if parts.len() >= 2 {
-        Some(parts[1].to_string())
-    } else {
-        None
-    }
 }
 
 /// Update manifest with completed files (called on every rotation)
