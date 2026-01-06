@@ -2,15 +2,19 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::time::{interval, Duration};
+use tokio::task::JoinSet;
+use tokio::time::interval;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use ssmd_archiver::{Config, manifest::{Gap, Manifest}, subscriber::Subscriber, writer::ArchiveWriter};
+use ssmd_archiver::{Config, config::StreamConfig, manifest::{Gap, Manifest}, subscriber::Subscriber, writer::ArchiveWriter};
 
 #[derive(Parser, Debug)]
 #[command(name = "ssmd-archiver")]
@@ -37,32 +41,131 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         e
     })?;
 
-    // For now, use first stream in the config (multi-stream support coming in future task)
-    let stream_config = config.nats.streams.first()
-        .ok_or("No streams configured")?;
+    let rotation_duration = config.rotation.parse_interval()?;
 
     info!(
         nats_url = %config.nats.url,
-        stream = %stream_config.stream,
-        filter = %stream_config.filter,
+        streams = config.nats.streams.len(),
         rotation = %config.rotation.interval,
         storage = ?config.storage.path,
         "Starting archiver"
     );
 
-    let rotation_duration = config.rotation.parse_interval()?;
+    // Create shared state
+    let shutdown = CancellationToken::new();
+    let nats_url = Arc::new(config.nats.url.clone());
+    let base_path = Arc::new(config.storage.path.clone());
+    let feed = Arc::new(config.storage.feed.clone());
+    let rotation_interval = Arc::new(config.rotation.interval.clone());
+
+    // Spawn a task per stream
+    let mut tasks: JoinSet<Result<(), Box<dyn std::error::Error + Send + Sync>>> = JoinSet::new();
+
+    for stream_config in config.nats.streams {
+        let shutdown = shutdown.clone();
+        let nats_url = Arc::clone(&nats_url);
+        let base_path = Arc::clone(&base_path);
+        let feed = Arc::clone(&feed);
+        let rotation_interval = Arc::clone(&rotation_interval);
+        let rotation_duration = rotation_duration;
+
+        info!(
+            stream = %stream_config.stream,
+            name = %stream_config.name,
+            filter = %stream_config.filter,
+            "Spawning archive task"
+        );
+
+        tasks.spawn(async move {
+            archive_stream(
+                &nats_url,
+                stream_config,
+                &base_path,
+                &feed,
+                &rotation_interval,
+                rotation_duration,
+                shutdown,
+            ).await
+        });
+    }
+
+    // Set up signal handlers for graceful shutdown
+    let mut sigterm = signal(SignalKind::terminate())
+        .expect("Failed to create SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt())
+        .expect("Failed to create SIGINT handler");
+
+    info!("Archiver running, waiting for SIGTERM/SIGINT to stop");
+
+    // Wait for signal or task failure
+    tokio::select! {
+        _ = sigterm.recv() => {
+            info!("SIGTERM received, shutting down gracefully");
+            shutdown.cancel();
+        }
+        _ = sigint.recv() => {
+            info!("SIGINT received, shutting down gracefully");
+            shutdown.cancel();
+        }
+        result = tasks.join_next() => {
+            match result {
+                Some(Ok(Ok(()))) => {
+                    info!("Task completed successfully, shutting down all tasks");
+                }
+                Some(Ok(Err(e))) => {
+                    error!(error = %e, "Task failed, shutting down all tasks");
+                }
+                Some(Err(e)) => {
+                    error!(error = %e, "Task panicked, shutting down all tasks");
+                }
+                None => {
+                    info!("All tasks completed");
+                }
+            }
+            shutdown.cancel();
+        }
+    }
+
+    // Wait for all remaining tasks to finish
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(Ok(())) => info!("Task shutdown complete"),
+            Ok(Err(e)) => error!(error = %e, "Task failed during shutdown"),
+            Err(e) => error!(error = %e, "Task panicked during shutdown"),
+        }
+    }
+
+    info!("Archiver stopped");
+    Ok(())
+}
+
+/// Archive messages from a single stream
+async fn archive_stream(
+    nats_url: &str,
+    stream_config: StreamConfig,
+    base_path: &Path,
+    feed: &str,
+    rotation_interval: &str,
+    rotation_duration: Duration,
+    shutdown: CancellationToken,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let stream_name = stream_config.name.clone();
     let rotation_minutes = (rotation_duration.as_secs() / 60) as u32;
 
-    // Use feed from config
-    let feed = &config.storage.feed;
+    info!(
+        stream = %stream_config.stream,
+        stream_name = %stream_name,
+        "Connecting to NATS"
+    );
 
     // Connect to NATS
-    let mut subscriber = Subscriber::connect(&config.nats.url, stream_config).await?;
+    let mut subscriber = Subscriber::connect(nats_url, &stream_config).await?;
 
-    // Create writer
+    // Create writer with stream-specific path
     let mut writer = ArchiveWriter::new(
-        config.storage.path.clone(),
-        feed.clone(),
+        base_path.to_path_buf(),
+        feed.to_string(),
+        stream_name.clone(),
         rotation_minutes,
     );
 
@@ -84,22 +187,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Fetch interval
     let mut fetch_interval = interval(Duration::from_millis(100));
 
-    // Set up signal handlers for graceful shutdown
-    let mut sigterm = signal(SignalKind::terminate())
-        .expect("Failed to create SIGTERM handler");
-    let mut sigint = signal(SignalKind::interrupt())
-        .expect("Failed to create SIGINT handler");
-
-    info!("Archiver running, waiting for SIGTERM/SIGINT to stop");
+    info!(stream_name = %stream_name, "Archive task running");
 
     loop {
         tokio::select! {
-            _ = sigterm.recv() => {
-                info!("SIGTERM received, shutting down gracefully");
-                break;
-            }
-            _ = sigint.recv() => {
-                info!("SIGINT received, shutting down gracefully");
+            _ = shutdown.cancelled() => {
+                info!(stream_name = %stream_name, "Shutdown signal received");
                 break;
             }
             _ = fetch_interval.tick() => {
@@ -108,8 +201,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Check for day rollover
                 if date != current_date {
-                    info!(old = %current_date, new = %date, "Day rollover, writing final manifest");
-                    write_manifest(&config.storage.path, &feed, &current_date, &config.rotation.interval, &mut writer, &tickers, &message_types, &gaps, &mut completed_files)?;
+                    info!(stream_name = %stream_name, old = %current_date, new = %date, "Day rollover, writing final manifest");
+                    write_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &mut writer, &tickers, &message_types, &gaps, &mut completed_files)?;
                     tickers.clear();
                     message_types.clear();
                     gaps.clear();
@@ -123,7 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         for msg in messages {
                             // Check for gap
                             if let Some((after_seq, missing)) = subscriber.check_gap(msg.seq) {
-                                warn!(after_seq = after_seq, missing = missing, "Recording gap");
+                                warn!(stream_name = %stream_name, after_seq = after_seq, missing = missing, "Recording gap");
                                 gaps.push(Gap {
                                     after_seq,
                                     missing_count: missing,
@@ -157,41 +250,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Ok(Some(rotated_entry)) => {
                                     // Ack after successful write
                                     if let Err(e) = msg.ack().await {
-                                        error!(error = %e, seq = seq, "Failed to ack message");
+                                        error!(stream_name = %stream_name, error = %e, seq = seq, "Failed to ack message");
                                     }
                                     // File was rotated - update manifest immediately
                                     info!(
+                                        stream_name = %stream_name,
                                         file = %rotated_entry.name,
                                         records = rotated_entry.records,
                                         seq_range = %format!("{}-{}", rotated_entry.nats_start_seq, rotated_entry.nats_end_seq),
                                         "File rotated"
                                     );
                                     completed_files.push(rotated_entry);
-                                    if let Err(e) = update_manifest(&config.storage.path, &feed, &current_date, &config.rotation.interval, &tickers, &message_types, &gaps, &completed_files) {
-                                        error!(error = %e, "Failed to update manifest after rotation");
+                                    if let Err(e) = update_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &tickers, &message_types, &gaps, &completed_files) {
+                                        error!(stream_name = %stream_name, error = %e, "Failed to update manifest after rotation");
                                     }
                                 }
                                 Ok(None) => {
                                     // Ack after successful write
                                     if let Err(e) = msg.ack().await {
-                                        error!(error = %e, seq = seq, "Failed to ack message");
+                                        error!(stream_name = %stream_name, error = %e, seq = seq, "Failed to ack message");
                                     }
                                 }
                                 Err(e) => {
                                     // Don't ack - message will be redelivered by NATS
-                                    warn!(error = %e, seq = seq, "Failed to write message, will be redelivered");
+                                    warn!(stream_name = %stream_name, error = %e, seq = seq, "Failed to write message, will be redelivered");
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, "Failed to fetch messages");
+                        error!(stream_name = %stream_name, error = %e, "Failed to fetch messages");
                     }
                 }
 
                 // Periodic stats log
                 if last_stats_time.elapsed() >= stats_interval {
                     info!(
+                        stream_name = %stream_name,
                         feed = %feed,
                         messages = total_messages,
                         bytes = total_bytes,
@@ -207,10 +302,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Final cleanup
-    info!("Writing final manifest");
-    write_manifest(&config.storage.path, &feed, &current_date, &config.rotation.interval, &mut writer, &tickers, &message_types, &gaps, &mut completed_files)?;
+    info!(stream_name = %stream_name, "Writing final manifest");
+    write_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &mut writer, &tickers, &message_types, &gaps, &mut completed_files)?;
 
-    info!("Archiver stopped");
+    info!(stream_name = %stream_name, "Archive task stopped");
     Ok(())
 }
 
@@ -219,13 +314,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn update_manifest(
     base_path: &Path,
     feed: &str,
+    stream_name: &str,
     date: &str,
     rotation_interval: &str,
     tickers: &HashSet<String>,
     message_types: &HashSet<String>,
     gaps: &[Gap],
     completed_files: &[ssmd_archiver::manifest::FileEntry],
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut manifest = Manifest::new(feed, date, rotation_interval);
     manifest.files = completed_files.to_vec();
     manifest.tickers = tickers.iter().cloned().collect();
@@ -233,14 +329,15 @@ fn update_manifest(
     manifest.gaps = gaps.to_vec();
     manifest.has_gaps = !gaps.is_empty();
 
-    let manifest_path = base_path.join(feed).join(date).join("manifest.json");
+    // Path: {base_path}/{feed}/{stream_name}/{date}/manifest.json
+    let manifest_path = base_path.join(feed).join(stream_name).join(date).join("manifest.json");
     if let Some(parent) = manifest_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
     std::fs::write(&manifest_path, manifest_json)?;
 
-    info!(path = ?manifest_path, files = completed_files.len(), "Updated manifest");
+    info!(stream_name = %stream_name, path = ?manifest_path, files = completed_files.len(), "Updated manifest");
     Ok(())
 }
 
@@ -249,6 +346,7 @@ fn update_manifest(
 fn write_manifest(
     base_path: &Path,
     feed: &str,
+    stream_name: &str,
     date: &str,
     rotation_interval: &str,
     writer: &mut ArchiveWriter,
@@ -256,12 +354,12 @@ fn write_manifest(
     message_types: &HashSet<String>,
     gaps: &[Gap],
     completed_files: &mut Vec<ssmd_archiver::manifest::FileEntry>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Close current file and add to completed files
     if let Some(entry) = writer.close()? {
         completed_files.push(entry);
     }
 
     // Write manifest with all completed files
-    update_manifest(base_path, feed, date, rotation_interval, tickers, message_types, gaps, completed_files)
+    update_manifest(base_path, feed, stream_name, date, rotation_interval, tickers, message_types, gaps, completed_files)
 }
