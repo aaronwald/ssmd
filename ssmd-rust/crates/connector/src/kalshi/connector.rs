@@ -83,8 +83,12 @@ impl KalshiConnector {
             "Using filtered subscription mode"
         );
 
-        // Fetch markets from secmaster
-        let client = SecmasterClient::new(&secmaster.url);
+        // Fetch markets from secmaster with retry config
+        let client = SecmasterClient::with_retry(
+            &secmaster.url,
+            self.subscription_config.retry_attempts,
+            self.subscription_config.retry_delay_ms,
+        );
         let tickers = client
             .get_markets_by_categories(&secmaster.categories)
             .await
