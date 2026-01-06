@@ -227,6 +227,23 @@ storage:
   type: local
 `, connector.Spec.Feed, connector.Spec.Feed, natsURL, stream, subjectPrefix)
 
+	// Add secmaster config if categories specified
+	if len(connector.Spec.Categories) > 0 {
+		categoriesYAML := ""
+		for _, cat := range connector.Spec.Categories {
+			categoriesYAML += fmt.Sprintf("    - %s\n", cat)
+		}
+
+		envConfig += fmt.Sprintf(`secmaster:
+  url: "http://ssmd-data-ts.ssmd.svc.cluster.local:3000"
+  categories:
+%ssubscription:
+  batch_size: 100
+  retry_attempts: 3
+  retry_delay_ms: 1000
+`, categoriesYAML)
+	}
+
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      r.configMapName(connector),
