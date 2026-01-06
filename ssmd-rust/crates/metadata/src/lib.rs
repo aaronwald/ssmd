@@ -10,6 +10,6 @@ pub use feed::{
     MessageProtocol, Protocol, SiteType, TransportProtocol,
 };
 pub use environment::{
-    CacheConfig, CacheType, Environment, KeySpec, KeyType, Schedule, StorageConfig, StorageType,
-    TransportConfig, TransportType,
+    CacheConfig, CacheType, Environment, KeySpec, KeyType, Schedule, SecmasterConfig,
+    StorageConfig, StorageType, SubscriptionConfig, TransportConfig, TransportType,
 };
