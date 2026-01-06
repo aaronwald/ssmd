@@ -2,7 +2,7 @@ use async_nats::jetstream::{self, consumer::PullConsumer, message::Message};
 use futures_util::StreamExt;
 use tracing::{error, info, trace, warn};
 
-use crate::config::NatsConfig;
+use crate::config::StreamConfig;
 use crate::error::ArchiverError;
 
 pub struct Subscriber {
@@ -28,8 +28,9 @@ impl ReceivedMessage {
 }
 
 impl Subscriber {
-    pub async fn connect(config: &NatsConfig) -> Result<Self, ArchiverError> {
-        let client = async_nats::connect(&config.url)
+    /// Connect to NATS and create a subscriber for a specific stream
+    pub async fn connect(nats_url: &str, stream_config: &StreamConfig) -> Result<Self, ArchiverError> {
+        let client = async_nats::connect(nats_url)
             .await
             .map_err(|e| ArchiverError::Nats(e.to_string()))?;
 
@@ -37,14 +38,14 @@ impl Subscriber {
 
         // Get or create consumer
         let consumer = jetstream
-            .get_stream(&config.stream)
+            .get_stream(&stream_config.stream)
             .await
             .map_err(|e| ArchiverError::Nats(format!("Stream not found: {}", e)))?
             .get_or_create_consumer(
-                &config.consumer,
+                &stream_config.consumer,
                 jetstream::consumer::pull::Config {
-                    durable_name: Some(config.consumer.clone()),
-                    filter_subject: config.filter.clone(),
+                    durable_name: Some(stream_config.consumer.clone()),
+                    filter_subject: stream_config.filter.clone(),
                     ..Default::default()
                 },
             )
@@ -52,9 +53,9 @@ impl Subscriber {
             .map_err(|e| ArchiverError::Nats(e.to_string()))?;
 
         info!(
-            stream = %config.stream,
-            consumer = %config.consumer,
-            filter = %config.filter,
+            stream = %stream_config.stream,
+            consumer = %stream_config.consumer,
+            filter = %stream_config.filter,
             "Connected to NATS JetStream"
         );
 
