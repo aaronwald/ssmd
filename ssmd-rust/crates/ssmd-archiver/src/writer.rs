@@ -13,6 +13,7 @@ use crate::manifest::FileEntry;
 pub struct ArchiveWriter {
     base_path: PathBuf,
     feed: String,
+    stream_name: String,
     current_file: Option<CurrentFile>,
     rotation_minutes: u32,
 }
@@ -28,10 +29,11 @@ struct CurrentFile {
 }
 
 impl ArchiveWriter {
-    pub fn new(base_path: PathBuf, feed: String, rotation_minutes: u32) -> Self {
+    pub fn new(base_path: PathBuf, feed: String, stream_name: String, rotation_minutes: u32) -> Self {
         Self {
             base_path,
             feed,
+            stream_name,
             current_file: None,
             rotation_minutes,
         }
@@ -100,7 +102,8 @@ impl ArchiveWriter {
         let date_str = now.format("%Y-%m-%d").to_string();
         let time_str = now.format("%H%M").to_string();
 
-        let dir = self.base_path.join(&self.feed).join(&date_str);
+        // Path: {base_path}/{feed}/{stream_name}/{date}/
+        let dir = self.base_path.join(&self.feed).join(&self.stream_name).join(&date_str);
         fs::create_dir_all(&dir)?;
 
         let filename = format!("{}.jsonl.gz", time_str);
@@ -149,7 +152,7 @@ mod tests {
     #[test]
     fn test_write_records() {
         let tmp = TempDir::new().unwrap();
-        let mut writer = ArchiveWriter::new(tmp.path().to_path_buf(), "kalshi".to_string(), 15);
+        let mut writer = ArchiveWriter::new(tmp.path().to_path_buf(), "kalshi".to_string(), "politics".to_string(), 15);
 
         let now = Utc::now();
         assert!(writer.write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now).unwrap().is_none());
@@ -160,10 +163,10 @@ mod tests {
         assert_eq!(entry.nats_start_seq, 1);
         assert_eq!(entry.nats_end_seq, 2);
 
-        // Verify file contents
+        // Verify file contents (path: {base}/{feed}/{stream_name}/{date}/{time}.jsonl.gz)
         let date_str = now.format("%Y-%m-%d").to_string();
         let time_str = now.format("%H%M").to_string();
-        let path = tmp.path().join("kalshi").join(&date_str).join(format!("{}.jsonl.gz", time_str));
+        let path = tmp.path().join("kalshi").join("politics").join(&date_str).join(format!("{}.jsonl.gz", time_str));
 
         let file = File::open(&path).unwrap();
         let decoder = GzDecoder::new(file);
