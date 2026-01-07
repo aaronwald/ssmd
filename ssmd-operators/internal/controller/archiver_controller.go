@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -118,10 +119,44 @@ func (r *ArchiverReconciler) reconcileDelete(ctx context.Context, archiver *ssmd
 	if controllerutil.ContainsFinalizer(archiver, archiverFinalizer) {
 		log.Info("Cleaning up Archiver resources", "name", archiver.Name)
 
-		// Create final sync job if sync is enabled and onDelete == "final"
+		// Step 1: Delete the Deployment FIRST (before creating sync job)
+		// This ensures the PVC is released before the sync job tries to mount it
+		deploymentName := r.deploymentName(archiver)
+		deployment := &appsv1.Deployment{}
+		if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: archiver.Namespace}, deployment); err == nil {
+			if err := r.Delete(ctx, deployment); err != nil && !errors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			log.Info("Deleted Deployment, waiting for pods to terminate", "name", deploymentName)
+			// Requeue to wait for pods to terminate before creating sync job
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		} else if !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+
+		// Step 2: Check if any archiver pods are still running
+		// We need to wait for them to terminate so the PVC is released
+		podList := &corev1.PodList{}
+		listOpts := []client.ListOption{
+			client.InNamespace(archiver.Namespace),
+			client.MatchingLabels{
+				"app.kubernetes.io/name":     "ssmd-archiver",
+				"app.kubernetes.io/instance": archiver.Name,
+			},
+		}
+		if err := r.List(ctx, podList, listOpts...); err != nil {
+			return ctrl.Result{}, err
+		}
+		if len(podList.Items) > 0 {
+			log.Info("Waiting for archiver pods to terminate", "count", len(podList.Items))
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+
+		// Step 3: Create final sync job if sync is enabled and onDelete == "final"
+		// Now safe to create since PVC is released
 		if archiver.Spec.Sync != nil && archiver.Spec.Sync.Enabled && archiver.Spec.Sync.OnDelete == "final" {
 			if archiver.Spec.Storage != nil && archiver.Spec.Storage.Remote != nil && archiver.Spec.Storage.Remote.Bucket != "" {
-				log.Info("Creating final sync job before cleanup")
+				log.Info("Creating final sync job")
 				job := r.constructSyncJob(archiver)
 				if err := r.Create(ctx, job); err != nil && !errors.IsAlreadyExists(err) {
 					log.Error(err, "Failed to create final sync job")
@@ -132,19 +167,9 @@ func (r *ArchiverReconciler) reconcileDelete(ctx context.Context, archiver *ssmd
 			}
 		}
 
-		// Delete the Deployment
-		deploymentName := r.deploymentName(archiver)
-		deployment := &appsv1.Deployment{}
-		if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: archiver.Namespace}, deployment); err == nil {
-			if err := r.Delete(ctx, deployment); err != nil && !errors.IsNotFound(err) {
-				return ctrl.Result{}, err
-			}
-			log.Info("Deleted Deployment", "name", deploymentName)
-		}
-
 		// Note: We don't delete the PVC to preserve data
 
-		// Remove finalizer
+		// Step 4: Remove finalizer
 		controllerutil.RemoveFinalizer(archiver, archiverFinalizer)
 		if err := r.Update(ctx, archiver); err != nil {
 			return ctrl.Result{}, err
