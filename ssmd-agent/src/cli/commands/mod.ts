@@ -19,6 +19,7 @@ import { handleNotifierDeploy } from "./notifier-deploy.ts";
 import { handleConnectorDeploy } from "./connector-deploy.ts";
 import { handleArchiverDeploy } from "./archiver-deploy.ts";
 import { handleDay } from "./day.ts";
+import { handleStatus } from "./status.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
@@ -96,6 +97,10 @@ export async function run(args: string[]): Promise<void> {
       await handleArchiverDeploy(subcommand, flags);
       break;
 
+    case "status":
+      await handleStatus(flags);
+      break;
+
     case "agent":
       // Launch the existing agent REPL
       await import("../../cli.ts");
@@ -170,6 +175,7 @@ function printHelp(): void {
   console.log("  ssmd <command> [options]");
   console.log("");
   console.log("COMMANDS:");
+  console.log("  status            Show cluster status overview");
   console.log("  init              Initialize exchanges directory");
   console.log("  feed              Manage feed configurations");
   console.log("  secmaster         Security master database operations");
