@@ -135,6 +135,11 @@ spec:
                     items:
                       type: string
                     type: array
+                  filter:
+                    description: |-
+                      Filter is the NATS subject filter pattern (e.g., "prod.kalshi.politics.>")
+                      Optional - if not specified, defaults to "prod.kalshi.>"
+                    type: string
                   natsUrl:
                     description: NATSURL is the NATS server URL (optional, defaults
                       to cluster NATS)

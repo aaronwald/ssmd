@@ -53,6 +53,11 @@ type SignalSourceConfig struct {
 	// +kubebuilder:validation:Required
 	Stream string `json:"stream"`
 
+	// Filter is the NATS subject filter pattern (e.g., "prod.kalshi.politics.>")
+	// Optional - if not specified, defaults to "prod.kalshi.>"
+	// +optional
+	Filter string `json:"filter,omitempty"`
+
 	// Categories filters to specific event categories (optional, empty = all)
 	// +optional
 	Categories []string `json:"categories,omitempty"`
