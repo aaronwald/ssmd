@@ -188,6 +188,11 @@ func (r *SignalReconciler) constructConfigMap(signal *ssmdv1alpha1.Signal) *core
   stream: %s
 `, natsURL, signal.Spec.Source.Stream)
 
+	// Add filter if specified
+	if signal.Spec.Source.Filter != "" {
+		signalConfig += fmt.Sprintf("  filter: %s\n", signal.Spec.Source.Filter)
+	}
+
 	// Add signals list
 	signalConfig += "\nsignals:\n"
 	for _, s := range signal.Spec.Signals {
