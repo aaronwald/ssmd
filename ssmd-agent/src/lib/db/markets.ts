@@ -79,7 +79,7 @@ export async function upsertMarkets(
         volume: sql`excluded.volume`,
         volume24h: sql`excluded.volume_24h`,
         openInterest: sql`excluded.open_interest`,
-        updatedAt: sql`NOW()`,
+        // updated_at is handled by trigger (only updates when data changes)
         deletedAt: sql`NULL`,
       },
     });
