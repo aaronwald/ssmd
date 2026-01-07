@@ -38,7 +38,8 @@ export async function generateApiKey(environment: "live" | "test" = "live"): Pro
  */
 export function parseApiKey(fullKey: string): { prefix: string; secret: string } | null {
   // Match: sk_{env}_{keyId}_{secret}
-  const match = fullKey.match(/^(sk_(?:live|test)_[a-zA-Z0-9_-]+)_([a-zA-Z0-9_-]+)$/);
+  // keyId is exactly 8 chars (6 bytes base64), secret is 32 chars (24 bytes base64)
+  const match = fullKey.match(/^(sk_(?:live|test)_[a-zA-Z0-9_-]{8})_([a-zA-Z0-9_-]+)$/);
   if (!match) {
     return null;
   }
