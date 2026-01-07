@@ -146,9 +146,39 @@ gh workflow run build-connector.yaml -f tag=0.4.4
 |----------|-------|------------|------------|
 | `build-connector.yaml` | `ghcr.io/aaronwald/ssmd-connector` | `v*` | `ssmd-rust/Dockerfile` |
 | `build-archiver.yaml` | `ghcr.io/aaronwald/ssmd-archiver` | `v*` | `ssmd-rust/crates/ssmd-archiver/Dockerfile` |
+| `build-operator.yaml` | `ghcr.io/aaronwald/ssmd-operator` | `operator-v*` | `ssmd-operators/Dockerfile` |
+| `build-signal-runner.yaml` | `ghcr.io/aaronwald/ssmd-signal-runner` | `signal-runner-v*` | `ssmd-agent/Dockerfile.signal` |
 | `build-cli-ts.yaml` | `ghcr.io/aaronwald/ssmd-cli-ts` | `cli-ts-v*` | `ssmd-agent/Dockerfile.cli` |
 | `build-data-ts.yaml` | `ghcr.io/aaronwald/ssmd-data-ts` | `data-ts-v*` | `ssmd-agent/Dockerfile.data` |
 | `build-agent.yaml` | `ghcr.io/aaronwald/ssmd-agent` | `agent-v*` | `ssmd-agent/Dockerfile` |
+
+## Kubernetes Operator
+
+The ssmd-operators project manages Kubernetes CRDs for market data components:
+
+### CRDs
+
+| CRD | Purpose |
+|-----|---------|
+| `connectors.ssmd.ssmd.io` | Manages Kalshi WebSocket connectors |
+| `archivers.ssmd.ssmd.io` | Manages NATS → JSONL.gz archivers |
+| `signals.ssmd.ssmd.io` | Manages signal evaluation pods |
+
+### Operator Commands
+
+```bash
+# Generate CRDs after modifying *_types.go
+cd ssmd-operators && make manifests
+
+# Build locally
+make build
+
+# Tag and push to trigger image build
+git tag operator-v0.4.1 && git push origin operator-v0.4.1
+```
+
+After updating the operator, copy CRDs to varlab:
+`varlab/clusters/homelab/apps/ssmd/operator/crds.yaml`
 
 
 ## Instructions
