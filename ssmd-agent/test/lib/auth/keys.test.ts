@@ -17,9 +17,10 @@ Deno.test("generateApiKey test environment", async () => {
 });
 
 Deno.test("parseApiKey extracts prefix and secret", () => {
-  const result = parseApiKey("sk_live_abc123_secretpart");
+  // keyId must be exactly 8 chars (6 bytes base64)
+  const result = parseApiKey("sk_live_abc12345_secretpart");
 
-  assertEquals(result?.prefix, "sk_live_abc123");
+  assertEquals(result?.prefix, "sk_live_abc12345");
   assertEquals(result?.secret, "secretpart");
 });
 
