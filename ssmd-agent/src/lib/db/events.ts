@@ -54,7 +54,7 @@ export async function upsertEvents(
         strikeDate: sql`excluded.strike_date`,
         mutuallyExclusive: sql`excluded.mutually_exclusive`,
         status: sql`excluded.status`,
-        updatedAt: sql`NOW()`,
+        // updated_at is handled by trigger (only updates when data changes)
         deletedAt: sql`NULL`,
       },
     });
