@@ -1,0 +1,10 @@
+[
+  {
+    "name": "test-ntfy",
+    "type": "ntfy",
+    "config": {
+      "server": "https://ntfy.sh",
+      "topic": "ssmd-test-do-not-use"
+    }
+  }
+]
