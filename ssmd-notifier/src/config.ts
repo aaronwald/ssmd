@@ -28,11 +28,18 @@ export function loadConfig(): NotifierConfig {
     throw new Error("NATS_URL environment variable is required");
   }
 
-  const subjectsStr = Deno.env.get("SUBJECTS");
-  if (!subjectsStr) {
-    throw new Error("SUBJECTS environment variable is required");
+  const stream = Deno.env.get("STREAM");
+  if (!stream) {
+    throw new Error("STREAM environment variable is required");
   }
-  const subjects = subjectsStr.split(",").map((s) => s.trim());
+
+  const consumer = Deno.env.get("CONSUMER");
+  if (!consumer) {
+    throw new Error("CONSUMER environment variable is required");
+  }
+
+  // Optional filter subject (e.g., "signals.volume-1m-30min.>")
+  const filterSubject = Deno.env.get("FILTER_SUBJECT");
 
   const configPath = Deno.env.get("DESTINATIONS_CONFIG");
   if (!configPath) {
@@ -42,5 +49,5 @@ export function loadConfig(): NotifierConfig {
   const destJson = Deno.readTextFileSync(configPath);
   const destinations = parseDestinations(destJson);
 
-  return { natsUrl, subjects, destinations };
+  return { natsUrl, stream, consumer, filterSubject, destinations };
 }

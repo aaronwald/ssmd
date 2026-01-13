@@ -33,6 +33,8 @@ export interface Destination {
 /** Notifier configuration */
 export interface NotifierConfig {
   natsUrl: string;
-  subjects: string[];
+  stream: string;
+  consumer: string;
+  filterSubject?: string;
   destinations: Destination[];
 }
