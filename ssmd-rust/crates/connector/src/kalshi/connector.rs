@@ -105,9 +105,15 @@ impl KalshiConnector {
         );
 
         // Fetch markets from secmaster with retry config and API key
+        // Use env var SSMD_DATA_API_KEY as fallback if secmaster.api_key not set in config
+        let api_key = secmaster
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("SSMD_DATA_API_KEY").ok());
+
         let client = SecmasterClient::with_config(
             &secmaster.url,
-            secmaster.api_key.clone(),
+            api_key,
             self.subscription_config.retry_attempts,
             self.subscription_config.retry_delay_ms,
         );
