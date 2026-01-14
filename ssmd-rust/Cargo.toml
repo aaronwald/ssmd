@@ -37,7 +37,7 @@ url = "2"
 clap = { version = "4", features = ["derive", "env"] }
 bytes = "1"
 capnp = "0.19"
-capnpc = "0.19"
+capnpc = "0.25"
 quanta = "0.12"
 dashmap = "6"
 simd-json = "0.14"
