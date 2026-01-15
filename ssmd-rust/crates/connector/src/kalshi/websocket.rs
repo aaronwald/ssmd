@@ -266,12 +266,36 @@ impl KalshiWebSocket {
             .map_err(|_| WebSocketError::SubscriptionFailed("Timeout waiting for confirmation".into()))?
     }
 
+    /// Read timeout in seconds - if no data received for this long, assume connection is dead
+    const READ_TIMEOUT_SECS: u64 = 120;
+
     /// Receive the next message with raw text
     /// Returns (raw_json, parsed_message) for raw data capture
+    ///
+    /// Has a read timeout to detect silent connection deaths.
+    /// If no data (including pings) is received within READ_TIMEOUT_SECS,
+    /// returns an error so the connector can reconnect.
     pub async fn recv_raw(&mut self) -> Result<(String, WsMessage), WebSocketError> {
         loop {
-            match self.ws.next().await {
-                Some(Ok(Message::Text(text))) => {
+            let recv_result = tokio::time::timeout(
+                Duration::from_secs(Self::READ_TIMEOUT_SECS),
+                self.ws.next(),
+            )
+            .await;
+
+            match recv_result {
+                Err(_) => {
+                    // Timeout - no data received, connection likely dead
+                    warn!(
+                        timeout_secs = Self::READ_TIMEOUT_SECS,
+                        "WebSocket read timeout - no data received, connection may be dead"
+                    );
+                    return Err(WebSocketError::Connection(format!(
+                        "Read timeout after {} seconds - no data received",
+                        Self::READ_TIMEOUT_SECS
+                    )));
+                }
+                Ok(Some(Ok(Message::Text(text)))) => {
                     match serde_json::from_str::<WsMessage>(&text) {
                         Ok(msg) => {
                             trace!(msg = %text, "Received message");
@@ -283,17 +307,17 @@ impl KalshiWebSocket {
                         }
                     }
                 }
-                Some(Ok(Message::Ping(data))) => {
+                Ok(Some(Ok(Message::Ping(data)))) => {
                     trace!("Received ping, sending pong");
                     self.ws.send(Message::Pong(data)).await?;
                 }
-                Some(Ok(Message::Close(frame))) => {
+                Ok(Some(Ok(Message::Close(frame)))) => {
                     info!(frame = ?frame, "WebSocket closed");
                     return Err(WebSocketError::ConnectionClosed);
                 }
-                Some(Ok(_)) => continue,
-                Some(Err(e)) => return Err(e.into()),
-                None => return Err(WebSocketError::ConnectionClosed),
+                Ok(Some(Ok(_))) => continue,
+                Ok(Some(Err(e))) => return Err(e.into()),
+                Ok(None) => return Err(WebSocketError::ConnectionClosed),
             }
         }
     }

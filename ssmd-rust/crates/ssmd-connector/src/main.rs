@@ -215,6 +215,9 @@ fn create_nats_writer(
     }
 }
 
+/// Staleness threshold in seconds - if no messages for this long, health check fails
+const STALE_THRESHOLD_SECS: u64 = 300; // 5 minutes
+
 /// Run connector with a specific writer implementation
 async fn run_with_writer<C, W>(
     feed: &Feed,
@@ -229,15 +232,21 @@ where
 {
     let mut runner = Runner::new(&feed.name, connector, writer);
     let connected_handle = runner.connected_handle();
+    let last_message_handle = runner.last_message_handle();
 
-    // Start health server
-    let server_state = ServerState::new(&feed.name, Arc::clone(&connected_handle));
+    // Start health server with staleness tracking
+    let server_state = ServerState::with_last_message(
+        &feed.name,
+        Arc::clone(&connected_handle),
+        Arc::clone(&last_message_handle),
+        STALE_THRESHOLD_SECS,
+    );
     tokio::spawn(async move {
         if let Err(e) = ssmd_connector_lib::run_server(health_addr, server_state).await {
             error!(error = %e, "Health server error");
         }
     });
-    info!(addr = %health_addr, "Health server started");
+    info!(addr = %health_addr, stale_threshold_secs = STALE_THRESHOLD_SECS, "Health server started");
 
     // Run the connector
     match runner.run(shutdown_rx).await {

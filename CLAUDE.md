@@ -43,8 +43,15 @@ make agent-run      # Start agent REPL (requires ANTHROPIC_API_KEY)
 ## Prerequisites
 
 ```bash
-# Install Cap'n Proto compiler (required for ssmd-schema crate)
-sudo apt-get install -y capnproto
+# Install all dependencies (Debian/Ubuntu)
+make setup
+```
+
+Or manually:
+
+```bash
+# System packages (required for Rust builds)
+sudo apt-get install -y capnproto pkg-config libssl-dev
 
 # Install Rust (if not present)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y

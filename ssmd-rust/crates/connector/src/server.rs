@@ -6,9 +6,14 @@ use axum::{
 };
 use serde::Serialize;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
+
+/// Default staleness threshold in seconds (5 minutes)
+/// If no messages received for this duration, health check reports stale
+const DEFAULT_STALE_THRESHOLD_SECS: u64 = 300;
 
 /// Health check response
 #[derive(Serialize)]
@@ -16,6 +21,12 @@ pub struct HealthResponse {
     pub status: String,
     pub feed: String,
     pub connected: bool,
+    /// Seconds since last message was received (None if no messages yet)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_secs_ago: Option<u64>,
+    /// True if no messages received within staleness threshold
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
 }
 
 /// Metrics response (placeholder for future Prometheus integration)
@@ -31,6 +42,10 @@ pub struct MetricsResponse {
 pub struct ServerState {
     pub feed_name: String,
     pub connected: Arc<AtomicBool>,
+    /// Unix timestamp (seconds) of last message received, 0 if none
+    pub last_message_epoch_secs: Arc<AtomicU64>,
+    /// Staleness threshold in seconds
+    pub stale_threshold_secs: u64,
 }
 
 impl ServerState {
@@ -38,34 +53,100 @@ impl ServerState {
         Self {
             feed_name: feed_name.into(),
             connected,
+            last_message_epoch_secs: Arc::new(AtomicU64::new(0)),
+            stale_threshold_secs: DEFAULT_STALE_THRESHOLD_SECS,
         }
+    }
+
+    /// Create with custom staleness threshold and shared last_message_epoch_secs
+    pub fn with_last_message(
+        feed_name: impl Into<String>,
+        connected: Arc<AtomicBool>,
+        last_message_epoch_secs: Arc<AtomicU64>,
+        stale_threshold_secs: u64,
+    ) -> Self {
+        Self {
+            feed_name: feed_name.into(),
+            connected,
+            last_message_epoch_secs,
+            stale_threshold_secs,
+        }
+    }
+
+    /// Calculate staleness info from current time
+    fn staleness_info(&self) -> (Option<u64>, bool) {
+        let last_msg = self.last_message_epoch_secs.load(Ordering::SeqCst);
+        if last_msg == 0 {
+            // No messages yet - not stale (just started)
+            return (None, false);
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let secs_ago = now.saturating_sub(last_msg);
+        let stale = secs_ago > self.stale_threshold_secs;
+        (Some(secs_ago), stale)
     }
 }
 
-/// Health endpoint - always returns 200 if server is running
-async fn health(State(state): State<ServerState>) -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "ok".to_string(),
-        feed: state.feed_name.clone(),
-        connected: state.connected.load(Ordering::SeqCst),
-    })
-}
-
-/// Ready endpoint - returns 200 only when connected
-async fn ready(State(state): State<ServerState>) -> (StatusCode, Json<HealthResponse>) {
+/// Health endpoint - returns 200 if server is running and not stale
+/// Returns 503 if stale (no messages for > threshold)
+async fn health(State(state): State<ServerState>) -> (StatusCode, Json<HealthResponse>) {
     let connected = state.connected.load(Ordering::SeqCst);
-    let status_code = if connected {
-        StatusCode::OK
-    } else {
+    let (last_message_secs_ago, stale) = state.staleness_info();
+
+    // Unhealthy if stale AND was previously connected (not just starting up)
+    let unhealthy = stale && connected;
+    let status_code = if unhealthy {
         StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
     };
 
     (
         status_code,
         Json(HealthResponse {
-            status: if connected { "ready" } else { "not_ready" }.to_string(),
+            status: if unhealthy { "stale" } else { "ok" }.to_string(),
             feed: state.feed_name.clone(),
             connected,
+            last_message_secs_ago,
+            stale,
+        }),
+    )
+}
+
+/// Ready endpoint - returns 200 only when connected and not stale
+async fn ready(State(state): State<ServerState>) -> (StatusCode, Json<HealthResponse>) {
+    let connected = state.connected.load(Ordering::SeqCst);
+    let (last_message_secs_ago, stale) = state.staleness_info();
+
+    // Ready only if connected and not stale
+    let ready = connected && !stale;
+    let status_code = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    let status = if !connected {
+        "not_connected"
+    } else if stale {
+        "stale"
+    } else {
+        "ready"
+    };
+
+    (
+        status_code,
+        Json(HealthResponse {
+            status: status.to_string(),
+            feed: state.feed_name.clone(),
+            connected,
+            last_message_secs_ago,
+            stale,
         }),
     )
 }
@@ -107,11 +188,41 @@ mod tests {
         ServerState {
             feed_name: "test-feed".to_string(),
             connected: Arc::new(AtomicBool::new(connected)),
+            last_message_epoch_secs: Arc::new(AtomicU64::new(0)),
+            stale_threshold_secs: DEFAULT_STALE_THRESHOLD_SECS,
+        }
+    }
+
+    fn create_test_state_with_last_message(connected: bool, last_msg_epoch: u64, threshold: u64) -> ServerState {
+        ServerState {
+            feed_name: "test-feed".to_string(),
+            connected: Arc::new(AtomicBool::new(connected)),
+            last_message_epoch_secs: Arc::new(AtomicU64::new(last_msg_epoch)),
+            stale_threshold_secs: threshold,
         }
     }
 
     #[tokio::test]
-    async fn test_health_returns_ok() {
+    async fn test_health_returns_ok_when_fresh() {
+        // Connected with recent message
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let state = create_test_state_with_last_message(true, now, 60);
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_health_returns_ok_when_no_messages_yet() {
+        // Connected but no messages yet (just started)
         let state = create_test_state(true);
         let app = create_router(state);
 
@@ -124,8 +235,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ready_when_connected() {
-        let state = create_test_state(true);
+    async fn test_health_returns_503_when_stale() {
+        // Connected but stale (old message)
+        let old_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() - 120; // 2 minutes ago
+        let state = create_test_state_with_last_message(true, old_time, 60); // 60s threshold
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_ready_when_connected_and_fresh() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let state = create_test_state_with_last_message(true, now, 60);
         let app = create_router(state);
 
         let response = app
@@ -150,6 +283,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ready_when_stale() {
+        let old_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() - 120;
+        let state = create_test_state_with_last_message(true, old_time, 60);
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
     async fn test_metrics_endpoint() {
         let state = create_test_state(true);
         let app = create_router(state);
@@ -160,5 +310,39 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_staleness_info_no_messages() {
+        let state = create_test_state(true);
+        let (secs_ago, stale) = state.staleness_info();
+        assert!(secs_ago.is_none());
+        assert!(!stale);
+    }
+
+    #[test]
+    fn test_staleness_info_fresh() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let state = create_test_state_with_last_message(true, now, 60);
+        let (secs_ago, stale) = state.staleness_info();
+        assert!(secs_ago.is_some());
+        assert!(secs_ago.unwrap() <= 1);
+        assert!(!stale);
+    }
+
+    #[test]
+    fn test_staleness_info_stale() {
+        let old_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() - 120;
+        let state = create_test_state_with_last_message(true, old_time, 60);
+        let (secs_ago, stale) = state.staleness_info();
+        assert!(secs_ago.is_some());
+        assert!(secs_ago.unwrap() >= 119);
+        assert!(stale);
     }
 }

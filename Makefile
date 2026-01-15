@@ -1,9 +1,34 @@
 .PHONY: rust-build rust-test rust-clippy rust-clean rust-all
 .PHONY: agent-check agent-test agent-run cli-check
-.PHONY: all test lint clean generate-k8s
+.PHONY: all test lint clean generate-k8s setup
 
 CARGO := . $$HOME/.cargo/env && cargo
 RUST_DIR := ssmd-rust
+
+# Setup development dependencies (Debian/Ubuntu)
+setup:
+	@echo "Installing system dependencies..."
+	sudo apt-get update && sudo apt-get install -y capnproto pkg-config libssl-dev
+	@echo "Checking Rust installation..."
+	@if command -v ~/.cargo/bin/rustup >/dev/null 2>&1; then \
+		echo "Setting Rust default toolchain..."; \
+		~/.cargo/bin/rustup default stable; \
+	elif command -v rustup >/dev/null 2>&1; then \
+		echo "Setting Rust default toolchain..."; \
+		rustup default stable; \
+	else \
+		echo "Installing Rust..."; \
+		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; \
+		~/.cargo/bin/rustup default stable; \
+	fi
+	@echo "Checking Deno installation..."
+	@if ! command -v deno >/dev/null 2>&1; then \
+		echo "Installing Deno..."; \
+		curl -fsSL https://deno.land/install.sh | sh; \
+	else \
+		echo "Deno already installed: $$(deno --version | head -1)"; \
+	fi
+	@echo "Setup complete!"
 
 # Rust targets
 rust-build:
