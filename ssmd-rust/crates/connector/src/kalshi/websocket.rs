@@ -301,8 +301,8 @@ impl KalshiWebSocket {
                             }
                             Ok(WsMessage::Ticker { .. } | WsMessage::Trade { .. }) => {
                                 // Expected during subscription - data is flowing
-                                if message_count % 100 == 0 {
-                                    trace!(message_count, "Still waiting for subscription confirmation...");
+                                if message_count == 1 || message_count % 100 == 0 {
+                                    debug!(message_count, expected_id, "Receiving data while waiting for subscription confirmation");
                                 }
                             }
                             Ok(_) => {
@@ -322,7 +322,10 @@ impl KalshiWebSocket {
 
         timeout
             .await
-            .map_err(|_| WebSocketError::SubscriptionFailed("Timeout waiting for confirmation".into()))?
+            .map_err(|_| {
+                warn!(expected_id, timeout_secs = Self::SUBSCRIPTION_TIMEOUT_SECS, "Subscription timeout - no confirmation received");
+                WebSocketError::SubscriptionFailed("Timeout waiting for confirmation".into())
+            })?
     }
 
     /// Read timeout in seconds - if no data received for this long, assume connection is dead
