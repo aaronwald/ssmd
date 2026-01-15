@@ -1,6 +1,7 @@
 use axum::{
     extract::State,
     http::StatusCode,
+    response::IntoResponse,
     routing::get,
     Json, Router,
 };
@@ -10,6 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
+
+use crate::metrics::encode_metrics;
 
 /// Default staleness threshold in seconds (5 minutes)
 /// If no messages received for this duration, health check reports stale
@@ -27,14 +30,6 @@ pub struct HealthResponse {
     /// True if no messages received within staleness threshold
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
-}
-
-/// Metrics response (placeholder for future Prometheus integration)
-#[derive(Serialize)]
-pub struct MetricsResponse {
-    pub messages_received: u64,
-    pub messages_written: u64,
-    pub errors: u64,
 }
 
 /// Shared state for health endpoints
@@ -151,14 +146,20 @@ async fn ready(State(state): State<ServerState>) -> (StatusCode, Json<HealthResp
     )
 }
 
-/// Metrics endpoint - placeholder for future Prometheus integration
-async fn metrics() -> Json<MetricsResponse> {
-    // TODO: Integrate with actual metrics collection
-    Json(MetricsResponse {
-        messages_received: 0,
-        messages_written: 0,
-        errors: 0,
-    })
+/// Metrics endpoint - returns Prometheus text format
+async fn metrics() -> impl IntoResponse {
+    match encode_metrics() {
+        Ok(body) => (
+            StatusCode::OK,
+            [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+            body,
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [("content-type", "text/plain; charset=utf-8")],
+            format!("Failed to encode metrics: {}", e),
+        ),
+    }
 }
 
 /// Create the health server router
@@ -310,6 +311,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+        // Verify Prometheus content type
+        let content_type = response.headers().get("content-type").unwrap();
+        assert!(content_type.to_str().unwrap().contains("text/plain"));
     }
 
     #[test]
