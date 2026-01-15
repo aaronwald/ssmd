@@ -23,6 +23,9 @@ pub struct SubscriptionResult {
     pub failed_tickers: Vec<String>,
 }
 
+/// Maximum markets per WebSocket subscription (Kalshi limit)
+pub const MAX_MARKETS_PER_SUBSCRIPTION: usize = 256;
+
 /// Production WebSocket URL
 pub const KALSHI_WS_URL: &str = "wss://api.elections.kalshi.com/trade-api/ws/v2";
 
@@ -192,118 +195,58 @@ impl KalshiWebSocket {
         self.wait_for_subscription(self.command_id).await
     }
 
-    /// Maximum markets per subscription batch
-    pub const MAX_MARKETS_PER_BATCH: usize = 256;
-
-    /// Subscribe to a channel for multiple markets
+    /// Subscribe to a channel for multiple markets (single subscription, max 256 markets)
     ///
-    /// Automatically batches subscriptions if more than MAX_MARKETS_PER_BATCH markets.
-    /// First batch uses `subscribe`, subsequent batches use `update_subscription`.
+    /// For more than MAX_MARKETS_PER_SUBSCRIPTION markets, use multiple WebSocket
+    /// connections (sharding) at the connector level.
     pub async fn subscribe_markets(
         &mut self,
         channel: &str,
         tickers: &[String],
     ) -> Result<(), WebSocketError> {
-        // Batch subscriptions to avoid hitting any API limits
-        let batches: Vec<&[String]> = tickers.chunks(Self::MAX_MARKETS_PER_BATCH).collect();
-        let total_batches = batches.len();
-
-        info!(
-            channel = %channel,
-            total_markets = tickers.len(),
-            batches = total_batches,
-            batch_size = Self::MAX_MARKETS_PER_BATCH,
-            "Subscribing to channel in batches"
-        );
-
-        let mut subscription_sid: Option<u64> = None;
-
-        for (batch_idx, batch) in batches.into_iter().enumerate() {
-            self.command_id += 1;
-
-            let (cmd_type, cmd) = if batch_idx == 0 {
-                // First batch: use subscribe
-                let cmd = WsCommand {
-                    id: self.command_id,
-                    cmd: "subscribe".to_string(),
-                    params: WsParams {
-                        channels: vec![channel.to_string()],
-                        market_ticker: None,
-                        market_tickers: Some(batch.to_vec()),
-                        sids: None,
-                    },
-                };
-                ("subscribe", cmd)
-            } else {
-                // Subsequent batches: use update_subscription with the sid from first batch
-                let cmd = WsCommand {
-                    id: self.command_id,
-                    cmd: "update_subscription".to_string(),
-                    params: WsParams {
-                        channels: vec![channel.to_string()],
-                        market_ticker: None,
-                        market_tickers: Some(batch.to_vec()),
-                        sids: subscription_sid.map(|sid| vec![sid]),
-                    },
-                };
-                ("update_subscription", cmd)
-            };
-
-            let msg = serde_json::to_string(&cmd)?;
-            debug!(
-                channel = %channel,
-                batch = batch_idx + 1,
-                total_batches = total_batches,
-                markets = batch.len(),
-                cmd_type = cmd_type,
-                ?subscription_sid,
-                "Sending subscription command"
-            );
-
-            self.ws.send(Message::Text(msg)).await?;
-
-            let sid = self.wait_for_subscription_with_sid(self.command_id).await?;
-
-            // Capture sid from first subscription for subsequent updates
-            if batch_idx == 0 {
-                subscription_sid = sid;
-                info!(
-                    channel = %channel,
-                    ?subscription_sid,
-                    "Captured subscription ID for updates"
-                );
-            }
-
-            debug!(
-                channel = %channel,
-                batch = batch_idx + 1,
-                cmd_id = self.command_id,
-                markets = batch.len(),
-                "Batch subscription confirmed"
-            );
-            self.subscribed_markets.extend(batch.iter().cloned());
-
-            // Add delay between batches to avoid overwhelming the server
-            if batch_idx + 1 < total_batches {
-                tokio::time::sleep(Duration::from_millis(Self::BATCH_DELAY_MS)).await;
-            }
+        if tickers.len() > MAX_MARKETS_PER_SUBSCRIPTION {
+            return Err(WebSocketError::SubscriptionFailed(format!(
+                "Too many markets ({}) for single subscription, max is {}. Use sharding.",
+                tickers.len(),
+                MAX_MARKETS_PER_SUBSCRIPTION
+            )));
         }
 
+        self.command_id += 1;
+        let cmd = WsCommand {
+            id: self.command_id,
+            cmd: "subscribe".to_string(),
+            params: WsParams {
+                channels: vec![channel.to_string()],
+                market_ticker: None,
+                market_tickers: Some(tickers.to_vec()),
+                sids: None,
+            },
+        };
+
+        let msg = serde_json::to_string(&cmd)?;
         info!(
             channel = %channel,
-            total_markets = tickers.len(),
-            batches = total_batches,
-            "All subscription batches confirmed by Kalshi"
+            markets = tickers.len(),
+            "Subscribing to channel"
+        );
+
+        self.ws.send(Message::Text(msg)).await?;
+        self.wait_for_subscription(self.command_id).await?;
+
+        self.subscribed_markets.extend(tickers.iter().cloned());
+
+        info!(
+            channel = %channel,
+            markets = tickers.len(),
+            "Subscription confirmed"
         );
 
         Ok(())
     }
 
-    /// Timeout for subscription confirmation (30 seconds for large batches)
+    /// Timeout for subscription confirmation
     const SUBSCRIPTION_TIMEOUT_SECS: u64 = 30;
-
-    /// Delay between subscription batches to avoid overwhelming the server
-    const BATCH_DELAY_MS: u64 = 500;
 
     /// Wait for subscription confirmation
     async fn wait_for_subscription(&mut self, expected_id: u64) -> Result<(), WebSocketError> {
