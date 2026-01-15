@@ -271,13 +271,45 @@ impl KalshiWebSocket {
     /// Wait for subscription confirmation
     async fn wait_for_subscription(&mut self, expected_id: u64) -> Result<(), WebSocketError> {
         let timeout = tokio::time::timeout(Duration::from_secs(Self::SUBSCRIPTION_TIMEOUT_SECS), async {
+            let mut message_count = 0u64;
             while let Some(msg) = self.ws.next().await {
                 match msg? {
                     Message::Text(text) => {
-                        if let Ok(WsMessage::Subscribed { id }) = serde_json::from_str(&text) {
-                            if id == expected_id {
-                                info!(id, "Subscription confirmed");
-                                return Ok(());
+                        message_count += 1;
+                        match serde_json::from_str::<WsMessage>(&text) {
+                            Ok(WsMessage::Subscribed { id }) => {
+                                if id == expected_id {
+                                    info!(id, messages_received = message_count, "Subscription confirmed");
+                                    return Ok(());
+                                } else {
+                                    debug!(id, expected = expected_id, "Received subscription confirmation for different id");
+                                }
+                            }
+                            Ok(WsMessage::Error { id, code, msg }) => {
+                                warn!(
+                                    ?id,
+                                    ?code,
+                                    error_msg = ?msg,
+                                    expected_id,
+                                    "Received error from Kalshi"
+                                );
+                                if id == Some(expected_id) {
+                                    return Err(WebSocketError::SubscriptionFailed(
+                                        msg.unwrap_or_else(|| format!("Error code: {:?}", code))
+                                    ));
+                                }
+                            }
+                            Ok(WsMessage::Ticker { .. } | WsMessage::Trade { .. }) => {
+                                // Expected during subscription - data is flowing
+                                if message_count % 100 == 0 {
+                                    trace!(message_count, "Still waiting for subscription confirmation...");
+                                }
+                            }
+                            Ok(_) => {
+                                trace!(raw = %text, "Received other message type");
+                            }
+                            Err(e) => {
+                                warn!(error = %e, raw = %text, "Failed to parse WebSocket message");
                             }
                         }
                     }

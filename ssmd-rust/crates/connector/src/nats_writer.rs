@@ -92,6 +92,10 @@ impl Writer for NatsWriter {
                 // Control messages, don't publish
                 return Ok(());
             }
+            WsMessage::Error { id, code, msg } => {
+                warn!(?id, ?code, error_msg = ?msg, "Error message received from Kalshi");
+                return Ok(());
+            }
             WsMessage::Unknown => {
                 warn!("Unknown message type received");
                 return Ok(());

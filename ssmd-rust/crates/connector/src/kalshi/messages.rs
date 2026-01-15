@@ -27,6 +27,11 @@ pub enum WsMessage {
     Trade { msg: TradeData },
     OrderbookSnapshot { msg: OrderbookData },
     OrderbookDelta { msg: OrderbookData },
+    Error {
+        id: Option<u64>,
+        code: Option<i64>,
+        msg: Option<String>,
+    },
     #[serde(other)]
     Unknown,
 }
