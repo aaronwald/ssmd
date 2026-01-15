@@ -26,6 +26,7 @@ use crate::error::ConnectorError;
 use crate::kalshi::auth::KalshiCredentials;
 use crate::kalshi::websocket::{KalshiWebSocket, WebSocketError, MAX_MARKETS_PER_SUBSCRIPTION};
 use crate::kalshi::messages::WsMessage;
+use crate::metrics::{ConnectorMetrics, ShardMetrics};
 use crate::secmaster::SecmasterClient;
 use crate::traits::Connector;
 use async_trait::async_trait;
@@ -171,16 +172,22 @@ impl KalshiConnector {
         tx: mpsc::Sender<Vec<u8>>,
         activity_tracker: Arc<AtomicU64>,
         shard_id: usize,
+        shard_metrics: ShardMetrics,
     ) {
-        // Helper to update activity timestamp
-        fn update_activity(tracker: &AtomicU64) {
+        // Helper to update activity timestamp and metrics
+        fn update_activity(tracker: &AtomicU64, metrics: &ShardMetrics, idle_secs: f64) {
             use std::time::{SystemTime, UNIX_EPOCH};
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             tracker.store(now, Ordering::SeqCst);
+            metrics.set_last_activity(now as f64);
+            metrics.set_idle_seconds(idle_secs);
         }
+
+        // Mark shard as connected
+        shard_metrics.set_connected();
 
         tokio::spawn(async move {
             use std::time::Duration;
@@ -195,7 +202,7 @@ impl KalshiConnector {
             let mut last_activity = Instant::now();
 
             // Initialize activity tracker with current time
-            update_activity(&activity_tracker);
+            update_activity(&activity_tracker, &shard_metrics, 0.0);
 
             loop {
                 tokio::select! {
@@ -203,30 +210,41 @@ impl KalshiConnector {
                     _ = ping_interval.tick() => {
                         let idle_secs = last_activity.elapsed().as_secs();
                         debug!(shard_id, idle_secs, "Sending WebSocket ping keepalive");
+                        // Update idle seconds metric before ping
+                        shard_metrics.set_idle_seconds(idle_secs as f64);
                         if let Err(e) = ws.ping().await {
                             error!(shard_id, error = %e, "Failed to send ping, connection may be dead");
+                            shard_metrics.set_disconnected();
                             break;
                         }
                         // Ping succeeded - update activity tracker
-                        update_activity(&activity_tracker);
+                        update_activity(&activity_tracker, &shard_metrics, idle_secs as f64);
                     }
 
                     // Receive message from WebSocket
                     result = ws.recv_raw() => {
                         last_activity = Instant::now();
                         // Update activity tracker on any received message (including pongs)
-                        update_activity(&activity_tracker);
+                        update_activity(&activity_tracker, &shard_metrics, 0.0);
 
                         match result {
                             Ok((raw_json, msg)) => {
-                                // Skip control messages, pass through data messages as raw bytes
-                                let should_forward = matches!(
-                                    msg,
-                                    WsMessage::Ticker { .. }
-                                        | WsMessage::Trade { .. }
-                                        | WsMessage::OrderbookSnapshot { .. }
-                                        | WsMessage::OrderbookDelta { .. }
-                                );
+                                // Record metrics and determine if we should forward
+                                let should_forward = match &msg {
+                                    WsMessage::Ticker { .. } => {
+                                        shard_metrics.inc_ticker();
+                                        true
+                                    }
+                                    WsMessage::Trade { .. } => {
+                                        shard_metrics.inc_trade();
+                                        true
+                                    }
+                                    WsMessage::OrderbookSnapshot { .. } | WsMessage::OrderbookDelta { .. } => {
+                                        shard_metrics.inc_orderbook();
+                                        true
+                                    }
+                                    _ => false,
+                                };
 
                                 if !should_forward {
                                     continue;
@@ -235,15 +253,18 @@ impl KalshiConnector {
                                 // Pass through raw Kalshi JSON bytes - no re-serialization
                                 if tx.send(raw_json.into_bytes()).await.is_err() {
                                     info!(shard_id, "Channel closed, stopping receiver");
+                                    shard_metrics.set_disconnected();
                                     break;
                                 }
                             }
                             Err(WebSocketError::ConnectionClosed) => {
                                 info!(shard_id, "Kalshi WebSocket connection closed");
+                                shard_metrics.set_disconnected();
                                 break;
                             }
                             Err(e) => {
                                 error!(shard_id, error = %e, "Kalshi WebSocket error");
+                                shard_metrics.set_disconnected();
                                 break;
                             }
                         }
@@ -276,6 +297,12 @@ impl Connector for KalshiConnector {
                 // Filtered mode: fetch markets and create sharded connections
                 let tickers = self.fetch_filtered_markets(secmaster).await?;
 
+                // Create metrics for this connector (use first category as label)
+                let category_label = secmaster.categories.first()
+                    .map(|s| s.to_lowercase())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let connector_metrics = ConnectorMetrics::new("kalshi", &category_label);
+
                 // Shard markets into groups of MAX_MARKETS_PER_SUBSCRIPTION
                 let shards: Vec<Vec<String>> = tickers
                     .chunks(MAX_MARKETS_PER_SUBSCRIPTION)
@@ -283,6 +310,8 @@ impl Connector for KalshiConnector {
                     .collect();
 
                 let num_shards = shards.len();
+                connector_metrics.set_shards_total(num_shards);
+
                 info!(
                     total_markets = tickers.len(),
                     num_shards = num_shards,
@@ -297,6 +326,9 @@ impl Connector for KalshiConnector {
                         markets = shard_tickers.len(),
                         "Connecting shard"
                     );
+
+                    // Record markets per shard
+                    connector_metrics.set_markets_subscribed(shard_id, shard_tickers.len());
 
                     let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
                         .await
@@ -316,12 +348,16 @@ impl Connector for KalshiConnector {
                         "Shard connected and subscribed"
                     );
 
+                    // Create shard-specific metrics handle
+                    let shard_metrics = connector_metrics.for_shard(shard_id);
+
                     // Spawn receiver task for this shard
                     Self::spawn_receiver_task(
                         ws,
                         tx.clone(),
                         Arc::clone(&activity_tracker),
                         shard_id,
+                        shard_metrics,
                     );
                 }
 
@@ -332,21 +368,31 @@ impl Connector for KalshiConnector {
                 );
             } else {
                 // Global mode: single connection
+                let connector_metrics = ConnectorMetrics::new("kalshi", "global");
+                connector_metrics.set_shards_total(1);
+                connector_metrics.set_markets_subscribed(0, 0); // Unknown market count in global mode
+
                 let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
                     .await
                     .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
                 self.subscribe_global(&mut ws).await?;
-                Self::spawn_receiver_task(ws, tx, activity_tracker, 0);
+                let shard_metrics = connector_metrics.for_shard(0);
+                Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics);
             }
         } else {
             // No secmaster config: global mode with single connection
+            let connector_metrics = ConnectorMetrics::new("kalshi", "global");
+            connector_metrics.set_shards_total(1);
+            connector_metrics.set_markets_subscribed(0, 0);
+
             let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
                 .await
                 .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
             self.subscribe_global(&mut ws).await?;
-            Self::spawn_receiver_task(ws, tx, activity_tracker, 0);
+            let shard_metrics = connector_metrics.for_shard(0);
+            Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics);
         }
 
         Ok(())
