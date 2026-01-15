@@ -287,10 +287,11 @@ export interface MarketDayActivity {
   date: string;
   added: number;
   closed: number;
+  settled: number;
 }
 
 /**
- * Get market activity over time (added and closed per day).
+ * Get market activity over time (added, closed, and settled per day).
  * @param days Number of days to look back (default 30)
  */
 export async function getMarketTimeseries(
@@ -312,7 +313,7 @@ export async function getMarketTimeseries(
     .groupBy(sql`DATE(${markets.createdAt})`)
     .orderBy(sql`DATE(${markets.createdAt})`);
 
-  // Get markets closed per day (by close_time, only settled/closed status)
+  // Get markets closed per day (status = 'closed')
   const closedRows = await db
     .select({
       date: sql<string>`DATE(${markets.closeTime})`.as("date"),
@@ -320,7 +321,20 @@ export async function getMarketTimeseries(
     })
     .from(markets)
     .where(
-      sql`${markets.closeTime} >= ${startDateStr} AND ${markets.closeTime} <= NOW() AND ${markets.status} IN ('settled', 'closed')`
+      sql`${markets.closeTime} >= ${startDateStr} AND ${markets.closeTime} <= NOW() AND ${markets.status} = 'closed'`
+    )
+    .groupBy(sql`DATE(${markets.closeTime})`)
+    .orderBy(sql`DATE(${markets.closeTime})`);
+
+  // Get markets settled per day (status = 'settled')
+  const settledRows = await db
+    .select({
+      date: sql<string>`DATE(${markets.closeTime})`.as("date"),
+      count: count(),
+    })
+    .from(markets)
+    .where(
+      sql`${markets.closeTime} >= ${startDateStr} AND ${markets.closeTime} <= NOW() AND ${markets.status} = 'settled'`
     )
     .groupBy(sql`DATE(${markets.closeTime})`)
     .orderBy(sql`DATE(${markets.closeTime})`);
@@ -331,7 +345,7 @@ export async function getMarketTimeseries(
     const d = new Date();
     d.setDate(d.getDate() - (days - i));
     const dateStr = d.toISOString().split("T")[0];
-    dateMap.set(dateStr, { date: dateStr, added: 0, closed: 0 });
+    dateMap.set(dateStr, { date: dateStr, added: 0, closed: 0, settled: 0 });
   }
 
   // Fill in added counts
@@ -347,6 +361,14 @@ export async function getMarketTimeseries(
     const entry = dateMap.get(row.date);
     if (entry) {
       entry.closed = row.count;
+    }
+  }
+
+  // Fill in settled counts
+  for (const row of settledRows) {
+    const entry = dateMap.get(row.date);
+    if (entry) {
+      entry.settled = row.count;
     }
   }
 
