@@ -245,6 +245,11 @@ impl KalshiWebSocket {
                 "Batch subscription confirmed"
             );
             self.subscribed_markets.extend(batch.iter().cloned());
+
+            // Add delay between batches to avoid overwhelming the server
+            if batch_idx + 1 < total_batches {
+                tokio::time::sleep(Duration::from_millis(Self::BATCH_DELAY_MS)).await;
+            }
         }
 
         info!(
@@ -257,9 +262,15 @@ impl KalshiWebSocket {
         Ok(())
     }
 
+    /// Timeout for subscription confirmation (30 seconds for large batches)
+    const SUBSCRIPTION_TIMEOUT_SECS: u64 = 30;
+
+    /// Delay between subscription batches to avoid overwhelming the server
+    const BATCH_DELAY_MS: u64 = 500;
+
     /// Wait for subscription confirmation
     async fn wait_for_subscription(&mut self, expected_id: u64) -> Result<(), WebSocketError> {
-        let timeout = tokio::time::timeout(Duration::from_secs(10), async {
+        let timeout = tokio::time::timeout(Duration::from_secs(Self::SUBSCRIPTION_TIMEOUT_SECS), async {
             while let Some(msg) = self.ws.next().await {
                 match msg? {
                     Message::Text(text) => {
