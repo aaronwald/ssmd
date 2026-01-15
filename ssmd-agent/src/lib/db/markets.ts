@@ -279,3 +279,76 @@ export async function getMarketStats(
 
   return { total, by_status };
 }
+
+/**
+ * Market activity for a single day
+ */
+export interface MarketDayActivity {
+  date: string;
+  added: number;
+  closed: number;
+}
+
+/**
+ * Get market activity over time (added and closed per day).
+ * @param days Number of days to look back (default 30)
+ */
+export async function getMarketTimeseries(
+  db: Database,
+  days = 30
+): Promise<MarketDayActivity[]> {
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - days);
+  const startDateStr = startDate.toISOString().split("T")[0];
+
+  // Get markets added per day (by created_at)
+  const addedRows = await db
+    .select({
+      date: sql<string>`DATE(${markets.createdAt})`.as("date"),
+      count: count(),
+    })
+    .from(markets)
+    .where(sql`${markets.createdAt} >= ${startDateStr}`)
+    .groupBy(sql`DATE(${markets.createdAt})`)
+    .orderBy(sql`DATE(${markets.createdAt})`);
+
+  // Get markets closed per day (by close_time, only settled/closed status)
+  const closedRows = await db
+    .select({
+      date: sql<string>`DATE(${markets.closeTime})`.as("date"),
+      count: count(),
+    })
+    .from(markets)
+    .where(
+      sql`${markets.closeTime} >= ${startDateStr} AND ${markets.closeTime} <= NOW() AND ${markets.status} IN ('settled', 'closed')`
+    )
+    .groupBy(sql`DATE(${markets.closeTime})`)
+    .orderBy(sql`DATE(${markets.closeTime})`);
+
+  // Build a map of all dates in range
+  const dateMap = new Map<string, MarketDayActivity>();
+  for (let i = 0; i <= days; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - (days - i));
+    const dateStr = d.toISOString().split("T")[0];
+    dateMap.set(dateStr, { date: dateStr, added: 0, closed: 0 });
+  }
+
+  // Fill in added counts
+  for (const row of addedRows) {
+    const entry = dateMap.get(row.date);
+    if (entry) {
+      entry.added = row.count;
+    }
+  }
+
+  // Fill in closed counts
+  for (const row of closedRows) {
+    const entry = dateMap.get(row.date);
+    if (entry) {
+      entry.closed = row.count;
+    }
+  }
+
+  return Array.from(dateMap.values());
+}
