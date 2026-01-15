@@ -188,55 +188,71 @@ impl KalshiWebSocket {
         self.wait_for_subscription(self.command_id).await
     }
 
-    /// Maximum markets per subscription (Kalshi limit)
-    pub const MAX_MARKETS_PER_SUBSCRIPTION: usize = 500;
+    /// Maximum markets per subscription batch
+    pub const MAX_MARKETS_PER_BATCH: usize = 256;
 
     /// Subscribe to a channel for multiple markets
     ///
-    /// Kalshi supports up to 500 markets per subscription.
-    /// If you need more markets, deploy multiple connectors with different filters.
+    /// Automatically batches subscriptions if more than MAX_MARKETS_PER_BATCH markets.
+    /// Each batch creates a separate subscription on the Kalshi side.
     pub async fn subscribe_markets(
         &mut self,
         channel: &str,
         tickers: &[String],
     ) -> Result<(), WebSocketError> {
-        if tickers.len() > Self::MAX_MARKETS_PER_SUBSCRIPTION {
-            return Err(WebSocketError::SubscriptionFailed(format!(
-                "Too many markets ({}) - Kalshi limit is {}. Deploy multiple connectors with different category filters.",
-                tickers.len(),
-                Self::MAX_MARKETS_PER_SUBSCRIPTION
-            )));
+        // Batch subscriptions to avoid hitting any API limits
+        let batches: Vec<&[String]> = tickers.chunks(Self::MAX_MARKETS_PER_BATCH).collect();
+        let total_batches = batches.len();
+
+        info!(
+            channel = %channel,
+            total_markets = tickers.len(),
+            batches = total_batches,
+            batch_size = Self::MAX_MARKETS_PER_BATCH,
+            "Subscribing to channel in batches"
+        );
+
+        for (batch_idx, batch) in batches.into_iter().enumerate() {
+            self.command_id += 1;
+            let cmd = WsCommand {
+                id: self.command_id,
+                cmd: "subscribe".to_string(),
+                params: WsParams {
+                    channels: vec![channel.to_string()],
+                    market_ticker: None,
+                    market_tickers: Some(batch.to_vec()),
+                },
+            };
+
+            let msg = serde_json::to_string(&cmd)?;
+            debug!(
+                channel = %channel,
+                batch = batch_idx + 1,
+                total_batches = total_batches,
+                markets = batch.len(),
+                "Sending subscription batch"
+            );
+
+            self.ws.send(Message::Text(msg)).await?;
+
+            self.wait_for_subscription(self.command_id).await?;
+
+            debug!(
+                channel = %channel,
+                batch = batch_idx + 1,
+                cmd_id = self.command_id,
+                markets = batch.len(),
+                "Batch subscription confirmed"
+            );
+            self.subscribed_markets.extend(batch.iter().cloned());
         }
 
-        self.command_id += 1;
-        let cmd = WsCommand {
-            id: self.command_id,
-            cmd: "subscribe".to_string(),
-            params: WsParams {
-                channels: vec![channel.to_string()],
-                market_ticker: None,
-                market_tickers: Some(tickers.to_vec()),
-            },
-        };
-
-        let msg = serde_json::to_string(&cmd)?;
         info!(
             channel = %channel,
-            markets = tickers.len(),
-            "Subscribing to channel"
+            total_markets = tickers.len(),
+            batches = total_batches,
+            "All subscription batches confirmed by Kalshi"
         );
-
-        self.ws.send(Message::Text(msg)).await?;
-
-        self.wait_for_subscription(self.command_id).await?;
-
-        info!(
-            channel = %channel,
-            cmd_id = self.command_id,
-            markets = tickers.len(),
-            "Subscription confirmed by Kalshi"
-        );
-        self.subscribed_markets.extend(tickers.iter().cloned());
 
         Ok(())
     }
