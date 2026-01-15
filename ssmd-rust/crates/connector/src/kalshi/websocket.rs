@@ -116,6 +116,7 @@ impl KalshiWebSocket {
                 channels: vec!["ticker".to_string()],
                 market_ticker: None,
                 market_tickers: None,
+                sids: None,
             },
         };
 
@@ -137,6 +138,7 @@ impl KalshiWebSocket {
                 channels: vec!["trade".to_string()],
                 market_ticker: Some(market_ticker.to_string()),
                 market_tickers: None,
+                sids: None,
             },
         };
 
@@ -159,6 +161,7 @@ impl KalshiWebSocket {
                 channels: vec!["trade".to_string()],
                 market_ticker: None,
                 market_tickers: None,
+                sids: None,
             },
         };
 
@@ -179,6 +182,7 @@ impl KalshiWebSocket {
                 channels: vec!["orderbook_delta".to_string()],
                 market_ticker: Some(market_ticker.to_string()),
                 market_tickers: None,
+                sids: None,
             },
         };
 
@@ -194,7 +198,7 @@ impl KalshiWebSocket {
     /// Subscribe to a channel for multiple markets
     ///
     /// Automatically batches subscriptions if more than MAX_MARKETS_PER_BATCH markets.
-    /// Each batch creates a separate subscription on the Kalshi side.
+    /// First batch uses `subscribe`, subsequent batches use `update_subscription`.
     pub async fn subscribe_markets(
         &mut self,
         channel: &str,
@@ -212,16 +216,37 @@ impl KalshiWebSocket {
             "Subscribing to channel in batches"
         );
 
+        let mut subscription_sid: Option<u64> = None;
+
         for (batch_idx, batch) in batches.into_iter().enumerate() {
             self.command_id += 1;
-            let cmd = WsCommand {
-                id: self.command_id,
-                cmd: "subscribe".to_string(),
-                params: WsParams {
-                    channels: vec![channel.to_string()],
-                    market_ticker: None,
-                    market_tickers: Some(batch.to_vec()),
-                },
+
+            let (cmd_type, cmd) = if batch_idx == 0 {
+                // First batch: use subscribe
+                let cmd = WsCommand {
+                    id: self.command_id,
+                    cmd: "subscribe".to_string(),
+                    params: WsParams {
+                        channels: vec![channel.to_string()],
+                        market_ticker: None,
+                        market_tickers: Some(batch.to_vec()),
+                        sids: None,
+                    },
+                };
+                ("subscribe", cmd)
+            } else {
+                // Subsequent batches: use update_subscription with the sid from first batch
+                let cmd = WsCommand {
+                    id: self.command_id,
+                    cmd: "update_subscription".to_string(),
+                    params: WsParams {
+                        channels: vec![channel.to_string()],
+                        market_ticker: None,
+                        market_tickers: Some(batch.to_vec()),
+                        sids: subscription_sid.map(|sid| vec![sid]),
+                    },
+                };
+                ("update_subscription", cmd)
             };
 
             let msg = serde_json::to_string(&cmd)?;
@@ -230,12 +255,24 @@ impl KalshiWebSocket {
                 batch = batch_idx + 1,
                 total_batches = total_batches,
                 markets = batch.len(),
-                "Sending subscription batch"
+                cmd_type = cmd_type,
+                ?subscription_sid,
+                "Sending subscription command"
             );
 
             self.ws.send(Message::Text(msg)).await?;
 
-            self.wait_for_subscription(self.command_id).await?;
+            let sid = self.wait_for_subscription_with_sid(self.command_id).await?;
+
+            // Capture sid from first subscription for subsequent updates
+            if batch_idx == 0 {
+                subscription_sid = sid;
+                info!(
+                    channel = %channel,
+                    ?subscription_sid,
+                    "Captured subscription ID for updates"
+                );
+            }
 
             debug!(
                 channel = %channel,
@@ -270,6 +307,15 @@ impl KalshiWebSocket {
 
     /// Wait for subscription confirmation
     async fn wait_for_subscription(&mut self, expected_id: u64) -> Result<(), WebSocketError> {
+        self.wait_for_subscription_with_sid(expected_id).await?;
+        Ok(())
+    }
+
+    /// Wait for subscription confirmation and return the subscription ID (sid)
+    async fn wait_for_subscription_with_sid(
+        &mut self,
+        expected_id: u64,
+    ) -> Result<Option<u64>, WebSocketError> {
         let timeout = tokio::time::timeout(Duration::from_secs(Self::SUBSCRIPTION_TIMEOUT_SECS), async {
             let mut message_count = 0u64;
             while let Some(msg) = self.ws.next().await {
@@ -277,10 +323,10 @@ impl KalshiWebSocket {
                     Message::Text(text) => {
                         message_count += 1;
                         match serde_json::from_str::<WsMessage>(&text) {
-                            Ok(WsMessage::Subscribed { id }) => {
+                            Ok(WsMessage::Subscribed { id, sid }) => {
                                 if id == expected_id {
-                                    info!(id, messages_received = message_count, "Subscription confirmed");
-                                    return Ok(());
+                                    info!(id, ?sid, messages_received = message_count, "Subscription confirmed");
+                                    return Ok(sid);
                                 } else {
                                     debug!(id, expected = expected_id, "Received subscription confirmation for different id");
                                 }

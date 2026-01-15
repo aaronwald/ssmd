@@ -21,7 +21,12 @@ where
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum WsMessage {
-    Subscribed { id: u64 },
+    Subscribed {
+        id: u64,
+        /// Subscription ID assigned by Kalshi (used for update_subscription)
+        #[serde(default)]
+        sid: Option<u64>,
+    },
     Unsubscribed { id: u64 },
     Ticker { msg: TickerData },
     Trade { msg: TradeData },
@@ -89,6 +94,9 @@ pub struct WsParams {
     pub market_ticker: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub market_tickers: Option<Vec<String>>,
+    /// Subscription IDs to update (for update_subscription command)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sids: Option<Vec<u64>>,
 }
 
 #[cfg(test)]
@@ -162,8 +170,9 @@ mod tests {
             serde_json::from_str(SUBSCRIBED_MESSAGE).expect("Failed to parse subscribed");
 
         match msg {
-            WsMessage::Subscribed { id } => {
+            WsMessage::Subscribed { id, sid } => {
                 assert_eq!(id, 1);
+                assert!(sid.is_none()); // Basic subscribed message has no sid
             }
             _ => panic!("Expected Subscribed variant"),
         }
@@ -211,6 +220,7 @@ mod tests {
                 channels: vec!["ticker".to_string()],
                 market_ticker: None,
                 market_tickers: None,
+                sids: None,
             },
         };
 
@@ -231,6 +241,7 @@ mod tests {
                 channels: vec!["trade".to_string()],
                 market_ticker: Some("KXTEST-123".to_string()),
                 market_tickers: None,
+                sids: None,
             },
         };
 
@@ -247,6 +258,7 @@ mod tests {
                 channels: vec!["ticker".to_string()],
                 market_ticker: None,
                 market_tickers: Some(vec!["KXTEST-1".to_string(), "KXTEST-2".to_string()]),
+                sids: None,
             },
         };
 
