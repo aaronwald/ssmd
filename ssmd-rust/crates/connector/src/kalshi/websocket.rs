@@ -305,8 +305,11 @@ impl KalshiWebSocket {
                                     debug!(message_count, expected_id, "Receiving data while waiting for subscription confirmation");
                                 }
                             }
-                            Ok(_) => {
-                                trace!(raw = %text, "Received other message type");
+                            Ok(WsMessage::Unknown) => {
+                                warn!(raw = %text, "Received unknown message type from Kalshi");
+                            }
+                            Ok(other) => {
+                                debug!(?other, "Received non-data message");
                             }
                             Err(e) => {
                                 warn!(error = %e, raw = %text, "Failed to parse WebSocket message");
