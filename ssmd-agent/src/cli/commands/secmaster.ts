@@ -151,6 +151,7 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
         for await (const batch of client.fetchAllMarkets({
           status: "settled",
           minSettledTs: twoDaysAgo,
+          mveFilter: "exclude",
         })) {
           result.markets.fetched += batch.length;
           allMarketTickers.push(...batch.map((m) => m.ticker));
@@ -168,6 +169,8 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
         for await (const batch of client.fetchAllMarkets({
           status: "closed",
           minCloseTs: twoDaysAgo,
+          maxCloseTs: Math.floor(Date.now() / 1000),
+          mveFilter: "exclude",
         })) {
           result.markets.fetched += batch.length;
           allMarketTickers.push(...batch.map((m) => m.ticker));
