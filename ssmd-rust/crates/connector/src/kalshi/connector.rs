@@ -7,6 +7,13 @@
 //! - **Global mode**: Subscribes to all markets (original behavior)
 //! - **Filtered mode**: Subscribes only to markets in configured categories
 //!
+//! ## Sharding
+//!
+//! Kalshi limits subscriptions to 256 markets per WebSocket. For categories with more
+//! markets, the connector automatically creates multiple WebSocket connections (shards),
+//! each handling up to 256 markets. Messages from all shards are merged into a single
+//! output channel.
+//!
 //! ## TODO: CDC Dynamic Updates
 //!
 //! Currently, filtered subscriptions are static - markets are fetched once at startup.
@@ -17,7 +24,7 @@
 
 use crate::error::ConnectorError;
 use crate::kalshi::auth::KalshiCredentials;
-use crate::kalshi::websocket::{KalshiWebSocket, WebSocketError};
+use crate::kalshi::websocket::{KalshiWebSocket, WebSocketError, MAX_MARKETS_PER_SUBSCRIPTION};
 use crate::kalshi::messages::WsMessage;
 use crate::secmaster::SecmasterClient;
 use crate::traits::Connector;
@@ -98,12 +105,11 @@ impl KalshiConnector {
         Ok(())
     }
 
-    /// Subscribe to filtered markets from secmaster
-    async fn subscribe_filtered(
+    /// Fetch filtered markets from secmaster
+    async fn fetch_filtered_markets(
         &self,
-        ws: &mut KalshiWebSocket,
         secmaster: &SecmasterConfig,
-    ) -> Result<(), ConnectorError> {
+    ) -> Result<Vec<String>, ConnectorError> {
         info!(
             categories = ?secmaster.categories,
             url = %secmaster.url,
@@ -138,51 +144,34 @@ impl KalshiConnector {
         // Log market list at debug level
         debug!(markets = ?tickers, "Market ticker list");
 
+        Ok(tickers)
+    }
+
+    /// Subscribe a single WebSocket to markets (up to MAX_MARKETS_PER_SUBSCRIPTION)
+    async fn subscribe_shard(
+        ws: &mut KalshiWebSocket,
+        tickers: &[String],
+    ) -> Result<(), ConnectorError> {
         // Subscribe to ticker channel for these markets
-        ws.subscribe_markets("ticker", &tickers)
+        ws.subscribe_markets("ticker", tickers)
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(format!("ticker subscription: {}", e)))?;
 
         // Subscribe to trade channel for these markets
-        ws.subscribe_markets("trade", &tickers)
+        ws.subscribe_markets("trade", tickers)
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(format!("trade subscription: {}", e)))?;
 
-        info!(
-            total_markets = tickers.len(),
-            "Subscription complete"
-        );
-
         Ok(())
     }
-}
 
-#[async_trait]
-impl Connector for KalshiConnector {
-    async fn connect(&mut self) -> Result<(), ConnectorError> {
-        let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
-            .await
-            .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
-
-        // Determine subscription mode
-        if let Some(ref secmaster) = self.secmaster_config {
-            if !secmaster.categories.is_empty() {
-                self.subscribe_filtered(&mut ws, secmaster).await?;
-            } else {
-                self.subscribe_global(&mut ws).await?;
-            }
-        } else {
-            self.subscribe_global(&mut ws).await?;
-        }
-
-        // Take the sender for the spawned task
-        let tx = self.tx.take().ok_or_else(|| {
-            ConnectorError::ConnectionFailed("connect() called twice".to_string())
-        })?;
-
-        // Clone activity tracker for the spawned task
-        let activity_tracker = Arc::clone(&self.last_ws_activity_epoch_secs);
-
+    /// Spawn a WebSocket receiver task that forwards messages to the channel
+    fn spawn_receiver_task(
+        mut ws: KalshiWebSocket,
+        tx: mpsc::Sender<Vec<u8>>,
+        activity_tracker: Arc<AtomicU64>,
+        shard_id: usize,
+    ) {
         // Helper to update activity timestamp
         fn update_activity(tracker: &AtomicU64) {
             use std::time::{SystemTime, UNIX_EPOCH};
@@ -193,9 +182,6 @@ impl Connector for KalshiConnector {
             tracker.store(now, Ordering::SeqCst);
         }
 
-        // Spawn task to receive messages and forward to channel
-        // Pass through raw Kalshi JSON bytes for data messages
-        // Also sends periodic pings to detect dead connections
         tokio::spawn(async move {
             use std::time::Duration;
             use tokio::time::{interval, Instant};
@@ -216,9 +202,9 @@ impl Connector for KalshiConnector {
                     // Ping timer fired - send keepalive
                     _ = ping_interval.tick() => {
                         let idle_secs = last_activity.elapsed().as_secs();
-                        debug!(idle_secs, "Sending WebSocket ping keepalive");
+                        debug!(shard_id, idle_secs, "Sending WebSocket ping keepalive");
                         if let Err(e) = ws.ping().await {
-                            error!(error = %e, "Failed to send ping, connection may be dead");
+                            error!(shard_id, error = %e, "Failed to send ping, connection may be dead");
                             break;
                         }
                         // Ping succeeded - update activity tracker
@@ -248,16 +234,16 @@ impl Connector for KalshiConnector {
 
                                 // Pass through raw Kalshi JSON bytes - no re-serialization
                                 if tx.send(raw_json.into_bytes()).await.is_err() {
-                                    info!("Channel closed, stopping receiver");
+                                    info!(shard_id, "Channel closed, stopping receiver");
                                     break;
                                 }
                             }
                             Err(WebSocketError::ConnectionClosed) => {
-                                info!("Kalshi WebSocket connection closed");
+                                info!(shard_id, "Kalshi WebSocket connection closed");
                                 break;
                             }
                             Err(e) => {
-                                error!(error = %e, "Kalshi WebSocket error");
+                                error!(shard_id, error = %e, "Kalshi WebSocket error");
                                 break;
                             }
                         }
@@ -267,9 +253,101 @@ impl Connector for KalshiConnector {
 
             // Try to close gracefully
             if let Err(e) = ws.close().await {
-                error!(error = %e, "Error closing Kalshi WebSocket");
+                error!(shard_id, error = %e, "Error closing Kalshi WebSocket");
             }
         });
+    }
+}
+
+#[async_trait]
+impl Connector for KalshiConnector {
+    async fn connect(&mut self) -> Result<(), ConnectorError> {
+        // Take the sender for the spawned tasks
+        let tx = self.tx.take().ok_or_else(|| {
+            ConnectorError::ConnectionFailed("connect() called twice".to_string())
+        })?;
+
+        // Clone activity tracker for the spawned tasks
+        let activity_tracker = Arc::clone(&self.last_ws_activity_epoch_secs);
+
+        // Determine subscription mode and get markets
+        if let Some(ref secmaster) = self.secmaster_config {
+            if !secmaster.categories.is_empty() {
+                // Filtered mode: fetch markets and create sharded connections
+                let tickers = self.fetch_filtered_markets(secmaster).await?;
+
+                // Shard markets into groups of MAX_MARKETS_PER_SUBSCRIPTION
+                let shards: Vec<Vec<String>> = tickers
+                    .chunks(MAX_MARKETS_PER_SUBSCRIPTION)
+                    .map(|chunk| chunk.to_vec())
+                    .collect();
+
+                let num_shards = shards.len();
+                info!(
+                    total_markets = tickers.len(),
+                    num_shards = num_shards,
+                    max_per_shard = MAX_MARKETS_PER_SUBSCRIPTION,
+                    "Creating sharded WebSocket connections"
+                );
+
+                // Create a WebSocket connection for each shard
+                for (shard_id, shard_tickers) in shards.into_iter().enumerate() {
+                    info!(
+                        shard_id = shard_id,
+                        markets = shard_tickers.len(),
+                        "Connecting shard"
+                    );
+
+                    let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
+                        .await
+                        .map_err(|e| ConnectorError::ConnectionFailed(format!(
+                            "shard {} connection: {}", shard_id, e
+                        )))?;
+
+                    Self::subscribe_shard(&mut ws, &shard_tickers).await.map_err(|e| {
+                        ConnectorError::ConnectionFailed(format!(
+                            "shard {} subscription: {}", shard_id, e
+                        ))
+                    })?;
+
+                    info!(
+                        shard_id = shard_id,
+                        markets = shard_tickers.len(),
+                        "Shard connected and subscribed"
+                    );
+
+                    // Spawn receiver task for this shard
+                    Self::spawn_receiver_task(
+                        ws,
+                        tx.clone(),
+                        Arc::clone(&activity_tracker),
+                        shard_id,
+                    );
+                }
+
+                info!(
+                    total_markets = tickers.len(),
+                    num_shards = num_shards,
+                    "All shards connected"
+                );
+            } else {
+                // Global mode: single connection
+                let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
+                    .await
+                    .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
+
+                self.subscribe_global(&mut ws).await?;
+                Self::spawn_receiver_task(ws, tx, activity_tracker, 0);
+            }
+        } else {
+            // No secmaster config: global mode with single connection
+            let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
+                .await
+                .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
+
+            self.subscribe_global(&mut ws).await?;
+            Self::spawn_receiver_task(ws, tx, activity_tracker, 0);
+        }
 
         Ok(())
     }
