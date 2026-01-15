@@ -6,7 +6,8 @@ const DEFAULT_SERVER = "https://ntfy.sh";
 
 export class NtfySender implements Sender {
   formatTitle(fire: SignalFire): string {
-    return `🔔 ${fire.signalId}: ${fire.ticker}`;
+    // HTTP headers must be ASCII - no emojis
+    return `Signal ${fire.signalId}: ${fire.ticker}`;
   }
 
   formatBody(fire: SignalFire): string {
