@@ -9,6 +9,7 @@ import {
   listMarkets,
   getMarket,
   getMarketStats,
+  getMarketTimeseries,
   getCurrentFee,
   getFeeAsOf,
   listCurrentFees,
@@ -160,6 +161,16 @@ route("GET", "/v1/secmaster/stats", async (_req, ctx) => {
     events: eventStats,
     markets: marketStats,
   });
+}, true, "secmaster:read");
+
+// Market activity timeseries (added/closed per day)
+route("GET", "/v1/secmaster/markets/timeseries", async (req, ctx) => {
+  const url = new URL(req.url);
+  const days = url.searchParams.get("days")
+    ? parseInt(url.searchParams.get("days")!)
+    : 30;
+  const timeseries = await getMarketTimeseries(ctx.db, days);
+  return json({ timeseries });
 }, true, "secmaster:read");
 
 // Fees endpoints
