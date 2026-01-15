@@ -176,36 +176,65 @@ impl Connector for KalshiConnector {
 
         // Spawn task to receive messages and forward to channel
         // Pass through raw Kalshi JSON bytes for data messages
+        // Also sends periodic pings to detect dead connections
         tokio::spawn(async move {
+            use std::time::Duration;
+            use tokio::time::{interval, Instant};
+
+            const PING_INTERVAL_SECS: u64 = 30;
+
+            let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
+            ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            // Track last activity for logging
+            let mut last_activity = Instant::now();
+
             loop {
-                match ws.recv_raw().await {
-                    Ok((raw_json, msg)) => {
-                        // Skip control messages, pass through data messages as raw bytes
-                        let should_forward = matches!(
-                            msg,
-                            WsMessage::Ticker { .. }
-                                | WsMessage::Trade { .. }
-                                | WsMessage::OrderbookSnapshot { .. }
-                                | WsMessage::OrderbookDelta { .. }
-                        );
-
-                        if !should_forward {
-                            continue;
-                        }
-
-                        // Pass through raw Kalshi JSON bytes - no re-serialization
-                        if tx.send(raw_json.into_bytes()).await.is_err() {
-                            info!("Channel closed, stopping receiver");
+                tokio::select! {
+                    // Ping timer fired - send keepalive
+                    _ = ping_interval.tick() => {
+                        let idle_secs = last_activity.elapsed().as_secs();
+                        debug!(idle_secs, "Sending WebSocket ping keepalive");
+                        if let Err(e) = ws.ping().await {
+                            error!(error = %e, "Failed to send ping, connection may be dead");
                             break;
                         }
                     }
-                    Err(WebSocketError::ConnectionClosed) => {
-                        info!("Kalshi WebSocket connection closed");
-                        break;
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Kalshi WebSocket error");
-                        break;
+
+                    // Receive message from WebSocket
+                    result = ws.recv_raw() => {
+                        last_activity = Instant::now();
+
+                        match result {
+                            Ok((raw_json, msg)) => {
+                                // Skip control messages, pass through data messages as raw bytes
+                                let should_forward = matches!(
+                                    msg,
+                                    WsMessage::Ticker { .. }
+                                        | WsMessage::Trade { .. }
+                                        | WsMessage::OrderbookSnapshot { .. }
+                                        | WsMessage::OrderbookDelta { .. }
+                                );
+
+                                if !should_forward {
+                                    continue;
+                                }
+
+                                // Pass through raw Kalshi JSON bytes - no re-serialization
+                                if tx.send(raw_json.into_bytes()).await.is_err() {
+                                    info!("Channel closed, stopping receiver");
+                                    break;
+                                }
+                            }
+                            Err(WebSocketError::ConnectionClosed) => {
+                                info!("Kalshi WebSocket connection closed");
+                                break;
+                            }
+                            Err(e) => {
+                                error!(error = %e, "Kalshi WebSocket error");
+                                break;
+                            }
+                        }
                     }
                 }
             }

@@ -1,5 +1,6 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::select;
 use tracing::{error, info};
 
@@ -13,6 +14,8 @@ pub struct Runner<C: Connector, W: Writer> {
     connector: C,
     writer: W,
     connected: Arc<AtomicBool>,
+    /// Unix timestamp (seconds) of last message received
+    last_message_epoch_secs: Arc<AtomicU64>,
 }
 
 impl<C: Connector, W: Writer> Runner<C, W> {
@@ -22,6 +25,7 @@ impl<C: Connector, W: Writer> Runner<C, W> {
             connector,
             writer,
             connected: Arc::new(AtomicBool::new(false)),
+            last_message_epoch_secs: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -33,6 +37,20 @@ impl<C: Connector, W: Writer> Runner<C, W> {
     /// Returns a handle to the connected status
     pub fn connected_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.connected)
+    }
+
+    /// Returns a handle to the last message timestamp
+    pub fn last_message_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.last_message_epoch_secs)
+    }
+
+    /// Update last message timestamp to current time
+    fn update_last_message_time(&self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.last_message_epoch_secs.store(now, Ordering::SeqCst);
     }
 
     /// Run the collection pipeline until cancelled or disconnected
@@ -63,6 +81,9 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                             if let Err(e) = self.writer.write(&message).await {
                                 error!(error = %e, "Failed to write message");
                                 // Continue on write errors
+                            } else {
+                                // Update last message time on successful write
+                                self.update_last_message_time();
                             }
                         }
                         None => {
