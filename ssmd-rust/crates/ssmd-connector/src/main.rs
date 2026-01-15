@@ -232,13 +232,15 @@ where
 {
     let mut runner = Runner::new(&feed.name, connector, writer);
     let connected_handle = runner.connected_handle();
-    let last_message_handle = runner.last_message_handle();
+    // Use activity handle (tracks WebSocket ping/pong + data messages) for health checks
+    // This prevents false staleness during quiet market periods when pings are succeeding
+    let activity_handle = runner.activity_handle();
 
     // Start health server with staleness tracking
     let server_state = ServerState::with_last_message(
         &feed.name,
         Arc::clone(&connected_handle),
-        Arc::clone(&last_message_handle),
+        Arc::clone(&activity_handle),
         STALE_THRESHOLD_SECS,
     );
     tokio::spawn(async move {

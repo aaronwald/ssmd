@@ -1,5 +1,7 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::error::{ConnectorError, ResolverError, WriterError};
@@ -16,6 +18,13 @@ pub trait Connector: Send + Sync {
 
     /// Close the connection
     async fn close(&mut self) -> Result<(), ConnectorError>;
+
+    /// Get handle to last WebSocket activity timestamp (epoch seconds).
+    /// Used for health checks - returns None if connector doesn't track activity.
+    /// Activity includes both ping/pong and data messages.
+    fn activity_handle(&self) -> Option<Arc<AtomicU64>> {
+        None
+    }
 }
 
 /// Writer trait for output destinations (file, S3, NATS, etc.)

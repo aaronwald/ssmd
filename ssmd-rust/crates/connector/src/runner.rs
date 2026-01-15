@@ -44,6 +44,15 @@ impl<C: Connector, W: Writer> Runner<C, W> {
         Arc::clone(&self.last_message_epoch_secs)
     }
 
+    /// Returns the connector's activity handle if available.
+    /// This tracks WebSocket activity (ping/pong + data messages) for health checks.
+    /// Falls back to Runner's last_message_epoch_secs if connector doesn't track activity.
+    pub fn activity_handle(&self) -> Arc<AtomicU64> {
+        self.connector
+            .activity_handle()
+            .unwrap_or_else(|| Arc::clone(&self.last_message_epoch_secs))
+    }
+
     /// Update last message timestamp to current time
     fn update_last_message_time(&self) {
         let now = SystemTime::now()
