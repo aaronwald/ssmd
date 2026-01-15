@@ -23,6 +23,8 @@ use crate::secmaster::SecmasterClient;
 use crate::traits::Connector;
 use async_trait::async_trait;
 use ssmd_metadata::{SecmasterConfig, SubscriptionConfig};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
@@ -34,6 +36,8 @@ pub struct KalshiConnector {
     subscription_config: SubscriptionConfig,
     tx: Option<mpsc::Sender<Vec<u8>>>,
     rx: Option<mpsc::Receiver<Vec<u8>>>,
+    /// Last WebSocket activity timestamp (epoch seconds) - updated on ping/pong AND data messages
+    last_ws_activity_epoch_secs: Arc<AtomicU64>,
 }
 
 impl KalshiConnector {
@@ -47,6 +51,7 @@ impl KalshiConnector {
             subscription_config: SubscriptionConfig::default(),
             tx: Some(tx),
             rx: Some(rx),
+            last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -73,6 +78,7 @@ impl KalshiConnector {
             subscription_config: validated_config,
             tx: Some(tx),
             rx: Some(rx),
+            last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -174,6 +180,19 @@ impl Connector for KalshiConnector {
             ConnectorError::ConnectionFailed("connect() called twice".to_string())
         })?;
 
+        // Clone activity tracker for the spawned task
+        let activity_tracker = Arc::clone(&self.last_ws_activity_epoch_secs);
+
+        // Helper to update activity timestamp
+        fn update_activity(tracker: &AtomicU64) {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            tracker.store(now, Ordering::SeqCst);
+        }
+
         // Spawn task to receive messages and forward to channel
         // Pass through raw Kalshi JSON bytes for data messages
         // Also sends periodic pings to detect dead connections
@@ -186,8 +205,11 @@ impl Connector for KalshiConnector {
             let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-            // Track last activity for logging
+            // Track last activity for logging (local Instant for idle_secs calculation)
             let mut last_activity = Instant::now();
+
+            // Initialize activity tracker with current time
+            update_activity(&activity_tracker);
 
             loop {
                 tokio::select! {
@@ -199,11 +221,15 @@ impl Connector for KalshiConnector {
                             error!(error = %e, "Failed to send ping, connection may be dead");
                             break;
                         }
+                        // Ping succeeded - update activity tracker
+                        update_activity(&activity_tracker);
                     }
 
                     // Receive message from WebSocket
                     result = ws.recv_raw() => {
                         last_activity = Instant::now();
+                        // Update activity tracker on any received message (including pongs)
+                        update_activity(&activity_tracker);
 
                         match result {
                             Ok((raw_json, msg)) => {
@@ -256,6 +282,10 @@ impl Connector for KalshiConnector {
         // Drop the sender to signal the spawned task to stop
         self.tx = None;
         Ok(())
+    }
+
+    fn activity_handle(&self) -> Option<Arc<AtomicU64>> {
+        Some(Arc::clone(&self.last_ws_activity_epoch_secs))
     }
 }
 
