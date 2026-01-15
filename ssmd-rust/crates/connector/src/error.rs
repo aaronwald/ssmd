@@ -8,6 +8,8 @@ pub enum ConnectorError {
     AuthFailed(String),
     #[error("disconnected: {0}")]
     Disconnected(String),
+    #[error("write failed: {0}")]
+    WriteFailed(String),
 }
 
 #[derive(Error, Debug)]

@@ -70,8 +70,15 @@ impl Writer for NatsWriter {
         let ws_msg: WsMessage = match serde_json::from_slice(&msg.data) {
             Ok(m) => m,
             Err(e) => {
-                trace!(error = %e, "Failed to parse message, skipping");
-                return Ok(()); // Skip unparseable messages
+                // Fail loudly on parse errors - indicates a bug in WsMessage enum
+                let preview: String = String::from_utf8_lossy(&msg.data)
+                    .chars()
+                    .take(500)
+                    .collect();
+                return Err(WriterError::WriteFailed(format!(
+                    "Failed to parse message: {}. Preview: {}",
+                    e, preview
+                )));
             }
         };
 

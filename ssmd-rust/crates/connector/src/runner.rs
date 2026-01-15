@@ -88,12 +88,12 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                             let message = Message::new(&self.feed_name, data);
 
                             if let Err(e) = self.writer.write(&message).await {
-                                error!(error = %e, "Failed to write message");
-                                // Continue on write errors
-                            } else {
-                                // Update last message time on successful write
-                                self.update_last_message_time();
+                                // Write failures are fatal - indicates parse bug or NATS issue
+                                error!(error = %e, "Failed to write message - exiting to trigger restart");
+                                return Err(ConnectorError::WriteFailed(e.to_string()));
                             }
+                            // Update last message time on successful write
+                            self.update_last_message_time();
                         }
                         None => {
                             // Channel closed - connector disconnected unexpectedly
