@@ -16,16 +16,44 @@ where
         .ok_or_else(|| D::Error::custom(format!("Invalid unix timestamp: {}", ts)))
 }
 
+/// Subscription confirmation data (inside "msg" field)
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubscribedData {
+    pub channel: String,
+    pub sid: u64,
+}
+
+/// Error data (inside "msg" field)
+#[derive(Debug, Clone, Deserialize)]
+pub struct ErrorData {
+    pub code: i64,
+    pub msg: String,
+}
+
 /// Incoming WebSocket messages from Kalshi
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum WsMessage {
+    /// Subscription confirmed (for some channels like orderbook_delta)
     Subscribed {
         id: u64,
-        /// Subscription ID assigned by Kalshi (used for update_subscription)
+        /// Subscription details including channel and sid
+        #[serde(default)]
+        msg: Option<SubscribedData>,
+    },
+    /// Subscription confirmed (for ticker/trade channels)
+    Ok {
+        id: u64,
+        /// Subscription ID at top level
         #[serde(default)]
         sid: Option<u64>,
+        /// Sequence number
+        #[serde(default)]
+        seq: Option<u64>,
+        /// List of subscribed market tickers
+        #[serde(default)]
+        market_tickers: Option<Vec<String>>,
     },
     Unsubscribed { id: u64 },
     Ticker { msg: TickerData },
@@ -34,8 +62,9 @@ pub enum WsMessage {
     OrderbookDelta { msg: OrderbookData },
     Error {
         id: Option<u64>,
-        code: Option<i64>,
-        msg: Option<String>,
+        /// Error details with code and message
+        #[serde(default)]
+        msg: Option<ErrorData>,
     },
     #[serde(other)]
     Unknown,
@@ -112,8 +141,17 @@ mod tests {
     /// Trade message
     const TRADE_MESSAGE: &str = r#"{"type":"trade","sid":1,"msg":{"market_ticker":"KXTEST-123","price":50,"count":10,"side":"yes","ts":1732579880}}"#;
 
-    /// Subscribed confirmation message
+    /// Subscribed confirmation message (without msg - older format)
     const SUBSCRIBED_MESSAGE: &str = r#"{"type":"subscribed","id":1}"#;
+
+    /// Subscribed confirmation message with sid (current format)
+    const SUBSCRIBED_MESSAGE_WITH_SID: &str = r#"{"type":"subscribed","id":1,"msg":{"channel":"ticker","sid":42}}"#;
+
+    /// Ok confirmation message (for ticker/trade subscriptions)
+    const OK_MESSAGE: &str = r#"{"id":123,"sid":456,"seq":222,"type":"ok","market_tickers":["MARKET-1","MARKET-2","MARKET-3"]}"#;
+
+    /// Error message
+    const ERROR_MESSAGE: &str = r#"{"id":123,"type":"error","msg":{"code":6,"msg":"Already subscribed"}}"#;
 
     #[test]
     fn test_parse_ticker_message() {
@@ -170,9 +208,25 @@ mod tests {
             serde_json::from_str(SUBSCRIBED_MESSAGE).expect("Failed to parse subscribed");
 
         match msg {
-            WsMessage::Subscribed { id, sid } => {
+            WsMessage::Subscribed { id, msg } => {
                 assert_eq!(id, 1);
-                assert!(sid.is_none()); // Basic subscribed message has no sid
+                assert!(msg.is_none()); // Basic subscribed message has no msg
+            }
+            _ => panic!("Expected Subscribed variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_subscribed_message_with_sid() {
+        let msg: WsMessage =
+            serde_json::from_str(SUBSCRIBED_MESSAGE_WITH_SID).expect("Failed to parse subscribed");
+
+        match msg {
+            WsMessage::Subscribed { id, msg } => {
+                assert_eq!(id, 1);
+                let data = msg.expect("Expected msg field");
+                assert_eq!(data.channel, "ticker");
+                assert_eq!(data.sid, 42);
             }
             _ => panic!("Expected Subscribed variant"),
         }
@@ -266,5 +320,44 @@ mod tests {
         assert!(json.contains(r#""market_tickers":["KXTEST-1","KXTEST-2"]"#));
         // market_ticker should be omitted when None
         assert!(!json.contains(r#""market_ticker""#));
+    }
+
+    #[test]
+    fn test_parse_ok_message() {
+        let msg: WsMessage = serde_json::from_str(OK_MESSAGE).expect("Failed to parse ok");
+
+        match msg {
+            WsMessage::Ok {
+                id,
+                sid,
+                seq,
+                market_tickers,
+            } => {
+                assert_eq!(id, 123);
+                assert_eq!(sid, Some(456));
+                assert_eq!(seq, Some(222));
+                let tickers = market_tickers.expect("Expected market_tickers");
+                assert_eq!(tickers.len(), 3);
+                assert_eq!(tickers[0], "MARKET-1");
+                assert_eq!(tickers[1], "MARKET-2");
+                assert_eq!(tickers[2], "MARKET-3");
+            }
+            _ => panic!("Expected Ok variant, got {:?}", msg),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_message() {
+        let msg: WsMessage = serde_json::from_str(ERROR_MESSAGE).expect("Failed to parse error");
+
+        match msg {
+            WsMessage::Error { id, msg } => {
+                assert_eq!(id, Some(123));
+                let error_data = msg.expect("Expected error msg");
+                assert_eq!(error_data.code, 6);
+                assert_eq!(error_data.msg, "Already subscribed");
+            }
+            _ => panic!("Expected Error variant, got {:?}", msg),
+        }
     }
 }

@@ -92,8 +92,14 @@ impl Writer for NatsWriter {
                 // Control messages, don't publish
                 return Ok(());
             }
-            WsMessage::Error { id, code, msg } => {
-                warn!(?id, ?code, error_msg = ?msg, "Error message received from Kalshi");
+            WsMessage::Ok { .. } => {
+                // Control message, don't publish
+                return Ok(());
+            }
+            WsMessage::Error { id, msg } => {
+                let code = msg.as_ref().map(|m| m.code);
+                let error_msg = msg.as_ref().map(|m| m.msg.as_str());
+                warn!(?id, ?code, ?error_msg, "Error message received from Kalshi");
                 return Ok(());
             }
             WsMessage::Unknown => {

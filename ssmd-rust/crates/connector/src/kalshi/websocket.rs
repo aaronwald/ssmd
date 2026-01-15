@@ -266,25 +266,38 @@ impl KalshiWebSocket {
                     Message::Text(text) => {
                         message_count += 1;
                         match serde_json::from_str::<WsMessage>(&text) {
-                            Ok(WsMessage::Subscribed { id, sid }) => {
+                            Ok(WsMessage::Subscribed { id, msg }) => {
                                 if id == expected_id {
-                                    info!(id, ?sid, messages_received = message_count, "Subscription confirmed");
+                                    let sid = msg.as_ref().map(|m| m.sid);
+                                    let channel = msg.as_ref().map(|m| m.channel.as_str());
+                                    info!(id, ?sid, ?channel, messages_received = message_count, "Subscription confirmed (subscribed)");
                                     return Ok(sid);
                                 } else {
                                     debug!(id, expected = expected_id, "Received subscription confirmation for different id");
                                 }
                             }
-                            Ok(WsMessage::Error { id, code, msg }) => {
+                            Ok(WsMessage::Ok { id, sid, seq, market_tickers }) => {
+                                if id == expected_id {
+                                    let ticker_count = market_tickers.as_ref().map(|t| t.len());
+                                    info!(id, ?sid, ?seq, ?ticker_count, messages_received = message_count, "Subscription confirmed (ok)");
+                                    return Ok(sid);
+                                } else {
+                                    debug!(id, expected = expected_id, "Received ok for different id");
+                                }
+                            }
+                            Ok(WsMessage::Error { id, msg }) => {
+                                let code = msg.as_ref().map(|m| m.code);
+                                let error_msg = msg.as_ref().map(|m| m.msg.as_str());
                                 warn!(
                                     ?id,
                                     ?code,
-                                    error_msg = ?msg,
+                                    ?error_msg,
                                     expected_id,
                                     "Received error from Kalshi"
                                 );
                                 if id == Some(expected_id) {
                                     return Err(WebSocketError::SubscriptionFailed(
-                                        msg.unwrap_or_else(|| format!("Error code: {:?}", code))
+                                        error_msg.map(|s| s.to_string()).unwrap_or_else(|| format!("Error code: {:?}", code))
                                     ));
                                 }
                             }
