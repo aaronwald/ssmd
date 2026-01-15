@@ -124,15 +124,50 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
       let batchCount = 0;
 
       if (options.activeOnly) {
-        // Incremental sync: fetch open markets created in last 7 days (excludes MVE)
-        // This catches all new markets without fetching the entire 90k+ open market set
+        // Incremental sync: fetch recent markets in multiple passes
         const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
-        console.log(`  Fetching open markets created in last 7 days (excluding MVE)...`);
+        const twoDaysAgo = Math.floor(Date.now() / 1000) - 2 * 24 * 60 * 60;
 
+        // Pass 1: New open markets (created in last 7 days, excludes MVE)
+        console.log(`  Fetching open markets created in last 7 days (excluding MVE)...`);
         for await (const batch of client.fetchAllMarkets({
           status: "open",
           minCreatedTs: sevenDaysAgo,
           mveFilter: "exclude",
+        })) {
+          result.markets.fetched += batch.length;
+          allMarketTickers.push(...batch.map((m) => m.ticker));
+
+          if (!options.dryRun) {
+            const batchResult = await bulkUpsertMarkets(db, batch);
+            result.markets.upserted += batchResult.total;
+            result.markets.skipped += batchResult.skipped;
+            batchCount++;
+          }
+        }
+
+        // Pass 2: Recently settled markets (to update status, 2 day window for perf)
+        console.log(`  Fetching markets settled in last 2 days...`);
+        for await (const batch of client.fetchAllMarkets({
+          status: "settled",
+          minSettledTs: twoDaysAgo,
+        })) {
+          result.markets.fetched += batch.length;
+          allMarketTickers.push(...batch.map((m) => m.ticker));
+
+          if (!options.dryRun) {
+            const batchResult = await bulkUpsertMarkets(db, batch);
+            result.markets.upserted += batchResult.total;
+            result.markets.skipped += batchResult.skipped;
+            batchCount++;
+          }
+        }
+
+        // Pass 3: Recently closed markets (to update status, 2 day window for perf)
+        console.log(`  Fetching markets closed in last 2 days...`);
+        for await (const batch of client.fetchAllMarkets({
+          status: "closed",
+          minCloseTs: twoDaysAgo,
         })) {
           result.markets.fetched += batch.length;
           allMarketTickers.push(...batch.map((m) => m.ticker));
