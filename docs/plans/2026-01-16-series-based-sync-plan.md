@@ -185,34 +185,127 @@ ssmd secmaster sync --by-series
 
 **Initial deployment**: Single job with all tags, split later as needed.
 
-## Implementation Order
+## Detailed Implementation TODOs
 
-### Phase 1: Database + CLI (no breaking changes)
+### Phase 1: Database + CLI
 
-1. Create migration `002_series.sql` with GIN index for tags
-2. Add `ssmd series sync` command with `--tag` filter support
-   - Fetches `/search/tags_by_categories` to discover available tags
-   - Fetches `/series?category={cat}&tags={tag}` for specified tags
-   - Applies Sports filter (GAME/MATCH pattern) when `--games-only`
-   - Stores tags array in series table
-   - Upserts to `series` table
-3. Add `ssmd secmaster sync --by-series` with `--tag` filter support
-   - Reads series from DB (optionally filtered by tag)
-   - Queries markets by `series_ticker` instead of category
-4. Test locally with existing connector
+#### 1.1 Create Migration
+- [ ] Create `migrations/002_series.sql`:
+```sql
+CREATE TABLE IF NOT EXISTS series (
+    ticker VARCHAR(64) PRIMARY KEY,
+    title TEXT NOT NULL,
+    category VARCHAR(64) NOT NULL,
+    tags TEXT[],
+    is_game BOOLEAN NOT NULL DEFAULT false,
+    active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_series_category ON series(category) WHERE active = true;
+CREATE INDEX idx_series_category_game ON series(category, is_game) WHERE active = true;
+CREATE INDEX idx_series_tags ON series USING GIN(tags) WHERE active = true;
+```
+- [ ] Run migration: `psql $DATABASE_URL -f migrations/002_series.sql`
+
+#### 1.2 Add Kalshi API Functions
+- [ ] Edit `ssmd-agent/src/lib/kalshi.ts`, add:
+```typescript
+export async function fetchTagsByCategories(): Promise<Record<string, string[]>>
+export async function fetchFiltersBySport(): Promise<SportFilters>
+export async function fetchSeriesByCategory(category: string, tag?: string): Promise<Series[]>
+export async function fetchMarketsBySeries(seriesTicker: string, status: string): Promise<Market[]>
+```
+
+#### 1.3 Add Database Functions
+- [ ] Edit `ssmd-agent/src/lib/db.ts`, add:
+```typescript
+export async function upsertSeries(series: Series[]): Promise<void>
+export async function getSeriesByTags(tags: string[], gamesOnly?: boolean): Promise<Series[]>
+export async function getAllActiveSeries(): Promise<Series[]>
+```
+
+#### 1.4 Create Series Command
+- [ ] Create `ssmd-agent/src/cli/commands/series.ts`:
+```typescript
+// ssmd series sync [--tag=X]... [--games-only]
+// 1. Fetch tags_by_categories from Kalshi
+// 2. For each tag (or all if none specified):
+//    - Fetch /series?category={cat}&tags={tag}
+//    - Set is_game = ticker.includes("GAME") || ticker.includes("MATCH")
+//    - Upsert to DB
+```
+- [ ] Register command in `ssmd-agent/src/cli/main.ts`
+
+#### 1.5 Update Secmaster Command
+- [ ] Edit `ssmd-agent/src/cli/commands/secmaster.ts`, add flags:
+  - `--by-series`: Use series-based sync instead of category-based
+  - `--tag=X`: Filter to specific tags (repeatable)
+- [ ] Implement series-based sync:
+```typescript
+// For each series (filtered by tags if specified):
+//   1. GET /markets?series_ticker={ticker}&status=open → upsert
+//   2. GET /markets?series_ticker={ticker}&status=closed&min_close_ts={24h} → update
+//   3. GET /markets?series_ticker={ticker}&status=settled&min_settled_ts={24h} → update
+```
+
+#### 1.6 Test Locally
+- [ ] `ssmd series sync` - sync all series
+- [ ] `ssmd series sync --tag=Basketball --games-only` - sync Basketball games
+- [ ] `ssmd secmaster sync --by-series` - sync markets by series
+- [ ] `ssmd secmaster sync --by-series --tag=Basketball` - sync Basketball markets
 
 ### Phase 2: API + Connector
 
-1. Add `/v1/series` endpoint to ssmd-data-ts
-2. Update Rust connector to use series-based queries
-3. Test end-to-end
+#### 2.1 Add Series API Endpoint
+- [ ] Create `ssmd-data-ts/src/routes/series.ts`:
+```typescript
+// GET /v1/series?tag=X&games_only=true
+// Returns: { series: [{ ticker, title, category, tags, is_game }] }
+```
+- [ ] Register route in `ssmd-data-ts/src/index.ts`
+
+#### 2.2 Update Rust Connector
+- [ ] Edit `ssmd-rust/crates/connector/src/secmaster.rs`:
+  - Add `get_series(category: &str) -> Vec<Series>` function
+  - Change market fetch to use `series_ticker` parameter
+  - Remove category-based market fetch
+
+#### 2.3 Test End-to-End
+- [ ] Deploy updated ssmd-data-ts
+- [ ] Run connector locally against cluster DB
+- [ ] Verify markets are fetched correctly
 
 ### Phase 3: Temporal + Deploy
 
-1. Update Temporal worker to call new commands
-2. Build and tag new CLI image
-3. Build and tag new worker image
-4. Deploy to cluster
+#### 3.1 Update Temporal Worker
+- [ ] Edit `varlab/workers/kalshi-temporal/src/activities.ts`:
+```typescript
+export async function syncSecmaster(tags?: string[]) {
+  const tagArgs = tags?.map(t => `--tag=${t}`).join(" ") || "";
+  await exec(`ssmd series sync ${tagArgs}`);
+  await exec(`ssmd secmaster sync --by-series ${tagArgs}`);
+}
+```
+- [ ] Edit `varlab/workers/kalshi-temporal/src/workflows.ts`:
+```typescript
+interface SyncInput { tags?: string[]; }
+```
+
+#### 3.2 Build and Deploy
+- [ ] Tag and push CLI: `git tag cli-ts-v0.2.19 && git push origin cli-ts-v0.2.19`
+- [ ] Wait for CLI build: `gh run watch`
+- [ ] Update worker Dockerfile to use new CLI version
+- [ ] Tag and push worker: build new ssmd-worker image
+- [ ] Update `varlab/clusters/homelab/apps/ssmd/worker/deployment.yaml`
+- [ ] Push varlab changes, wait for Flux reconcile
+
+### Verification Checklist
+- [ ] `ssmd series sync` populates series table
+- [ ] `ssmd secmaster sync --by-series` fetches markets by series
+- [ ] Temporal job runs successfully
+- [ ] Connector receives correct markets from API
+- [ ] NBA/NFL/NHL games appear in secmaster within 5 minutes of sync
 
 ## Series Filtering Logic
 
