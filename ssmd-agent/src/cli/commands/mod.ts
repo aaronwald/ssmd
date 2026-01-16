@@ -13,6 +13,7 @@ import {
 import { handleBacktest } from "./backtest.ts";
 import { handleSecmaster } from "./secmaster.ts";
 import { handleFees } from "./fees.ts";
+import { handleSeries } from "./series.ts";
 import { handleSignal } from "./signal.ts";
 import { handleSignalDeploy } from "./signal-deploy.ts";
 import { handleNotifierDeploy } from "./notifier-deploy.ts";
@@ -23,10 +24,11 @@ import { handleStatus } from "./status.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
-    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail"],
-    boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait", "follow"],
+    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag"],
+    boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait", "follow", "games-only", "by-series"],
     alias: { h: "help", v: "version", t: "type", e: "endpoint", f: "follow" },
     default: { wait: true },
+    collect: ["tag"], // Allow multiple --tag flags
   });
 
   const command = flags._[0] as string;
@@ -68,6 +70,10 @@ export async function run(args: string[]): Promise<void> {
 
     case "fees":
       await handleFees(subcommand, flags);
+      break;
+
+    case "series":
+      await handleSeries(subcommand, flags);
       break;
 
     case "signal": {
@@ -178,6 +184,7 @@ function printHelp(): void {
   console.log("  status            Show cluster status overview");
   console.log("  init              Initialize exchanges directory");
   console.log("  feed              Manage feed configurations");
+  console.log("  series            Series metadata operations");
   console.log("  secmaster         Security master database operations");
   console.log("  fees              Fee schedule database operations");
   console.log("  backtest          Run signal backtests");

@@ -4,7 +4,8 @@
 import { getDb, closeDb } from "../../lib/db/client.ts";
 import { bulkUpsertEvents, softDeleteMissingEvents } from "../../lib/db/events.ts";
 import { bulkUpsertMarkets, softDeleteMissingMarkets } from "../../lib/db/markets.ts";
-import { createKalshiClient } from "../../lib/api/kalshi.ts";
+import { getAllActiveSeries, getSeriesByTags } from "../../lib/db/series.ts";
+import { createKalshiClient, type MarketFilters } from "../../lib/api/kalshi.ts";
 
 const API_TIMEOUT_MS = 10000;
 
@@ -41,6 +42,10 @@ export interface SyncOptions {
   dryRun?: boolean;
   /** Only sync active/open records (faster incremental sync) */
   activeOnly?: boolean;
+  /** Use series-based sync (requires series table to be populated) */
+  bySeries?: boolean;
+  /** Filter to specific tags (for series-based sync) */
+  tags?: string[];
 }
 
 /**
@@ -244,6 +249,105 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
 }
 
 /**
+ * Run series-based secmaster sync (faster, targeted approach)
+ */
+export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<SyncResult> {
+  const startTime = Date.now();
+  const client = createKalshiClient();
+  const _db = getDb();
+
+  const result: SyncResult = {
+    events: { fetched: 0, upserted: 0, deleted: 0, durationMs: 0 },
+    markets: { fetched: 0, upserted: 0, skipped: 0, deleted: 0, durationMs: 0 },
+    totalDurationMs: 0,
+  };
+
+  try {
+    // Get series from database (filtered by tags if specified)
+    let seriesList;
+    if (options.tags && options.tags.length > 0) {
+      console.log(`\n[Series] Fetching series for tags: ${options.tags.join(", ")}`);
+      seriesList = await getSeriesByTags(options.tags, true); // gamesOnly for sports
+    } else {
+      console.log(`\n[Series] Fetching all active series from database...`);
+      seriesList = await getAllActiveSeries();
+    }
+
+    console.log(`[Series] Found ${seriesList.length} series to sync`);
+
+    if (seriesList.length === 0) {
+      console.log("[Series] No series found. Run 'ssmd series sync' first.");
+      result.totalDurationMs = Date.now() - startTime;
+      return result;
+    }
+
+    const marketStart = Date.now();
+    const now = Math.floor(Date.now() / 1000);
+    const oneDayAgo = now - 24 * 60 * 60;
+
+    // For each series, run the three queries
+    for (const s of seriesList) {
+      console.log(`\n[${s.ticker}] Syncing markets...`);
+
+      // Query 1: Open markets (to subscribe)
+      console.log(`  Fetching open markets...`);
+      for await (const batch of client.fetchMarketsBySeries(s.ticker, { status: "open" })) {
+        result.markets.fetched += batch.length;
+
+        if (!options.dryRun) {
+          const batchResult = await bulkUpsertMarkets(_db, batch);
+          result.markets.upserted += batchResult.total;
+          result.markets.skipped += batchResult.skipped;
+        }
+      }
+
+      // Query 2: Closed in last 24h (to update status)
+      console.log(`  Fetching recently closed markets...`);
+      for await (const batch of client.fetchMarketsBySeries(s.ticker, {
+        status: "closed",
+        minCloseTs: oneDayAgo,
+        maxCloseTs: now,
+      })) {
+        result.markets.fetched += batch.length;
+
+        if (!options.dryRun) {
+          const batchResult = await bulkUpsertMarkets(_db, batch);
+          result.markets.upserted += batchResult.total;
+          result.markets.skipped += batchResult.skipped;
+        }
+      }
+
+      // Query 3: Settled in last 24h (to record results)
+      console.log(`  Fetching recently settled markets...`);
+      for await (const batch of client.fetchMarketsBySeries(s.ticker, {
+        status: "settled",
+        minSettledTs: oneDayAgo,
+      })) {
+        result.markets.fetched += batch.length;
+
+        if (!options.dryRun) {
+          const batchResult = await bulkUpsertMarkets(_db, batch);
+          result.markets.upserted += batchResult.total;
+          result.markets.skipped += batchResult.skipped;
+        }
+      }
+    }
+
+    result.markets.durationMs = Date.now() - marketStart;
+    result.totalDurationMs = Date.now() - startTime;
+
+    console.log(
+      `\n[Markets] Synced ${result.markets.upserted} markets across ${seriesList.length} series` +
+        (result.markets.skipped > 0 ? ` (${result.markets.skipped} skipped)` : "")
+    );
+
+    return result;
+  } finally {
+    await closeDb();
+  }
+}
+
+/**
  * Print sync summary
  */
 export function printSyncSummary(result: SyncResult): void {
@@ -439,12 +543,23 @@ export async function handleSecmaster(
 ): Promise<void> {
   switch (subcommand) {
     case "sync": {
+      // Parse --tag flags (can be multiple)
+      const tagFlags = flags.tag;
+      const tags: string[] = [];
+      if (typeof tagFlags === "string") {
+        tags.push(tagFlags);
+      } else if (Array.isArray(tagFlags)) {
+        tags.push(...tagFlags.map(String));
+      }
+
       const options: SyncOptions = {
         eventsOnly: Boolean(flags["events-only"]),
         marketsOnly: Boolean(flags["markets-only"]),
         noDelete: Boolean(flags["no-delete"]),
         dryRun: Boolean(flags["dry-run"]),
         activeOnly: Boolean(flags["active-only"]),
+        bySeries: Boolean(flags["by-series"]),
+        tags: tags.length > 0 ? tags : undefined,
       };
 
       if (options.eventsOnly && options.marketsOnly) {
@@ -453,8 +568,14 @@ export async function handleSecmaster(
       }
 
       try {
-        const result = await runSecmasterSync(options);
-        printSyncSummary(result);
+        // Use series-based sync if --by-series flag is set
+        if (options.bySeries) {
+          const result = await runSeriesBasedSync(options);
+          printSyncSummary(result);
+        } else {
+          const result = await runSecmasterSync(options);
+          printSyncSummary(result);
+        }
       } catch (e) {
         console.error(`Sync failed: ${(e as Error).message}`);
         Deno.exit(1);
@@ -514,11 +635,17 @@ export async function handleSecmaster(
       console.log("  markets      List markets (or show one: markets <ticker>)");
       console.log();
       console.log("Options for sync:");
-      console.log("  --active-only    Only sync active/open records (fast incremental)");
+      console.log("  --by-series      Use series-based sync (fast, targeted)");
+      console.log("  --tag=X          Filter to specific tags (with --by-series)");
+      console.log("  --active-only    Only sync active/open records (legacy mode)");
       console.log("  --events-only    Only sync events");
       console.log("  --markets-only   Only sync markets");
       console.log("  --no-delete      Skip soft-deleting missing records");
       console.log("  --dry-run        Fetch but don't write to database");
+      console.log();
+      console.log("Examples:");
+      console.log("  ssmd secmaster sync --by-series                  # Series-based sync");
+      console.log("  ssmd secmaster sync --by-series --tag=Basketball # Basketball only");
       console.log();
       console.log("Options for events/markets:");
       console.log("  --category       Filter by category");

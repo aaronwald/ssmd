@@ -10,6 +10,7 @@ export {
   seriesFees,
   apiKeys,
   settings,
+  series,
   feeTypeEnum,
   type Event,
   type NewEvent,
@@ -21,6 +22,8 @@ export {
   type NewApiKey,
   type Setting,
   type NewSetting,
+  type Series,
+  type NewSeries,
 } from "./schema.ts";
 
 // Event operations
@@ -73,3 +76,14 @@ export {
   upsertSetting,
   getSettingValue,
 } from "./settings.ts";
+
+// Series operations
+export {
+  upsertSeries,
+  getSeriesByTags,
+  getSeriesByCategory,
+  getAllActiveSeries,
+  getSeriesStats,
+  getSeries,
+  listSeries,
+} from "./series.ts";

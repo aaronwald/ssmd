@@ -11,6 +11,34 @@ import {
 } from "../types/fee.ts";
 
 /**
+ * Series metadata from Kalshi API
+ */
+export interface KalshiSeries {
+  ticker: string;
+  title: string;
+  category: string;
+  tags?: string[];
+}
+
+/**
+ * Tags grouped by category from /search/tags_by_categories
+ */
+export type TagsByCategories = Record<string, string[]>;
+
+/**
+ * Sport filter structure from /search/filters_by_sport
+ */
+export interface SportFilters {
+  sports: Array<{
+    sport: string;
+    competitions: Array<{
+      competition: string;
+      scopes: string[];
+    }>;
+  }>;
+}
+
+/**
  * Kalshi API client configuration
  */
 export interface KalshiClientOptions {
@@ -235,6 +263,121 @@ export class KalshiClient {
     console.log(`  [API] Fetched ${changes.length} fee changes`);
 
     return changes.map(fromKalshiFeeChange);
+  }
+
+  /**
+   * Fetch tags grouped by category from /search/tags_by_categories
+   */
+  async fetchTagsByCategories(): Promise<TagsByCategories> {
+    console.log(`  [API] Fetching tags by categories`);
+    const data = await this.fetch<TagsByCategories>(`/search/tags_by_categories`);
+    return data;
+  }
+
+  /**
+   * Fetch sport filters from /search/filters_by_sport
+   */
+  async fetchFiltersBySport(): Promise<SportFilters> {
+    console.log(`  [API] Fetching filters by sport`);
+    const data = await this.fetch<SportFilters>(`/search/filters_by_sport`);
+    return data;
+  }
+
+  /**
+   * Fetch series with optional category and tag filters
+   * @param category - Filter by category (e.g., 'Sports', 'Economics')
+   * @param tag - Filter by tag within category (e.g., 'Basketball')
+   */
+  async *fetchSeries(category?: string, tag?: string): AsyncGenerator<KalshiSeries[]> {
+    let cursor: string | undefined;
+    let page = 0;
+
+    const params: string[] = [];
+    if (category) params.push(`category=${encodeURIComponent(category)}`);
+    if (tag) params.push(`tags=${encodeURIComponent(tag)}`);
+    const queryParams = params.length > 0 ? params.join("&") : "";
+
+    do {
+      const path = cursor
+        ? `/series?cursor=${cursor}&${queryParams}`
+        : `/series${queryParams ? "?" + queryParams : ""}`;
+
+      const data = await this.fetch<PaginatedResponse<KalshiSeries>>(path);
+      const series = (data.series as KalshiSeries[]) || [];
+
+      page++;
+      console.log(`  [API] series page ${page}: ${series.length} fetched`);
+
+      if (series.length > 0) {
+        yield series;
+      }
+
+      cursor = data.cursor || undefined;
+    } while (cursor);
+  }
+
+  /**
+   * Fetch all series for a category (convenience method)
+   */
+  async fetchAllSeries(category?: string, tag?: string): Promise<KalshiSeries[]> {
+    const allSeries: KalshiSeries[] = [];
+    for await (const batch of this.fetchSeries(category, tag)) {
+      allSeries.push(...batch);
+    }
+    return allSeries;
+  }
+
+  /**
+   * Fetch markets by series ticker with status filter
+   * @param seriesTicker - Series ticker (e.g., 'KXNBAGAME')
+   * @param filters - Optional filters (status, timestamps)
+   */
+  async *fetchMarketsBySeries(
+    seriesTicker: string,
+    filters?: MarketFilters
+  ): AsyncGenerator<Market[]> {
+    let cursor: string | undefined;
+    let page = 0;
+
+    // Build query params
+    const params: string[] = [`series_ticker=${encodeURIComponent(seriesTicker)}`];
+    if (filters?.status) params.push(`status=${filters.status}`);
+    if (filters?.minCloseTs) params.push(`min_close_ts=${filters.minCloseTs}`);
+    if (filters?.maxCloseTs) params.push(`max_close_ts=${filters.maxCloseTs}`);
+    if (filters?.minSettledTs) params.push(`min_settled_ts=${filters.minSettledTs}`);
+    const filterParams = params.join("&");
+
+    do {
+      const path = cursor
+        ? `/markets?cursor=${cursor}&${filterParams}`
+        : `/markets?${filterParams}`;
+
+      const data = await this.fetch<PaginatedResponse<KalshiMarket>>(path);
+      const markets = (data.markets as KalshiMarket[]) || [];
+
+      page++;
+      console.log(`  [API] ${seriesTicker} markets page ${page}: ${markets.length} fetched`);
+
+      if (markets.length > 0) {
+        yield markets.map(fromKalshiMarket);
+      }
+
+      cursor = data.cursor || undefined;
+    } while (cursor);
+  }
+
+  /**
+   * Fetch all markets for a series (convenience method)
+   */
+  async fetchAllMarketsBySeries(
+    seriesTicker: string,
+    filters?: MarketFilters
+  ): Promise<Market[]> {
+    const allMarkets: Market[] = [];
+    for await (const batch of this.fetchMarketsBySeries(seriesTicker, filters)) {
+      allMarkets.push(...batch);
+    }
+    return allMarkets;
   }
 }
 

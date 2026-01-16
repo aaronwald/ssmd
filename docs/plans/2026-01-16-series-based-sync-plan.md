@@ -300,12 +300,27 @@ interface SyncInput { tags?: string[]; }
 - [ ] Update `varlab/clusters/homelab/apps/ssmd/worker/deployment.yaml`
 - [ ] Push varlab changes, wait for Flux reconcile
 
+### Phase 4: Admin Dashboard + Cleanup
+
+#### 4.1 Add Series Stats to API
+- [ ] Add `/v1/stats/series` endpoint showing markets per series
+- [ ] Add series filter to existing market stats
+
+#### 4.2 Update Admin Dashboard
+- [ ] Update ssmd-admin.varshtat.com to show series breakdown
+- [ ] Add series filter to market views
+
+#### 4.3 Clean Old Data
+- [ ] Delete stale markets/events from before series-based sync
+- [ ] Truncate and resync with new approach
+
 ### Verification Checklist
 - [ ] `ssmd series sync` populates series table
 - [ ] `ssmd secmaster sync --by-series` fetches markets by series
 - [ ] Temporal job runs successfully
 - [ ] Connector receives correct markets from API
 - [ ] NBA/NFL/NHL games appear in secmaster within 5 minutes of sync
+- [ ] Admin dashboard shows series breakdown
 
 ## Series Filtering Logic
 
