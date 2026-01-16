@@ -13,6 +13,7 @@ Replace the slow time-based market sync (`close_within_hours=48`) with a targete
 3. **Sports filtering**: Include only "Games" scope (tickers ending in GAME/MATCH)
 4. **Other categories**: Include all series (no filtering needed)
 5. **Uniform market queries**: Once we have series, `series_ticker={ticker}&status=open` works the same for all
+6. **Tag-based Temporal jobs**: Jobs are configurable by tag for horizontal scaling
 
 ## Database Changes
 
@@ -25,15 +26,35 @@ CREATE TABLE IF NOT EXISTS series (
     ticker VARCHAR(64) PRIMARY KEY,
     title TEXT NOT NULL,
     category VARCHAR(64) NOT NULL,
-    tags TEXT[], -- Array of tags from API
-    is_game BOOLEAN NOT NULL DEFAULT false, -- For Sports filtering
+    tags TEXT[], -- Array of tags from API (e.g., ["Basketball", "Pro Basketball"])
+    is_game BOOLEAN NOT NULL DEFAULT false, -- For Sports: GAME/MATCH in ticker
     active BOOLEAN NOT NULL DEFAULT true, -- Soft disable
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Query by category
 CREATE INDEX idx_series_category ON series(category) WHERE active = true;
+
+-- Query by category + games filter (for Sports)
 CREATE INDEX idx_series_category_game ON series(category, is_game) WHERE active = true;
+
+-- Query by tag (for Temporal job filtering)
+CREATE INDEX idx_series_tags ON series USING GIN(tags) WHERE active = true;
+```
+
+**Tag query example:**
+```sql
+-- Get all series for Basketball tag (Sports games only)
+SELECT * FROM series
+WHERE 'Basketball' = ANY(tags)
+  AND is_game = true
+  AND active = true;
+
+-- Get all series for Economics tag (all series)
+SELECT * FROM series
+WHERE 'Economics' = ANY(tags)
+  AND active = true;
 ```
 
 ## Component Changes
@@ -110,38 +131,73 @@ for s in series {
 }
 ```
 
-### 4. Temporal Workflows
+### 4. Temporal Workflows (Tag-Based Configuration)
 
-Update `ssmd-worker` activities:
+**Design goal**: Enable horizontal scaling by running separate jobs per tag.
+
+**Current**: One monolithic sync job for everything.
+
+**Future**: Tag-based jobs that can be added/removed via configuration.
 
 ```typescript
-// Current
-async function syncSecmaster() {
-  await exec("ssmd secmaster sync --active-only");
+// Workflow input - configurable per schedule
+interface SyncWorkflowInput {
+  tags: string[];        // e.g., ["Basketball"], ["Soccer"], or ["Economics", "Financials"]
+  gamesOnly?: boolean;   // For Sports tags, filter to GAME/MATCH series
 }
 
-// New
-async function syncSecmaster() {
-  // Step 1: Sync series metadata (fast, ~2s for all categories)
-  await exec("ssmd series sync");
+// Activity: sync series for specific tags
+async function syncSeriesForTags(input: SyncWorkflowInput) {
+  const tagArgs = input.tags.map(t => `--tag=${t}`).join(" ");
+  const gamesFlag = input.gamesOnly ? "--games-only" : "";
+  await exec(`ssmd series sync ${tagArgs} ${gamesFlag}`);
+}
 
-  // Step 2: Sync markets by series
-  await exec("ssmd secmaster sync --by-series");
+// Activity: sync markets for series matching tags
+async function syncMarketsForTags(input: SyncWorkflowInput) {
+  const tagArgs = input.tags.map(t => `--tag=${t}`).join(" ");
+  await exec(`ssmd secmaster sync --by-series ${tagArgs}`);
 }
 ```
+
+**CLI commands support tag filtering:**
+
+```bash
+# Sync series for specific tags
+ssmd series sync --tag=Basketball --tag=Hockey --games-only
+
+# Sync markets for series matching tags
+ssmd secmaster sync --by-series --tag=Basketball --tag=Hockey
+
+# Sync all (default behavior)
+ssmd series sync
+ssmd secmaster sync --by-series
+```
+
+**Example Temporal schedules (future scaling):**
+
+| Schedule ID | Tags | Interval | Notes |
+|-------------|------|----------|-------|
+| `sync-sports-us` | Basketball, Football, Hockey, Baseball | 5m | US pro sports |
+| `sync-sports-soccer` | Soccer | 5m | European leagues |
+| `sync-financials` | Financials | 15m | S&P, Nasdaq |
+| `sync-politics` | Politics, Elections | 30m | Less time-sensitive |
+
+**Initial deployment**: Single job with all tags, split later as needed.
 
 ## Implementation Order
 
 ### Phase 1: Database + CLI (no breaking changes)
 
-1. Create migration `002_series.sql`
-2. Add `ssmd series sync` command
-   - Fetches `/search/tags_by_categories`
-   - Fetches `/series?category={cat}` for each category
-   - Applies Sports filter (GAME/MATCH pattern)
+1. Create migration `002_series.sql` with GIN index for tags
+2. Add `ssmd series sync` command with `--tag` filter support
+   - Fetches `/search/tags_by_categories` to discover available tags
+   - Fetches `/series?category={cat}&tags={tag}` for specified tags
+   - Applies Sports filter (GAME/MATCH pattern) when `--games-only`
+   - Stores tags array in series table
    - Upserts to `series` table
-3. Add `ssmd secmaster sync --by-series` flag
-   - Reads series from DB
+3. Add `ssmd secmaster sync --by-series` with `--tag` filter support
+   - Reads series from DB (optionally filtered by tag)
    - Queries markets by `series_ticker` instead of category
 4. Test locally with existing connector
 
@@ -205,11 +261,23 @@ If series-based sync has issues:
 
 | File | Changes |
 |------|---------|
-| `migrations/002_series.sql` | New file |
-| `ssmd-agent/src/cli/commands/series.ts` | New file |
-| `ssmd-agent/src/cli/commands/secmaster.ts` | Add `--by-series` flag |
-| `ssmd-agent/src/lib/db.ts` | Add series queries |
-| `ssmd-agent/src/lib/kalshi.ts` | Add series API calls |
-| `ssmd-data-ts/src/routes/series.ts` | New file |
+| `migrations/002_series.sql` | New file: series table with GIN index |
+| `ssmd-agent/src/cli/commands/series.ts` | New file: `ssmd series sync --tag=X --games-only` |
+| `ssmd-agent/src/cli/commands/secmaster.ts` | Add `--by-series --tag=X` flags |
+| `ssmd-agent/src/lib/db.ts` | Add series queries (by tag, by category) |
+| `ssmd-agent/src/lib/kalshi.ts` | Add `tags_by_categories`, `filters_by_sport`, series API calls |
+| `ssmd-data-ts/src/routes/series.ts` | New file: `/v1/series?tag=X&games_only=true` |
 | `ssmd-rust/crates/connector/src/secmaster.rs` | Use series-based queries |
-| `varlab/workers/kalshi-temporal/src/activities.ts` | Update sync command |
+| `varlab/workers/kalshi-temporal/src/workflows.ts` | Add tag-based workflow input |
+| `varlab/workers/kalshi-temporal/src/activities.ts` | Update sync commands with tag args |
+
+## Future Scaling Path
+
+When a single sync job becomes too slow or we need different intervals per category:
+
+1. **Split by domain**: Create separate Temporal schedules for Sports, Financials, Politics
+2. **Split by sport**: Separate schedules for Basketball, Soccer, Hockey
+3. **Adjust intervals**: Sports every 5m, Politics every 30m
+4. **Add/remove tags**: Just update schedule input, no code changes needed
+
+The tag-based CLI design makes all of this configuration, not code.
