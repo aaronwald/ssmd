@@ -422,7 +422,44 @@ export const getFeeSchedule = tool(
   }
 );
 
+export const listSeries = tool(
+  async ({ category, tag, games_only, limit }) => {
+    const params = new URLSearchParams();
+    if (category) params.set("category", category);
+    if (tag) params.set("tag", tag);
+    if (games_only) params.set("games_only", "true");
+    if (limit) params.set("limit", String(limit));
+
+    const path = `/v1/series${params.toString() ? "?" + params : ""}`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "list_series",
+    description: "List series from secmaster with filters. Series are groups of related markets (e.g., KXNBAGAME for NBA games).",
+    schema: z.object({
+      category: z.string().optional().nullable().describe("Filter by category (e.g., 'Economics', 'Sports')"),
+      tag: z.string().optional().nullable().describe("Filter by tag (e.g., 'Basketball', 'Fed')"),
+      games_only: z.boolean().optional().nullable().describe("Only return game series (for Sports)"),
+      limit: z.number().optional().nullable().describe("Max results (default 100)"),
+    }),
+  }
+);
+
+export const getSeries = tool(
+  async ({ ticker }) => {
+    const path = `/v1/series/${encodeURIComponent(ticker)}`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "get_series",
+    description: "Get details for a specific series by ticker.",
+    schema: z.object({
+      ticker: z.string().describe("Series ticker (e.g., 'KXNBAGAME' or 'INXD')"),
+    }),
+  }
+);
+
 export const calendarTools = [getToday];
 export const dataTools = [listDatasets, listTickers, sampleData, getSchema, listBuilders, orderbookBuilder, priceHistoryBuilder, volumeProfileBuilder];
-export const secmasterTools = [listMarkets, getMarket, getFees, listEvents, getEvent, getFeeSchedule];
+export const secmasterTools = [listMarkets, getMarket, getFees, listEvents, getEvent, getFeeSchedule, listSeries, getSeries];
 export const allTools = [...calendarTools, ...dataTools, ...secmasterTools, runBacktest, deploySignal];
