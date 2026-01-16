@@ -91,6 +91,9 @@ pub struct SecmasterConfig {
     pub api_key: Option<String>,
     #[serde(default)]
     pub categories: Vec<String>,
+    /// Only subscribe to markets closing within this many hours (for high-volume categories like Sports)
+    #[serde(default)]
+    pub close_within_hours: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

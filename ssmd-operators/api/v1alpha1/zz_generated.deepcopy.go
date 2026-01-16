@@ -252,6 +252,11 @@ func (in *ConnectorSpec) DeepCopyInto(out *ConnectorSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.CloseWithinHours != nil {
+		in, out := &in.CloseWithinHours, &out.CloseWithinHours
+		*out = new(int32)
+		**out = **in
+	}
 	if in.ExcludeCategories != nil {
 		in, out := &in.ExcludeCategories, &out.ExcludeCategories
 		*out = make([]string, len(*in))

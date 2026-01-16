@@ -113,6 +113,7 @@ impl KalshiConnector {
     ) -> Result<Vec<String>, ConnectorError> {
         info!(
             categories = ?secmaster.categories,
+            close_within_hours = ?secmaster.close_within_hours,
             url = %secmaster.url,
             "Using filtered subscription mode"
         );
@@ -131,7 +132,7 @@ impl KalshiConnector {
             self.subscription_config.retry_delay_ms,
         );
         let tickers = client
-            .get_markets_by_categories(&secmaster.categories)
+            .get_markets_by_categories(&secmaster.categories, secmaster.close_within_hours)
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(format!("secmaster query: {}", e)))?;
 
