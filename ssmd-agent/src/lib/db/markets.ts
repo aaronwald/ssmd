@@ -35,7 +35,7 @@ function toNewMarket(m: ApiMarket): NewMarket {
 
 /**
  * Upsert a batch of markets. Caller handles batching (e.g., API pagination).
- * Pre-filters by existing events to avoid FK violations.
+ * Fails if any markets reference missing parent events (FK constraint).
  */
 export async function upsertMarkets(
   db: Database,
@@ -48,18 +48,20 @@ export async function upsertMarkets(
   // Collect unique event tickers
   const eventTickers = [...new Set(marketList.map((m) => m.event_ticker))];
 
-  // Pre-filter by existing events (FK constraint)
+  // Check for missing parent events (FK constraint)
   const existingEvents = await getExistingEventTickers(db, eventTickers);
+  const missingEvents = eventTickers.filter((t) => !existingEvents.has(t));
 
-  // Filter markets to only those with existing parent events
-  const validMarkets = marketList.filter((m) => existingEvents.has(m.event_ticker));
-  const skipped = marketList.length - validMarkets.length;
-
-  if (validMarkets.length === 0) {
-    return { total: 0, skipped };
+  if (missingEvents.length > 0) {
+    const sample = missingEvents.slice(0, 5).join(", ");
+    const more = missingEvents.length > 5 ? ` (and ${missingEvents.length - 5} more)` : "";
+    throw new Error(
+      `FK constraint: ${missingEvents.length} parent events missing: ${sample}${more}. ` +
+      `Sync events before markets.`
+    );
   }
 
-  const drizzleMarkets = validMarkets.map(toNewMarket);
+  const drizzleMarkets = marketList.map(toNewMarket);
 
   await db
     .insert(markets)
@@ -84,7 +86,7 @@ export async function upsertMarkets(
       },
     });
 
-  return { total: validMarkets.length, skipped };
+  return { total: marketList.length, skipped: 0 };
 }
 
 /**

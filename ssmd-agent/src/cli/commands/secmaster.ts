@@ -2,10 +2,12 @@
  * Secmaster sync command - sync Kalshi events and markets to PostgreSQL
  */
 import { getDb, closeDb } from "../../lib/db/client.ts";
-import { bulkUpsertEvents, softDeleteMissingEvents } from "../../lib/db/events.ts";
+import { bulkUpsertEvents, softDeleteMissingEvents, upsertEvents } from "../../lib/db/events.ts";
 import { bulkUpsertMarkets, softDeleteMissingMarkets } from "../../lib/db/markets.ts";
 import { getAllActiveSeries, getSeriesByTags, getSeriesByCategory } from "../../lib/db/series.ts";
-import { createKalshiClient, type MarketFilters } from "../../lib/api/kalshi.ts";
+import { createKalshiClient } from "../../lib/api/kalshi.ts";
+import type { Event } from "../../lib/types/event.ts";
+import type { Market } from "../../lib/types/market.ts";
 
 const API_TIMEOUT_MS = 10000;
 
@@ -252,11 +254,12 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
 
 /**
  * Run series-based secmaster sync (faster, targeted approach)
+ * Fetches events before markets to satisfy FK constraints.
  */
 export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<SyncResult> {
   const startTime = Date.now();
   const client = createKalshiClient();
-  const _db = getDb();
+  const db = getDb();
 
   const result: SyncResult = {
     events: { fetched: 0, upserted: 0, deleted: 0, durationMs: 0 },
@@ -287,64 +290,84 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
       return result;
     }
 
-    const marketStart = Date.now();
     const now = Math.floor(Date.now() / 1000);
     const oneDayAgo = now - 24 * 60 * 60;
 
-    // For each series, run the three queries
+    // Phase 1: Collect all markets from all series
+    console.log(`\n[Phase 1] Fetching markets from ${seriesList.length} series...`);
+    const allMarkets: Market[] = [];
+
     for (const s of seriesList) {
-      console.log(`\n[${s.ticker}] Syncing markets...`);
-
-      // Query 1: Open markets (to subscribe)
-      console.log(`  Fetching open markets...`);
+      // Open markets
       for await (const batch of client.fetchMarketsBySeries(s.ticker, { status: "open" })) {
-        result.markets.fetched += batch.length;
-
-        if (!options.dryRun) {
-          const batchResult = await bulkUpsertMarkets(_db, batch);
-          result.markets.upserted += batchResult.total;
-          result.markets.skipped += batchResult.skipped;
-        }
+        allMarkets.push(...batch);
       }
-
-      // Query 2: Closed in last 24h (to update status)
-      console.log(`  Fetching recently closed markets...`);
+      // Closed in last 24h
       for await (const batch of client.fetchMarketsBySeries(s.ticker, {
         status: "closed",
         minCloseTs: oneDayAgo,
         maxCloseTs: now,
       })) {
-        result.markets.fetched += batch.length;
-
-        if (!options.dryRun) {
-          const batchResult = await bulkUpsertMarkets(_db, batch);
-          result.markets.upserted += batchResult.total;
-          result.markets.skipped += batchResult.skipped;
-        }
+        allMarkets.push(...batch);
       }
-
-      // Query 3: Settled in last 24h (to record results)
-      console.log(`  Fetching recently settled markets...`);
+      // Settled in last 24h
       for await (const batch of client.fetchMarketsBySeries(s.ticker, {
         status: "settled",
         minSettledTs: oneDayAgo,
       })) {
-        result.markets.fetched += batch.length;
-
-        if (!options.dryRun) {
-          const batchResult = await bulkUpsertMarkets(_db, batch);
-          result.markets.upserted += batchResult.total;
-          result.markets.skipped += batchResult.skipped;
-        }
+        allMarkets.push(...batch);
       }
     }
 
+    result.markets.fetched = allMarkets.length;
+    console.log(`[Phase 1] Fetched ${allMarkets.length} markets`);
+
+    if (allMarkets.length === 0) {
+      console.log("[Phase 1] No markets found.");
+      result.totalDurationMs = Date.now() - startTime;
+      return result;
+    }
+
+    // Phase 2: Fetch parent events for all markets
+    console.log(`\n[Phase 2] Fetching parent events...`);
+    const eventStart = Date.now();
+    const uniqueEventTickers = [...new Set(allMarkets.map((m) => m.event_ticker))];
+    console.log(`[Phase 2] ${uniqueEventTickers.length} unique events to fetch`);
+
+    const fetchedEvents: Event[] = [];
+    for (const eventTicker of uniqueEventTickers) {
+      const event = await client.getEvent(eventTicker);
+      if (event) {
+        fetchedEvents.push(event);
+      } else {
+        console.warn(`  [WARN] Event not found: ${eventTicker}`);
+      }
+    }
+
+    result.events.fetched = fetchedEvents.length;
+    console.log(`[Phase 2] Fetched ${fetchedEvents.length} events`);
+
+    // Phase 3: Upsert events first
+    if (!options.dryRun && fetchedEvents.length > 0) {
+      console.log(`\n[Phase 3] Upserting ${fetchedEvents.length} events...`);
+      result.events.upserted = await upsertEvents(db, fetchedEvents);
+    }
+    result.events.durationMs = Date.now() - eventStart;
+
+    // Phase 4: Upsert markets
+    const marketStart = Date.now();
+    if (!options.dryRun && allMarkets.length > 0) {
+      console.log(`\n[Phase 4] Upserting ${allMarkets.length} markets...`);
+      const batchResult = await bulkUpsertMarkets(db, allMarkets);
+      result.markets.upserted = batchResult.total;
+      result.markets.skipped = batchResult.skipped;
+    }
     result.markets.durationMs = Date.now() - marketStart;
+
     result.totalDurationMs = Date.now() - startTime;
 
     console.log(
-      `\n[Markets] Synced ${result.markets.upserted} markets across ${seriesList.length} series` +
-        (result.markets.skipped > 0 ? ` (${result.markets.skipped} skipped)` : "")
+      `\n[Done] Synced ${result.events.upserted} events, ${result.markets.upserted} markets`
     );
 
     return result;

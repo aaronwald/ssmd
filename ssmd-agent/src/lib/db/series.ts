@@ -62,7 +62,9 @@ export async function getSeriesByTags(
   const db = getDb();
 
   // Use raw SQL for array overlap (&&) which checks if any tag matches
-  const tagCondition = sql`${series.tags} && ${tags}::text[]`;
+  // Format tags as PostgreSQL array literal: '{tag1,tag2}'
+  const tagsLiteral = `{${tags.join(",")}}`;
+  const tagCondition = sql`${series.tags} && ${tagsLiteral}::text[]`;
 
   if (gamesOnly) {
     return db
