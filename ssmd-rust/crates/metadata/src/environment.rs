@@ -96,6 +96,28 @@ pub struct SecmasterConfig {
     pub close_within_hours: Option<u32>,
 }
 
+/// CDC configuration for dynamic market subscriptions
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CdcConfig {
+    /// Enable CDC dynamic subscriptions
+    #[serde(default)]
+    pub enabled: bool,
+    /// NATS URL for CDC stream (defaults to transport.url if not set)
+    #[serde(default)]
+    pub nats_url: Option<String>,
+    /// JetStream stream name (default: "SECMASTER_CDC")
+    #[serde(default = "default_cdc_stream")]
+    pub stream_name: String,
+    /// Durable consumer name (should be unique per connector instance)
+    /// If not set, defaults to "{connector_name}-cdc"
+    #[serde(default)]
+    pub consumer_name: Option<String>,
+}
+
+fn default_cdc_stream() -> String {
+    "SECMASTER_CDC".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionConfig {
     #[serde(default = "default_batch_size")]
@@ -175,6 +197,9 @@ pub struct Environment {
     pub secmaster: Option<SecmasterConfig>,
     #[serde(default)]
     pub subscription: Option<SubscriptionConfig>,
+    /// CDC configuration for dynamic market subscriptions
+    #[serde(default)]
+    pub cdc: Option<CdcConfig>,
     pub transport: TransportConfig,
     pub storage: StorageConfig,
     pub cache: Option<CacheConfig>,

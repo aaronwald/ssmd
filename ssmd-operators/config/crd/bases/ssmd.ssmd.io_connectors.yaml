@@ -58,6 +58,26 @@ spec:
                 items:
                   type: string
                 type: array
+              cdc:
+                description: Cdc configures CDC-driven dynamic market subscriptions
+                properties:
+                  consumerName:
+                    description: |-
+                      ConsumerName is the durable consumer name (unique per connector instance)
+                      Defaults to "{connector-name}-cdc"
+                    type: string
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled enables CDC-driven dynamic market subscriptions
+                      When enabled, the connector will subscribe to new markets automatically
+                      when they are inserted into secmaster
+                    type: boolean
+                  streamName:
+                    default: SECMASTER_CDC
+                    description: StreamName is the NATS JetStream stream for CDC events
+                    type: string
+                type: object
               closeWithinHours:
                 description: |-
                   CloseWithinHours only subscribes to markets closing within this many hours

@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_connector_lib::{
@@ -137,7 +137,7 @@ async fn run_kalshi_connector(
         .map(|v| v.to_lowercase() == "true" || v == "1")
         .unwrap_or(false);
 
-    // Create connector with optional secmaster filtering
+    // Create connector with optional secmaster filtering and CDC
     let connector = if let Some(ref secmaster) = env_config.secmaster {
         if !secmaster.categories.is_empty() {
             // Inject API key from environment variable if not set in config
@@ -148,17 +148,44 @@ async fn run_kalshi_connector(
                 }
             }
 
+            // Check if CDC is enabled
+            let cdc_enabled = env_config.cdc.as_ref().map_or(false, |c| c.enabled);
+            let nats_url = env_config.transport.url.clone();
+
             info!(
                 categories = ?secmaster_config.categories,
                 use_demo = use_demo,
+                cdc_enabled = cdc_enabled,
                 "Creating Kalshi connector with category filtering"
             );
-            KalshiConnector::with_secmaster(
-                credentials,
-                use_demo,
-                secmaster_config,
-                env_config.subscription.clone(),
-            )
+
+            if cdc_enabled {
+                if let (Some(cdc_config), Some(nats_url)) = (env_config.cdc.clone(), nats_url) {
+                    KalshiConnector::with_cdc(
+                        credentials,
+                        use_demo,
+                        secmaster_config,
+                        env_config.subscription.clone(),
+                        cdc_config,
+                        nats_url,
+                    )
+                } else {
+                    warn!("CDC enabled but NATS URL not configured, falling back to static subscriptions");
+                    KalshiConnector::with_secmaster(
+                        credentials,
+                        use_demo,
+                        secmaster_config,
+                        env_config.subscription.clone(),
+                    )
+                }
+            } else {
+                KalshiConnector::with_secmaster(
+                    credentials,
+                    use_demo,
+                    secmaster_config,
+                    env_config.subscription.clone(),
+                )
+            }
         } else {
             info!(use_demo = use_demo, "Creating Kalshi connector (global mode)");
             KalshiConnector::new(credentials, use_demo)

@@ -139,6 +139,7 @@ mod tests {
             keys: None,
             secmaster: None,
             subscription: None,
+            cdc: None,
             transport: TransportConfig {
                 transport_type: TransportType::Memory,
                 url: None,
