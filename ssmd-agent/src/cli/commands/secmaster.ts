@@ -4,7 +4,7 @@
 import { getDb, closeDb } from "../../lib/db/client.ts";
 import { bulkUpsertEvents, softDeleteMissingEvents } from "../../lib/db/events.ts";
 import { bulkUpsertMarkets, softDeleteMissingMarkets } from "../../lib/db/markets.ts";
-import { getAllActiveSeries, getSeriesByTags } from "../../lib/db/series.ts";
+import { getAllActiveSeries, getSeriesByTags, getSeriesByCategory } from "../../lib/db/series.ts";
 import { createKalshiClient, type MarketFilters } from "../../lib/api/kalshi.ts";
 
 const API_TIMEOUT_MS = 10000;
@@ -44,6 +44,8 @@ export interface SyncOptions {
   activeOnly?: boolean;
   /** Use series-based sync (requires series table to be populated) */
   bySeries?: boolean;
+  /** Filter to specific category (for series-based sync) */
+  category?: string;
   /** Filter to specific tags (for series-based sync) */
   tags?: string[];
 }
@@ -263,9 +265,13 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
   };
 
   try {
-    // Get series from database (filtered by tags if specified)
+    // Get series from database (filtered by category or tags if specified)
     let seriesList;
-    if (options.tags && options.tags.length > 0) {
+    if (options.category) {
+      const isGamesOnly = options.category === "Sports";
+      console.log(`\n[Series] Fetching series for category: ${options.category}${isGamesOnly ? " (games only)" : ""}`);
+      seriesList = await getSeriesByCategory(options.category, isGamesOnly);
+    } else if (options.tags && options.tags.length > 0) {
       console.log(`\n[Series] Fetching series for tags: ${options.tags.join(", ")}`);
       seriesList = await getSeriesByTags(options.tags, true); // gamesOnly for sports
     } else {
@@ -559,6 +565,7 @@ export async function handleSecmaster(
         dryRun: Boolean(flags["dry-run"]),
         activeOnly: Boolean(flags["active-only"]),
         bySeries: Boolean(flags["by-series"]),
+        category: flags.category ? String(flags.category) : undefined,
         tags: tags.length > 0 ? tags : undefined,
       };
 
@@ -636,6 +643,7 @@ export async function handleSecmaster(
       console.log();
       console.log("Options for sync:");
       console.log("  --by-series      Use series-based sync (fast, targeted)");
+      console.log("  --category=X     Filter by category (with --by-series)");
       console.log("  --tag=X          Filter to specific tags (with --by-series)");
       console.log("  --active-only    Only sync active/open records (legacy mode)");
       console.log("  --events-only    Only sync events");
@@ -644,8 +652,8 @@ export async function handleSecmaster(
       console.log("  --dry-run        Fetch but don't write to database");
       console.log();
       console.log("Examples:");
-      console.log("  ssmd secmaster sync --by-series                  # Series-based sync");
-      console.log("  ssmd secmaster sync --by-series --tag=Basketball # Basketball only");
+      console.log("  ssmd secmaster sync --by-series --category=Sports    # Sports games");
+      console.log("  ssmd secmaster sync --by-series --category=Economics # Economics");
       console.log();
       console.log("Options for events/markets:");
       console.log("  --category       Filter by category");
