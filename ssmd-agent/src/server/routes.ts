@@ -21,6 +21,8 @@ import {
   revokeApiKey,
   getAllSettings,
   upsertSetting,
+  listSeries,
+  getSeriesStats,
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
@@ -183,6 +185,23 @@ route("GET", "/v1/secmaster/markets/timeseries", async (req, ctx) => {
     : 30;
   const timeseries = await getMarketTimeseries(ctx.db, days);
   return json({ timeseries });
+}, true, "secmaster:read");
+
+// Series endpoints
+route("GET", "/v1/series", async (req, ctx) => {
+  const url = new URL(req.url);
+  const series = await listSeries({
+    category: url.searchParams.get("category") ?? undefined,
+    tag: url.searchParams.get("tag") ?? undefined,
+    gamesOnly: url.searchParams.get("games_only") === "true",
+    limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
+  });
+  return json({ series });
+}, true, "secmaster:read");
+
+route("GET", "/v1/series/stats", async (_req, _ctx) => {
+  const stats = await getSeriesStats();
+  return json({ stats });
 }, true, "secmaster:read");
 
 // Fees endpoints
