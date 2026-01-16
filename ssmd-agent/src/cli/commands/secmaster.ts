@@ -6,8 +6,6 @@ import { bulkUpsertEvents, softDeleteMissingEvents, upsertEvents } from "../../l
 import { bulkUpsertMarkets, softDeleteMissingMarkets } from "../../lib/db/markets.ts";
 import { getAllActiveSeries, getSeriesByTags, getSeriesByCategory } from "../../lib/db/series.ts";
 import { createKalshiClient } from "../../lib/api/kalshi.ts";
-import type { Event } from "../../lib/types/event.ts";
-import type { Market } from "../../lib/types/market.ts";
 
 const API_TIMEOUT_MS = 10000;
 
@@ -254,7 +252,7 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
 
 /**
  * Run series-based secmaster sync (faster, targeted approach)
- * Fetches events before markets to satisfy FK constraints.
+ * Uses fetchEventsBySeries with nested markets for efficiency.
  */
 export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<SyncResult> {
   const startTime = Date.now();
@@ -290,79 +288,32 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
       return result;
     }
 
-    const now = Math.floor(Date.now() / 1000);
-    const oneDayAgo = now - 24 * 60 * 60;
-
-    // Phase 1: Collect all markets from all series
-    console.log(`\n[Phase 1] Fetching markets from ${seriesList.length} series...`);
-    const allMarkets: Market[] = [];
+    // Sync each series: fetch events with nested markets, upsert events first, then markets
+    // Sync open, closed, and settled events
+    const statuses: Array<"open" | "closed" | "settled"> = ["open", "closed", "settled"];
 
     for (const s of seriesList) {
-      // Open markets
-      for await (const batch of client.fetchMarketsBySeries(s.ticker, { status: "open" })) {
-        allMarkets.push(...batch);
-      }
-      // Closed in last 24h
-      for await (const batch of client.fetchMarketsBySeries(s.ticker, {
-        status: "closed",
-        minCloseTs: oneDayAgo,
-        maxCloseTs: now,
-      })) {
-        allMarkets.push(...batch);
-      }
-      // Settled in last 24h
-      for await (const batch of client.fetchMarketsBySeries(s.ticker, {
-        status: "settled",
-        minSettledTs: oneDayAgo,
-      })) {
-        allMarkets.push(...batch);
-      }
-    }
+      console.log(`\n[${s.ticker}] Syncing...`);
 
-    result.markets.fetched = allMarkets.length;
-    console.log(`[Phase 1] Fetched ${allMarkets.length} markets`);
+      for (const status of statuses) {
+        for await (const batch of client.fetchEventsBySeries(s.ticker, status)) {
+          result.events.fetched += batch.events.length;
+          result.markets.fetched += batch.markets.length;
 
-    if (allMarkets.length === 0) {
-      console.log("[Phase 1] No markets found.");
-      result.totalDurationMs = Date.now() - startTime;
-      return result;
-    }
-
-    // Phase 2: Fetch parent events for all markets
-    console.log(`\n[Phase 2] Fetching parent events...`);
-    const eventStart = Date.now();
-    const uniqueEventTickers = [...new Set(allMarkets.map((m) => m.event_ticker))];
-    console.log(`[Phase 2] ${uniqueEventTickers.length} unique events to fetch`);
-
-    const fetchedEvents: Event[] = [];
-    for (const eventTicker of uniqueEventTickers) {
-      const event = await client.getEvent(eventTicker);
-      if (event) {
-        fetchedEvents.push(event);
-      } else {
-        console.warn(`  [WARN] Event not found: ${eventTicker}`);
+          if (!options.dryRun) {
+            // Upsert events first (FK constraint)
+            if (batch.events.length > 0) {
+              result.events.upserted += await upsertEvents(db, batch.events);
+            }
+            // Then upsert markets
+            if (batch.markets.length > 0) {
+              const marketResult = await bulkUpsertMarkets(db, batch.markets);
+              result.markets.upserted += marketResult.total;
+            }
+          }
+        }
       }
     }
-
-    result.events.fetched = fetchedEvents.length;
-    console.log(`[Phase 2] Fetched ${fetchedEvents.length} events`);
-
-    // Phase 3: Upsert events first
-    if (!options.dryRun && fetchedEvents.length > 0) {
-      console.log(`\n[Phase 3] Upserting ${fetchedEvents.length} events...`);
-      result.events.upserted = await upsertEvents(db, fetchedEvents);
-    }
-    result.events.durationMs = Date.now() - eventStart;
-
-    // Phase 4: Upsert markets
-    const marketStart = Date.now();
-    if (!options.dryRun && allMarkets.length > 0) {
-      console.log(`\n[Phase 4] Upserting ${allMarkets.length} markets...`);
-      const batchResult = await bulkUpsertMarkets(db, allMarkets);
-      result.markets.upserted = batchResult.total;
-      result.markets.skipped = batchResult.skipped;
-    }
-    result.markets.durationMs = Date.now() - marketStart;
 
     result.totalDurationMs = Date.now() - startTime;
 
