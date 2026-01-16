@@ -125,14 +125,13 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
 
       if (options.activeOnly) {
         // Incremental sync: fetch recent markets in multiple passes
-        const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
         const twoDaysAgo = Math.floor(Date.now() / 1000) - 2 * 24 * 60 * 60;
 
-        // Pass 1: New open markets (created in last 7 days, excludes MVE)
-        console.log(`  Fetching open markets created in last 7 days (excluding MVE)...`);
+        // Pass 1: ALL open markets (no creation time filter)
+        // This ensures we capture markets created weeks ago (e.g., NBA games)
+        console.log(`  Fetching all open markets (excluding MVE)...`);
         for await (const batch of client.fetchAllMarkets({
           status: "open",
-          minCreatedTs: sevenDaysAgo,
           mveFilter: "exclude",
         })) {
           result.markets.fetched += batch.length;
