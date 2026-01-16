@@ -190,7 +190,7 @@ ssmd secmaster sync --by-series
 ### Phase 1: Database + CLI
 
 #### 1.1 Create Migration
-- [ ] Create `migrations/002_series.sql`:
+- [x] Create `migrations/002_series.sql`:
 ```sql
 CREATE TABLE IF NOT EXISTS series (
     ticker VARCHAR(64) PRIMARY KEY,
@@ -209,7 +209,7 @@ CREATE INDEX idx_series_tags ON series USING GIN(tags) WHERE active = true;
 - [ ] Run migration: `psql $DATABASE_URL -f migrations/002_series.sql`
 
 #### 1.2 Add Kalshi API Functions
-- [ ] Edit `ssmd-agent/src/lib/kalshi.ts`, add:
+- [x] Edit `ssmd-agent/src/lib/kalshi.ts`, add:
 ```typescript
 export async function fetchTagsByCategories(): Promise<Record<string, string[]>>
 export async function fetchFiltersBySport(): Promise<SportFilters>
@@ -218,7 +218,7 @@ export async function fetchMarketsBySeries(seriesTicker: string, status: string)
 ```
 
 #### 1.3 Add Database Functions
-- [ ] Edit `ssmd-agent/src/lib/db.ts`, add:
+- [x] Edit `ssmd-agent/src/lib/db.ts`, add:
 ```typescript
 export async function upsertSeries(series: Series[]): Promise<void>
 export async function getSeriesByTags(tags: string[], gamesOnly?: boolean): Promise<Series[]>
@@ -226,7 +226,7 @@ export async function getAllActiveSeries(): Promise<Series[]>
 ```
 
 #### 1.4 Create Series Command
-- [ ] Create `ssmd-agent/src/cli/commands/series.ts`:
+- [x] Create `ssmd-agent/src/cli/commands/series.ts`:
 ```typescript
 // ssmd series sync [--tag=X]... [--games-only]
 // 1. Fetch tags_by_categories from Kalshi
@@ -235,13 +235,13 @@ export async function getAllActiveSeries(): Promise<Series[]>
 //    - Set is_game = ticker.includes("GAME") || ticker.includes("MATCH")
 //    - Upsert to DB
 ```
-- [ ] Register command in `ssmd-agent/src/cli/main.ts`
+- [x] Register command in `ssmd-agent/src/cli/main.ts`
 
 #### 1.5 Update Secmaster Command
-- [ ] Edit `ssmd-agent/src/cli/commands/secmaster.ts`, add flags:
+- [x] Edit `ssmd-agent/src/cli/commands/secmaster.ts`, add flags:
   - `--by-series`: Use series-based sync instead of category-based
   - `--tag=X`: Filter to specific tags (repeatable)
-- [ ] Implement series-based sync:
+- [x] Implement series-based sync:
 ```typescript
 // For each series (filtered by tags if specified):
 //   1. GET /markets?series_ticker={ticker}&status=open → upsert
