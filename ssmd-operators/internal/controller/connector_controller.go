@@ -252,6 +252,24 @@ storage:
 `, categoriesYAML, closeWithinHoursYAML)
 	}
 
+	// Add CDC config if enabled
+	if connector.Spec.Cdc != nil && connector.Spec.Cdc.Enabled {
+		streamName := "SECMASTER_CDC"
+		if connector.Spec.Cdc.StreamName != "" {
+			streamName = connector.Spec.Cdc.StreamName
+		}
+		consumerName := fmt.Sprintf("%s-cdc", connector.Name)
+		if connector.Spec.Cdc.ConsumerName != "" {
+			consumerName = connector.Spec.Cdc.ConsumerName
+		}
+
+		envConfig += fmt.Sprintf(`cdc:
+  enabled: true
+  stream_name: %s
+  consumer_name: %s
+`, streamName, consumerName)
+	}
+
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      r.configMapName(connector),

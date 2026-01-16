@@ -65,6 +65,10 @@ type ConnectorSpec struct {
 	// Resources configures CPU/memory for the connector pod
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Cdc configures CDC-driven dynamic market subscriptions
+	// +optional
+	Cdc *CdcConfig `json:"cdc,omitempty"`
 }
 
 // TransportConfig defines NATS transport settings
@@ -102,6 +106,26 @@ type SecretReference struct {
 	// +kubebuilder:default="private-key"
 	// +optional
 	PrivateKeyField string `json:"privateKeyField,omitempty"`
+}
+
+// CdcConfig configures CDC-driven dynamic market subscriptions
+type CdcConfig struct {
+	// Enabled enables CDC-driven dynamic market subscriptions
+	// When enabled, the connector will subscribe to new markets automatically
+	// when they are inserted into secmaster
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// StreamName is the NATS JetStream stream for CDC events
+	// +kubebuilder:default="SECMASTER_CDC"
+	// +optional
+	StreamName string `json:"streamName,omitempty"`
+
+	// ConsumerName is the durable consumer name (unique per connector instance)
+	// Defaults to "{connector-name}-cdc"
+	// +optional
+	ConsumerName string `json:"consumerName,omitempty"`
 }
 
 // ConnectorPhase represents the current phase of the Connector

@@ -14,27 +14,37 @@
 //! each handling up to 256 markets. Messages from all shards are merged into a single
 //! output channel.
 //!
-//! ## TODO: CDC Dynamic Updates
+//! ## CDC Dynamic Updates
 //!
-//! Currently, filtered subscriptions are static - markets are fetched once at startup.
-//! Future enhancement: Subscribe to CDC stream from secmaster to dynamically add/remove
-//! market subscriptions as markets are added/removed from categories.
-//!
-//! See: <https://github.com/aaronwald/ssmd/issues/TBD>
+//! When CDC is enabled, the connector subscribes to the SECMASTER_CDC stream and
+//! dynamically adds new market subscriptions when markets are inserted. The shard
+//! manager routes new subscriptions to shards with available capacity.
 
 use crate::error::ConnectorError;
 use crate::kalshi::auth::KalshiCredentials;
+use crate::kalshi::cdc_consumer::{CdcConfig as CdcConsumerConfig, CdcSubscriptionConsumer};
+use crate::kalshi::shard_manager::ShardManager;
 use crate::kalshi::websocket::{KalshiWebSocket, WebSocketError, MAX_MARKETS_PER_SUBSCRIPTION};
 use crate::kalshi::messages::WsMessage;
 use crate::metrics::{ConnectorMetrics, ShardMetrics};
 use crate::secmaster::SecmasterClient;
 use crate::traits::Connector;
 use async_trait::async_trait;
-use ssmd_metadata::{SecmasterConfig, SubscriptionConfig};
+use ssmd_metadata::{CdcConfig, SecmasterConfig, SubscriptionConfig};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
+
+/// Commands that can be sent to a shard's receiver task
+#[derive(Debug)]
+pub enum ShardCommand {
+    /// Subscribe to additional markets on this shard
+    Subscribe {
+        /// Market tickers to subscribe to
+        tickers: Vec<String>,
+    },
+}
 
 /// Kalshi connector implementing the ssmd Connector trait
 pub struct KalshiConnector {
@@ -42,6 +52,10 @@ pub struct KalshiConnector {
     use_demo: bool,
     secmaster_config: Option<SecmasterConfig>,
     subscription_config: SubscriptionConfig,
+    /// CDC configuration for dynamic subscriptions
+    cdc_config: Option<CdcConfig>,
+    /// NATS URL for CDC (from transport config)
+    nats_url: Option<String>,
     tx: Option<mpsc::Sender<Vec<u8>>>,
     rx: Option<mpsc::Receiver<Vec<u8>>>,
     /// Last WebSocket activity timestamp (epoch seconds) - updated on ping/pong AND data messages
@@ -57,6 +71,8 @@ impl KalshiConnector {
             use_demo,
             secmaster_config: None,
             subscription_config: SubscriptionConfig::default(),
+            cdc_config: None,
+            nats_url: None,
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
@@ -84,6 +100,38 @@ impl KalshiConnector {
             use_demo,
             secmaster_config: Some(secmaster_config),
             subscription_config: validated_config,
+            cdc_config: None,
+            nats_url: None,
+            tx: Some(tx),
+            rx: Some(rx),
+            last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Create connector with secmaster filtering and CDC dynamic subscriptions
+    pub fn with_cdc(
+        credentials: KalshiCredentials,
+        use_demo: bool,
+        secmaster_config: SecmasterConfig,
+        subscription_config: Option<SubscriptionConfig>,
+        cdc_config: CdcConfig,
+        nats_url: String,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel(1000);
+        let (validated_config, was_clamped) = subscription_config.unwrap_or_default().validated();
+        if was_clamped {
+            tracing::warn!(
+                batch_size = validated_config.batch_size,
+                "batch_size was out of range and was clamped"
+            );
+        }
+        Self {
+            credentials,
+            use_demo,
+            secmaster_config: Some(secmaster_config),
+            subscription_config: validated_config,
+            cdc_config: Some(cdc_config),
+            nats_url: Some(nats_url),
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
@@ -168,12 +216,15 @@ impl KalshiConnector {
     }
 
     /// Spawn a WebSocket receiver task that forwards messages to the channel
+    ///
+    /// Optionally accepts a command receiver for dynamic subscription updates (CDC).
     fn spawn_receiver_task(
         mut ws: KalshiWebSocket,
         tx: mpsc::Sender<Vec<u8>>,
         activity_tracker: Arc<AtomicU64>,
         shard_id: usize,
         shard_metrics: ShardMetrics,
+        mut cmd_rx: Option<mpsc::Receiver<ShardCommand>>,
     ) {
         // Helper to update activity timestamp and metrics
         fn update_activity(tracker: &AtomicU64, metrics: &ShardMetrics, idle_secs: f64) {
@@ -220,6 +271,52 @@ impl KalshiConnector {
                         }
                         // Ping succeeded - update activity tracker
                         update_activity(&activity_tracker, &shard_metrics, idle_secs as f64);
+                    }
+
+                    // Handle shard commands (dynamic subscriptions from CDC)
+                    cmd = async {
+                        match cmd_rx.as_mut() {
+                            Some(rx) => rx.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        match cmd {
+                            Some(ShardCommand::Subscribe { tickers }) => {
+                                info!(
+                                    shard_id,
+                                    market_count = tickers.len(),
+                                    "CDC: Adding dynamic market subscriptions"
+                                );
+
+                                // Subscribe to ticker channel
+                                if let Err(e) = ws.subscribe_markets("ticker", &tickers).await {
+                                    warn!(shard_id, error = %e, "Failed to subscribe to ticker channel");
+                                    // Continue - don't break the receiver loop
+                                }
+
+                                // Subscribe to trade channel
+                                if let Err(e) = ws.subscribe_markets("trade", &tickers).await {
+                                    warn!(shard_id, error = %e, "Failed to subscribe to trade channel");
+                                }
+
+                                // Update metrics
+                                let current_count = shard_metrics.get_markets_subscribed();
+                                shard_metrics.set_markets_subscribed(current_count + tickers.len());
+
+                                info!(
+                                    shard_id,
+                                    added = tickers.len(),
+                                    total = current_count + tickers.len(),
+                                    "CDC: Successfully subscribed to new markets"
+                                );
+                            }
+                            None => {
+                                // Command channel closed - CDC disabled or shutting down
+                                debug!(shard_id, "Command channel closed");
+                                // Don't break - continue receiving WebSocket messages
+                                cmd_rx = None;
+                            }
+                        }
                     }
 
                     // Receive message from WebSocket
@@ -313,12 +410,23 @@ impl Connector for KalshiConnector {
                 let num_shards = shards.len();
                 connector_metrics.set_shards_total(num_shards);
 
+                // Check if CDC is enabled
+                let cdc_enabled = self.cdc_config.as_ref().map_or(false, |c| c.enabled);
+
                 info!(
                     total_markets = tickers.len(),
                     num_shards = num_shards,
                     max_per_shard = MAX_MARKETS_PER_SUBSCRIPTION,
+                    cdc_enabled = cdc_enabled,
                     "Creating sharded WebSocket connections"
                 );
+
+                // Create shard manager if CDC is enabled
+                let mut shard_manager = if cdc_enabled {
+                    Some(ShardManager::new(tickers.clone()))
+                } else {
+                    None
+                };
 
                 // Create a WebSocket connection for each shard
                 for (shard_id, shard_tickers) in shards.into_iter().enumerate() {
@@ -352,6 +460,15 @@ impl Connector for KalshiConnector {
                     // Create shard-specific metrics handle
                     let shard_metrics = connector_metrics.for_shard(shard_id);
 
+                    // Create command channel for CDC if enabled
+                    let cmd_rx = if let Some(ref mut manager) = shard_manager {
+                        let (cmd_tx, cmd_rx) = mpsc::channel::<ShardCommand>(100);
+                        manager.register_shard(shard_id, cmd_tx, shard_tickers.len());
+                        Some(cmd_rx)
+                    } else {
+                        None
+                    };
+
                     // Spawn receiver task for this shard
                     Self::spawn_receiver_task(
                         ws,
@@ -359,6 +476,7 @@ impl Connector for KalshiConnector {
                         Arc::clone(&activity_tracker),
                         shard_id,
                         shard_metrics,
+                        cmd_rx,
                     );
                 }
 
@@ -367,6 +485,60 @@ impl Connector for KalshiConnector {
                     num_shards = num_shards,
                     "All shards connected"
                 );
+
+                // Start CDC consumer if enabled
+                if let (Some(cdc_config), Some(manager), Some(ref nats_url)) =
+                    (&self.cdc_config, shard_manager, &self.nats_url)
+                {
+                    if cdc_config.enabled {
+                        let consumer_name = cdc_config.consumer_name.clone()
+                            .unwrap_or_else(|| format!("{}-cdc", category_label));
+
+                        let cdc_nats_url = cdc_config.nats_url.clone()
+                            .unwrap_or_else(|| nats_url.clone());
+
+                        let cdc_consumer_config = CdcConsumerConfig {
+                            nats_url: cdc_nats_url,
+                            stream_name: cdc_config.stream_name.clone(),
+                            consumer_name,
+                            secmaster_url: secmaster.url.clone(),
+                            secmaster_api_key: secmaster.api_key.clone(),
+                        };
+
+                        let categories = secmaster.categories.clone();
+
+                        // Create channel for CDC → ShardManager communication
+                        let (new_market_tx, new_market_rx) = mpsc::channel::<String>(1000);
+
+                        // Spawn CDC consumer task
+                        let snapshot_lsn = "0/0".to_string(); // TODO: Get actual LSN from initial fetch
+                        let initial_markets = tickers.clone();
+                        tokio::spawn(async move {
+                            match CdcSubscriptionConsumer::new(
+                                &cdc_consumer_config,
+                                categories,
+                                snapshot_lsn,
+                                initial_markets,
+                            ).await {
+                                Ok(consumer) => {
+                                    if let Err(e) = consumer.run(new_market_tx).await {
+                                        error!(error = %e, "CDC consumer error");
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(error = %e, "Failed to start CDC consumer");
+                                }
+                            }
+                        });
+
+                        // Spawn shard manager dispatcher task
+                        tokio::spawn(async move {
+                            manager.run(new_market_rx).await;
+                        });
+
+                        info!("CDC dynamic subscription enabled");
+                    }
+                }
             } else {
                 // Global mode: single connection
                 let connector_metrics = ConnectorMetrics::new("kalshi", "global");
@@ -379,7 +551,7 @@ impl Connector for KalshiConnector {
 
                 self.subscribe_global(&mut ws).await?;
                 let shard_metrics = connector_metrics.for_shard(0);
-                Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics);
+                Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics, None);
             }
         } else {
             // No secmaster config: global mode with single connection
@@ -393,7 +565,7 @@ impl Connector for KalshiConnector {
 
             self.subscribe_global(&mut ws).await?;
             let shard_metrics = connector_metrics.for_shard(0);
-            Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics);
+            Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics, None);
         }
 
         Ok(())

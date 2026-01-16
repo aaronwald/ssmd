@@ -9,6 +9,7 @@ ssmd-middleware = { path = "../middleware" }
 ssmd-schema = { path = "../schema" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+async-nats = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

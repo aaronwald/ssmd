@@ -32,6 +32,19 @@ struct MarketsResponse {
     markets: Vec<MarketItem>,
 }
 
+/// Event data from secmaster API (for category lookup)
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventData {
+    pub event_ticker: String,
+    pub title: String,
+    pub category: String,
+    #[serde(default)]
+    pub series_ticker: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
 /// Series item from secmaster API
 #[derive(Debug, Clone, Deserialize)]
 pub struct SeriesItem {
@@ -322,6 +335,43 @@ impl SecmasterClient {
         );
 
         Ok(tickers)
+    }
+
+    /// Fetch a single event by ticker (for CDC category lookup)
+    ///
+    /// Returns None if the event is not found (404).
+    pub async fn get_event(&self, event_ticker: &str) -> Result<Option<EventData>, SecmasterError> {
+        let url = format!(
+            "{}/v1/events/{}",
+            self.base_url,
+            urlencoding::encode(event_ticker)
+        );
+
+        debug!(url = %url, event_ticker = %event_ticker, "Fetching event from secmaster");
+
+        let mut request = self.client.get(&url);
+        if let Some(ref api_key) = self.api_key {
+            request = request.header("X-Api-Key", api_key);
+        }
+
+        let response = request.send().await?;
+
+        if response.status().is_success() {
+            let event: EventData = response.json().await?;
+            debug!(
+                event_ticker = %event_ticker,
+                category = %event.category,
+                "Fetched event"
+            );
+            Ok(Some(event))
+        } else if response.status().as_u16() == 404 {
+            debug!(event_ticker = %event_ticker, "Event not found");
+            Ok(None)
+        } else {
+            let status = response.status().as_u16();
+            let message = response.text().await.unwrap_or_default();
+            Err(SecmasterError::ApiError { status, message })
+        }
     }
 }
 

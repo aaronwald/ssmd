@@ -191,6 +191,20 @@ impl ShardMetrics {
             .with_label_values(&[&self.feed, &self.category, &self.shard_id.to_string()])
             .set(0);
     }
+
+    /// Get the current number of markets subscribed for this shard
+    pub fn get_markets_subscribed(&self) -> usize {
+        MARKETS_SUBSCRIBED
+            .with_label_values(&[&self.feed, &self.category, &self.shard_id.to_string()])
+            .get() as usize
+    }
+
+    /// Set the number of markets subscribed for this shard
+    pub fn set_markets_subscribed(&self, count: usize) {
+        MARKETS_SUBSCRIBED
+            .with_label_values(&[&self.feed, &self.category, &self.shard_id.to_string()])
+            .set(count as i64);
+    }
 }
 
 /// Encode all metrics to Prometheus text format
