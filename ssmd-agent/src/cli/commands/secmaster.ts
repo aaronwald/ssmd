@@ -124,14 +124,19 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
       let batchCount = 0;
 
       if (options.activeOnly) {
-        // Incremental sync: fetch recent markets in multiple passes
-        const twoDaysAgo = Math.floor(Date.now() / 1000) - 2 * 24 * 60 * 60;
+        // Incremental sync: fetch markets in multiple passes
+        const now = Math.floor(Date.now() / 1000);
+        const sevenDaysAgo = now - 7 * 24 * 60 * 60;
+        const twoDaysAgo = now - 2 * 24 * 60 * 60;
+        const fortyEightHoursFromNow = now + 48 * 60 * 60;
 
-        // Pass 1: ALL open markets (no creation time filter)
-        // This ensures we capture markets created weeks ago (e.g., NBA games)
-        console.log(`  Fetching all open markets (excluding MVE)...`);
+        // Pass 1: Markets closing in next 48 hours (any status)
+        // This captures all markets relevant for closeWithinHours connectors
+        // including sports games that were created weeks ago
+        console.log(`  Fetching markets closing in next 48 hours (any status)...`);
         for await (const batch of client.fetchAllMarkets({
-          status: "open",
+          minCloseTs: now,
+          maxCloseTs: fortyEightHoursFromNow,
           mveFilter: "exclude",
         })) {
           result.markets.fetched += batch.length;
@@ -145,7 +150,25 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
           }
         }
 
-        // Pass 2: Recently settled markets (to update status, 2 day window for perf)
+        // Pass 2: Recently created open markets (for connectors without closeWithinHours)
+        console.log(`  Fetching open markets created in last 7 days...`);
+        for await (const batch of client.fetchAllMarkets({
+          status: "open",
+          minCreatedTs: sevenDaysAgo,
+          mveFilter: "exclude",
+        })) {
+          result.markets.fetched += batch.length;
+          allMarketTickers.push(...batch.map((m) => m.ticker));
+
+          if (!options.dryRun) {
+            const batchResult = await bulkUpsertMarkets(db, batch);
+            result.markets.upserted += batchResult.total;
+            result.markets.skipped += batchResult.skipped;
+            batchCount++;
+          }
+        }
+
+        // Pass 3: Recently settled markets (status updates)
         console.log(`  Fetching markets settled in last 2 days...`);
         for await (const batch of client.fetchAllMarkets({
           status: "settled",
@@ -163,12 +186,12 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
           }
         }
 
-        // Pass 3: Recently closed markets (to update status, 2 day window for perf)
+        // Pass 4: Recently closed markets (status updates)
         console.log(`  Fetching markets closed in last 2 days...`);
         for await (const batch of client.fetchAllMarkets({
           status: "closed",
           minCloseTs: twoDaysAgo,
-          maxCloseTs: Math.floor(Date.now() / 1000),
+          maxCloseTs: now,
           mveFilter: "exclude",
         })) {
           result.markets.fetched += batch.length;
