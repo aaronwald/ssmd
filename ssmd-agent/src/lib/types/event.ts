@@ -48,6 +48,8 @@ export interface KalshiEvent {
   // Additional fields from API that we don't store
   sub_title?: string;
   event_type?: string;
+  // Nested markets when with_nested_markets=true
+  markets?: import("./market.ts").KalshiMarket[];
 }
 
 /**

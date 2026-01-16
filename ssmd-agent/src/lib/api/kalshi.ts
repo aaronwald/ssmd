@@ -175,6 +175,53 @@ export class KalshiClient {
   }
 
   /**
+   * Fetch events by series with nested markets.
+   * Uses series_ticker filter and with_nested_markets=true.
+   * @param seriesTicker - Series ticker to filter by
+   * @param status - Optional status filter (e.g., 'open')
+   */
+  async *fetchEventsBySeries(
+    seriesTicker: string,
+    status?: string
+  ): AsyncGenerator<{ events: Event[]; markets: Market[] }> {
+    let cursor: string | undefined;
+    let page = 0;
+
+    const params: string[] = [
+      `series_ticker=${encodeURIComponent(seriesTicker)}`,
+      "with_nested_markets=true",
+    ];
+    if (status) params.push(`status=${status}`);
+    const queryParams = params.join("&");
+
+    do {
+      const path = cursor
+        ? `/events?cursor=${cursor}&limit=200&${queryParams}`
+        : `/events?limit=200&${queryParams}`;
+
+      const data = await this.fetch<PaginatedResponse<KalshiEvent>>(path);
+      const rawEvents = (data.events as KalshiEvent[]) || [];
+
+      page++;
+      const marketCount = rawEvents.reduce((sum, e) => sum + (e.markets?.length || 0), 0);
+      console.log(`  [API] ${seriesTicker} events page ${page}: ${rawEvents.length} events, ${marketCount} markets`);
+
+      if (rawEvents.length > 0) {
+        const events = rawEvents.map(fromKalshiEvent);
+        const markets: Market[] = [];
+        for (const e of rawEvents) {
+          if (e.markets) {
+            markets.push(...e.markets.map(fromKalshiMarket));
+          }
+        }
+        yield { events, markets };
+      }
+
+      cursor = data.cursor || undefined;
+    } while (cursor);
+  }
+
+  /**
    * Fetch all markets with automatic pagination
    * @param filters - Optional filters (status, minCloseTs, etc.)
    */
