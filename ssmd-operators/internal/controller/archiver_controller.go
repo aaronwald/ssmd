@@ -638,6 +638,9 @@ func (r *ArchiverReconciler) constructSyncJob(archiver *ssmdv1alpha1.Archiver) *
 		}
 	}
 
+	// Marker file path - archiver writes this after flushing all data
+	markerPath := localPath + ".sync-ready"
+
 	remotePath := fmt.Sprintf("gs://%s/", archiver.Spec.Storage.Remote.Bucket)
 	if archiver.Spec.Storage.Remote.Prefix != "" {
 		remotePath = fmt.Sprintf("gs://%s/%s/", archiver.Spec.Storage.Remote.Bucket, archiver.Spec.Storage.Remote.Prefix)
@@ -656,6 +659,33 @@ func (r *ArchiverReconciler) constructSyncJob(archiver *ssmdv1alpha1.Archiver) *
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
+					// Init container waits for archiver to write .sync-ready marker
+					InitContainers: []corev1.Container{{
+						Name:  "wait-for-flush",
+						Image: "busybox:1.36",
+						Command: []string{
+							"sh", "-c",
+							fmt.Sprintf(`echo "Waiting for archiver to flush (marker: %s)..."
+timeout=120
+elapsed=0
+while [ ! -f "%s" ] && [ $elapsed -lt $timeout ]; do
+  sleep 2
+  elapsed=$((elapsed + 2))
+  echo "Waiting... ($elapsed/$timeout seconds)"
+done
+if [ -f "%s" ]; then
+  echo "Marker found: $(cat %s)"
+  rm -f "%s"
+  exit 0
+else
+  echo "WARNING: Marker not found after ${timeout}s, proceeding anyway"
+  exit 0
+fi`, markerPath, markerPath, markerPath, markerPath, markerPath),
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "data", MountPath: "/data"},
+						},
+					}},
 					Containers: []corev1.Container{{
 						Name:  "sync",
 						Image: "gcr.io/google.com/cloudsdktool/google-cloud-cli:slim",
