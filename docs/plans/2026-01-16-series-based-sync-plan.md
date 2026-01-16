@@ -314,6 +314,10 @@ interface SyncInput { tags?: string[]; }
 - [ ] Delete stale markets/events from before series-based sync
 - [ ] Truncate and resync with new approach
 
+#### 4.4 Expose Series to REPL
+- [ ] Add series tools to LangGraph agent
+- [ ] Enable querying series stats from REPL
+
 ### Verification Checklist
 - [ ] `ssmd series sync` populates series table
 - [ ] `ssmd secmaster sync --by-series` fetches markets by series

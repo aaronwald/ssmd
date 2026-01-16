@@ -32,6 +32,21 @@ struct MarketsResponse {
     markets: Vec<MarketItem>,
 }
 
+/// Series item from secmaster API
+#[derive(Debug, Clone, Deserialize)]
+pub struct SeriesItem {
+    pub ticker: String,
+    pub title: String,
+    pub category: String,
+    pub is_game: bool,
+}
+
+/// Wrapper for series API response
+#[derive(Debug, Deserialize)]
+struct SeriesResponse {
+    series: Vec<SeriesItem>,
+}
+
 /// Client for querying secmaster API
 pub struct SecmasterClient {
     client: Client,
@@ -177,6 +192,133 @@ impl SecmasterClient {
         info!(
             total_markets = tickers.len(),
             "Combined unique markets for subscription"
+        );
+
+        Ok(tickers)
+    }
+
+    /// Fetch series for a category (optionally filtered to games only)
+    pub async fn get_series(
+        &self,
+        category: &str,
+        games_only: bool,
+    ) -> Result<Vec<SeriesItem>, SecmasterError> {
+        let mut url = format!(
+            "{}/v1/series?category={}&limit=10000",
+            self.base_url,
+            urlencoding::encode(category)
+        );
+        if games_only {
+            url.push_str("&games_only=true");
+        }
+
+        debug!(url = %url, category = %category, "Fetching series from secmaster");
+
+        let mut request = self.client.get(&url);
+        if let Some(ref api_key) = self.api_key {
+            request = request.header("X-Api-Key", api_key);
+        }
+
+        let response = request.send().await?;
+
+        if response.status().is_success() {
+            let response_body: SeriesResponse = response.json().await?;
+            info!(
+                category = %category,
+                series_count = response_body.series.len(),
+                "Fetched series for category"
+            );
+            Ok(response_body.series)
+        } else {
+            let status = response.status().as_u16();
+            let message = response.text().await.unwrap_or_default();
+            Err(SecmasterError::ApiError { status, message })
+        }
+    }
+
+    /// Fetch market tickers by series ticker
+    pub async fn get_markets_by_series(
+        &self,
+        series_ticker: &str,
+    ) -> Result<Vec<String>, SecmasterError> {
+        // Use the /v1/markets endpoint with series filter
+        let url = format!(
+            "{}/v1/markets?series={}&status=active&limit=10000",
+            self.base_url,
+            urlencoding::encode(series_ticker)
+        );
+
+        debug!(url = %url, series_ticker = %series_ticker, "Fetching markets by series from secmaster");
+
+        let mut request = self.client.get(&url);
+        if let Some(ref api_key) = self.api_key {
+            request = request.header("X-Api-Key", api_key);
+        }
+
+        let response = request.send().await?;
+
+        if response.status().is_success() {
+            let response_body: MarketsResponse = response.json().await?;
+            let tickers: Vec<String> = response_body.markets.into_iter().map(|m| m.ticker).collect();
+            info!(
+                series_ticker = %series_ticker,
+                market_count = tickers.len(),
+                "Fetched markets for series"
+            );
+            Ok(tickers)
+        } else {
+            let status = response.status().as_u16();
+            let message = response.text().await.unwrap_or_default();
+            Err(SecmasterError::ApiError { status, message })
+        }
+    }
+
+    /// Fetch market tickers using series-based approach
+    /// This is faster than category-based as it only fetches series we care about
+    pub async fn get_markets_by_series_list(
+        &self,
+        category: &str,
+        games_only: bool,
+    ) -> Result<Vec<String>, SecmasterError> {
+        // Step 1: Get series for this category
+        let series_list = self.get_series(category, games_only).await?;
+
+        if series_list.is_empty() {
+            return Err(SecmasterError::NoMarketsFound(vec![category.to_string()]));
+        }
+
+        info!(
+            category = %category,
+            series_count = series_list.len(),
+            "Found series, fetching markets"
+        );
+
+        // Step 2: For each series, get markets
+        let mut all_tickers = HashSet::new();
+
+        for series in &series_list {
+            match self.get_markets_by_series(&series.ticker).await {
+                Ok(tickers) => {
+                    all_tickers.extend(tickers);
+                }
+                Err(e) => {
+                    warn!(series = %series.ticker, error = %e, "Failed to fetch series markets, continuing");
+                }
+            }
+        }
+
+        if all_tickers.is_empty() {
+            return Err(SecmasterError::NoMarketsFound(vec![category.to_string()]));
+        }
+
+        let mut tickers: Vec<String> = all_tickers.into_iter().collect();
+        tickers.sort();
+
+        info!(
+            category = %category,
+            total_markets = tickers.len(),
+            series_count = series_list.len(),
+            "Combined markets from series"
         );
 
         Ok(tickers)
