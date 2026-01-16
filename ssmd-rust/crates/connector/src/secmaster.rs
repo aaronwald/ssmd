@@ -74,15 +74,20 @@ impl SecmasterClient {
     }
 
     /// Fetch market tickers for a single category with retry logic
+    /// If close_within_hours is Some, only returns markets closing within that many hours
     pub async fn get_markets_by_category(
         &self,
         category: &str,
+        close_within_hours: Option<u32>,
     ) -> Result<Vec<String>, SecmasterError> {
-        let url = format!(
+        let mut url = format!(
             "{}/v1/markets?category={}&status=active&limit=10000",
             self.base_url,
             urlencoding::encode(category)
         );
+        if let Some(hours) = close_within_hours {
+            url.push_str(&format!("&close_within_hours={}", hours));
+        }
 
         let mut last_error = None;
 
@@ -137,20 +142,22 @@ impl SecmasterClient {
     }
 
     /// Fetch market tickers for multiple categories, merged and deduped
+    /// If close_within_hours is Some, only returns markets closing within that many hours
     pub async fn get_markets_by_categories(
         &self,
         categories: &[String],
+        close_within_hours: Option<u32>,
     ) -> Result<Vec<String>, SecmasterError> {
         if categories.is_empty() {
             return Ok(Vec::new());
         }
 
-        info!(categories = ?categories, "Loading markets from secmaster");
+        info!(categories = ?categories, close_within_hours = ?close_within_hours, "Loading markets from secmaster");
 
         let mut all_tickers = HashSet::new();
 
         for category in categories {
-            match self.get_markets_by_category(category).await {
+            match self.get_markets_by_category(category, close_within_hours).await {
                 Ok(tickers) => {
                     all_tickers.extend(tickers);
                 }

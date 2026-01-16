@@ -58,6 +58,13 @@ spec:
                 items:
                   type: string
                 type: array
+              closeWithinHours:
+                description: |-
+                  CloseWithinHours only subscribes to markets closing within this many hours
+                  Useful for high-volume categories like Sports where only near-term markets are relevant
+                  Requires daily connector restart to pick up newly eligible markets
+                format: int32
+                type: integer
               date:
                 description: Date is the trading date (optional, used for historical
                   backfill)

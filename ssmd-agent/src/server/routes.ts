@@ -129,12 +129,24 @@ route("GET", "/v1/events/:ticker", async (req, ctx) => {
 // Markets endpoints
 route("GET", "/v1/markets", async (req, ctx) => {
   const url = new URL(req.url);
+
+  // Calculate closingBefore from close_within_hours if provided
+  let closingBefore = url.searchParams.get("closing_before") ?? undefined;
+  const closeWithinHours = url.searchParams.get("close_within_hours");
+  if (closeWithinHours && !closingBefore) {
+    const hours = parseInt(closeWithinHours);
+    if (!isNaN(hours) && hours > 0) {
+      const deadline = new Date(Date.now() + hours * 60 * 60 * 1000);
+      closingBefore = deadline.toISOString();
+    }
+  }
+
   const markets = await listMarkets(ctx.db, {
     category: url.searchParams.get("category") ?? undefined,
     status: url.searchParams.get("status") ?? undefined,
     series: url.searchParams.get("series") ?? undefined,
     eventTicker: url.searchParams.get("event") ?? undefined,
-    closingBefore: url.searchParams.get("closing_before") ?? undefined,
+    closingBefore,
     closingAfter: url.searchParams.get("closing_after") ?? undefined,
     asOf: url.searchParams.get("as_of") ?? undefined,
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,

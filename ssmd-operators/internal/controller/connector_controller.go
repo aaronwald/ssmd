@@ -236,14 +236,20 @@ storage:
 			categoriesYAML += fmt.Sprintf("    - %s\n", cat)
 		}
 
+		// Add close_within_hours if specified (for high-volume categories like Sports)
+		closeWithinHoursYAML := ""
+		if connector.Spec.CloseWithinHours != nil {
+			closeWithinHoursYAML = fmt.Sprintf("  close_within_hours: %d\n", *connector.Spec.CloseWithinHours)
+		}
+
 		envConfig += fmt.Sprintf(`secmaster:
   url: "http://ssmd-data-ts.ssmd.svc.cluster.local:8080"
   categories:
-%ssubscription:
+%s%ssubscription:
   batch_size: 100
   retry_attempts: 3
   retry_delay_ms: 1000
-`, categoriesYAML)
+`, categoriesYAML, closeWithinHoursYAML)
 	}
 
 	return &corev1.ConfigMap{

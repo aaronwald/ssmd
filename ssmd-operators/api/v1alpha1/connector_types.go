@@ -44,6 +44,12 @@ type ConnectorSpec struct {
 	// +optional
 	Categories []string `json:"categories,omitempty"`
 
+	// CloseWithinHours only subscribes to markets closing within this many hours
+	// Useful for high-volume categories like Sports where only near-term markets are relevant
+	// Requires daily connector restart to pick up newly eligible markets
+	// +optional
+	CloseWithinHours *int32 `json:"closeWithinHours,omitempty"`
+
 	// ExcludeCategories excludes specific categories (for sharding)
 	// +optional
 	ExcludeCategories []string `json:"excludeCategories,omitempty"`
