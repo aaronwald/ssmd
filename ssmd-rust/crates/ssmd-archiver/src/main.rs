@@ -135,6 +135,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Write sync-ready marker file to signal that all data has been flushed
+    let marker_path = base_path.join(".sync-ready");
+    match std::fs::write(&marker_path, Utc::now().to_rfc3339()) {
+        Ok(()) => info!(path = ?marker_path, "Wrote sync-ready marker"),
+        Err(e) => error!(error = %e, path = ?marker_path, "Failed to write sync-ready marker"),
+    }
+
     info!("Archiver stopped");
     Ok(())
 }
