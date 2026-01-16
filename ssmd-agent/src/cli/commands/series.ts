@@ -1,5 +1,10 @@
 /**
  * Series sync command - sync Kalshi series metadata to PostgreSQL
+ *
+ * Sync flow:
+ * 1. Call /search/tags_by_categories to get tags for the category
+ * 2. For each tag, call /series?category=X&tags=Y to get filtered series
+ * 3. Upsert to PostgreSQL with category and tags
  */
 import { getDb, closeDb, upsertSeries, getSeriesStats, type NewSeries } from "../../lib/db/mod.ts";
 import { createKalshiClient, type KalshiSeries } from "../../lib/api/kalshi.ts";
@@ -7,15 +12,12 @@ import { createKalshiClient, type KalshiSeries } from "../../lib/api/kalshi.ts";
 // Categories we sync
 const CATEGORIES = ["Economics", "Elections", "Entertainment", "Financials", "Politics", "Sports"];
 
-// Sports tags to sync (when filtering by tag)
-const SPORTS_TAGS = ["Basketball", "Football", "Soccer", "Hockey", "Baseball", "Tennis", "Golf", "Esports"];
-
 /**
  * Series sync options
  */
 export interface SeriesSyncOptions {
-  /** Filter to specific tags (repeatable) */
-  tags?: string[];
+  /** Category to sync (e.g., "Economics", "Sports") */
+  category?: string;
   /** For Sports, only sync game series (GAME/MATCH in ticker) */
   gamesOnly?: boolean;
   /** Dry run - don't write to database */
@@ -60,27 +62,67 @@ export async function runSeriesSync(options: SeriesSyncOptions = {}): Promise<Se
   try {
     console.log("\n[Series] Syncing series metadata from Kalshi API...");
 
-    // If tags are specified, only sync those tags
-    // Otherwise, sync all categories
-    const tagsToSync = options.tags?.length ? options.tags : null;
+    // Fetch tags by category from the API
+    console.log("[Series] Fetching tags by category...");
+    const tagsByCategoriesResponse = await client.fetchTagsByCategories();
+    // Response structure: { tags_by_categories: { "Economics": ["Fed", ...], ... } }
+    const tagsByCategories: Record<string, string[] | null> =
+      (tagsByCategoriesResponse as { tags_by_categories?: Record<string, string[] | null> }).tags_by_categories ||
+      (tagsByCategoriesResponse as Record<string, string[] | null>);
+
+    // Determine which categories to sync
+    const categoriesToSync = options.category
+      ? [options.category]
+      : CATEGORIES;
 
     const allSeries: NewSeries[] = [];
+    const seenTickers = new Set<string>();
 
-    if (tagsToSync) {
-      // Sync specific tags
-      console.log(`[Series] Syncing tags: ${tagsToSync.join(", ")}`);
+    for (const category of categoriesToSync) {
+      const tags = tagsByCategories[category];
 
-      for (const tag of tagsToSync) {
-        // Determine category from tag (Sports tags vs other category tags)
-        const isSportsTag = SPORTS_TAGS.includes(tag);
-        const category = isSportsTag ? "Sports" : tag;
-
-        console.log(`[Series] Fetching series for ${isSportsTag ? "Sports/" : ""}${tag}...`);
-
-        const series = await client.fetchAllSeries(category, isSportsTag ? tag : undefined);
+      if (!tags || tags.length === 0) {
+        console.log(`[Series] No tags found for ${category}, fetching all...`);
+        // Fetch without tag filter
+        const series = await client.fetchAllSeries(category);
         result.fetched += series.length;
 
         for (const s of series) {
+          if (seenTickers.has(s.ticker)) continue;
+          seenTickers.add(s.ticker);
+
+          const isGame = isGameSeries(s.ticker);
+
+          // For Sports with gamesOnly, filter out non-game series
+          if (options.gamesOnly && category === "Sports" && !isGame) {
+            result.filtered++;
+            continue;
+          }
+
+          allSeries.push({
+            ticker: s.ticker,
+            title: s.title,
+            category: s.category || category,
+            tags: s.tags || [],
+            isGame,
+            active: true,
+          });
+        }
+        continue;
+      }
+
+      console.log(`[Series] ${category} has ${tags.length} tags: ${tags.join(", ")}`);
+
+      for (const tag of tags) {
+        console.log(`[Series] Fetching ${category}/${tag}...`);
+        const series = await client.fetchAllSeries(category, tag);
+        result.fetched += series.length;
+
+        for (const s of series) {
+          // Dedupe by ticker (series can appear in multiple tags)
+          if (seenTickers.has(s.ticker)) continue;
+          seenTickers.add(s.ticker);
+
           const isGame = isGameSeries(s.ticker);
 
           // For Sports with gamesOnly, filter out non-game series
@@ -99,57 +141,9 @@ export async function runSeriesSync(options: SeriesSyncOptions = {}): Promise<Se
           });
         }
       }
-    } else {
-      // Sync all categories
-      for (const category of CATEGORIES) {
-        console.log(`[Series] Fetching series for ${category}...`);
-
-        if (category === "Sports" && options.gamesOnly) {
-          // For Sports with gamesOnly, fetch by each sport tag
-          for (const tag of SPORTS_TAGS) {
-            const series = await client.fetchAllSeries(category, tag);
-            result.fetched += series.length;
-
-            for (const s of series) {
-              const isGame = isGameSeries(s.ticker);
-
-              if (!isGame) {
-                result.filtered++;
-                continue;
-              }
-
-              allSeries.push({
-                ticker: s.ticker,
-                title: s.title,
-                category: s.category || category,
-                tags: s.tags || [tag],
-                isGame: true,
-                active: true,
-              });
-            }
-          }
-        } else {
-          // Fetch all series for this category
-          const series = await client.fetchAllSeries(category);
-          result.fetched += series.length;
-
-          for (const s of series) {
-            const isGame = isGameSeries(s.ticker);
-
-            allSeries.push({
-              ticker: s.ticker,
-              title: s.title,
-              category: s.category || category,
-              tags: s.tags || [],
-              isGame,
-              active: true,
-            });
-          }
-        }
-      }
     }
 
-    console.log(`[Series] Fetched ${result.fetched} series, filtered ${result.filtered}`);
+    console.log(`[Series] Fetched ${result.fetched} series, unique: ${allSeries.length}, filtered: ${result.filtered}`);
 
     if (!options.dryRun && allSeries.length > 0) {
       console.log(`[Series] Upserting ${allSeries.length} series to database...`);
@@ -220,17 +214,8 @@ export async function handleSeries(
 ): Promise<void> {
   switch (subcommand) {
     case "sync": {
-      // Parse --tag flags (can be multiple)
-      const tagFlags = flags.tag;
-      const tags: string[] = [];
-      if (typeof tagFlags === "string") {
-        tags.push(tagFlags);
-      } else if (Array.isArray(tagFlags)) {
-        tags.push(...tagFlags.map(String));
-      }
-
       const options: SeriesSyncOptions = {
-        tags: tags.length > 0 ? tags : undefined,
+        category: flags.category as string | undefined,
         gamesOnly: Boolean(flags["games-only"]),
         dryRun: Boolean(flags["dry-run"]),
       };
@@ -263,14 +248,14 @@ export async function handleSeries(
       console.log("  stats        Show series statistics by category");
       console.log();
       console.log("Options for sync:");
-      console.log("  --tag=X      Filter to specific tags (repeatable)");
-      console.log("  --games-only Only sync game series (Sports)");
-      console.log("  --dry-run    Fetch but don't write to database");
+      console.log("  --category=X   Sync specific category (e.g., Economics, Sports)");
+      console.log("  --games-only   Only sync game series (Sports)");
+      console.log("  --dry-run      Fetch but don't write to database");
       console.log();
       console.log("Examples:");
-      console.log("  ssmd series sync                           # Sync all series");
-      console.log("  ssmd series sync --tag=Basketball          # Sync Basketball only");
-      console.log("  ssmd series sync --tag=Basketball --games-only  # Basketball games");
+      console.log("  ssmd series sync                           # Sync all categories");
+      console.log("  ssmd series sync --category=Economics      # Sync Economics only");
+      console.log("  ssmd series sync --category=Sports --games-only  # Sports games");
       Deno.exit(1);
   }
 }
