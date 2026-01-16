@@ -92,6 +92,18 @@ export const settings = pgTable("settings", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
 
+// Series table for Kalshi series metadata
+export const series = pgTable("series", {
+  ticker: varchar("ticker", { length: 64 }).primaryKey(),
+  title: text("title").notNull(),
+  category: varchar("category", { length: 64 }).notNull(),
+  tags: text("tags").array(), // Array of tags from Kalshi API
+  isGame: boolean("is_game").notNull().default(false), // For Sports: GAME/MATCH in ticker
+  active: boolean("active").notNull().default(true), // Soft disable for filtering
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Inferred types for select/insert
 export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
@@ -103,3 +115,5 @@ export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 export type Setting = typeof settings.$inferSelect;
 export type NewSetting = typeof settings.$inferInsert;
+export type Series = typeof series.$inferSelect;
+export type NewSeries = typeof series.$inferInsert;
