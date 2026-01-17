@@ -34,7 +34,7 @@ use ssmd_metadata::{CdcConfig, SecmasterConfig, SubscriptionConfig};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Commands that can be sent to a shard's receiver task
 #[derive(Debug)]
@@ -261,7 +261,7 @@ impl KalshiConnector {
                     // Ping timer fired - send keepalive
                     _ = ping_interval.tick() => {
                         let idle_secs = last_activity.elapsed().as_secs();
-                        debug!(shard_id, idle_secs, "Sending WebSocket ping keepalive");
+                        trace!(shard_id, idle_secs, "Sending WebSocket ping keepalive");
                         // Update idle seconds metric before ping
                         shard_metrics.set_idle_seconds(idle_secs as f64);
                         if let Err(e) = ws.ping().await {
