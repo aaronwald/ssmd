@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -353,12 +354,38 @@ func (r *SignalReconciler) constructDeployment(signal *ssmdv1alpha1.Signal) *app
 
 // deploymentNeedsUpdate checks if the Deployment needs to be updated
 func (r *SignalReconciler) deploymentNeedsUpdate(current, desired *appsv1.Deployment) bool {
-	if len(current.Spec.Template.Spec.Containers) > 0 && len(desired.Spec.Template.Spec.Containers) > 0 {
-		// Check image - config changes are handled by ConfigMap reconciliation
-		if current.Spec.Template.Spec.Containers[0].Image != desired.Spec.Template.Spec.Containers[0].Image {
-			return true
-		}
+	if len(current.Spec.Template.Spec.Containers) == 0 || len(desired.Spec.Template.Spec.Containers) == 0 {
+		return len(current.Spec.Template.Spec.Containers) != len(desired.Spec.Template.Spec.Containers)
 	}
+
+	currentContainer := &current.Spec.Template.Spec.Containers[0]
+	desiredContainer := &desired.Spec.Template.Spec.Containers[0]
+
+	// Check image
+	if currentContainer.Image != desiredContainer.Image {
+		return true
+	}
+
+	// Check resource requirements
+	if !reflect.DeepEqual(currentContainer.Resources, desiredContainer.Resources) {
+		return true
+	}
+
+	// Check volume mounts
+	if !reflect.DeepEqual(currentContainer.VolumeMounts, desiredContainer.VolumeMounts) {
+		return true
+	}
+
+	// Check args
+	if !reflect.DeepEqual(currentContainer.Args, desiredContainer.Args) {
+		return true
+	}
+
+	// Check volumes
+	if !reflect.DeepEqual(current.Spec.Template.Spec.Volumes, desired.Spec.Template.Spec.Volumes) {
+		return true
+	}
+
 	return false
 }
 

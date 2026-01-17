@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -357,18 +358,38 @@ func (r *NotifierReconciler) constructDeployment(notifier *ssmdv1alpha1.Notifier
 
 // deploymentNeedsUpdate checks if the Deployment needs to be updated
 func (r *NotifierReconciler) deploymentNeedsUpdate(current, desired *appsv1.Deployment) bool {
-	if len(current.Spec.Template.Spec.Containers) > 0 && len(desired.Spec.Template.Spec.Containers) > 0 {
-		// Check image
-		if current.Spec.Template.Spec.Containers[0].Image != desired.Spec.Template.Spec.Containers[0].Image {
-			return true
-		}
-		// Check subjects (if source changed)
-		currentSubjects := getEnvValue(current.Spec.Template.Spec.Containers[0].Env, "SUBJECTS")
-		desiredSubjects := getEnvValue(desired.Spec.Template.Spec.Containers[0].Env, "SUBJECTS")
-		if currentSubjects != desiredSubjects {
-			return true
-		}
+	if len(current.Spec.Template.Spec.Containers) == 0 || len(desired.Spec.Template.Spec.Containers) == 0 {
+		return len(current.Spec.Template.Spec.Containers) != len(desired.Spec.Template.Spec.Containers)
 	}
+
+	currentContainer := &current.Spec.Template.Spec.Containers[0]
+	desiredContainer := &desired.Spec.Template.Spec.Containers[0]
+
+	// Check image
+	if currentContainer.Image != desiredContainer.Image {
+		return true
+	}
+
+	// Check environment variables
+	if !reflect.DeepEqual(currentContainer.Env, desiredContainer.Env) {
+		return true
+	}
+
+	// Check resource requirements
+	if !reflect.DeepEqual(currentContainer.Resources, desiredContainer.Resources) {
+		return true
+	}
+
+	// Check volume mounts
+	if !reflect.DeepEqual(currentContainer.VolumeMounts, desiredContainer.VolumeMounts) {
+		return true
+	}
+
+	// Check volumes
+	if !reflect.DeepEqual(current.Spec.Template.Spec.Volumes, desired.Spec.Template.Spec.Volumes) {
+		return true
+	}
+
 	return false
 }
 
