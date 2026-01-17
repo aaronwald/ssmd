@@ -32,9 +32,8 @@ export const signal = {
       dollarVolume: state.volumeProfile.dollarVolume,
       contractVolume: state.volumeProfile.totalVolume,
       tradeCount: state.volumeProfile.tradeCount,
-      buyRatio: state.volumeProfile.ratio,
       windowMs: state.volumeProfile.windowMs,
-      lastPrice: state.volumeProfile.lastPrice,
+      lastPrice: state.volumeProfile.lastPrice / 100, // cents to dollars
       // lastUpdate is in seconds, convert to ms for Date
       lastUpdate: new Date(state.volumeProfile.lastUpdate * 1000).toISOString(),
     };
