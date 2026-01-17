@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -539,15 +540,48 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 
 // deploymentNeedsUpdate checks if the Deployment needs to be updated
 func (r *ArchiverReconciler) deploymentNeedsUpdate(current, desired *appsv1.Deployment) bool {
-	// Simple check: compare replicas and image
+	// Check replicas
 	if *current.Spec.Replicas != *desired.Spec.Replicas {
 		return true
 	}
-	if len(current.Spec.Template.Spec.Containers) > 0 && len(desired.Spec.Template.Spec.Containers) > 0 {
-		if current.Spec.Template.Spec.Containers[0].Image != desired.Spec.Template.Spec.Containers[0].Image {
-			return true
-		}
+
+	if len(current.Spec.Template.Spec.Containers) == 0 || len(desired.Spec.Template.Spec.Containers) == 0 {
+		return len(current.Spec.Template.Spec.Containers) != len(desired.Spec.Template.Spec.Containers)
 	}
+
+	currentContainer := &current.Spec.Template.Spec.Containers[0]
+	desiredContainer := &desired.Spec.Template.Spec.Containers[0]
+
+	// Check image
+	if currentContainer.Image != desiredContainer.Image {
+		return true
+	}
+
+	// Check environment variables
+	if !reflect.DeepEqual(currentContainer.Env, desiredContainer.Env) {
+		return true
+	}
+
+	// Check resource requirements
+	if !reflect.DeepEqual(currentContainer.Resources, desiredContainer.Resources) {
+		return true
+	}
+
+	// Check volume mounts
+	if !reflect.DeepEqual(currentContainer.VolumeMounts, desiredContainer.VolumeMounts) {
+		return true
+	}
+
+	// Check args
+	if !reflect.DeepEqual(currentContainer.Args, desiredContainer.Args) {
+		return true
+	}
+
+	// Check volumes
+	if !reflect.DeepEqual(current.Spec.Template.Spec.Volumes, desired.Spec.Template.Spec.Volumes) {
+		return true
+	}
+
 	return false
 }
 
