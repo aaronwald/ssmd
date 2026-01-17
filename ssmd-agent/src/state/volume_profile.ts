@@ -10,6 +10,7 @@ export interface VolumeProfileState {
   tradeCount: number; // number of updates in window
   lastUpdate: number;
   windowMs: number; // window size for reference
+  lastPrice: number; // last traded price in cents (1-99)
 }
 
 interface VolumeSnapshot {
@@ -29,6 +30,7 @@ export class VolumeProfileBuilder implements StateBuilder<VolumeProfileState> {
   private state: VolumeProfileState = this.initialState();
   private prevVolume = 0;
   private prevDollars = 0;
+  private lastPrice = 0; // last traded price in cents
   private initialized = false; // First snapshot only establishes baseline
 
   constructor(windowMs: number = 300000) { // default 5 minutes
@@ -42,6 +44,12 @@ export class VolumeProfileBuilder implements StateBuilder<VolumeProfileState> {
     const volume = (record.volume as number) ?? 0;
     const dollars = (record.dollar_volume as number) ?? 0;
     const ts = record.ts;
+    const price = (record.price as number) ?? 0;
+
+    // Track last price if present
+    if (price > 0) {
+      this.lastPrice = price;
+    }
 
     // First snapshot establishes baseline - don't count as new volume
     if (!this.initialized) {
@@ -106,6 +114,7 @@ export class VolumeProfileBuilder implements StateBuilder<VolumeProfileState> {
       tradeCount: this.snapshots.length,
       lastUpdate: ts,
       windowMs: this.windowMs,
+      lastPrice: this.lastPrice,
     };
   }
 
@@ -117,6 +126,7 @@ export class VolumeProfileBuilder implements StateBuilder<VolumeProfileState> {
     this.snapshots = [];
     this.prevVolume = 0;
     this.prevDollars = 0;
+    this.lastPrice = 0;
     this.initialized = false;
     this.state = this.initialState();
   }
@@ -131,6 +141,7 @@ export class VolumeProfileBuilder implements StateBuilder<VolumeProfileState> {
       tradeCount: 0,
       lastUpdate: 0,
       windowMs: this.windowMs,
+      lastPrice: 0,
     };
   }
 }
