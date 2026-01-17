@@ -28,10 +28,10 @@ YOUR LAPTOP                              HOMELAB (Kubernetes)
    ```
 
 2. **ssmd-data API** running on homelab (see [DEPLOYMENT.md](DEPLOYMENT.md))
+   - The agent uses ssmd-data as an LLM proxy (routes to OpenRouter)
+   - No direct Anthropic API key needed - authentication handled by ssmd-data
 
-3. **Anthropic API key** for Claude
-
-4. **Archived data** - the archiver must have produced JSONL.gz files
+3. **Archived data** - the archiver must have produced JSONL.gz files (for data exploration tools)
 
 ## Setup
 
@@ -56,9 +56,9 @@ kubectl port-forward -n ssmd svc/ssmd-data 8080:8080
 ### 3. Set environment variables
 
 ```bash
-export SSMD_DATA_URL=http://localhost:8080      # or your ingress URL
+export SSMD_API_URL=https://ssmd-data.varshtat.com  # or your ingress URL
 export SSMD_DATA_API_KEY=<api-key-from-step-1>
-export ANTHROPIC_API_KEY=sk-ant-...
+export SSMD_MODEL="anthropic/claude-sonnet-4.5"     # optional, this is the default
 ```
 
 ## Running the Agent
@@ -66,6 +66,15 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ```bash
 cd ssmd-agent
 deno task agent
+```
+
+### Non-Interactive Mode
+
+For testing or scripting, use the `--prompt` flag:
+
+```bash
+deno task agent --prompt "What tools are available?"
+deno task agent --prompt "List markets in the Economics category"
 ```
 
 You'll see:
@@ -129,13 +138,42 @@ Deployed to signals/spread-alert-5pct.ts (commit a1b2c3d)
 
 ## Available Tools
 
+### Calendar Tools
+| Tool | Description |
+|------|-------------|
+| `get_today` | Get today's date in YYYY-MM-DD format (UTC) |
+
+### Data Discovery Tools
 | Tool | Description |
 |------|-------------|
 | `list_datasets` | List available feeds and dates |
+| `list_tickers` | List tickers in a dataset |
 | `sample_data` | Fetch raw market records |
 | `get_schema` | Get field definitions for message types |
 | `list_builders` | List available state builders |
-| `orderbook_builder` | Process records into state snapshots |
+
+### Secmaster Tools
+| Tool | Description |
+|------|-------------|
+| `list_markets` | List markets with filters (category, status, series, point-in-time) |
+| `get_market` | Get details for a specific market |
+| `list_events` | List events with market counts |
+| `get_event` | Get event details including markets |
+| `list_series` | List series (groups of related markets) |
+| `get_series` | Get series details |
+| `get_fees` | Get fee schedule for a tier |
+| `get_fee_schedule` | Get fee schedule for a series ticker |
+
+### State Builder Tools
+| Tool | Description |
+|------|-------------|
+| `orderbook_builder` | Process records into orderbook state snapshots |
+| `price_history_builder` | Process trades into price history with VWAP, returns, volatility |
+| `volume_profile_builder` | Track contract and USD volume over sliding time window |
+
+### Backtest & Deploy Tools
+| Tool | Description |
+|------|-------------|
 | `run_backtest` | Evaluate signal code against states |
 | `deploy_signal` | Write signal file and git commit |
 
@@ -218,6 +256,38 @@ curl -H "X-API-Key: $SSMD_DATA_API_KEY" \
 # → [{...}, {...}, ...]
 ```
 
+## Testing the Agent
+
+### Quick Verification
+
+Test that the agent starts and can use tools:
+
+```bash
+cd ssmd-agent
+export SSMD_DATA_API_KEY=<your-api-key>
+export SSMD_API_URL=https://ssmd-data.varshtat.com
+export SSMD_MODEL="anthropic/claude-sonnet-4.5"
+
+# Test tool listing
+deno task agent --prompt "What tools are available?"
+
+# Test secmaster access
+deno task agent --prompt "How many active markets are in the Economics category?"
+
+# Test date tool
+deno task agent --prompt "What is today's date?"
+```
+
+### Expected Output
+
+A successful test shows:
+- Agent version banner
+- Audit log file path
+- Tool invocation results (if tools are called)
+- Token usage: `[tokens] in: X, out: Y`
+
+---
+
 ## Troubleshooting
 
 ### "SSMD_DATA_API_KEY required"
@@ -225,13 +295,6 @@ curl -H "X-API-Key: $SSMD_DATA_API_KEY" \
 Set the environment variable:
 ```bash
 export SSMD_DATA_API_KEY=your-key
-```
-
-### "ANTHROPIC_API_KEY required"
-
-Set the environment variable:
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 ### "API error: 401"
@@ -258,10 +321,9 @@ ssmd-data not running or not accessible. Check:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `SSMD_DATA_URL` | No | `http://localhost:8080` | ssmd-data API URL |
-| `SSMD_DATA_API_KEY` | Yes | - | API key for ssmd-data |
-| `ANTHROPIC_API_KEY` | Yes | - | Anthropic API key |
-| `SSMD_MODEL` | No | `claude-sonnet-4-20250514` | Claude model to use |
+| `SSMD_API_URL` | No | `http://localhost:8080` | ssmd-data API URL |
+| `SSMD_DATA_API_KEY` | Yes | - | API key for ssmd-data (also used for LLM proxy) |
+| `SSMD_MODEL` | No | `anthropic/claude-sonnet-4` | Model in OpenRouter format |
 | `SSMD_SKILLS_PATH` | No | `./skills` | Path to skills directory |
 | `SSMD_PROMPTS_PATH` | No | `./prompts` | Path to prompt templates |
 | `SSMD_SIGNALS_PATH` | No | `./signals` | Path to deploy signals |
@@ -270,7 +332,5 @@ ssmd-data not running or not accessible. Check:
 
 | Feature | Status |
 |---------|--------|
-| Signal Runtime | Signals are just files - no production runner yet |
-| Memory persistence | Agent has no memory between sessions |
-| priceHistory builder | Listed but not implemented |
-| volumeProfile builder | Listed but not implemented |
+| Memory persistence | Agent has no memory between sessions (SQLite checkpointer planned) |
+| Streaming responses | LLM responses are not streamed (proxy limitation) |
