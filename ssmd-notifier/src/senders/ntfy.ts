@@ -1,6 +1,7 @@
 // ssmd-notifier/src/senders/ntfy.ts
 import type { SignalFire, Destination } from "../types.ts";
 import type { Sender } from "./mod.ts";
+import { formatPayload } from "../format.ts";
 
 const DEFAULT_SERVER = "https://ntfy.sh";
 
@@ -11,7 +12,7 @@ export class NtfySender implements Sender {
   }
 
   formatBody(fire: SignalFire): string {
-    return JSON.stringify(fire.payload);
+    return formatPayload(fire.payload);
   }
 
   buildUrl(dest: Destination): string {

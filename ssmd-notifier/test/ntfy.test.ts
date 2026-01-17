@@ -17,11 +17,11 @@ Deno.test("NtfySender - formats title correctly", () => {
   assertStringIncludes(title, "GOOGL-250117-W185");
 });
 
-Deno.test("NtfySender - formats body as JSON", () => {
+Deno.test("NtfySender - formats body with human-readable text", () => {
   const sender = new NtfySender();
   const body = sender.formatBody(fire);
-  assertStringIncludes(body, "dollarVolume");
-  assertStringIncludes(body, "15234");
+  assertStringIncludes(body, "Dollar Volume:");
+  assertStringIncludes(body, "$15,234");
 });
 
 Deno.test("NtfySender - builds correct URL", () => {
