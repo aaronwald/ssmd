@@ -64,6 +64,28 @@ async function scaleDown(flags: ScaleFlags): Promise<void> {
     // Continue anyway - manual scale might still work
   }
 
+  // 0.5. Scale down ssmd-operator to prevent CR reconciliation restoring deployments
+  console.log("Scaling down ssmd-operator...");
+  try {
+    await kubectl(["scale", "deployment", "ssmd-operator", "-n", ns, "--replicas=0"]);
+    // Wait for operator pod to terminate
+    const start = Date.now();
+    while (Date.now() - start < 30000) {
+      const pods = await kubectl([
+        "get", "pods", "-n", ns,
+        "-l", "app.kubernetes.io/name=ssmd-operator",
+        "-o", "jsonpath={.items[*].metadata.name}"
+      ]);
+      if (!pods.trim()) {
+        console.log("  ssmd-operator scaled to 0");
+        break;
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  } catch (e) {
+    console.error(`  Failed to scale operator: ${e}`);
+  }
+
   // 1. Scale down components in order (upstream first)
   for (const component of COMPONENTS) {
     console.log(`Scaling down ${component.name}...`);
