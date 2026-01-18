@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
                         tracing::error!(error = %e, table = %event.table, "Failed to publish event");
                     } else {
                         events_published += 1;
-                        if events_published % 100 == 0 {
+                        if events_published.is_multiple_of(100) {
                             tracing::info!(total = events_published, "Events published");
                         }
                     }

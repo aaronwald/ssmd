@@ -149,7 +149,7 @@ async fn run_kalshi_connector(
             }
 
             // Check if CDC is enabled
-            let cdc_enabled = env_config.cdc.as_ref().map_or(false, |c| c.enabled);
+            let cdc_enabled = env_config.cdc.as_ref().is_some_and(|c| c.enabled);
             let nats_url = env_config.transport.url.clone();
 
             info!(

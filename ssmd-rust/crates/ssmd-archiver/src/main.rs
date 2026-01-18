@@ -67,7 +67,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let base_path = Arc::clone(&base_path);
         let feed = Arc::clone(&feed);
         let rotation_interval = Arc::clone(&rotation_interval);
-        let rotation_duration = rotation_duration;
 
         info!(
             stream = %stream_config.stream,
