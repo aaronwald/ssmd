@@ -278,7 +278,7 @@ impl CdcSubscriptionConsumer {
             }
 
             // Log progress periodically
-            if processed % 100 == 0 {
+            if processed.is_multiple_of(100) {
                 info!(
                     processed,
                     skipped_lsn,

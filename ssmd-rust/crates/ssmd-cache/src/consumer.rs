@@ -103,7 +103,7 @@ impl CdcConsumer {
                     }
 
                     processed += 1;
-                    if processed % 100 == 0 {
+                    if processed.is_multiple_of(100) {
                         tracing::info!(processed, skipped, "CDC events processed");
                     }
                 }

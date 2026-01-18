@@ -89,7 +89,7 @@ impl ReplicationSlot {
 
             if let Some(caps) = table_re.captures(&data) {
                 let full_table = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                let table = full_table.split('.').last().unwrap_or(full_table).to_string();
+                let table = full_table.split('.').next_back().unwrap_or(full_table).to_string();
                 let op_str = caps.get(2).map(|m| m.as_str()).unwrap_or("");
                 let cols_str = caps.get(3).map(|m| m.as_str()).unwrap_or("");
 
