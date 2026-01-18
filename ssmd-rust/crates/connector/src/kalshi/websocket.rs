@@ -303,7 +303,7 @@ impl KalshiWebSocket {
                             }
                             Ok(WsMessage::Ticker { .. } | WsMessage::Trade { .. }) => {
                                 // Expected during subscription - data is flowing
-                                if message_count == 1 || message_count.is_multiple_of(100) {
+                                if message_count == 1 || message_count % 100 == 0 {
                                     debug!(message_count, expected_id, "Receiving data while waiting for subscription confirmation");
                                 }
                             }
