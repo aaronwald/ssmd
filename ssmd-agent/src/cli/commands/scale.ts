@@ -54,6 +54,16 @@ async function scaleDown(flags: ScaleFlags): Promise<void> {
 
   console.log(`Scaling down SSMD components (env: ${env}, namespace: ${ns})...\n`);
 
+  // 0. Suspend Flux reconciliation to prevent restoring deployments
+  console.log("Suspending Flux reconciliation for ssmd...");
+  try {
+    await flux(["suspend", "kustomization", "ssmd", "-n", "flux-system"]);
+    console.log("  Flux reconciliation suspended");
+  } catch (e) {
+    console.error(`  Failed to suspend Flux: ${e}`);
+    // Continue anyway - manual scale might still work
+  }
+
   // 1. Scale down components in order (upstream first)
   for (const component of COMPONENTS) {
     console.log(`Scaling down ${component.name}...`);
@@ -110,6 +120,16 @@ async function scaleUp(flags: ScaleFlags): Promise<void> {
   const shouldWait = flags.wait !== false;
 
   console.log(`Scaling up SSMD components via Flux (env: ${env})...\n`);
+
+  // 0. Resume Flux reconciliation (in case it was suspended)
+  console.log("Resuming Flux reconciliation for ssmd...");
+  try {
+    await flux(["resume", "kustomization", "ssmd", "-n", "flux-system"]);
+    console.log("  Flux reconciliation resumed");
+  } catch (e) {
+    console.error(`  Failed to resume Flux: ${e}`);
+    // Continue anyway - it might not have been suspended
+  }
 
   // 1. Reconcile Flux source
   console.log("Reconciling Flux git source...");
