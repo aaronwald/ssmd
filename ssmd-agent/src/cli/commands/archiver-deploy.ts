@@ -45,6 +45,9 @@ export async function handleArchiverDeploy(
     case "delete":
       await deleteArchiver(flags, ns);
       break;
+    case "sync":
+      await syncArchiver(flags, ns);
+      break;
     default:
       console.error(`Unknown archiver-deploy command: ${subcommand}`);
       printArchiverDeployHelp();
@@ -418,6 +421,171 @@ async function deleteArchiver(flags: ArchiverDeployFlags, ns: string): Promise<v
   }
 }
 
+async function syncArchiver(flags: ArchiverDeployFlags, ns: string): Promise<void> {
+  const name = flags._[2] as string;
+
+  if (!name) {
+    console.error("Usage: ssmd archiver sync <name> [--wait]");
+    Deno.exit(1);
+  }
+
+  console.log(`Creating GCS sync job for archiver ${name}...`);
+
+  try {
+    // Get the archiver CR to read sync config
+    const archiverJson = await kubectl([
+      "get", "archiver", name, "-n", ns, "-o", "json"
+    ]);
+    const archiver = JSON.parse(archiverJson);
+
+    // Validate sync is configured
+    const remote = archiver.spec.storage?.remote;
+    const local = archiver.spec.storage?.local;
+
+    if (!remote?.bucket) {
+      console.error("Error: Archiver has no remote storage configured");
+      Deno.exit(1);
+    }
+
+    if (!local?.pvcName) {
+      console.error("Error: Archiver has no local PVC configured");
+      Deno.exit(1);
+    }
+
+    // Build paths
+    const localPath = local.path || "/data/ssmd";
+    const feed = archiver.spec.feed || "kalshi";
+    const remotePath = remote.prefix
+      ? `gs://${remote.bucket}/${remote.prefix}/`
+      : `gs://${remote.bucket}/`;
+    const secretRef = remote.secretRef || "gcs-credentials";
+
+    // Delete existing sync job if any
+    const jobName = `${name}-sync`;
+    await kubectl(["delete", "job", jobName, "-n", ns, "--ignore-not-found"]).catch(() => {});
+
+    // Create sync job YAML
+    const jobYaml = `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${jobName}
+  namespace: ${ns}
+  labels:
+    app.kubernetes.io/name: ssmd-archiver-sync
+    app.kubernetes.io/instance: ${name}
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ssmd-archiver-sync
+        app.kubernetes.io/instance: ${name}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: sync
+          image: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              gcloud auth activate-service-account --key-file=/etc/gcs/key.json
+              LOCAL="${localPath}/${feed}"
+              REMOTE="${remotePath}"
+              if [ -d "$LOCAL" ] && [ "$(ls -A $LOCAL 2>/dev/null)" ]; then
+                echo "Syncing $LOCAL to $REMOTE"
+                gsutil -m rsync -r "$LOCAL" "$REMOTE"
+                echo "Sync complete"
+              else
+                echo "No data at $LOCAL, nothing to sync"
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: gcs-credentials
+              mountPath: /etc/gcs
+              readOnly: true
+          env:
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /etc/gcs/key.json
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ${local.pvcName}
+        - name: gcs-credentials
+          secret:
+            secretName: ${secretRef}
+`;
+
+    // Apply the job
+    const applyCmd = new Deno.Command("kubectl", {
+      args: ["apply", "-f", "-", "-n", ns],
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+    });
+
+    const child = applyCmd.spawn();
+    const writer = child.stdin.getWriter();
+    await writer.write(new TextEncoder().encode(jobYaml));
+    await writer.close();
+
+    const { code, stderr } = await child.output();
+    if (code !== 0) {
+      throw new Error(new TextDecoder().decode(stderr));
+    }
+
+    console.log(`Sync job ${jobName} created`);
+    console.log(`  Local: ${localPath}/${feed}`);
+    console.log(`  Remote: ${remotePath}`);
+
+    // Wait for job if requested
+    if (flags.wait) {
+      console.log("\nWaiting for sync job to complete...");
+      await waitForJob(jobName, ns, 600); // 10 minute timeout
+    } else {
+      console.log(`\nMonitor with: kubectl logs -n ${ns} job/${jobName} -f`);
+    }
+  } catch (e) {
+    console.error(`Failed to create sync job: ${e instanceof Error ? e.message : e}`);
+    Deno.exit(1);
+  }
+}
+
+async function waitForJob(name: string, ns: string, timeoutSec: number): Promise<void> {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutSec * 1000) {
+    try {
+      const status = await kubectl([
+        "get", "job", name, "-n", ns,
+        "-o", "jsonpath={.status.succeeded},{.status.failed}"
+      ]);
+
+      const [succeeded, failed] = status.split(",").map(s => parseInt(s) || 0);
+
+      if (succeeded > 0) {
+        console.log("Sync job completed successfully");
+        return;
+      }
+
+      if (failed > 0) {
+        console.error("Sync job failed");
+        console.log(`Check logs: kubectl logs -n ${ns} job/${name}`);
+        Deno.exit(1);
+      }
+    } catch {
+      // Job may not exist yet
+    }
+
+    await new Promise(r => setTimeout(r, 5000));
+  }
+
+  console.error(`Timeout waiting for sync job (${timeoutSec}s)`);
+  Deno.exit(1);
+}
+
 // Helper functions
 
 async function kubectl(args: string[]): Promise<string> {
@@ -487,6 +655,7 @@ export function printArchiverDeployHelp(): void {
   console.log("  status <name>          Show detailed Archiver status");
   console.log("  logs <name>            Show logs from Archiver pod");
   console.log("  delete <name>          Delete an Archiver CR");
+  console.log("  sync <name>            Trigger GCS sync job for archiver data");
   console.log();
   console.log("Options for 'new':");
   console.log("  --stream <stream>      NATS stream name (required, e.g., PROD_KALSHI)");
@@ -504,6 +673,9 @@ export function printArchiverDeployHelp(): void {
   console.log("  --follow, -f           Follow log output (logs command)");
   console.log("  --tail N               Number of lines to show (logs command)");
   console.log();
+  console.log("Options for 'sync':");
+  console.log("  --wait                 Wait for sync job to complete");
+  console.log();
   console.log("Examples:");
   console.log("  ssmd archiver new kalshi-2026-01-05 \\");
   console.log("    --stream PROD_KALSHI --filter prod.kalshi.main.json.> \\");
@@ -512,5 +684,7 @@ export function printArchiverDeployHelp(): void {
   console.log("  ssmd archiver list");
   console.log("  ssmd archiver status kalshi-2026-01-05");
   console.log("  ssmd archiver logs kalshi-2026-01-05 --follow --tail 100");
+  console.log("  ssmd archiver sync kalshi-archiver");
+  console.log("  ssmd archiver sync kalshi-archiver --wait");
   console.log("  ssmd archiver delete kalshi-2026-01-05");
 }

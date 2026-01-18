@@ -1,45 +1,40 @@
-// scale.ts - SSMD component scaling for maintenance windows
-// Manages scaling all SSMD components up/down via kubectl and Flux
+// scale.ts - Scale SSMD components up/down for maintenance windows
 
 interface ScaleFlags {
   _: (string | number)[];
   env?: string;
   wait?: boolean;
-  namespace?: string;
+  "dry-run"?: boolean;
 }
 
-// Components in scale-down order (upstream first)
+// Components in scale-down order (operator first to stop reconciliation, then upstream)
 const COMPONENTS = [
-  { name: "connectors", label: "app.kubernetes.io/name=ssmd-connector", type: "label" },
-  { name: "signal-runner", deployment: "ssmd-signal-runner", type: "deployment" },
-  { name: "notifier", deployment: "ssmd-notifier", type: "deployment" },
-  { name: "archiver", label: "app.kubernetes.io/name=ssmd-archiver", type: "label" },
-  { name: "data-api", deployment: "ssmd-data-ts", type: "deployment" },
+  { label: "operator", deployment: "ssmd-operator" },
+  { label: "connectors", selector: "app.kubernetes.io/name=ssmd-connector" },
+  { label: "signals", selector: "app.kubernetes.io/name=ssmd-signal" },
+  { label: "notifier", deployment: "ssmd-notifier" },
+  { label: "archiver", selector: "app.kubernetes.io/name=ssmd-archiver" },
+  { label: "data-api", deployment: "ssmd-data-ts" },
 ];
 
-// NATS streams to purge (for prod env)
-const NATS_STREAMS = [
-  "PROD_KALSHI_ECONOMICS",
-  "PROD_KALSHI_POLITICS",
-  "PROD_KALSHI_SPORTS",
-  "PROD_KALSHI_ENTERTAINMENT",
-  "SIGNALS",
-  "SECMASTER_CDC",
-];
 
 export async function handleScale(
   subcommand: string,
   flags: ScaleFlags
 ): Promise<void> {
+  const namespace = "ssmd";
+  const dryRun = flags["dry-run"] ?? false;
+
   switch (subcommand) {
     case "down":
-      await scaleDown(flags);
+      await scaleDown(namespace, dryRun);
       break;
     case "up":
-      await scaleUp(flags);
+      await scaleUp(dryRun);
       break;
     case "status":
-      await scaleStatus(flags);
+    case undefined:
+      await scaleStatus(namespace);
       break;
     default:
       console.error(`Unknown scale command: ${subcommand}`);
@@ -48,194 +43,177 @@ export async function handleScale(
   }
 }
 
-async function scaleDown(flags: ScaleFlags): Promise<void> {
-  const ns = flags.namespace || "ssmd";
-  const env = flags.env || "prod";
+async function scaleDown(namespace: string, dryRun: boolean): Promise<void> {
+  console.log("Scaling down SSMD components...\n");
 
-  console.log(`Scaling down SSMD components (env: ${env}, namespace: ${ns})...\n`);
-
-  // 0. Suspend Flux reconciliation to prevent restoring deployments
-  console.log("Suspending Flux reconciliation for ssmd...");
-  try {
-    await flux(["suspend", "kustomization", "ssmd", "-n", "flux-system"]);
-    console.log("  Flux reconciliation suspended");
-  } catch (e) {
-    console.error(`  Failed to suspend Flux: ${e}`);
-    // Continue anyway - manual scale might still work
-  }
-
-  // 0.5. Scale down ssmd-operator to prevent CR reconciliation restoring deployments
-  console.log("Scaling down ssmd-operator...");
-  try {
-    await kubectl(["scale", "deployment", "ssmd-operator", "-n", ns, "--replicas=0"]);
-    // Wait for operator pod to terminate
-    const start = Date.now();
-    while (Date.now() - start < 30000) {
-      const pods = await kubectl([
-        "get", "pods", "-n", ns,
-        "-l", "app.kubernetes.io/name=ssmd-operator",
-        "-o", "jsonpath={.items[*].metadata.name}"
-      ]);
-      if (!pods.trim()) {
-        console.log("  ssmd-operator scaled to 0");
-        break;
-      }
-      await new Promise(r => setTimeout(r, 2000));
-    }
-  } catch (e) {
-    console.error(`  Failed to scale operator: ${e}`);
-  }
-
-  // 1. Scale down components in order (upstream first)
-  for (const component of COMPONENTS) {
-    console.log(`Scaling down ${component.name}...`);
+  // Suspend Flux kustomization first to prevent reconciliation
+  console.log("Suspending Flux kustomization...");
+  if (!dryRun) {
     try {
-      if (component.type === "label") {
-        await kubectl([
-          "scale", "deployment", "-n", ns,
-          "-l", component.label!,
-          "--replicas=0"
-        ]);
-      } else {
-        await kubectl([
-          "scale", "deployment", component.deployment!,
-          "-n", ns,
-          "--replicas=0"
-        ]);
-      }
-
-      // Wait for pods to terminate
-      await waitForPodsTerminated(ns, component);
-      console.log(`  ${component.name} scaled to 0`);
+      await flux(["suspend", "kustomization", "ssmd"]);
+      console.log("  Flux ssmd kustomization suspended\n");
     } catch (e) {
-      console.error(`  Failed to scale ${component.name}: ${e}`);
-      // Continue with other components
+      console.error(`  Failed to suspend Flux: ${e}`);
+      console.error("  Aborting scale down to prevent drift/restore loop");
+      Deno.exit(1);
     }
-  }
-
-  // 2. Wait for archiver GCS sync job to complete
-  console.log("\nWaiting for archiver GCS sync job...");
-  const syncCompleted = await waitForSyncJob(ns, "kalshi-archiver-final-sync", 300000); // 5 min timeout
-  if (syncCompleted) {
-    console.log("  GCS sync job completed");
   } else {
-    console.log("  GCS sync job not found or timed out (may not have been triggered)");
+    console.log("[dry-run] Would suspend Flux kustomization ssmd\n");
   }
 
-  // 3. Purge NATS streams
-  console.log("\nPurging NATS streams...");
-  for (const stream of NATS_STREAMS) {
-    try {
-      await purgeNatsStream(stream);
-      console.log(`  Purged ${stream}`);
-    } catch (e) {
-      console.error(`  Failed to purge ${stream}: ${e}`);
+  // Scale down components in order (operator first)
+  for (const component of COMPONENTS) {
+    if (dryRun) {
+      console.log(`[dry-run] Would scale ${component.label} to 0`);
+      continue;
     }
+
+    console.log(`Scaling ${component.label} to 0...`);
+    try {
+      if (component.selector) {
+        await kubectl([
+          "scale", "deployment",
+          "-n", namespace,
+          "-l", component.selector,
+          "--replicas=0",
+        ]);
+      } else if (component.deployment) {
+        await kubectl([
+          "scale", "deployment", component.deployment,
+          "-n", namespace,
+          "--replicas=0",
+        ]);
+      }
+      console.log(`  ${component.label} scaled to 0`);
+
+      // Wait for operator to fully stop before scaling other components
+      if (component.label === "operator") {
+        console.log("  Waiting for operator to stop...");
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    } catch (e) {
+      console.error(`  Failed to scale ${component.label}: ${e}`);
+    }
+  }
+
+  // Wait for pods to terminate
+  console.log("\nWaiting for pods to terminate...");
+  if (!dryRun) {
+    await waitForPodsTerminated(namespace, 120);
   }
 
   console.log("\nScale down complete.");
+  console.log("Run 'ssmd archiver sync kalshi-archiver' to sync data to GCS.");
 }
 
-async function scaleUp(flags: ScaleFlags): Promise<void> {
-  const ns = flags.namespace || "ssmd";
-  const env = flags.env || "prod";
-  const shouldWait = flags.wait !== false;
+async function scaleUp(dryRun: boolean): Promise<void> {
+  console.log("Scaling up SSMD components via Flux...\n");
 
-  console.log(`Scaling up SSMD components via Flux (env: ${env})...\n`);
+  if (dryRun) {
+    console.log("[dry-run] Would resume Flux kustomization ssmd");
+    return;
+  }
 
-  // 0. Resume Flux reconciliation (in case it was suspended)
-  console.log("Resuming Flux reconciliation for ssmd...");
+  // Resume Flux kustomization (this triggers reconciliation automatically)
+  console.log("Resuming Flux kustomization...");
   try {
-    await flux(["resume", "kustomization", "ssmd", "-n", "flux-system"]);
-    console.log("  Flux reconciliation resumed");
+    await flux(["resume", "kustomization", "ssmd"]);
+    console.log("  Flux ssmd kustomization resumed");
   } catch (e) {
     console.error(`  Failed to resume Flux: ${e}`);
-    // Continue anyway - it might not have been suspended
-  }
-
-  // 1. Reconcile Flux source
-  console.log("Reconciling Flux git source...");
-  try {
-    await flux(["reconcile", "source", "git", "flux-system"]);
-    console.log("  Git source reconciled");
-  } catch (e) {
-    console.error(`  Failed to reconcile git source: ${e}`);
-  }
-
-  // 2. Reconcile ssmd kustomization
-  console.log("Reconciling ssmd kustomization...");
-  try {
-    await flux(["reconcile", "kustomization", "ssmd", "--with-source"]);
-    console.log("  Kustomization reconciled");
-  } catch (e) {
-    console.error(`  Failed to reconcile kustomization: ${e}`);
     Deno.exit(1);
   }
 
-  // 3. Wait for deployments to be ready
-  if (shouldWait) {
-    console.log("\nWaiting for deployments to be ready...");
-    // Reverse order for scale up (downstream first)
-    const reversed = [...COMPONENTS].reverse();
-    for (const component of reversed) {
-      try {
-        await waitForDeploymentReady(ns, component, 120000); // 2 min per component
-        console.log(`  ${component.name} ready`);
-      } catch (e) {
-        console.error(`  ${component.name} not ready: ${e}`);
-      }
-    }
-  }
+  // Force reconcile to restore immediately
+  console.log("Triggering reconciliation...");
+  await flux(["reconcile", "kustomization", "ssmd", "--with-source"]);
 
-  console.log("\nScale up complete.");
+  console.log("\nScale up triggered. Use 'ssmd scale status' to monitor.");
 }
 
-async function scaleStatus(flags: ScaleFlags): Promise<void> {
-  const ns = flags.namespace || "ssmd";
-
-  console.log(`SSMD Component Status (namespace: ${ns})\n`);
-  console.log("COMPONENT        REPLICAS  READY     STATUS");
-  console.log("---------        --------  -----     ------");
+async function scaleStatus(namespace: string): Promise<void> {
+  console.log("SSMD Component Status\n");
+  console.log("COMPONENT                          READY   REPLICAS");
+  console.log("---------                          -----   --------");
 
   for (const component of COMPONENTS) {
     try {
-      let deployments: string;
-      if (component.type === "label") {
-        deployments = await kubectl([
-          "get", "deployment", "-n", ns,
-          "-l", component.label!,
-          "-o", "jsonpath={range .items[*]}{.metadata.name} {.spec.replicas} {.status.readyReplicas} {.status.conditions[?(@.type=='Available')].status}\\n{end}"
+      let jsonOutput: string;
+      if (component.selector) {
+        jsonOutput = await kubectl([
+          "get", "deployment",
+          "-n", namespace,
+          "-l", component.selector,
+          "-o", "json",
+        ]);
+      } else if (component.deployment) {
+        jsonOutput = await kubectl([
+          "get", "deployment", component.deployment,
+          "-n", namespace,
+          "-o", "json",
         ]);
       } else {
-        deployments = await kubectl([
-          "get", "deployment", component.deployment!,
-          "-n", ns,
-          "-o", "jsonpath={.metadata.name} {.spec.replicas} {.status.readyReplicas} {.status.conditions[?(@.type=='Available')].status}"
+        continue;
+      }
+
+      const parsed = JSON.parse(jsonOutput);
+      const items = parsed.items ?? [parsed]; // Single deployment vs list
+
+      if (items.length === 0) {
+        console.log(`${component.label.padEnd(34)} N/A     (not found)`);
+        continue;
+      }
+
+      for (const dep of items) {
+        const name = dep.metadata?.name ?? component.label;
+        const ready = dep.status?.readyReplicas ?? 0;
+        const total = dep.status?.replicas ?? 0;
+        const replicas = `${ready}/${total}`;
+        const status = total === 0 ? "SCALED" : (ready === total ? "READY" : "PENDING");
+        console.log(`${name.padEnd(34)} ${status.padEnd(7)} ${replicas}`);
+      }
+    } catch {
+      console.log(`${component.label.padEnd(34)} ERROR   (failed to get)`);
+    }
+  }
+
+}
+
+async function waitForPodsTerminated(namespace: string, timeoutSec: number): Promise<void> {
+  const start = Date.now();
+  const selectors = COMPONENTS
+    .filter(c => c.selector || c.deployment)
+    .map(c => c.selector || `app.kubernetes.io/name=${c.deployment}`);
+
+  while (Date.now() - start < timeoutSec * 1000) {
+    let allTerminated = true;
+
+    for (const selector of selectors) {
+      try {
+        const output = await kubectl([
+          "get", "pods",
+          "-n", namespace,
+          "-l", selector,
+          "-o", "jsonpath={.items[*].metadata.name}",
         ]);
+        if (output.trim()) {
+          allTerminated = false;
+          break;
+        }
+      } catch {
+        // Ignore errors
       }
-
-      for (const line of deployments.split("\n").filter(Boolean)) {
-        const [name, replicas, ready, available] = line.split(" ");
-        const status = available === "True" ? "Available" : "NotReady";
-        console.log(`${name.padEnd(16)} ${(replicas || "0").padEnd(9)} ${(ready || "0").padEnd(9)} ${status}`);
-      }
-    } catch (_e) {
-      console.log(`${component.name.padEnd(16)} -         -         NotFound`);
     }
+
+    if (allTerminated) {
+      console.log("  All pods terminated");
+      return;
+    }
+
+    await new Promise(r => setTimeout(r, 2000));
   }
 
-  // Show NATS stream message counts
-  console.log("\nNATS Streams:");
-  console.log("STREAM                         MESSAGES");
-  console.log("------                         --------");
-  for (const stream of NATS_STREAMS) {
-    try {
-      const count = await getNatsStreamMessageCount(stream);
-      console.log(`${stream.padEnd(30)} ${count}`);
-    } catch (_e) {
-      console.log(`${stream.padEnd(30)} -`);
-    }
-  }
+  console.log("  Warning: timeout waiting for pods to terminate");
 }
 
 // Helper functions
@@ -246,7 +224,7 @@ async function kubectl(args: string[]): Promise<string> {
 
   if (code !== 0) {
     const err = new TextDecoder().decode(stderr);
-    throw new Error(`kubectl failed: ${err}`);
+    throw new Error(err.trim());
   }
 
   return new TextDecoder().decode(stdout);
@@ -258,177 +236,27 @@ async function flux(args: string[]): Promise<string> {
 
   if (code !== 0) {
     const err = new TextDecoder().decode(stderr);
-    throw new Error(`flux failed: ${err}`);
+    throw new Error(err.trim());
   }
 
   return new TextDecoder().decode(stdout);
-}
-
-async function waitForPodsTerminated(
-  ns: string,
-  component: typeof COMPONENTS[0],
-  timeoutMs = 60000
-): Promise<void> {
-  const start = Date.now();
-
-  while (Date.now() - start < timeoutMs) {
-    let podCount: number;
-
-    if (component.type === "label") {
-      const output = await kubectl([
-        "get", "pods", "-n", ns,
-        "-l", component.label!,
-        "-o", "jsonpath={.items[*].metadata.name}"
-      ]);
-      podCount = output.trim() ? output.trim().split(" ").length : 0;
-    } else {
-      const output = await kubectl([
-        "get", "pods", "-n", ns,
-        "-l", `app.kubernetes.io/name=${component.deployment}`,
-        "-o", "jsonpath={.items[*].metadata.name}"
-      ]);
-      podCount = output.trim() ? output.trim().split(" ").length : 0;
-    }
-
-    if (podCount === 0) {
-      return;
-    }
-
-    await new Promise(r => setTimeout(r, 2000));
-  }
-
-  throw new Error("Timeout waiting for pods to terminate");
-}
-
-async function waitForDeploymentReady(
-  ns: string,
-  component: typeof COMPONENTS[0],
-  timeoutMs = 120000
-): Promise<void> {
-  const start = Date.now();
-
-  while (Date.now() - start < timeoutMs) {
-    let ready = false;
-
-    if (component.type === "label") {
-      const output = await kubectl([
-        "get", "deployment", "-n", ns,
-        "-l", component.label!,
-        "-o", "jsonpath={range .items[*]}{.status.readyReplicas}/{.spec.replicas} {end}"
-      ]);
-
-      // All deployments must have readyReplicas == replicas
-      const pairs = output.trim().split(" ").filter(Boolean);
-      ready = pairs.length > 0 && pairs.every(p => {
-        const [readyStr, replicasStr] = p.split("/");
-        const readyCount = parseInt(readyStr) || 0;
-        const replicas = parseInt(replicasStr) || 0;
-        return replicas > 0 && readyCount >= replicas;
-      });
-    } else {
-      const output = await kubectl([
-        "get", "deployment", component.deployment!,
-        "-n", ns,
-        "-o", "jsonpath={.status.readyReplicas}/{.spec.replicas}"
-      ]);
-      const [readyStr, replicasStr] = output.split("/");
-      const readyCount = parseInt(readyStr) || 0;
-      const replicas = parseInt(replicasStr) || 0;
-      ready = replicas > 0 && readyCount >= replicas;
-    }
-
-    if (ready) {
-      return;
-    }
-
-    await new Promise(r => setTimeout(r, 2000));
-  }
-
-  throw new Error("Timeout waiting for deployment to be ready");
-}
-
-async function waitForSyncJob(ns: string, jobName: string, timeoutMs: number): Promise<boolean> {
-  const start = Date.now();
-
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const status = await kubectl([
-        "get", "job", jobName, "-n", ns,
-        "-o", "jsonpath={.status.succeeded}"
-      ]);
-
-      if (status.trim() === "1") {
-        return true;
-      }
-    } catch (_e) {
-      // Job might not exist yet
-    }
-
-    await new Promise(r => setTimeout(r, 5000));
-  }
-
-  return false;
-}
-
-async function purgeNatsStream(stream: string): Promise<void> {
-  // Find nats-box pod
-  const natsBoxPod = await kubectl([
-    "get", "pod", "-n", "nats",
-    "-l", "app.kubernetes.io/name=nats-box",
-    "-o", "jsonpath={.items[0].metadata.name}"
-  ]);
-
-  if (!natsBoxPod.trim()) {
-    throw new Error("nats-box pod not found");
-  }
-
-  await kubectl([
-    "exec", "-n", "nats", natsBoxPod.trim(), "--",
-    "nats", "stream", "purge", stream, "-f"
-  ]);
-}
-
-async function getNatsStreamMessageCount(stream: string): Promise<string> {
-  // Find nats-box pod
-  const natsBoxPod = await kubectl([
-    "get", "pod", "-n", "nats",
-    "-l", "app.kubernetes.io/name=nats-box",
-    "-o", "jsonpath={.items[0].metadata.name}"
-  ]);
-
-  if (!natsBoxPod.trim()) {
-    return "-";
-  }
-
-  const output = await kubectl([
-    "exec", "-n", "nats", natsBoxPod.trim(), "--",
-    "nats", "stream", "info", stream, "-j"
-  ]);
-
-  try {
-    const info = JSON.parse(output);
-    return info.state?.messages?.toString() || "0";
-  } catch (_e) {
-    return "-";
-  }
 }
 
 function printScaleHelp(): void {
   console.log("Usage: ssmd scale <command> [options]");
   console.log("");
   console.log("Commands:");
-  console.log("  down      Scale down all SSMD components, sync to GCS, purge NATS");
-  console.log("  up        Scale up all SSMD components via Flux reconcile");
-  console.log("  status    Show current scale status of all components");
+  console.log("  down      Suspend Flux + scale all SSMD components to 0");
+  console.log("  up        Resume Flux + reconcile (restores git-defined replicas)");
+  console.log("  status    Show current component status and replica counts");
   console.log("");
   console.log("Options:");
-  console.log("  --env <env>         Environment (default: prod)");
-  console.log("  --namespace <ns>    Kubernetes namespace (default: ssmd)");
-  console.log("  --no-wait           Don't wait for ready status on scale up");
+  console.log("  --dry-run    Show what would be done without making changes");
   console.log("");
   console.log("Examples:");
-  console.log("  ssmd scale down                    # Scale down prod");
-  console.log("  ssmd scale up                      # Scale up via Flux");
-  console.log("  ssmd scale status                  # Show component status");
-  console.log("  ssmd scale down --env staging      # Scale down staging");
+  console.log("  ssmd scale status");
+  console.log("  ssmd scale down --dry-run");
+  console.log("  ssmd scale down");
+  console.log("  ssmd archiver sync kalshi-archiver   # sync to GCS after scale down");
+  console.log("  ssmd scale up");
 }
