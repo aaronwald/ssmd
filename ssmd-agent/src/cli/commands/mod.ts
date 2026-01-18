@@ -19,7 +19,7 @@ import { handleSignalDeploy } from "./signal-deploy.ts";
 import { handleNotifierDeploy } from "./notifier-deploy.ts";
 import { handleConnectorDeploy } from "./connector-deploy.ts";
 import { handleArchiverDeploy } from "./archiver-deploy.ts";
-import { handleDay } from "./day.ts";
+import { handleScale } from "./scale.ts";
 import { handleStatus } from "./status.ts";
 
 export async function run(args: string[]): Promise<void> {
@@ -87,8 +87,8 @@ export async function run(args: string[]): Promise<void> {
       break;
     }
 
-    case "day":
-      await handleDay(subcommand, flags);
+    case "scale":
+      await handleScale(subcommand, flags);
       break;
 
     case "notifier":
@@ -192,7 +192,7 @@ function printHelp(): void {
   console.log("  notifier          Manage Notifier CRs in Kubernetes");
   console.log("  connector         Manage Connector CRs in Kubernetes");
   console.log("  archiver          Manage Archiver CRs in Kubernetes");
-  console.log("  day               Manage trading day lifecycle");
+  console.log("  scale             Scale SSMD components up/down for maintenance");
   console.log("  agent             Start interactive agent REPL");
   console.log("");
   console.log("OPTIONS:");
