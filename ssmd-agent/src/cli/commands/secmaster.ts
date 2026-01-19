@@ -402,29 +402,30 @@ async function showStats(): Promise<void> {
 }
 
 /**
- * Event row from API
+ * Event row from API (camelCase to match API response)
  */
 interface EventRow {
-  event_ticker: string;
+  eventTicker: string;
   title: string;
   category: string;
-  series_ticker: string | null;
+  seriesTicker: string | null;
   status: string;
-  updated_at: string;
+  updatedAt: string;
+  marketCount: number;
 }
 
 /**
- * Market row from API
+ * Market row from API (camelCase to match API response)
  */
 interface MarketRow {
   ticker: string;
-  event_ticker: string;
+  eventTicker: string;
   title: string;
   status: string;
-  close_time: string | null;
-  last_price: number;
-  volume_24h: number;
-  updated_at: string;
+  closeTime: string | null;
+  lastPrice: number;
+  volume24h: number;
+  updatedAt: string;
 }
 
 /**
@@ -440,16 +441,36 @@ async function listEvents(flags: Record<string, unknown>): Promise<void> {
   const url = `/v1/events${params.toString() ? "?" + params : ""}`;
   const { events } = await apiRequest<{ events: EventRow[] }>(url);
 
-  console.log("\n=== Events ===\n");
-  console.log(`Found ${events.length} events\n`);
+  console.log(`\nFound ${events.length} events\n`);
 
+  if (events.length === 0) return;
+
+  // Calculate column widths
+  const tickerWidth = Math.max(12, ...events.map(e => e.eventTicker.length));
+  const titleWidth = Math.min(45, Math.max(10, ...events.map(e => e.title.length)));
+  const catWidth = Math.max(8, ...events.map(e => e.category.length));
+
+  // Header
+  console.log(
+    "TICKER".padEnd(tickerWidth) + "  " +
+    "TITLE".padEnd(titleWidth) + "  " +
+    "CATEGORY".padEnd(catWidth) + "  " +
+    "MKTS".padStart(4) + "  " +
+    "STATUS"
+  );
+  console.log("-".repeat(tickerWidth + titleWidth + catWidth + 30));
+
+  // Rows
   for (const e of events) {
-    console.log(`${e.event_ticker}`);
-    console.log(`  Title: ${e.title}`);
-    console.log(`  Category: ${e.category}`);
-    console.log(`  Status: ${e.status}`);
-    if (e.series_ticker) console.log(`  Series: ${e.series_ticker}`);
-    console.log();
+    const title = e.title.length > titleWidth ? e.title.slice(0, titleWidth - 3) + "..." : e.title;
+    const mkts = e.marketCount !== undefined ? String(e.marketCount) : "-";
+    console.log(
+      e.eventTicker.padEnd(tickerWidth) + "  " +
+      title.padEnd(titleWidth) + "  " +
+      e.category.padEnd(catWidth) + "  " +
+      mkts.padStart(4) + "  " +
+      e.status
+    );
   }
 }
 
@@ -467,17 +488,36 @@ async function listMarkets(flags: Record<string, unknown>): Promise<void> {
   const url = `/v1/markets${params.toString() ? "?" + params : ""}`;
   const { markets } = await apiRequest<{ markets: MarketRow[] }>(url);
 
-  console.log("\n=== Markets ===\n");
-  console.log(`Found ${markets.length} markets\n`);
+  console.log(`\nFound ${markets.length} markets\n`);
 
+  if (markets.length === 0) return;
+
+  // Calculate column widths
+  const tickerWidth = Math.max(12, ...markets.map(m => m.ticker.length));
+  const titleWidth = Math.min(40, Math.max(10, ...markets.map(m => m.title.length)));
+
+  // Header
+  console.log(
+    "TICKER".padEnd(tickerWidth) + "  " +
+    "TITLE".padEnd(titleWidth) + "  " +
+    "LAST".padStart(6) + "  " +
+    "VOL24H".padStart(10) + "  " +
+    "STATUS"
+  );
+  console.log("-".repeat(tickerWidth + titleWidth + 40));
+
+  // Rows
   for (const m of markets) {
-    console.log(`${m.ticker}`);
-    console.log(`  Title: ${m.title}`);
-    console.log(`  Event: ${m.event_ticker}`);
-    console.log(`  Status: ${m.status}`);
-    console.log(`  Last: ${m.last_price}¢  Vol24h: ${m.volume_24h}`);
-    if (m.close_time) console.log(`  Closes: ${m.close_time}`);
-    console.log();
+    const title = m.title.length > titleWidth ? m.title.slice(0, titleWidth - 3) + "..." : m.title;
+    const lastPrice = m.lastPrice !== null ? `${m.lastPrice}¢` : "-";
+    const vol = m.volume24h !== null ? m.volume24h.toLocaleString() : "-";
+    console.log(
+      m.ticker.padEnd(tickerWidth) + "  " +
+      title.padEnd(titleWidth) + "  " +
+      lastPrice.padStart(6) + "  " +
+      vol.padStart(10) + "  " +
+      m.status
+    );
   }
 }
 
@@ -485,16 +525,16 @@ async function listMarkets(flags: Record<string, unknown>): Promise<void> {
  * Show a single event
  */
 async function showEvent(ticker: string): Promise<void> {
-  const event = await apiRequest<EventRow & { market_count: number }>(`/v1/events/${encodeURIComponent(ticker)}`);
+  const event = await apiRequest<EventRow & { marketCount: number }>(`/v1/events/${encodeURIComponent(ticker)}`);
 
   console.log("\n=== Event Details ===\n");
-  console.log(`Ticker: ${event.event_ticker}`);
-  console.log(`Title: ${event.title}`);
+  console.log(`Ticker:   ${event.eventTicker}`);
+  console.log(`Title:    ${event.title}`);
   console.log(`Category: ${event.category}`);
-  console.log(`Status: ${event.status}`);
-  if (event.series_ticker) console.log(`Series: ${event.series_ticker}`);
-  console.log(`Markets: ${event.market_count}`);
-  console.log(`Updated: ${event.updated_at}`);
+  console.log(`Status:   ${event.status}`);
+  if (event.seriesTicker) console.log(`Series:   ${event.seriesTicker}`);
+  console.log(`Markets:  ${event.marketCount}`);
+  console.log(`Updated:  ${event.updatedAt}`);
 }
 
 /**
@@ -504,14 +544,14 @@ async function showMarket(ticker: string): Promise<void> {
   const m = await apiRequest<MarketRow>(`/v1/markets/${encodeURIComponent(ticker)}`);
 
   console.log("\n=== Market Details ===\n");
-  console.log(`Ticker: ${m.ticker}`);
-  console.log(`Title: ${m.title}`);
-  console.log(`Event: ${m.event_ticker}`);
-  console.log(`Status: ${m.status}`);
-  console.log(`Last Price: ${m.last_price}¢`);
-  console.log(`Volume 24h: ${m.volume_24h}`);
-  if (m.close_time) console.log(`Closes: ${m.close_time}`);
-  console.log(`Updated: ${m.updated_at}`);
+  console.log(`Ticker:     ${m.ticker}`);
+  console.log(`Title:      ${m.title}`);
+  console.log(`Event:      ${m.eventTicker}`);
+  console.log(`Status:     ${m.status}`);
+  console.log(`Last Price: ${m.lastPrice}¢`);
+  console.log(`Volume 24h: ${m.volume24h?.toLocaleString() ?? "-"}`);
+  if (m.closeTime) console.log(`Closes:     ${m.closeTime}`);
+  console.log(`Updated:    ${m.updatedAt}`);
 }
 
 /**

@@ -194,7 +194,8 @@ export async function listMarkets(
       eventConditions.push(eq(events.category, options.category));
     }
     if (options.series) {
-      eventConditions.push(eq(events.seriesTicker, options.series));
+      // Case-insensitive match (Kalshi tickers are uppercase but allow lowercase input)
+      eventConditions.push(sql`LOWER(${events.seriesTicker}) = LOWER(${options.series})`);
     }
 
     const rows = await db
