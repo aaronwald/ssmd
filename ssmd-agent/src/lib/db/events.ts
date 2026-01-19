@@ -152,7 +152,7 @@ export async function listEvents(
     asOf?: string;
     limit?: number;
   } = {}
-): Promise<EventRow[]> {
+): Promise<(EventRow & { marketCount: number })[]> {
   const limit = options.limit ?? 100;
   const asOf = options.asOf ?? new Date().toISOString();
 
@@ -171,13 +171,31 @@ export async function listEvents(
     conditions.push(eq(events.status, options.status));
   }
   if (options.series) {
-    conditions.push(eq(events.seriesTicker, options.series));
+    // Case-insensitive match (Kalshi tickers are uppercase but allow lowercase input)
+    conditions.push(sql`LOWER(${events.seriesTicker}) = LOWER(${options.series})`);
   }
 
   return await db
-    .select()
+    .select({
+      eventTicker: events.eventTicker,
+      title: events.title,
+      category: events.category,
+      seriesTicker: events.seriesTicker,
+      strikeDate: events.strikeDate,
+      mutuallyExclusive: events.mutuallyExclusive,
+      status: events.status,
+      createdAt: events.createdAt,
+      updatedAt: events.updatedAt,
+      deletedAt: events.deletedAt,
+      marketCount: count(markets.ticker),
+    })
     .from(events)
+    .leftJoin(
+      markets,
+      sql`${markets.eventTicker} = ${events.eventTicker} AND ${isNull(markets.deletedAt)}`
+    )
     .where(sql.join(conditions, sql` AND `))
+    .groupBy(events.eventTicker)
     .orderBy(desc(events.updatedAt))
     .limit(limit);
 }
