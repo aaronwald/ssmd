@@ -244,13 +244,13 @@ storage:
 		}
 
 		envConfig += fmt.Sprintf(`secmaster:
-  url: "http://ssmd-data-ts.ssmd.svc.cluster.local:8080"
+  url: "http://ssmd-data-ts.%s.svc.cluster.local:8080"
   categories:
 %s%ssubscription:
   batch_size: 100
   retry_attempts: 3
   retry_delay_ms: 1000
-`, categoriesYAML, closeWithinHoursYAML)
+`, connector.Namespace, categoriesYAML, closeWithinHoursYAML)
 	}
 
 	// Add CDC config if enabled
