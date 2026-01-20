@@ -25,10 +25,10 @@ export const feeTypeEnum = pgEnum("fee_type", [
 
 // Events table
 export const events = pgTable("events", {
-  eventTicker: varchar("event_ticker", { length: 64 }).primaryKey(),
+  eventTicker: varchar("event_ticker", { length: 128 }).primaryKey(),
   title: text("title").notNull(),
-  category: varchar("category", { length: 64 }).notNull().default(""),
-  seriesTicker: varchar("series_ticker", { length: 64 }).notNull().default(""),
+  category: varchar("category", { length: 128 }).notNull().default(""),
+  seriesTicker: varchar("series_ticker", { length: 128 }).notNull().default(""),
   strikeDate: timestamp("strike_date", { withTimezone: true }),
   mutuallyExclusive: boolean("mutually_exclusive").notNull().default(false),
   status: varchar("status", { length: 16 }).notNull().default("open"),
@@ -39,8 +39,8 @@ export const events = pgTable("events", {
 
 // Markets table
 export const markets = pgTable("markets", {
-  ticker: varchar("ticker", { length: 64 }).primaryKey(),
-  eventTicker: varchar("event_ticker", { length: 64 }).notNull()
+  ticker: varchar("ticker", { length: 128 }).primaryKey(),
+  eventTicker: varchar("event_ticker", { length: 128 }).notNull()
     .references(() => events.eventTicker),
   title: text("title").notNull(),
   status: varchar("status", { length: 16 }).notNull().default("open"),
@@ -61,7 +61,7 @@ export const markets = pgTable("markets", {
 // Series fees table (exclusion constraint lives in SQL migration)
 export const seriesFees = pgTable("series_fees", {
   id: serial("id").primaryKey(),
-  seriesTicker: varchar("series_ticker", { length: 64 }).notNull(),
+  seriesTicker: varchar("series_ticker", { length: 128 }).notNull(),
   feeType: feeTypeEnum("fee_type").notNull(),
   feeMultiplier: numeric("fee_multiplier", { precision: 6, scale: 4 }).notNull().default("1.0"),
   effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull(),
@@ -94,9 +94,9 @@ export const settings = pgTable("settings", {
 
 // Series table for Kalshi series metadata
 export const series = pgTable("series", {
-  ticker: varchar("ticker", { length: 64 }).primaryKey(),
+  ticker: varchar("ticker", { length: 128 }).primaryKey(),
   title: text("title").notNull(),
-  category: varchar("category", { length: 64 }).notNull(),
+  category: varchar("category", { length: 128 }).notNull(),
   tags: text("tags").array(), // Array of tags from Kalshi API
   isGame: boolean("is_game").notNull().default(false), // For Sports: GAME/MATCH in ticker
   active: boolean("active").notNull().default(true), // Soft disable for filtering
