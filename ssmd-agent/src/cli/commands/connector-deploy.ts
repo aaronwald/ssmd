@@ -1,11 +1,14 @@
 // connector-deploy.ts - Connector CR deployment management
 // Manages Connector CRs via kubectl (kubernetes deployment lifecycle)
 
+import { kubectl, kubectlStream, getCurrentEnvDisplay, type KubectlOptions } from "../utils/kubectl.ts";
+
 interface ConnectorDeployFlags {
   _: (string | number)[];
   follow?: boolean;
   tail?: string;
   namespace?: string;
+  env?: string;
   // Flags for 'new' command
   feed?: string;
   stream?: string;
@@ -14,32 +17,34 @@ interface ConnectorDeployFlags {
   output?: string;
 }
 
-const DEFAULT_NAMESPACE = "ssmd";
-
 export async function handleConnectorDeploy(
   subcommand: string,
   flags: ConnectorDeployFlags
 ): Promise<void> {
-  const ns = flags.namespace ?? DEFAULT_NAMESPACE;
+  // Build kubectl options from flags
+  const opts: KubectlOptions = {
+    env: flags.env,
+    namespace: flags.namespace,
+  };
 
   switch (subcommand) {
     case "new":
-      await newConnector(flags, ns);
+      await newConnector(flags, opts);
       break;
     case "deploy":
-      await deployConnector(flags, ns);
+      await deployConnector(flags, opts);
       break;
     case "list":
-      await listConnectors(ns);
+      await listConnectors(opts);
       break;
     case "status":
-      await statusConnector(flags, ns);
+      await statusConnector(flags, opts);
       break;
     case "logs":
-      await logsConnector(flags, ns);
+      await logsConnector(flags, opts);
       break;
     case "delete":
-      await deleteConnector(flags, ns);
+      await deleteConnector(flags, opts);
       break;
     default:
       console.error(`Unknown connector-deploy command: ${subcommand}`);
@@ -50,8 +55,10 @@ export async function handleConnectorDeploy(
 
 const DEFAULT_IMAGE = "ghcr.io/aaronwald/ssmd-connector:0.5.5";
 
-async function newConnector(flags: ConnectorDeployFlags, ns: string): Promise<void> {
+async function newConnector(flags: ConnectorDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
+  const { envName, namespace } = await import("../utils/env-context.ts").then(m => m.getEnvContext(opts.env));
+  const ns = opts.namespace ?? namespace;
 
   if (!name) {
     console.error("Usage: ssmd connector new <name> --feed <feed> --stream <stream> --subject-prefix <prefix> [options]");
@@ -121,7 +128,7 @@ spec:
   }
 }
 
-async function deployConnector(flags: ConnectorDeployFlags, ns: string): Promise<void> {
+async function deployConnector(flags: ConnectorDeployFlags, opts: KubectlOptions): Promise<void> {
   const file = flags._[2] as string;
 
   if (!file) {
@@ -137,10 +144,11 @@ async function deployConnector(flags: ConnectorDeployFlags, ns: string): Promise
     Deno.exit(1);
   }
 
-  console.log(`Deploying Connector from ${file}...`);
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Deploying Connector from ${file} to ${envDisplay}...`);
 
   try {
-    const output = await kubectl(["apply", "-f", file, "-n", ns]);
+    const output = await kubectl(["apply", "-f", file], opts);
     console.log(output.trim());
   } catch (e) {
     console.error(`Failed to deploy: ${e instanceof Error ? e.message : e}`);
@@ -148,8 +156,9 @@ async function deployConnector(flags: ConnectorDeployFlags, ns: string): Promise
   }
 }
 
-async function listConnectors(ns: string): Promise<void> {
-  console.log("Connector CRs:\n");
+async function listConnectors(opts: KubectlOptions): Promise<void> {
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Connector CRs (${envDisplay}):\n`);
   console.log(
     "NAME".padEnd(30) +
     "FEED".padEnd(10) +
@@ -166,8 +175,8 @@ async function listConnectors(ns: string): Promise<void> {
   try {
     // Get connectors as JSON and parse
     const output = await kubectl([
-      "get", "connector", "-n", ns, "-o", "json"
-    ]).catch(() => '{"items":[]}');
+      "get", "connector", "-o", "json"
+    ], opts).catch(() => '{"items":[]}');
 
     const data = JSON.parse(output);
     const items = data.items || [];
@@ -197,7 +206,7 @@ async function listConnectors(ns: string): Promise<void> {
   }
 }
 
-async function statusConnector(flags: ConnectorDeployFlags, ns: string): Promise<void> {
+async function statusConnector(flags: ConnectorDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -208,8 +217,8 @@ async function statusConnector(flags: ConnectorDeployFlags, ns: string): Promise
   try {
     // Get full Connector CR as JSON
     const connectorJson = await kubectl([
-      "get", "connector", name, "-n", ns, "-o", "json"
-    ]);
+      "get", "connector", name, "-o", "json"
+    ], opts);
 
     const connector = JSON.parse(connectorJson);
 
@@ -297,7 +306,7 @@ async function statusConnector(flags: ConnectorDeployFlags, ns: string): Promise
   }
 }
 
-async function logsConnector(flags: ConnectorDeployFlags, ns: string): Promise<void> {
+async function logsConnector(flags: ConnectorDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -308,15 +317,15 @@ async function logsConnector(flags: ConnectorDeployFlags, ns: string): Promise<v
   try {
     // First get the deployment name from the Connector CR
     const deploymentName = await kubectl([
-      "get", "connector", name, "-n", ns,
+      "get", "connector", name,
       "-o", "jsonpath={.status.deployment}"
-    ]).catch(() => "");
+    ], opts).catch(() => "");
 
     // If no deployment in status, try the conventional name
     const targetDeployment = deploymentName.trim() || `connector-${name}`;
 
     // Build kubectl logs args
-    const logsArgs = ["logs", "-n", ns, `deployment/${targetDeployment}`];
+    const logsArgs = ["logs", `deployment/${targetDeployment}`];
 
     if (flags.follow) {
       logsArgs.push("-f");
@@ -327,14 +336,14 @@ async function logsConnector(flags: ConnectorDeployFlags, ns: string): Promise<v
     }
 
     // Stream logs directly to stdout/stderr
-    await kubectlStream(logsArgs);
+    await kubectlStream(logsArgs, opts);
   } catch (e) {
     console.error(`Failed to get logs: ${e instanceof Error ? e.message : e}`);
     Deno.exit(1);
   }
 }
 
-async function deleteConnector(flags: ConnectorDeployFlags, ns: string): Promise<void> {
+async function deleteConnector(flags: ConnectorDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -342,10 +351,11 @@ async function deleteConnector(flags: ConnectorDeployFlags, ns: string): Promise
     Deno.exit(1);
   }
 
-  console.log(`Deleting Connector ${name}...`);
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Deleting Connector ${name} from ${envDisplay}...`);
 
   try {
-    await kubectl(["delete", "connector", name, "-n", ns]);
+    await kubectl(["delete", "connector", name], opts);
     console.log(`Connector ${name} deleted`);
   } catch (e) {
     console.error(`Failed to delete connector: ${e instanceof Error ? e.message : e}`);
@@ -354,32 +364,6 @@ async function deleteConnector(flags: ConnectorDeployFlags, ns: string): Promise
 }
 
 // Helper functions
-
-async function kubectl(args: string[]): Promise<string> {
-  const cmd = new Deno.Command("kubectl", { args, stdout: "piped", stderr: "piped" });
-  const { stdout, stderr, code } = await cmd.output();
-
-  if (code !== 0) {
-    const err = new TextDecoder().decode(stderr);
-    throw new Error(`kubectl failed: ${err}`);
-  }
-
-  return new TextDecoder().decode(stdout);
-}
-
-async function kubectlStream(args: string[]): Promise<void> {
-  const cmd = new Deno.Command("kubectl", {
-    args,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-
-  const { code } = await cmd.output();
-
-  if (code !== 0) {
-    throw new Error(`kubectl logs failed with code ${code}`);
-  }
-}
 
 export function formatAge(timestamp: string): string {
   const created = new Date(timestamp);
@@ -403,7 +387,7 @@ export function formatAge(timestamp: string): string {
 }
 
 export function printConnectorDeployHelp(): void {
-  console.log("Usage: ssmd connector <command> [options]");
+  console.log("Usage: ssmd [--env <env>] connector <command> [options]");
   console.log();
   console.log("Kubernetes Connector CR Management Commands:");
   console.log("  new <name>             Generate a new Connector CR YAML");
@@ -421,7 +405,8 @@ export function printConnectorDeployHelp(): void {
   console.log("  --output <file>        Output file (default: stdout)");
   console.log();
   console.log("Options for other commands:");
-  console.log("  --namespace NS         Kubernetes namespace (default: ssmd)");
+  console.log("  --env <env>            Target environment (default: current from 'ssmd env')");
+  console.log("  --namespace NS         Override namespace (default: from environment)");
   console.log("  --follow, -f           Follow log output (logs command)");
   console.log("  --tail N               Number of lines to show (logs command)");
   console.log();

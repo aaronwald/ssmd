@@ -1,26 +1,33 @@
 // status.ts - Top-level cluster status overview
 // Aggregates status from connectors, archivers, signals, and NATS streams
 
+import { kubectl, getCurrentEnvDisplay, type KubectlOptions } from "../utils/kubectl.ts";
+import { getEnvContext } from "../utils/env-context.ts";
+
 interface StatusFlags {
   _: (string | number)[];
   namespace?: string;
+  env?: string;
 }
 
-const DEFAULT_NAMESPACE = "ssmd";
-const NATS_NAMESPACE = "nats";
-
 export async function handleStatus(flags: StatusFlags): Promise<void> {
-  const ns = flags.namespace ?? DEFAULT_NAMESPACE;
+  const opts: KubectlOptions = {
+    env: flags.env,
+    namespace: flags.namespace,
+  };
 
-  console.log("SSMD Cluster Status");
-  console.log("===================\n");
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  const context = await getEnvContext(opts.env);
+
+  console.log(`SSMD Cluster Status (${envDisplay})`);
+  console.log("=".repeat(40 + envDisplay.length) + "\n");
 
   // Run all status checks in parallel
   const [connectors, archivers, signals, streams] = await Promise.all([
-    getConnectors(ns),
-    getArchivers(ns),
-    getSignals(ns),
-    getNatsStreams(),
+    getConnectors(opts),
+    getArchivers(opts),
+    getSignals(opts),
+    getNatsStreams(context.cluster),
   ]);
 
   // Connectors
@@ -109,11 +116,11 @@ interface StreamStatus {
   bytes: number;
 }
 
-async function getConnectors(ns: string): Promise<ConnectorStatus[]> {
+async function getConnectors(opts: KubectlOptions): Promise<ConnectorStatus[]> {
   try {
     const output = await kubectl([
-      "get", "connector", "-n", ns, "-o", "json"
-    ]);
+      "get", "connector", "-o", "json"
+    ], opts);
     const data = JSON.parse(output);
     return (data.items || []).map((c: Record<string, unknown>) => ({
       name: (c.metadata as Record<string, string>)?.name || "-",
@@ -125,11 +132,11 @@ async function getConnectors(ns: string): Promise<ConnectorStatus[]> {
   }
 }
 
-async function getArchivers(ns: string): Promise<ArchiverStatus[]> {
+async function getArchivers(opts: KubectlOptions): Promise<ArchiverStatus[]> {
   try {
     const output = await kubectl([
-      "get", "archiver", "-n", ns, "-o", "json"
-    ]);
+      "get", "archiver", "-o", "json"
+    ], opts);
     const data = JSON.parse(output);
     return (data.items || []).map((a: Record<string, unknown>) => ({
       name: (a.metadata as Record<string, string>)?.name || "-",
@@ -141,11 +148,11 @@ async function getArchivers(ns: string): Promise<ArchiverStatus[]> {
   }
 }
 
-async function getSignals(ns: string): Promise<SignalStatus[]> {
+async function getSignals(opts: KubectlOptions): Promise<SignalStatus[]> {
   try {
     const output = await kubectl([
-      "get", "signal", "-n", ns, "-o", "json"
-    ]);
+      "get", "signal", "-o", "json"
+    ], opts);
     const data = JSON.parse(output);
     return (data.items || []).map((s: Record<string, unknown>) => ({
       name: (s.metadata as Record<string, string>)?.name || "-",
@@ -156,13 +163,28 @@ async function getSignals(ns: string): Promise<SignalStatus[]> {
   }
 }
 
-async function getNatsStreams(): Promise<StreamStatus[]> {
+async function getNatsStreams(cluster: string): Promise<StreamStatus[]> {
+  // NATS namespace is typically 'nats' in both environments
+  const natsNamespace = "nats";
+
   try {
     // Get stream names first
-    const namesOutput = await kubectl([
-      "exec", "-n", NATS_NAMESPACE, "deploy/nats-box", "--",
-      "nats", "stream", "ls", "--names", "-s", "nats://nats:4222"
-    ]);
+    const cmd = new Deno.Command("kubectl", {
+      args: [
+        "--context", cluster,
+        "exec", "-n", natsNamespace, "deploy/nats-box", "--",
+        "nats", "stream", "ls", "--names", "-s", "nats://nats:4222"
+      ],
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const { stdout, code } = await cmd.output();
+
+    if (code !== 0) {
+      return [];
+    }
+
+    const namesOutput = new TextDecoder().decode(stdout);
     const names = namesOutput.trim().split("\n").filter(n => n.trim());
 
     if (names.length === 0) {
@@ -172,10 +194,22 @@ async function getNatsStreams(): Promise<StreamStatus[]> {
     // Get info for each stream in parallel
     const streamPromises = names.map(async (name) => {
       try {
-        const infoOutput = await kubectl([
-          "exec", "-n", NATS_NAMESPACE, "deploy/nats-box", "--",
-          "nats", "stream", "info", name, "--json", "-s", "nats://nats:4222"
-        ]);
+        const infoCmd = new Deno.Command("kubectl", {
+          args: [
+            "--context", cluster,
+            "exec", "-n", natsNamespace, "deploy/nats-box", "--",
+            "nats", "stream", "info", name, "--json", "-s", "nats://nats:4222"
+          ],
+          stdout: "piped",
+          stderr: "piped",
+        });
+        const { stdout: infoStdout, code: infoCode } = await infoCmd.output();
+
+        if (infoCode !== 0) {
+          return { name, messages: 0, bytes: 0 };
+        }
+
+        const infoOutput = new TextDecoder().decode(infoStdout);
         const data = JSON.parse(infoOutput);
         return {
           name,
@@ -191,18 +225,6 @@ async function getNatsStreams(): Promise<StreamStatus[]> {
   } catch {
     return [];
   }
-}
-
-async function kubectl(args: string[]): Promise<string> {
-  const cmd = new Deno.Command("kubectl", { args, stdout: "piped", stderr: "piped" });
-  const { stdout, stderr, code } = await cmd.output();
-
-  if (code !== 0) {
-    const err = new TextDecoder().decode(stderr);
-    throw new Error(`kubectl failed: ${err}`);
-  }
-
-  return new TextDecoder().decode(stdout);
 }
 
 function formatNumber(n: number): string {
@@ -226,7 +248,7 @@ function formatBytes(bytes: number): string {
 }
 
 export function printStatusHelp(): void {
-  console.log("Usage: ssmd status [options]");
+  console.log("Usage: ssmd [--env <env>] status [options]");
   console.log();
   console.log("Shows overview of SSMD cluster components:");
   console.log("  - Connectors (market data feeds)");
@@ -235,5 +257,6 @@ export function printStatusHelp(): void {
   console.log("  - NATS Streams (message queues)");
   console.log();
   console.log("Options:");
-  console.log("  --namespace NS    Kubernetes namespace (default: ssmd)");
+  console.log("  --env <env>       Target environment (default: current from 'ssmd env')");
+  console.log("  --namespace NS    Override namespace (default: from environment)");
 }

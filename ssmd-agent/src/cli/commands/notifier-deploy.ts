@@ -1,41 +1,45 @@
 // notifier-deploy.ts - Notifier CR deployment management
 // Manages Notifier CRs via kubectl (kubernetes deployment lifecycle)
 
+import { kubectl, kubectlStream, getCurrentEnvDisplay, type KubectlOptions } from "../utils/kubectl.ts";
+
 interface NotifierDeployFlags {
   _: (string | number)[];
   follow?: boolean;
   tail?: string;
   namespace?: string;
+  env?: string;
   message?: string;
   destination?: string;
 }
-
-const DEFAULT_NAMESPACE = "ssmd";
 
 export async function handleNotifierDeploy(
   subcommand: string,
   flags: NotifierDeployFlags
 ): Promise<void> {
-  const ns = flags.namespace ?? DEFAULT_NAMESPACE;
+  const opts: KubectlOptions = {
+    env: flags.env,
+    namespace: flags.namespace,
+  };
 
   switch (subcommand) {
     case "deploy":
-      await deployNotifier(flags, ns);
+      await deployNotifier(flags, opts);
       break;
     case "list":
-      await listNotifiers(ns);
+      await listNotifiers(opts);
       break;
     case "status":
-      await statusNotifier(flags, ns);
+      await statusNotifier(flags, opts);
       break;
     case "logs":
-      await logsNotifier(flags, ns);
+      await logsNotifier(flags, opts);
       break;
     case "test":
-      await testNotifier(flags, ns);
+      await testNotifier(flags, opts);
       break;
     case "delete":
-      await deleteNotifier(flags, ns);
+      await deleteNotifier(flags, opts);
       break;
     default:
       console.error(`Unknown notifier-deploy command: ${subcommand}`);
@@ -44,7 +48,7 @@ export async function handleNotifierDeploy(
   }
 }
 
-async function deployNotifier(flags: NotifierDeployFlags, ns: string): Promise<void> {
+async function deployNotifier(flags: NotifierDeployFlags, opts: KubectlOptions): Promise<void> {
   const file = flags._[2] as string;
 
   if (!file) {
@@ -60,10 +64,11 @@ async function deployNotifier(flags: NotifierDeployFlags, ns: string): Promise<v
     Deno.exit(1);
   }
 
-  console.log(`Deploying Notifier from ${file}...`);
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Deploying Notifier from ${file} to ${envDisplay}...`);
 
   try {
-    const output = await kubectl(["apply", "-f", file, "-n", ns]);
+    const output = await kubectl(["apply", "-f", file], opts);
     console.log(output.trim());
   } catch (e) {
     console.error(`Failed to deploy: ${e instanceof Error ? e.message : e}`);
@@ -71,17 +76,18 @@ async function deployNotifier(flags: NotifierDeployFlags, ns: string): Promise<v
   }
 }
 
-async function listNotifiers(ns: string): Promise<void> {
-  console.log("Notifier CRs:\n");
+async function listNotifiers(opts: KubectlOptions): Promise<void> {
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Notifier CRs (${envDisplay}):\n`);
   console.log("NAME".padEnd(25) + "DESTINATIONS".padEnd(30) + "PHASE".padEnd(12) + "FIRES".padEnd(10) + "AGE");
   console.log("----".padEnd(25) + "------------".padEnd(30) + "-----".padEnd(12) + "-----".padEnd(10) + "---");
 
   try {
     // Get notifiers with all needed fields
     const notifiers = await kubectl([
-      "get", "notifier", "-n", ns,
+      "get", "notifier",
       "-o", "jsonpath={range .items[*]}{.metadata.name}|{.spec.destinations}|{.status.phase}|{.status.metrics.firesProcessed}|{.metadata.creationTimestamp}\\n{end}"
-    ]).catch(() => "");
+    ], opts).catch(() => "");
 
     if (!notifiers.trim()) {
       console.log("(no notifiers found)");
@@ -121,7 +127,7 @@ async function listNotifiers(ns: string): Promise<void> {
   }
 }
 
-async function statusNotifier(flags: NotifierDeployFlags, ns: string): Promise<void> {
+async function statusNotifier(flags: NotifierDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -132,8 +138,8 @@ async function statusNotifier(flags: NotifierDeployFlags, ns: string): Promise<v
   try {
     // Get full Notifier CR as JSON
     const notifierJson = await kubectl([
-      "get", "notifier", name, "-n", ns, "-o", "json"
-    ]);
+      "get", "notifier", name, "-o", "json"
+    ], opts);
 
     const notifier = JSON.parse(notifierJson);
 
@@ -225,7 +231,7 @@ async function statusNotifier(flags: NotifierDeployFlags, ns: string): Promise<v
   }
 }
 
-async function logsNotifier(flags: NotifierDeployFlags, ns: string): Promise<void> {
+async function logsNotifier(flags: NotifierDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -236,15 +242,15 @@ async function logsNotifier(flags: NotifierDeployFlags, ns: string): Promise<voi
   try {
     // First get the deployment name from the Notifier CR
     const deploymentName = await kubectl([
-      "get", "notifier", name, "-n", ns,
+      "get", "notifier", name,
       "-o", "jsonpath={.status.deployment}"
-    ]).catch(() => "");
+    ], opts).catch(() => "");
 
     // If no deployment in status, try the conventional name
     const targetDeployment = deploymentName.trim() || `notifier-${name}`;
 
     // Build kubectl logs args
-    const logsArgs = ["logs", "-n", ns, `deployment/${targetDeployment}`];
+    const logsArgs = ["logs", `deployment/${targetDeployment}`];
 
     if (flags.follow) {
       logsArgs.push("-f");
@@ -255,14 +261,14 @@ async function logsNotifier(flags: NotifierDeployFlags, ns: string): Promise<voi
     }
 
     // Stream logs directly to stdout/stderr
-    await kubectlStream(logsArgs);
+    await kubectlStream(logsArgs, opts);
   } catch (e) {
     console.error(`Failed to get logs: ${e instanceof Error ? e.message : e}`);
     Deno.exit(1);
   }
 }
 
-async function testNotifier(flags: NotifierDeployFlags, ns: string): Promise<void> {
+async function testNotifier(flags: NotifierDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -273,8 +279,8 @@ async function testNotifier(flags: NotifierDeployFlags, ns: string): Promise<voi
   try {
     // Get the notifier's source subject
     const notifierJson = await kubectl([
-      "get", "notifier", name, "-n", ns, "-o", "json"
-    ]);
+      "get", "notifier", name, "-o", "json"
+    ], opts);
 
     const notifier = JSON.parse(notifierJson);
     const sourceSubject = notifier.spec.source?.subject || "signals.>";
@@ -330,7 +336,7 @@ async function testNotifier(flags: NotifierDeployFlags, ns: string): Promise<voi
   }
 }
 
-async function deleteNotifier(flags: NotifierDeployFlags, ns: string): Promise<void> {
+async function deleteNotifier(flags: NotifierDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -338,10 +344,11 @@ async function deleteNotifier(flags: NotifierDeployFlags, ns: string): Promise<v
     Deno.exit(1);
   }
 
-  console.log(`Deleting Notifier ${name}...`);
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Deleting Notifier ${name} from ${envDisplay}...`);
 
   try {
-    await kubectl(["delete", "notifier", name, "-n", ns]);
+    await kubectl(["delete", "notifier", name], opts);
     console.log(`Notifier ${name} deleted`);
   } catch (e) {
     console.error(`Failed to delete notifier: ${e instanceof Error ? e.message : e}`);
@@ -350,32 +357,6 @@ async function deleteNotifier(flags: NotifierDeployFlags, ns: string): Promise<v
 }
 
 // Helper functions
-
-async function kubectl(args: string[]): Promise<string> {
-  const cmd = new Deno.Command("kubectl", { args, stdout: "piped", stderr: "piped" });
-  const { stdout, stderr, code } = await cmd.output();
-
-  if (code !== 0) {
-    const err = new TextDecoder().decode(stderr);
-    throw new Error(`kubectl failed: ${err}`);
-  }
-
-  return new TextDecoder().decode(stdout);
-}
-
-async function kubectlStream(args: string[]): Promise<void> {
-  const cmd = new Deno.Command("kubectl", {
-    args,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-
-  const { code } = await cmd.output();
-
-  if (code !== 0) {
-    throw new Error(`kubectl logs failed with code ${code}`);
-  }
-}
 
 async function checkNatsCliAvailable(): Promise<boolean> {
   try {
@@ -429,7 +410,7 @@ function formatAge(timestamp: string): string {
 }
 
 export function printNotifierHelp(): void {
-  console.log("Usage: ssmd notifier <deploy-command> [options]");
+  console.log("Usage: ssmd [--env <env>] notifier <deploy-command> [options]");
   console.log();
   console.log("Kubernetes Notifier CR Management Commands:");
   console.log("  deploy <file.yaml>     Deploy a Notifier CR from YAML file");
@@ -440,7 +421,8 @@ export function printNotifierHelp(): void {
   console.log("  delete <name>          Delete a Notifier CR");
   console.log();
   console.log("Options:");
-  console.log("  --namespace NS         Kubernetes namespace (default: ssmd)");
+  console.log("  --env <env>            Target environment (default: current from 'ssmd env')");
+  console.log("  --namespace NS         Override namespace (default: from environment)");
   console.log("  --follow, -f           Follow log output (logs command)");
   console.log("  --tail N               Number of lines to show (logs command)");
   console.log("  --message MSG          Test message content (test command)");
@@ -448,7 +430,7 @@ export function printNotifierHelp(): void {
   console.log();
   console.log("Examples:");
   console.log("  ssmd notifier deploy notifiers/my-notifier/notifier.yaml");
-  console.log("  ssmd notifier list");
+  console.log("  ssmd --env dev notifier list");
   console.log("  ssmd notifier status my-notifier");
   console.log("  ssmd notifier logs my-notifier --follow --tail 100");
   console.log("  ssmd notifier test my-notifier --message 'Hello world'");

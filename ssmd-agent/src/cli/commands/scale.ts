@@ -1,5 +1,8 @@
 // scale.ts - Scale SSMD components up/down for maintenance windows
 
+import { kubectl, flux, getCurrentEnvDisplay, type KubectlOptions } from "../utils/kubectl.ts";
+import { getEnvContext } from "../utils/env-context.ts";
+
 interface ScaleFlags {
   _: (string | number)[];
   env?: string;
@@ -22,19 +25,19 @@ export async function handleScale(
   subcommand: string,
   flags: ScaleFlags
 ): Promise<void> {
-  const namespace = "ssmd";
+  const opts: KubectlOptions = { env: flags.env };
   const dryRun = flags["dry-run"] ?? false;
 
   switch (subcommand) {
     case "down":
-      await scaleDown(namespace, dryRun);
+      await scaleDown(opts, dryRun);
       break;
     case "up":
-      await scaleUp(dryRun);
+      await scaleUp(opts, dryRun);
       break;
     case "status":
     case undefined:
-      await scaleStatus(namespace);
+      await scaleStatus(opts);
       break;
     default:
       console.error(`Unknown scale command: ${subcommand}`);
@@ -43,22 +46,28 @@ export async function handleScale(
   }
 }
 
-async function scaleDown(namespace: string, dryRun: boolean): Promise<void> {
-  console.log("Scaling down SSMD components...\n");
+async function scaleDown(opts: KubectlOptions, dryRun: boolean): Promise<void> {
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  const context = await getEnvContext(opts.env);
+
+  console.log(`Scaling down SSMD components in ${envDisplay}...\n`);
+
+  // Determine kustomization name based on environment
+  const kustomizationName = context.envName === "prod" ? "ssmd" : "apps";
 
   // Suspend Flux kustomization first to prevent reconciliation
   console.log("Suspending Flux kustomization...");
   if (!dryRun) {
     try {
-      await flux(["suspend", "kustomization", "ssmd"]);
-      console.log("  Flux ssmd kustomization suspended\n");
+      await flux(["suspend", "kustomization", kustomizationName], opts);
+      console.log(`  Flux ${kustomizationName} kustomization suspended\n`);
     } catch (e) {
       console.error(`  Failed to suspend Flux: ${e}`);
       console.error("  Aborting scale down to prevent drift/restore loop");
       Deno.exit(1);
     }
   } else {
-    console.log("[dry-run] Would suspend Flux kustomization ssmd\n");
+    console.log(`[dry-run] Would suspend Flux kustomization ${kustomizationName}\n`);
   }
 
   // Scale down components in order (operator first)
@@ -73,16 +82,14 @@ async function scaleDown(namespace: string, dryRun: boolean): Promise<void> {
       if (component.selector) {
         await kubectl([
           "scale", "deployment",
-          "-n", namespace,
           "-l", component.selector,
           "--replicas=0",
-        ]);
+        ], opts);
       } else if (component.deployment) {
         await kubectl([
           "scale", "deployment", component.deployment,
-          "-n", namespace,
           "--replicas=0",
-        ]);
+        ], opts);
       }
       console.log(`  ${component.label} scaled to 0`);
 
@@ -99,26 +106,32 @@ async function scaleDown(namespace: string, dryRun: boolean): Promise<void> {
   // Wait for pods to terminate
   console.log("\nWaiting for pods to terminate...");
   if (!dryRun) {
-    await waitForPodsTerminated(namespace, 120);
+    await waitForPodsTerminated(opts, 120);
   }
 
   console.log("\nScale down complete.");
   console.log("Run 'ssmd archiver sync kalshi-archiver' to sync data to GCS.");
 }
 
-async function scaleUp(dryRun: boolean): Promise<void> {
-  console.log("Scaling up SSMD components via Flux...\n");
+async function scaleUp(opts: KubectlOptions, dryRun: boolean): Promise<void> {
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  const context = await getEnvContext(opts.env);
+
+  console.log(`Scaling up SSMD components in ${envDisplay} via Flux...\n`);
+
+  // Determine kustomization name based on environment
+  const kustomizationName = context.envName === "prod" ? "ssmd" : "apps";
 
   if (dryRun) {
-    console.log("[dry-run] Would resume Flux kustomization ssmd");
+    console.log(`[dry-run] Would resume Flux kustomization ${kustomizationName}`);
     return;
   }
 
   // Resume Flux kustomization (this triggers reconciliation automatically)
   console.log("Resuming Flux kustomization...");
   try {
-    await flux(["resume", "kustomization", "ssmd"]);
-    console.log("  Flux ssmd kustomization resumed");
+    await flux(["resume", "kustomization", kustomizationName], opts);
+    console.log(`  Flux ${kustomizationName} kustomization resumed`);
   } catch (e) {
     console.error(`  Failed to resume Flux: ${e}`);
     Deno.exit(1);
@@ -126,13 +139,15 @@ async function scaleUp(dryRun: boolean): Promise<void> {
 
   // Force reconcile to restore immediately
   console.log("Triggering reconciliation...");
-  await flux(["reconcile", "kustomization", "ssmd", "--with-source"]);
+  await flux(["reconcile", "kustomization", kustomizationName, "--with-source"], opts);
 
   console.log("\nScale up triggered. Use 'ssmd scale status' to monitor.");
 }
 
-async function scaleStatus(namespace: string): Promise<void> {
-  console.log("SSMD Component Status\n");
+async function scaleStatus(opts: KubectlOptions): Promise<void> {
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+
+  console.log(`SSMD Component Status (${envDisplay})\n`);
   console.log("COMPONENT                          READY   REPLICAS");
   console.log("---------                          -----   --------");
 
@@ -142,16 +157,14 @@ async function scaleStatus(namespace: string): Promise<void> {
       if (component.selector) {
         jsonOutput = await kubectl([
           "get", "deployment",
-          "-n", namespace,
           "-l", component.selector,
           "-o", "json",
-        ]);
+        ], opts);
       } else if (component.deployment) {
         jsonOutput = await kubectl([
           "get", "deployment", component.deployment,
-          "-n", namespace,
           "-o", "json",
-        ]);
+        ], opts);
       } else {
         continue;
       }
@@ -179,7 +192,7 @@ async function scaleStatus(namespace: string): Promise<void> {
 
 }
 
-async function waitForPodsTerminated(namespace: string, timeoutSec: number): Promise<void> {
+async function waitForPodsTerminated(opts: KubectlOptions, timeoutSec: number): Promise<void> {
   const start = Date.now();
   const selectors = COMPONENTS
     .filter(c => c.selector || c.deployment)
@@ -192,10 +205,9 @@ async function waitForPodsTerminated(namespace: string, timeoutSec: number): Pro
       try {
         const output = await kubectl([
           "get", "pods",
-          "-n", namespace,
           "-l", selector,
           "-o", "jsonpath={.items[*].metadata.name}",
-        ]);
+        ], opts);
         if (output.trim()) {
           allTerminated = false;
           break;
@@ -216,34 +228,8 @@ async function waitForPodsTerminated(namespace: string, timeoutSec: number): Pro
   console.log("  Warning: timeout waiting for pods to terminate");
 }
 
-// Helper functions
-
-async function kubectl(args: string[]): Promise<string> {
-  const cmd = new Deno.Command("kubectl", { args, stdout: "piped", stderr: "piped" });
-  const { stdout, stderr, code } = await cmd.output();
-
-  if (code !== 0) {
-    const err = new TextDecoder().decode(stderr);
-    throw new Error(err.trim());
-  }
-
-  return new TextDecoder().decode(stdout);
-}
-
-async function flux(args: string[]): Promise<string> {
-  const cmd = new Deno.Command("flux", { args, stdout: "piped", stderr: "piped" });
-  const { stdout, stderr, code } = await cmd.output();
-
-  if (code !== 0) {
-    const err = new TextDecoder().decode(stderr);
-    throw new Error(err.trim());
-  }
-
-  return new TextDecoder().decode(stdout);
-}
-
 function printScaleHelp(): void {
-  console.log("Usage: ssmd scale <command> [options]");
+  console.log("Usage: ssmd [--env <env>] scale <command> [options]");
   console.log("");
   console.log("Commands:");
   console.log("  down      Suspend Flux + scale all SSMD components to 0");
@@ -251,10 +237,12 @@ function printScaleHelp(): void {
   console.log("  status    Show current component status and replica counts");
   console.log("");
   console.log("Options:");
+  console.log("  --env <env>  Target environment (default: current from 'ssmd env')");
   console.log("  --dry-run    Show what would be done without making changes");
   console.log("");
   console.log("Examples:");
   console.log("  ssmd scale status");
+  console.log("  ssmd --env dev scale status");
   console.log("  ssmd scale down --dry-run");
   console.log("  ssmd scale down");
   console.log("  ssmd archiver sync kalshi-archiver   # sync to GCS after scale down");
