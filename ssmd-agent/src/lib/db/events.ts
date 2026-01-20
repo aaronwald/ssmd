@@ -21,9 +21,13 @@ function toNewEvent(e: ApiEvent): NewEvent {
   };
 }
 
+// PostgreSQL has a 65534 parameter limit. Events have ~7 fields, so max safe batch is ~5000.
+const EVENTS_BATCH_SIZE = 5000;
+
 /**
  * Upsert a batch of events. Caller handles batching (e.g., API pagination).
  * Uses ON CONFLICT DO UPDATE to handle existing records.
+ * Automatically chunks large batches to avoid PostgreSQL's 65534 parameter limit.
  */
 export async function upsertEvents(
   db: Database,
@@ -42,22 +46,26 @@ export async function upsertEvents(
 
   const drizzleEvents = dedupedList.map(toNewEvent);
 
-  await db
-    .insert(events)
-    .values(drizzleEvents)
-    .onConflictDoUpdate({
-      target: events.eventTicker,
-      set: {
-        title: sql`excluded.title`,
-        category: sql`excluded.category`,
-        seriesTicker: sql`excluded.series_ticker`,
-        strikeDate: sql`excluded.strike_date`,
-        mutuallyExclusive: sql`excluded.mutually_exclusive`,
-        status: sql`excluded.status`,
-        // updated_at is handled by trigger (only updates when data changes)
-        deletedAt: sql`NULL`,
-      },
-    });
+  // Chunk to avoid PostgreSQL parameter limit (65534)
+  for (let i = 0; i < drizzleEvents.length; i += EVENTS_BATCH_SIZE) {
+    const chunk = drizzleEvents.slice(i, i + EVENTS_BATCH_SIZE);
+    await db
+      .insert(events)
+      .values(chunk)
+      .onConflictDoUpdate({
+        target: events.eventTicker,
+        set: {
+          title: sql`excluded.title`,
+          category: sql`excluded.category`,
+          seriesTicker: sql`excluded.series_ticker`,
+          strikeDate: sql`excluded.strike_date`,
+          mutuallyExclusive: sql`excluded.mutually_exclusive`,
+          status: sql`excluded.status`,
+          // updated_at is handled by trigger (only updates when data changes)
+          deletedAt: sql`NULL`,
+        },
+      });
+  }
 
   return dedupedList.length;
 }

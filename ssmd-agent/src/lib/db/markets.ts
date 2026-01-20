@@ -33,9 +33,13 @@ function toNewMarket(m: ApiMarket): NewMarket {
   };
 }
 
+// PostgreSQL has a 65534 parameter limit. Markets have ~14 fields, so max safe batch is ~3000.
+const MARKETS_BATCH_SIZE = 3000;
+
 /**
  * Upsert a batch of markets. Caller handles batching (e.g., API pagination).
  * Fails if any markets reference missing parent events (FK constraint).
+ * Automatically chunks large batches to avoid PostgreSQL's 65534 parameter limit.
  */
 export async function upsertMarkets(
   db: Database,
@@ -63,28 +67,32 @@ export async function upsertMarkets(
 
   const drizzleMarkets = marketList.map(toNewMarket);
 
-  await db
-    .insert(markets)
-    .values(drizzleMarkets)
-    .onConflictDoUpdate({
-      target: markets.ticker,
-      set: {
-        eventTicker: sql`excluded.event_ticker`,
-        title: sql`excluded.title`,
-        status: sql`excluded.status`,
-        closeTime: sql`excluded.close_time`,
-        yesBid: sql`excluded.yes_bid`,
-        yesAsk: sql`excluded.yes_ask`,
-        noBid: sql`excluded.no_bid`,
-        noAsk: sql`excluded.no_ask`,
-        lastPrice: sql`excluded.last_price`,
-        volume: sql`excluded.volume`,
-        volume24h: sql`excluded.volume_24h`,
-        openInterest: sql`excluded.open_interest`,
-        // updated_at is handled by trigger (only updates when data changes)
-        deletedAt: sql`NULL`,
-      },
-    });
+  // Chunk to avoid PostgreSQL parameter limit (65534)
+  for (let i = 0; i < drizzleMarkets.length; i += MARKETS_BATCH_SIZE) {
+    const chunk = drizzleMarkets.slice(i, i + MARKETS_BATCH_SIZE);
+    await db
+      .insert(markets)
+      .values(chunk)
+      .onConflictDoUpdate({
+        target: markets.ticker,
+        set: {
+          eventTicker: sql`excluded.event_ticker`,
+          title: sql`excluded.title`,
+          status: sql`excluded.status`,
+          closeTime: sql`excluded.close_time`,
+          yesBid: sql`excluded.yes_bid`,
+          yesAsk: sql`excluded.yes_ask`,
+          noBid: sql`excluded.no_bid`,
+          noAsk: sql`excluded.no_ask`,
+          lastPrice: sql`excluded.last_price`,
+          volume: sql`excluded.volume`,
+          volume24h: sql`excluded.volume_24h`,
+          openInterest: sql`excluded.open_interest`,
+          // updated_at is handled by trigger (only updates when data changes)
+          deletedAt: sql`NULL`,
+        },
+      });
+  }
 
   return { total: marketList.length, skipped: 0 };
 }
