@@ -1,11 +1,15 @@
 // archiver-deploy.ts - Archiver CR deployment management
 // Manages Archiver CRs via kubectl (kubernetes deployment lifecycle)
 
+import { kubectl, kubectlStream, getCurrentEnvDisplay, type KubectlOptions } from "../utils/kubectl.ts";
+import { getEnvContext } from "../utils/env-context.ts";
+
 interface ArchiverDeployFlags {
   _: (string | number)[];
   follow?: boolean;
   tail?: string;
   namespace?: string;
+  env?: string;
   wait?: boolean;
   // Flags for 'new' command
   date?: string;
@@ -19,35 +23,36 @@ interface ArchiverDeployFlags {
   output?: string;
 }
 
-const DEFAULT_NAMESPACE = "ssmd";
-
 export async function handleArchiverDeploy(
   subcommand: string,
   flags: ArchiverDeployFlags
 ): Promise<void> {
-  const ns = flags.namespace ?? DEFAULT_NAMESPACE;
+  const opts: KubectlOptions = {
+    env: flags.env,
+    namespace: flags.namespace,
+  };
 
   switch (subcommand) {
     case "new":
-      await newArchiver(flags, ns);
+      await newArchiver(flags, opts);
       break;
     case "deploy":
-      await deployArchiver(flags, ns);
+      await deployArchiver(flags, opts);
       break;
     case "list":
-      await listArchivers(ns);
+      await listArchivers(opts);
       break;
     case "status":
-      await statusArchiver(flags, ns);
+      await statusArchiver(flags, opts);
       break;
     case "logs":
-      await logsArchiver(flags, ns);
+      await logsArchiver(flags, opts);
       break;
     case "delete":
-      await deleteArchiver(flags, ns);
+      await deleteArchiver(flags, opts);
       break;
     case "sync":
-      await syncArchiver(flags, ns);
+      await syncArchiver(flags, opts);
       break;
     default:
       console.error(`Unknown archiver-deploy command: ${subcommand}`);
@@ -58,8 +63,10 @@ export async function handleArchiverDeploy(
 
 const DEFAULT_IMAGE = "ghcr.io/aaronwald/ssmd-archiver:0.4.8";
 
-async function newArchiver(flags: ArchiverDeployFlags, ns: string): Promise<void> {
+async function newArchiver(flags: ArchiverDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
+  const context = await getEnvContext(opts.env);
+  const ns = opts.namespace ?? context.namespace;
 
   if (!name) {
     console.error("Usage: ssmd archiver new <name> --stream <stream> --filter <filter> [options]");
@@ -144,7 +151,7 @@ spec:
   }
 }
 
-async function deployArchiver(flags: ArchiverDeployFlags, ns: string): Promise<void> {
+async function deployArchiver(flags: ArchiverDeployFlags, opts: KubectlOptions): Promise<void> {
   const file = flags._[2] as string;
 
   if (!file) {
@@ -160,10 +167,11 @@ async function deployArchiver(flags: ArchiverDeployFlags, ns: string): Promise<v
     Deno.exit(1);
   }
 
-  console.log(`Deploying Archiver from ${file}...`);
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Deploying Archiver from ${file} to ${envDisplay}...`);
 
   try {
-    const output = await kubectl(["apply", "-f", file, "-n", ns]);
+    const output = await kubectl(["apply", "-f", file], opts);
     console.log(output.trim());
   } catch (e) {
     console.error(`Failed to deploy: ${e instanceof Error ? e.message : e}`);
@@ -171,8 +179,9 @@ async function deployArchiver(flags: ArchiverDeployFlags, ns: string): Promise<v
   }
 }
 
-async function listArchivers(ns: string): Promise<void> {
-  console.log("Archiver CRs:\n");
+async function listArchivers(opts: KubectlOptions): Promise<void> {
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Archiver CRs (${envDisplay}):\n`);
   console.log(
     "NAME".padEnd(30) +
     "DATE".padEnd(12) +
@@ -191,9 +200,9 @@ async function listArchivers(ns: string): Promise<void> {
   try {
     // Get archivers with all needed fields
     const archivers = await kubectl([
-      "get", "archiver", "-n", ns,
+      "get", "archiver",
       "-o", "jsonpath={range .items[*]}{.metadata.name}|{.spec.date}|{.spec.source.stream}|{.status.phase}|{.metadata.creationTimestamp}\\n{end}"
-    ]).catch(() => "");
+    ], opts).catch(() => "");
 
     if (!archivers.trim()) {
       console.log("(no archivers found)");
@@ -219,7 +228,7 @@ async function listArchivers(ns: string): Promise<void> {
   }
 }
 
-async function statusArchiver(flags: ArchiverDeployFlags, ns: string): Promise<void> {
+async function statusArchiver(flags: ArchiverDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -230,8 +239,8 @@ async function statusArchiver(flags: ArchiverDeployFlags, ns: string): Promise<v
   try {
     // Get full Archiver CR as JSON
     const archiverJson = await kubectl([
-      "get", "archiver", name, "-n", ns, "-o", "json"
-    ]);
+      "get", "archiver", name, "-o", "json"
+    ], opts);
 
     const archiver = JSON.parse(archiverJson);
 
@@ -366,7 +375,7 @@ async function statusArchiver(flags: ArchiverDeployFlags, ns: string): Promise<v
   }
 }
 
-async function logsArchiver(flags: ArchiverDeployFlags, ns: string): Promise<void> {
+async function logsArchiver(flags: ArchiverDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -377,15 +386,15 @@ async function logsArchiver(flags: ArchiverDeployFlags, ns: string): Promise<voi
   try {
     // First get the deployment name from the Archiver CR
     const deploymentName = await kubectl([
-      "get", "archiver", name, "-n", ns,
+      "get", "archiver", name,
       "-o", "jsonpath={.status.deployment}"
-    ]).catch(() => "");
+    ], opts).catch(() => "");
 
     // If no deployment in status, try the conventional name
     const targetDeployment = deploymentName.trim() || `archiver-${name}`;
 
     // Build kubectl logs args
-    const logsArgs = ["logs", "-n", ns, `deployment/${targetDeployment}`];
+    const logsArgs = ["logs", `deployment/${targetDeployment}`];
 
     if (flags.follow) {
       logsArgs.push("-f");
@@ -396,14 +405,14 @@ async function logsArchiver(flags: ArchiverDeployFlags, ns: string): Promise<voi
     }
 
     // Stream logs directly to stdout/stderr
-    await kubectlStream(logsArgs);
+    await kubectlStream(logsArgs, opts);
   } catch (e) {
     console.error(`Failed to get logs: ${e instanceof Error ? e.message : e}`);
     Deno.exit(1);
   }
 }
 
-async function deleteArchiver(flags: ArchiverDeployFlags, ns: string): Promise<void> {
+async function deleteArchiver(flags: ArchiverDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -411,10 +420,11 @@ async function deleteArchiver(flags: ArchiverDeployFlags, ns: string): Promise<v
     Deno.exit(1);
   }
 
-  console.log(`Deleting Archiver ${name}...`);
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Deleting Archiver ${name} from ${envDisplay}...`);
 
   try {
-    await kubectl(["delete", "archiver", name, "-n", ns]);
+    await kubectl(["delete", "archiver", name], opts);
     console.log(`Archiver ${name} deleted`);
   } catch (e) {
     console.error(`Failed to delete archiver: ${e instanceof Error ? e.message : e}`);
@@ -422,21 +432,24 @@ async function deleteArchiver(flags: ArchiverDeployFlags, ns: string): Promise<v
   }
 }
 
-async function syncArchiver(flags: ArchiverDeployFlags, ns: string): Promise<void> {
+async function syncArchiver(flags: ArchiverDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
+  const context = await getEnvContext(opts.env);
+  const ns = opts.namespace ?? context.namespace;
 
   if (!name) {
     console.error("Usage: ssmd archiver sync <name> [--wait]");
     Deno.exit(1);
   }
 
-  console.log(`Creating GCS sync job for archiver ${name}...`);
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Creating GCS sync job for archiver ${name} in ${envDisplay}...`);
 
   try {
     // Get the archiver CR to read sync config
     const archiverJson = await kubectl([
-      "get", "archiver", name, "-n", ns, "-o", "json"
-    ]);
+      "get", "archiver", name, "-o", "json"
+    ], opts);
     const archiver = JSON.parse(archiverJson);
 
     // Validate sync is configured
@@ -463,7 +476,7 @@ async function syncArchiver(flags: ArchiverDeployFlags, ns: string): Promise<voi
 
     // Delete existing sync job if any
     const jobName = `${name}-sync`;
-    await kubectl(["delete", "job", jobName, "-n", ns, "--ignore-not-found"]).catch(() => {});
+    await kubectl(["delete", "job", jobName, "--ignore-not-found"], opts).catch(() => {});
 
     // Create sync job YAML
     const jobYaml = `apiVersion: batch/v1
@@ -519,9 +532,9 @@ spec:
             secretName: ${secretRef}
 `;
 
-    // Apply the job
+    // Apply the job using kubectl with context
     const applyCmd = new Deno.Command("kubectl", {
-      args: ["apply", "-f", "-", "-n", ns],
+      args: ["--context", context.cluster, "-n", ns, "apply", "-f", "-"],
       stdin: "piped",
       stdout: "piped",
       stderr: "piped",
@@ -544,7 +557,7 @@ spec:
     // Wait for job if requested
     if (flags.wait) {
       console.log("\nWaiting for sync job to complete...");
-      await waitForJob(jobName, ns, 600); // 10 minute timeout
+      await waitForJob(jobName, opts, 600); // 10 minute timeout
     } else {
       console.log(`\nMonitor with: kubectl logs -n ${ns} job/${jobName} -f`);
     }
@@ -554,15 +567,15 @@ spec:
   }
 }
 
-async function waitForJob(name: string, ns: string, timeoutSec: number): Promise<void> {
+async function waitForJob(name: string, opts: KubectlOptions, timeoutSec: number): Promise<void> {
   const start = Date.now();
 
   while (Date.now() - start < timeoutSec * 1000) {
     try {
       const status = await kubectl([
-        "get", "job", name, "-n", ns,
+        "get", "job", name,
         "-o", "jsonpath={.status.succeeded},{.status.failed}"
-      ]);
+      ], opts);
 
       const [succeeded, failed] = status.split(",").map(s => parseInt(s) || 0);
 
@@ -573,7 +586,8 @@ async function waitForJob(name: string, ns: string, timeoutSec: number): Promise
 
       if (failed > 0) {
         console.error("Sync job failed");
-        console.log(`Check logs: kubectl logs -n ${ns} job/${name}`);
+        const context = await getEnvContext(opts.env);
+        console.log(`Check logs: kubectl logs -n ${context.namespace} job/${name}`);
         Deno.exit(1);
       }
     } catch {
@@ -588,32 +602,6 @@ async function waitForJob(name: string, ns: string, timeoutSec: number): Promise
 }
 
 // Helper functions
-
-async function kubectl(args: string[]): Promise<string> {
-  const cmd = new Deno.Command("kubectl", { args, stdout: "piped", stderr: "piped" });
-  const { stdout, stderr, code } = await cmd.output();
-
-  if (code !== 0) {
-    const err = new TextDecoder().decode(stderr);
-    throw new Error(`kubectl failed: ${err}`);
-  }
-
-  return new TextDecoder().decode(stdout);
-}
-
-async function kubectlStream(args: string[]): Promise<void> {
-  const cmd = new Deno.Command("kubectl", {
-    args,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-
-  const { code } = await cmd.output();
-
-  if (code !== 0) {
-    throw new Error(`kubectl logs failed with code ${code}`);
-  }
-}
 
 export function formatAge(timestamp: string): string {
   const created = new Date(timestamp);
@@ -647,7 +635,7 @@ function formatBytes(bytes: number): string {
 }
 
 export function printArchiverDeployHelp(): void {
-  console.log("Usage: ssmd archiver <command> [options]");
+  console.log("Usage: ssmd [--env <env>] archiver <command> [options]");
   console.log();
   console.log("Kubernetes Archiver CR Management Commands:");
   console.log("  new <name>             Generate a new Archiver CR YAML");
@@ -670,7 +658,8 @@ export function printArchiverDeployHelp(): void {
   console.log("  --output <file>        Output file (default: stdout)");
   console.log();
   console.log("Options for other commands:");
-  console.log("  --namespace NS         Kubernetes namespace (default: ssmd)");
+  console.log("  --env <env>            Target environment (default: current from 'ssmd env')");
+  console.log("  --namespace NS         Override namespace (default: from environment)");
   console.log("  --follow, -f           Follow log output (logs command)");
   console.log("  --tail N               Number of lines to show (logs command)");
   console.log();
@@ -682,7 +671,7 @@ export function printArchiverDeployHelp(): void {
   console.log("    --stream PROD_KALSHI --filter prod.kalshi.main.json.> \\");
   console.log("    --output archiver.yaml");
   console.log("  ssmd archiver deploy archiver.yaml");
-  console.log("  ssmd archiver list");
+  console.log("  ssmd --env dev archiver list");
   console.log("  ssmd archiver status kalshi-2026-01-05");
   console.log("  ssmd archiver logs kalshi-2026-01-05 --follow --tail 100");
   console.log("  ssmd archiver sync kalshi-archiver");

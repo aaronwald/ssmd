@@ -22,10 +22,11 @@ import { handleArchiverDeploy } from "./archiver-deploy.ts";
 import { handleScale } from "./scale.ts";
 import { handleSchedule } from "./schedule.ts";
 import { handleStatus } from "./status.ts";
+import { handleEnv } from "./env.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
-    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag"],
+    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag", "env"],
     boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait", "follow", "games-only", "by-series"],
     alias: { h: "help", v: "version", t: "type", e: "endpoint", f: "follow" },
     default: { wait: true },
@@ -112,6 +113,10 @@ export async function run(args: string[]): Promise<void> {
       await handleStatus(flags);
       break;
 
+    case "env":
+      await handleEnv(subcommand, flags);
+      break;
+
     case "agent":
       // Launch the existing agent REPL
       await import("../../cli.ts");
@@ -183,9 +188,10 @@ function printHelp(): void {
   console.log("ssmd - Market data CLI and agent");
   console.log("");
   console.log("USAGE:");
-  console.log("  ssmd <command> [options]");
+  console.log("  ssmd [--env <name>] <command> [options]");
   console.log("");
   console.log("COMMANDS:");
+  console.log("  env               Manage environment contexts (list, use, current, show)");
   console.log("  status            Show cluster status overview");
   console.log("  init              Initialize exchanges directory");
   console.log("  feed              Manage feed configurations");
@@ -202,6 +208,7 @@ function printHelp(): void {
   console.log("  agent             Start interactive agent REPL");
   console.log("");
   console.log("OPTIONS:");
+  console.log("  --env <name>      Override current environment for this command");
   console.log("  -h, --help        Show this help message");
   console.log("  -v, --version     Show version");
 }

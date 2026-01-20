@@ -1,36 +1,40 @@
 // signal-deploy.ts - Signal CR deployment management
 // Manages Signal CRs via kubectl (kubernetes deployment lifecycle)
 
+import { kubectl, kubectlStream, getCurrentEnvDisplay, type KubectlOptions } from "../utils/kubectl.ts";
+
 interface SignalDeployFlags {
   _: (string | number)[];
   follow?: boolean;
   tail?: string;
   namespace?: string;
+  env?: string;
 }
-
-const DEFAULT_NAMESPACE = "ssmd";
 
 export async function handleSignalDeploy(
   subcommand: string,
   flags: SignalDeployFlags
 ): Promise<void> {
-  const ns = flags.namespace ?? DEFAULT_NAMESPACE;
+  const opts: KubectlOptions = {
+    env: flags.env,
+    namespace: flags.namespace,
+  };
 
   switch (subcommand) {
     case "deploy":
-      await deploySignal(flags, ns);
+      await deploySignal(flags, opts);
       break;
     case "list":
-      await listSignals(ns);
+      await listSignals(opts);
       break;
     case "status":
-      await statusSignal(flags, ns);
+      await statusSignal(flags, opts);
       break;
     case "logs":
-      await logsSignal(flags, ns);
+      await logsSignal(flags, opts);
       break;
     case "delete":
-      await deleteSignal(flags, ns);
+      await deleteSignal(flags, opts);
       break;
     default:
       console.error(`Unknown signal-deploy command: ${subcommand}`);
@@ -39,7 +43,7 @@ export async function handleSignalDeploy(
   }
 }
 
-async function deploySignal(flags: SignalDeployFlags, ns: string): Promise<void> {
+async function deploySignal(flags: SignalDeployFlags, opts: KubectlOptions): Promise<void> {
   const file = flags._[2] as string;
 
   if (!file) {
@@ -55,10 +59,11 @@ async function deploySignal(flags: SignalDeployFlags, ns: string): Promise<void>
     Deno.exit(1);
   }
 
-  console.log(`Deploying Signal from ${file}...`);
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Deploying Signal from ${file} to ${envDisplay}...`);
 
   try {
-    const output = await kubectl(["apply", "-f", file, "-n", ns]);
+    const output = await kubectl(["apply", "-f", file], opts);
     console.log(output.trim());
   } catch (e) {
     console.error(`Failed to deploy: ${e instanceof Error ? e.message : e}`);
@@ -66,17 +71,18 @@ async function deploySignal(flags: SignalDeployFlags, ns: string): Promise<void>
   }
 }
 
-async function listSignals(ns: string): Promise<void> {
-  console.log("Signal CRs:\n");
+async function listSignals(opts: KubectlOptions): Promise<void> {
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Signal CRs (${envDisplay}):\n`);
   console.log("NAME".padEnd(25) + "SIGNALS".padEnd(30) + "STREAM".padEnd(20) + "PHASE".padEnd(12) + "AGE");
   console.log("----".padEnd(25) + "-------".padEnd(30) + "------".padEnd(20) + "-----".padEnd(12) + "---");
 
   try {
     // Get signals with all needed fields
     const signals = await kubectl([
-      "get", "signal", "-n", ns,
+      "get", "signal",
       "-o", "jsonpath={range .items[*]}{.metadata.name}|{.spec.signals}|{.spec.source.stream}|{.status.phase}|{.metadata.creationTimestamp}\\n{end}"
-    ]).catch(() => "");
+    ], opts).catch(() => "");
 
     if (!signals.trim()) {
       console.log("(no signals found)");
@@ -113,7 +119,7 @@ async function listSignals(ns: string): Promise<void> {
   }
 }
 
-async function statusSignal(flags: SignalDeployFlags, ns: string): Promise<void> {
+async function statusSignal(flags: SignalDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -124,8 +130,8 @@ async function statusSignal(flags: SignalDeployFlags, ns: string): Promise<void>
   try {
     // Get full Signal CR as JSON
     const signalJson = await kubectl([
-      "get", "signal", name, "-n", ns, "-o", "json"
-    ]);
+      "get", "signal", name, "-o", "json"
+    ], opts);
 
     const signal = JSON.parse(signalJson);
 
@@ -193,7 +199,7 @@ async function statusSignal(flags: SignalDeployFlags, ns: string): Promise<void>
   }
 }
 
-async function logsSignal(flags: SignalDeployFlags, ns: string): Promise<void> {
+async function logsSignal(flags: SignalDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -204,15 +210,15 @@ async function logsSignal(flags: SignalDeployFlags, ns: string): Promise<void> {
   try {
     // First get the deployment name from the Signal CR
     const deploymentName = await kubectl([
-      "get", "signal", name, "-n", ns,
+      "get", "signal", name,
       "-o", "jsonpath={.status.deployment}"
-    ]).catch(() => "");
+    ], opts).catch(() => "");
 
     // If no deployment in status, try the conventional name
     const targetDeployment = deploymentName.trim() || `signal-${name}`;
 
     // Build kubectl logs args
-    const logsArgs = ["logs", "-n", ns, `deployment/${targetDeployment}`];
+    const logsArgs = ["logs", `deployment/${targetDeployment}`];
 
     if (flags.follow) {
       logsArgs.push("-f");
@@ -223,14 +229,14 @@ async function logsSignal(flags: SignalDeployFlags, ns: string): Promise<void> {
     }
 
     // Stream logs directly to stdout/stderr
-    await kubectlStream(logsArgs);
+    await kubectlStream(logsArgs, opts);
   } catch (e) {
     console.error(`Failed to get logs: ${e instanceof Error ? e.message : e}`);
     Deno.exit(1);
   }
 }
 
-async function deleteSignal(flags: SignalDeployFlags, ns: string): Promise<void> {
+async function deleteSignal(flags: SignalDeployFlags, opts: KubectlOptions): Promise<void> {
   const name = flags._[2] as string;
 
   if (!name) {
@@ -238,10 +244,11 @@ async function deleteSignal(flags: SignalDeployFlags, ns: string): Promise<void>
     Deno.exit(1);
   }
 
-  console.log(`Deleting Signal ${name}...`);
+  const envDisplay = await getCurrentEnvDisplay(opts.env);
+  console.log(`Deleting Signal ${name} from ${envDisplay}...`);
 
   try {
-    await kubectl(["delete", "signal", name, "-n", ns]);
+    await kubectl(["delete", "signal", name], opts);
     console.log(`Signal ${name} deleted`);
   } catch (e) {
     console.error(`Failed to delete signal: ${e instanceof Error ? e.message : e}`);
@@ -250,32 +257,6 @@ async function deleteSignal(flags: SignalDeployFlags, ns: string): Promise<void>
 }
 
 // Helper functions
-
-async function kubectl(args: string[]): Promise<string> {
-  const cmd = new Deno.Command("kubectl", { args, stdout: "piped", stderr: "piped" });
-  const { stdout, stderr, code } = await cmd.output();
-
-  if (code !== 0) {
-    const err = new TextDecoder().decode(stderr);
-    throw new Error(`kubectl failed: ${err}`);
-  }
-
-  return new TextDecoder().decode(stdout);
-}
-
-async function kubectlStream(args: string[]): Promise<void> {
-  const cmd = new Deno.Command("kubectl", {
-    args,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-
-  const { code } = await cmd.output();
-
-  if (code !== 0) {
-    throw new Error(`kubectl logs failed with code ${code}`);
-  }
-}
 
 export function formatAge(timestamp: string): string {
   const created = new Date(timestamp);
@@ -299,7 +280,7 @@ export function formatAge(timestamp: string): string {
 }
 
 export function printSignalDeployHelp(): void {
-  console.log("Usage: ssmd signal <deploy-command> [options]");
+  console.log("Usage: ssmd [--env <env>] signal <deploy-command> [options]");
   console.log();
   console.log("Kubernetes Signal CR Management Commands:");
   console.log("  deploy <file.yaml>     Deploy a Signal CR from YAML file");
@@ -309,13 +290,14 @@ export function printSignalDeployHelp(): void {
   console.log("  delete <name>          Delete a Signal CR");
   console.log();
   console.log("Options:");
-  console.log("  --namespace NS         Kubernetes namespace (default: ssmd)");
+  console.log("  --env <env>            Target environment (default: current from 'ssmd env')");
+  console.log("  --namespace NS         Override namespace (default: from environment)");
   console.log("  --follow, -f           Follow log output (logs command)");
   console.log("  --tail N               Number of lines to show (logs command)");
   console.log();
   console.log("Examples:");
   console.log("  ssmd signal deploy signals/my-signal/signal.yaml");
-  console.log("  ssmd signal list");
+  console.log("  ssmd --env dev signal list");
   console.log("  ssmd signal status my-signal");
   console.log("  ssmd signal logs my-signal --follow --tail 100");
   console.log("  ssmd signal delete my-signal");
