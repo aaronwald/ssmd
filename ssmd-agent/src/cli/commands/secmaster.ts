@@ -274,7 +274,7 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
       seriesList = await getSeriesByCategory(options.category, isGamesOnly);
     } else if (options.tags && options.tags.length > 0) {
       console.log(`\n[Series] Fetching series for tags: ${options.tags.join(", ")}`);
-      seriesList = await getSeriesByTags(options.tags, true); // gamesOnly for sports
+      seriesList = await getSeriesByTags(options.tags, false); // include all series with tag
     } else {
       console.log(`\n[Series] Fetching all active series from database...`);
       seriesList = await getAllActiveSeries();
