@@ -6,6 +6,7 @@ interface ArchiverDeployFlags {
   follow?: boolean;
   tail?: string;
   namespace?: string;
+  wait?: boolean;
   // Flags for 'new' command
   date?: string;
   stream?: string;
