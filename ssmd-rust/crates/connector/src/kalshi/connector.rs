@@ -594,7 +594,7 @@ mod tests {
         use rsa::RsaPrivateKey;
         use rsa::pkcs8::EncodePrivateKey;
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand_core::OsRng;
         let key = RsaPrivateKey::new(&mut rng, 2048).expect("failed to generate key");
         let pem = key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).expect("failed to encode");
 
