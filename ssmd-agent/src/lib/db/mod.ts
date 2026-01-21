@@ -46,8 +46,10 @@ export {
   getMarket,
   getMarketStats,
   getMarketTimeseries,
+  getActiveMarketsByCategoryTimeseries,
   type UpsertResult,
   type MarketDayActivity,
+  type ActiveByCategoryDay,
 } from "./markets.ts";
 
 // Fee operations

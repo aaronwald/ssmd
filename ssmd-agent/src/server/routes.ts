@@ -10,6 +10,7 @@ import {
   getMarket,
   getMarketStats,
   getMarketTimeseries,
+  getActiveMarketsByCategoryTimeseries,
   getCurrentFee,
   getFeeAsOf,
   listCurrentFees,
@@ -184,6 +185,16 @@ route("GET", "/v1/secmaster/markets/timeseries", async (req, ctx) => {
     ? parseInt(url.searchParams.get("days")!)
     : 30;
   const timeseries = await getMarketTimeseries(ctx.db, days);
+  return json({ timeseries });
+}, true, "secmaster:read");
+
+// Active markets by category over time
+route("GET", "/v1/secmaster/markets/active-by-category", async (req, ctx) => {
+  const url = new URL(req.url);
+  const days = url.searchParams.get("days")
+    ? parseInt(url.searchParams.get("days")!)
+    : 7;
+  const timeseries = await getActiveMarketsByCategoryTimeseries(ctx.db, days);
   return json({ timeseries });
 }, true, "secmaster:read");
 
