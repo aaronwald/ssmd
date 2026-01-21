@@ -11,7 +11,7 @@ thiserror = { workspace = true }
 bytes = { workspace = true }
 tracing = { workspace = true }
 futures-util = { workspace = true }
-md5 = "0.7"
+md5 = "0.8"
 ssmd-metadata = { path = "../metadata" }
 quanta = { workspace = true }
 dashmap = { workspace = true }
