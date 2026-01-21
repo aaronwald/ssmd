@@ -1,6 +1,4 @@
--- Migration: Add guardrail settings
--- Run with: kubectl exec -n ssmd deployment/ssmd-data-ts -- psql $DATABASE_URL -f -
-
+-- migrate:up
 -- Add description column if it doesn't exist
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS description TEXT;
 
@@ -11,3 +9,7 @@ INSERT INTO settings (key, value, description) VALUES
   ('guardrail_trading_approval', 'true', 'Require human approval for trading tool calls'),
   ('guardrail_max_messages', '50', 'Maximum messages to keep in context window')
 ON CONFLICT (key) DO NOTHING;
+
+-- migrate:down
+DELETE FROM settings WHERE key LIKE 'guardrail_%';
+ALTER TABLE settings DROP COLUMN IF EXISTS description;

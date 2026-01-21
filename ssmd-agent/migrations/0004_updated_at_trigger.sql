@@ -1,6 +1,4 @@
--- Migration: Add trigger to only update updated_at when data actually changes
--- This prevents CDC spam from secmaster syncs that don't modify data
-
+-- migrate:up
 -- Trigger function for events table
 CREATE OR REPLACE FUNCTION events_update_timestamp()
 RETURNS TRIGGER AS $$
@@ -52,3 +50,9 @@ CREATE TRIGGER markets_updated_at_trigger
     BEFORE UPDATE ON markets
     FOR EACH ROW
     EXECUTE FUNCTION markets_update_timestamp();
+
+-- migrate:down
+DROP TRIGGER IF EXISTS markets_updated_at_trigger ON markets;
+DROP TRIGGER IF EXISTS events_updated_at_trigger ON events;
+DROP FUNCTION IF EXISTS markets_update_timestamp();
+DROP FUNCTION IF EXISTS events_update_timestamp();

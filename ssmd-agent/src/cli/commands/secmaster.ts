@@ -9,6 +9,7 @@ import { createKalshiClient } from "../../lib/api/kalshi.ts";
 
 const API_TIMEOUT_MS = 10000;
 
+
 function getApiUrl(): string {
   return Deno.env.get("SSMD_API_URL") ?? "http://localhost:8080";
 }
@@ -48,6 +49,8 @@ export interface SyncOptions {
   category?: string;
   /** Filter to specific tags (for series-based sync) */
   tags?: string[];
+  /** Minimum volume threshold for series (filters low-activity series) */
+  minVolume?: number;
 }
 
 /**
@@ -253,6 +256,11 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
 /**
  * Run series-based secmaster sync (faster, targeted approach)
  * Uses fetchEventsBySeries with nested markets for efficiency.
+ *
+ * Error handling:
+ * - Per-series try/catch: continues on single failure
+ * - Fail-fast: aborts after 3 consecutive failures (API likely down)
+ * - Progress markers: PROGRESS:series:N/total:ticker for Temporal heartbeats
  */
 export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<SyncResult> {
   const startTime = Date.now();
@@ -265,25 +273,33 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
     totalDurationMs: 0,
   };
 
+  // Track errors for fail-fast behavior
+  let consecutiveErrors = 0;
+  const errors: Array<{ ticker: string; error: string }> = [];
+  const FAIL_FAST_THRESHOLD = 3;
+
   try {
-    // Get series from database (filtered by category or tags if specified)
-    let seriesList;
+    // Get series from database (filtered by category, tags, and/or minVolume)
+    let seriesList: Array<{ ticker: string }>;
+    const volFilter = options.minVolume ? `, minVolume=${options.minVolume}` : "";
+
     if (options.category) {
       const isGamesOnly = options.category === "Sports";
-      console.log(`\n[Series] Fetching series for category: ${options.category}${isGamesOnly ? " (games only)" : ""}`);
-      seriesList = await getSeriesByCategory(options.category, isGamesOnly);
+      console.log(`\n[Series] Fetching series for category: ${options.category}${isGamesOnly ? " (games only)" : ""}${volFilter}`);
+      seriesList = await getSeriesByCategory(options.category, isGamesOnly, options.minVolume);
     } else if (options.tags && options.tags.length > 0) {
-      console.log(`\n[Series] Fetching series for tags: ${options.tags.join(", ")}`);
-      seriesList = await getSeriesByTags(options.tags, false); // include all series with tag
+      console.log(`\n[Series] Fetching series for tags: ${options.tags.join(", ")}${volFilter}`);
+      seriesList = await getSeriesByTags(options.tags, false);
     } else {
-      console.log(`\n[Series] Fetching all active series from database...`);
-      seriesList = await getAllActiveSeries();
+      console.log(`\n[Series] Fetching all active series from database...${volFilter}`);
+      seriesList = await getAllActiveSeries(options.minVolume);
     }
 
     console.log(`[Series] Found ${seriesList.length} series to sync`);
 
     if (seriesList.length === 0) {
       console.log("[Series] No series found. Run 'ssmd series sync' first.");
+      console.log(`PROGRESS:complete:events=0,markets=0,errors=0`);
       result.totalDurationMs = Date.now() - startTime;
       return result;
     }
@@ -291,31 +307,65 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
     // Sync each series: fetch events with nested markets, upsert events first, then markets
     // Sync open, closed, and settled events
     const statuses: Array<"open" | "closed" | "settled"> = ["open", "closed", "settled"];
+    const total = seriesList.length;
 
-    for (const s of seriesList) {
-      console.log(`\n[${s.ticker}] Syncing...`);
+    for (let i = 0; i < seriesList.length; i++) {
+      const s = seriesList[i];
 
-      for (const status of statuses) {
-        for await (const batch of client.fetchEventsBySeries(s.ticker, status)) {
-          result.events.fetched += batch.events.length;
-          result.markets.fetched += batch.markets.length;
+      // Emit progress marker for Temporal heartbeat
+      console.log(`PROGRESS:series:${i + 1}/${total}:${s.ticker}`);
 
-          if (!options.dryRun) {
-            // Upsert events first (FK constraint)
-            if (batch.events.length > 0) {
-              result.events.upserted += await upsertEvents(db, batch.events);
-            }
-            // Then upsert markets
-            if (batch.markets.length > 0) {
-              const marketResult = await bulkUpsertMarkets(db, batch.markets);
-              result.markets.upserted += marketResult.total;
+      try {
+        for (const status of statuses) {
+          for await (const batch of client.fetchEventsBySeries(s.ticker, status)) {
+            result.events.fetched += batch.events.length;
+            result.markets.fetched += batch.markets.length;
+
+            if (!options.dryRun) {
+              // Upsert events first (FK constraint)
+              if (batch.events.length > 0) {
+                result.events.upserted += await upsertEvents(db, batch.events);
+              }
+              // Then upsert markets
+              if (batch.markets.length > 0) {
+                const marketResult = await bulkUpsertMarkets(db, batch.markets);
+                result.markets.upserted += marketResult.total;
+              }
             }
           }
+        }
+        // Success - reset consecutive error counter
+        consecutiveErrors = 0;
+      } catch (err) {
+        consecutiveErrors++;
+        const errorMsg = String(err).slice(0, 200);
+        errors.push({ ticker: s.ticker, error: errorMsg });
+        console.log(`PROGRESS:error:${s.ticker}:${errorMsg}`);
+
+        // Fail-fast: abort after N consecutive failures
+        if (consecutiveErrors >= FAIL_FAST_THRESHOLD) {
+          console.log(`PROGRESS:fatal:${FAIL_FAST_THRESHOLD} consecutive failures - aborting`);
+          throw new Error(
+            `Aborting: ${FAIL_FAST_THRESHOLD} consecutive failures. Last error on ${s.ticker}: ${errorMsg}`
+          );
         }
       }
     }
 
     result.totalDurationMs = Date.now() - startTime;
+
+    // Emit completion marker
+    console.log(`PROGRESS:complete:events=${result.events.upserted},markets=${result.markets.upserted},errors=${errors.length}`);
+
+    if (errors.length > 0) {
+      console.log(`\n[Warning] ${errors.length} series failed (non-consecutive):`);
+      for (const e of errors.slice(0, 10)) {
+        console.log(`  - ${e.ticker}: ${e.error.slice(0, 80)}`);
+      }
+      if (errors.length > 10) {
+        console.log(`  ... and ${errors.length - 10} more`);
+      }
+    }
 
     console.log(
       `\n[Done] Synced ${result.events.upserted} events, ${result.markets.upserted} markets`
@@ -581,6 +631,7 @@ export async function handleSecmaster(
         bySeries: Boolean(flags["by-series"]),
         category: flags.category ? String(flags.category) : undefined,
         tags: tags.length > 0 ? tags : undefined,
+        minVolume: flags["min-volume"] ? Number(flags["min-volume"]) : undefined,
       };
 
       if (options.eventsOnly && options.marketsOnly) {
@@ -659,6 +710,7 @@ export async function handleSecmaster(
       console.log("  --by-series      Use series-based sync (fast, targeted)");
       console.log("  --category=X     Filter by category (with --by-series)");
       console.log("  --tag=X          Filter to specific tags (with --by-series)");
+      console.log("  --min-volume=N   Only sync series with volume >= N");
       console.log("  --active-only    Only sync active/open records (legacy mode)");
       console.log("  --events-only    Only sync events");
       console.log("  --markets-only   Only sync markets");

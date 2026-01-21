@@ -100,6 +100,7 @@ export const series = pgTable("series", {
   tags: text("tags").array(), // Array of tags from Kalshi API
   isGame: boolean("is_game").notNull().default(false), // For Sports: GAME/MATCH in ticker
   active: boolean("active").notNull().default(true), // Soft disable for filtering
+  volume: bigint("volume", { mode: "number" }).notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

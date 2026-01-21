@@ -83,8 +83,8 @@ export async function runSeriesSync(options: SeriesSyncOptions = {}): Promise<Se
 
       if (!tags || tags.length === 0) {
         console.log(`[Series] No tags found for ${category}, fetching all...`);
-        // Fetch without tag filter
-        const series = await client.fetchAllSeries(category);
+        // Fetch without tag filter, with volume
+        const series = await client.fetchAllSeries(category, undefined, true);
         result.fetched += series.length;
 
         for (const s of series) {
@@ -106,6 +106,7 @@ export async function runSeriesSync(options: SeriesSyncOptions = {}): Promise<Se
             tags: s.tags || [],
             isGame,
             active: true,
+            volume: s.volume ?? 0,
           });
         }
         continue;
@@ -115,7 +116,7 @@ export async function runSeriesSync(options: SeriesSyncOptions = {}): Promise<Se
 
       for (const tag of tags) {
         console.log(`[Series] Fetching ${category}/${tag}...`);
-        const series = await client.fetchAllSeries(category, tag);
+        const series = await client.fetchAllSeries(category, tag, true);
         result.fetched += series.length;
 
         for (const s of series) {
@@ -138,6 +139,7 @@ export async function runSeriesSync(options: SeriesSyncOptions = {}): Promise<Se
             tags: s.tags || [tag],
             isGame,
             active: true,
+            volume: s.volume ?? 0,
           });
         }
       }

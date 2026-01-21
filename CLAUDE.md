@@ -40,6 +40,52 @@ make agent-test     # Run agent tests
 make agent-run      # Start agent REPL (requires ANTHROPIC_API_KEY)
 ```
 
+### Database Migrations (dbmate)
+
+Migrations are in `ssmd-agent/migrations/` and managed by [dbmate](https://github.com/amacneil/dbmate).
+
+```bash
+cd ssmd-agent
+
+# Check migration status
+deno task db:status
+
+# Apply pending migrations
+deno task db:migrate
+
+# Rollback last migration
+deno task db:rollback
+
+# Create new migration
+deno task db:new <name>
+```
+
+**Applying to Kubernetes environments:**
+
+```bash
+# 1. Port-forward to the target database
+kubectl port-forward -n ssmd-dev svc/ssmd-postgres 5433:5432
+
+# 2. Get credentials
+kubectl get secret -n ssmd-dev ssmd-postgres-auth -o jsonpath='{.data.database-url}' | base64 -d
+
+# 3. Run migrations (replace credentials)
+DATABASE_URL="postgresql://ssmd:<password>@localhost:5433/ssmd?sslmode=disable" dbmate -d ./migrations --no-dump-schema up
+
+# 4. Check status
+DATABASE_URL="postgresql://ssmd:<password>@localhost:5433/ssmd?sslmode=disable" dbmate -d ./migrations status
+```
+
+**Migration file format:**
+
+```sql
+-- migrate:up
+CREATE TABLE example (...);
+
+-- migrate:down
+DROP TABLE example;
+```
+
 ## Prerequisites
 
 ```bash
