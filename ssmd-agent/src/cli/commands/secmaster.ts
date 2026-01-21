@@ -419,9 +419,20 @@ interface SecmasterStats {
 }
 
 /**
+ * Active by category timeseries response
+ */
+interface ActiveByCategoryResponse {
+  timeseries: Array<{
+    date: string;
+    categories: Record<string, number>;
+    total: number;
+  }>;
+}
+
+/**
  * Show secmaster statistics
  */
-async function showStats(): Promise<void> {
+async function showStats(days?: number): Promise<void> {
   const stats = await apiRequest<SecmasterStats>("/v1/secmaster/stats");
 
   console.log("\n=== Secmaster Statistics ===\n");
@@ -448,6 +459,81 @@ async function showStats(): Promise<void> {
     for (const [status, count] of Object.entries(stats.markets.by_status)) {
       console.log(`    ${status}: ${count}`);
     }
+  }
+
+  // Show active markets by category over time
+  if (days && days > 0) {
+    await showActiveByCategory(days);
+  }
+}
+
+/**
+ * Show active markets by category over time as a table
+ */
+async function showActiveByCategory(days: number): Promise<void> {
+  const data = await apiRequest<ActiveByCategoryResponse>(
+    `/v1/secmaster/markets/active-by-category?days=${days}`
+  );
+
+  if (data.timeseries.length === 0) {
+    console.log("\nNo active market history data available.");
+    return;
+  }
+
+  // Collect all unique categories across all days
+  const allCategories = new Set<string>();
+  for (const day of data.timeseries) {
+    for (const cat of Object.keys(day.categories)) {
+      allCategories.add(cat);
+    }
+  }
+
+  // Sort categories by total count in most recent day (descending)
+  const lastDay = data.timeseries[data.timeseries.length - 1];
+  const sortedCategories = Array.from(allCategories).sort((a, b) => {
+    return (lastDay.categories[b] || 0) - (lastDay.categories[a] || 0);
+  });
+
+  // Calculate column widths
+  const dateWidth = 10; // YYYY-MM-DD
+  const categoryWidths: Record<string, number> = {};
+  for (const cat of sortedCategories) {
+    // Width is max of category name or largest number
+    let maxVal = 0;
+    for (const day of data.timeseries) {
+      maxVal = Math.max(maxVal, day.categories[cat] || 0);
+    }
+    categoryWidths[cat] = Math.max(cat.length, String(maxVal).length);
+  }
+  const totalWidth = Math.max(5, String(lastDay.total).length);
+
+  // Print header
+  console.log(`\n=== Active Markets by Category (Last ${days} Days) ===\n`);
+
+  let header = "Date".padEnd(dateWidth);
+  for (const cat of sortedCategories) {
+    header += " | " + cat.padStart(categoryWidths[cat]);
+  }
+  header += " | " + "Total".padStart(totalWidth);
+  console.log(header);
+
+  // Print separator
+  let separator = "-".repeat(dateWidth);
+  for (const cat of sortedCategories) {
+    separator += "-+-" + "-".repeat(categoryWidths[cat]);
+  }
+  separator += "-+-" + "-".repeat(totalWidth);
+  console.log(separator);
+
+  // Print rows
+  for (const day of data.timeseries) {
+    let row = day.date.padEnd(dateWidth);
+    for (const cat of sortedCategories) {
+      const val = day.categories[cat] || 0;
+      row += " | " + String(val).padStart(categoryWidths[cat]);
+    }
+    row += " | " + String(day.total).padStart(totalWidth);
+    console.log(row);
   }
 }
 
@@ -656,8 +742,9 @@ export async function handleSecmaster(
     }
 
     case "stats": {
+      const days = flags.days ? Number(flags.days) : undefined;
       try {
-        await showStats();
+        await showStats(days);
       } catch (e) {
         console.error(`Failed to get stats: ${(e as Error).message}`);
         Deno.exit(1);
@@ -717,9 +804,13 @@ export async function handleSecmaster(
       console.log("  --no-delete      Skip soft-deleting missing records");
       console.log("  --dry-run        Fetch but don't write to database");
       console.log();
+      console.log("Options for stats:");
+      console.log("  --days=N         Show active markets by category over N days");
+      console.log();
       console.log("Examples:");
       console.log("  ssmd secmaster sync --by-series --category=Sports    # Sports games");
       console.log("  ssmd secmaster sync --by-series --category=Economics # Economics");
+      console.log("  ssmd secmaster stats --days=7                        # Show 7-day history");
       console.log();
       console.log("Options for events/markets:");
       console.log("  --category       Filter by category");

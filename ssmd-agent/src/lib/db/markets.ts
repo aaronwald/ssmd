@@ -302,6 +302,66 @@ export interface MarketDayActivity {
 }
 
 /**
+ * Active markets by category for a single day
+ */
+export interface ActiveByCategoryDay {
+  date: string;
+  categories: Record<string, number>;
+  total: number;
+}
+
+/**
+ * Get active markets by category over time.
+ * For each day in the range, counts currently-active markets that were created by that date.
+ * @param days Number of days to look back (default 7)
+ */
+export async function getActiveMarketsByCategoryTimeseries(
+  db: Database,
+  days = 7
+): Promise<ActiveByCategoryDay[]> {
+  // Get all currently active markets with their category (from events table)
+  const activeMarkets = await db
+    .select({
+      ticker: markets.ticker,
+      category: events.category,
+      createdAt: markets.createdAt,
+    })
+    .from(markets)
+    .innerJoin(events, eq(markets.eventTicker, events.eventTicker))
+    .where(
+      sql`${markets.status} = 'active' AND ${markets.deletedAt} IS NULL AND ${events.deletedAt} IS NULL`
+    );
+
+  // Build date range
+  const results: ActiveByCategoryDay[] = [];
+  const today = new Date();
+  today.setHours(23, 59, 59, 999); // End of today
+
+  for (let i = days - 1; i >= 0; i--) {
+    const date = new Date(today);
+    date.setDate(date.getDate() - i);
+    const dateStr = date.toISOString().split("T")[0];
+    const endOfDay = new Date(dateStr + "T23:59:59.999Z");
+
+    // Count active markets created by this date, grouped by category
+    const categories: Record<string, number> = {};
+    let total = 0;
+
+    for (const market of activeMarkets) {
+      if (market.createdAt <= endOfDay) {
+        const cat = market.category || "Unknown";
+        categories[cat] = (categories[cat] || 0) + 1;
+        total++;
+      }
+    }
+
+    results.push({ date: dateStr, categories, total });
+  }
+
+  return results;
+}
+
+/**
  * Get market activity over time (added, closed, and settled per day).
  * @param days Number of days to look back (default 30)
  */
