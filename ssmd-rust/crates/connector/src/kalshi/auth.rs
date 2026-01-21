@@ -52,7 +52,8 @@ impl KalshiCredentials {
     /// Sign a message using RSA-PSS with SHA256
     fn sign_message(&self, message: &str) -> Result<String, AuthError> {
         let signing_key = SigningKey::<Sha256>::new(self.private_key.clone());
-        let mut rng = rand::thread_rng();
+        // Use rand_core 0.6 OsRng for compatibility with rsa crate's CryptoRng requirement
+        let mut rng = rand_core::OsRng;
         let signature = signing_key
             .try_sign_with_rng(&mut rng, message.as_bytes())
             .map_err(|e| AuthError::SigningError(e.to_string()))?;
@@ -76,7 +77,7 @@ mod tests {
     use rsa::pkcs8::EncodePrivateKey;
 
     fn generate_test_key() -> RsaPrivateKey {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand_core::OsRng;
         RsaPrivateKey::new(&mut rng, 2048).unwrap()
     }
 
