@@ -18,6 +18,7 @@ export interface KalshiSeries {
   title: string;
   category: string;
   tags?: string[];
+  volume?: number;
 }
 
 /**
@@ -42,11 +43,9 @@ export interface SportFilters {
  * Kalshi API client configuration
  */
 export interface KalshiClientOptions {
-  /** API key for authentication */
-  apiKey: string;
   /** Use demo environment (default: false) */
   demo?: boolean;
-  /** Minimum delay between requests in ms (default: 250 = 4 req/sec) */
+  /** Minimum delay between requests in ms (default: 1000 = 1 req/sec) */
   minDelayMs?: number;
   /** Max retries for rate limiting (default: 10) */
   maxRetries?: number;
@@ -91,19 +90,19 @@ export class KalshiClient {
   private readonly headers: Headers;
   private readonly limiter: RateLimiter;
 
-  constructor(options: KalshiClientOptions) {
+  constructor(options: KalshiClientOptions = {}) {
     this.baseUrl = options.demo
       ? "https://demo-api.kalshi.co/trade-api/v2"
       : "https://api.elections.kalshi.com/trade-api/v2";
 
     this.headers = new Headers({
-      Authorization: `Bearer ${options.apiKey}`,
       "Content-Type": "application/json",
     });
 
-    // Rate limit: 5 req/sec (Kalshi's limit is ~10 req/sec)
+    // Rate limit: 300ms between requests (~3 req/sec)
+    // Plus 1 second delay between series in secmaster sync
     this.limiter = new RateLimiter(
-      options.minDelayMs ?? 200,
+      options.minDelayMs ?? 300,
       options.maxRetries ?? 10,
       5000 // Min retry wait (5s) with exponential backoff
     );
@@ -119,7 +118,9 @@ export class KalshiClient {
 
     return retry(
       async () => {
-        const res = await fetch(`${this.baseUrl}${path}`, {
+        const url = `${this.baseUrl}${path}`;
+
+        const res = await fetch(url, {
           headers: this.headers,
         });
         this.limiter.markRequest();
@@ -164,7 +165,6 @@ export class KalshiClient {
       const events = (data.events as KalshiEvent[]) || [];
 
       page++;
-      console.log(`  [API] events page ${page}: ${events.length} fetched`);
 
       if (events.length > 0) {
         yield events.map(fromKalshiEvent);
@@ -203,8 +203,6 @@ export class KalshiClient {
       const rawEvents = (data.events as KalshiEvent[]) || [];
 
       page++;
-      const marketCount = rawEvents.reduce((sum, e) => sum + (e.markets?.length || 0), 0);
-      console.log(`  [API] ${seriesTicker} events page ${page}: ${rawEvents.length} events, ${marketCount} markets`);
 
       if (rawEvents.length > 0) {
         const events = rawEvents.map(fromKalshiEvent);
@@ -248,7 +246,6 @@ export class KalshiClient {
       const markets = (data.markets as KalshiMarket[]) || [];
 
       page++;
-      console.log(`  [API] markets page ${page}: ${markets.length} fetched`);
 
       if (markets.length > 0) {
         yield markets.map(fromKalshiMarket);
@@ -298,16 +295,8 @@ export class KalshiClient {
    */
   async fetchFeeChanges(showHistorical = true): Promise<SeriesFeeChange[]> {
     const path = `/series/fee_changes?show_historical=${showHistorical}`;
-
-    console.log(`  [API] Fetching fee changes (historical: ${showHistorical})`);
-
-    const data = await this.fetch<{ series_fee_change_arr: KalshiFeeChange[] }>(
-      path
-    );
-
+    const data = await this.fetch<{ series_fee_change_arr: KalshiFeeChange[] }>(path);
     const changes = data.series_fee_change_arr || [];
-    console.log(`  [API] Fetched ${changes.length} fee changes`);
-
     return changes.map(fromKalshiFeeChange);
   }
 
@@ -315,32 +304,30 @@ export class KalshiClient {
    * Fetch tags grouped by category from /search/tags_by_categories
    */
   async fetchTagsByCategories(): Promise<TagsByCategories> {
-    console.log(`  [API] Fetching tags by categories`);
-    const data = await this.fetch<TagsByCategories>(`/search/tags_by_categories`);
-    return data;
+    return this.fetch<TagsByCategories>(`/search/tags_by_categories`);
   }
 
   /**
    * Fetch sport filters from /search/filters_by_sport
    */
   async fetchFiltersBySport(): Promise<SportFilters> {
-    console.log(`  [API] Fetching filters by sport`);
-    const data = await this.fetch<SportFilters>(`/search/filters_by_sport`);
-    return data;
+    return this.fetch<SportFilters>(`/search/filters_by_sport`);
   }
 
   /**
    * Fetch series with optional category and tag filters
    * @param category - Filter by category (e.g., 'Sports', 'Economics')
    * @param tag - Filter by tag within category (e.g., 'Basketball')
+   * @param includeVolume - Include volume data (for filtering by volume)
    */
-  async *fetchSeries(category?: string, tag?: string): AsyncGenerator<KalshiSeries[]> {
+  async *fetchSeries(category?: string, tag?: string, includeVolume?: boolean): AsyncGenerator<KalshiSeries[]> {
     let cursor: string | undefined;
     let page = 0;
 
     const params: string[] = [];
     if (category) params.push(`category=${encodeURIComponent(category)}`);
     if (tag) params.push(`tags=${encodeURIComponent(tag)}`);
+    if (includeVolume) params.push("include_volume=true");
     const queryParams = params.length > 0 ? params.join("&") : "";
 
     do {
@@ -352,7 +339,6 @@ export class KalshiClient {
       const series = (data.series as KalshiSeries[]) || [];
 
       page++;
-      console.log(`  [API] series page ${page}: ${series.length} fetched`);
 
       if (series.length > 0) {
         yield series;
@@ -365,9 +351,9 @@ export class KalshiClient {
   /**
    * Fetch all series for a category (convenience method)
    */
-  async fetchAllSeries(category?: string, tag?: string): Promise<KalshiSeries[]> {
+  async fetchAllSeries(category?: string, tag?: string, includeVolume?: boolean): Promise<KalshiSeries[]> {
     const allSeries: KalshiSeries[] = [];
-    for await (const batch of this.fetchSeries(category, tag)) {
+    for await (const batch of this.fetchSeries(category, tag, includeVolume)) {
       allSeries.push(...batch);
     }
     return allSeries;
@@ -402,7 +388,6 @@ export class KalshiClient {
       const markets = (data.markets as KalshiMarket[]) || [];
 
       page++;
-      console.log(`  [API] ${seriesTicker} markets page ${page}: ${markets.length} fetched`);
 
       if (markets.length > 0) {
         yield markets.map(fromKalshiMarket);
@@ -428,29 +413,9 @@ export class KalshiClient {
 }
 
 /**
- * Options for creating a Kalshi client from environment variables
+ * Create a Kalshi client (no auth needed for public read-only endpoints)
  */
-export interface CreateKalshiClientOptions {
-  /** Environment variable name for API key (default: KALSHI_API_KEY) */
-  apiKeyEnvVar?: string;
-  /** Environment variable name for demo mode flag (default: KALSHI_DEMO) */
-  demoEnvVar?: string;
-}
-
-/**
- * Create a Kalshi client from environment variables
- * @param options Optional configuration for env var names
- */
-export function createKalshiClient(options?: CreateKalshiClientOptions): KalshiClient {
-  const apiKeyEnvVar = options?.apiKeyEnvVar ?? "KALSHI_API_KEY";
-  const demoEnvVar = options?.demoEnvVar ?? "KALSHI_DEMO";
-
-  const apiKey = Deno.env.get(apiKeyEnvVar);
-  if (!apiKey) {
-    throw new Error(`${apiKeyEnvVar} environment variable not set`);
-  }
-
-  const demo = Deno.env.get(demoEnvVar) === "true";
-
-  return new KalshiClient({ apiKey, demo });
+export function createKalshiClient(): KalshiClient {
+  const demo = Deno.env.get("KALSHI_DEMO") === "true";
+  return new KalshiClient({ demo });
 }

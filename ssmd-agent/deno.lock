@@ -11,6 +11,7 @@
     "npm:drizzle-orm@0.38": "0.38.4_postgres@3.4.7",
     "npm:nats@*": "2.29.3",
     "npm:nats@^2.29.3": "2.29.3",
+    "npm:postgres@*": "3.4.7",
     "npm:postgres@^3.4.4": "3.4.7",
     "npm:yaml@^2.3.0": "2.8.2",
     "npm:zod@^3.23.0": "3.25.76"

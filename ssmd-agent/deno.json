@@ -1,5 +1,9 @@
 {
   "tasks": {
+    "db:migrate": "dbmate -d ./migrations --no-dump-schema up",
+    "db:status": "dbmate -d ./migrations status",
+    "db:rollback": "dbmate -d ./migrations --no-dump-schema rollback",
+    "db:new": "dbmate -d ./migrations new",
     "start": "deno run --allow-net --allow-env src/main.ts",
     "agent": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run src/cli.ts",
     "cli": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run src/cli/main.ts",

@@ -29,6 +29,7 @@ export async function upsertSeries(records: NewSeries[]): Promise<{ inserted: nu
           tags: record.tags,
           isGame: record.isGame,
           active: record.active ?? true,
+          volume: record.volume ?? 0,
           updatedAt: new Date(),
         },
       })
@@ -83,38 +84,52 @@ export async function getSeriesByTags(
  * Get series by category
  * @param category - Category to filter by
  * @param gamesOnly - If true, only return series where is_game = true
+ * @param minVolume - Minimum volume threshold
  */
 export async function getSeriesByCategory(
   category: string,
-  gamesOnly = false
+  gamesOnly = false,
+  minVolume?: number
 ): Promise<Series[]> {
   const db = getDb();
 
+  const conditions = [
+    eq(series.category, category),
+    eq(series.active, true),
+  ];
+
   if (gamesOnly) {
-    return db
-      .select()
-      .from(series)
-      .where(
-        and(
-          eq(series.category, category),
-          eq(series.isGame, true),
-          eq(series.active, true)
-        )
-      );
+    conditions.push(eq(series.isGame, true));
+  }
+
+  if (minVolume !== undefined) {
+    conditions.push(sql`${series.volume} >= ${minVolume}`);
   }
 
   return db
     .select()
     .from(series)
-    .where(and(eq(series.category, category), eq(series.active, true)));
+    .where(and(...conditions))
+    .orderBy(sql`${series.volume} DESC`);
 }
 
 /**
  * Get all active series
+ * @param minVolume - Minimum volume threshold
  */
-export async function getAllActiveSeries(): Promise<Series[]> {
+export async function getAllActiveSeries(minVolume?: number): Promise<Series[]> {
   const db = getDb();
-  return db.select().from(series).where(eq(series.active, true));
+  const conditions = [eq(series.active, true)];
+
+  if (minVolume !== undefined) {
+    conditions.push(sql`${series.volume} >= ${minVolume}`);
+  }
+
+  return db
+    .select()
+    .from(series)
+    .where(and(...conditions))
+    .orderBy(sql`${series.volume} DESC`);
 }
 
 /**
