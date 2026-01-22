@@ -124,6 +124,16 @@ pub struct LifecycleConfig {
     /// Enable lifecycle channel subscription (market_lifecycle_v2)
     #[serde(default)]
     pub enabled: bool,
+    /// Filter lifecycle events to only these series (e.g., ["KXBTCD", "KXETHD"])
+    /// If empty, all lifecycle events are published.
+    #[serde(default)]
+    pub series: Vec<String>,
+    /// Secmaster URL for fetching series -> market mappings (required if series filter is set)
+    #[serde(default)]
+    pub secmaster_url: Option<String>,
+    /// API key for secmaster (optional, falls back to SSMD_DATA_API_KEY env var)
+    #[serde(default)]
+    pub secmaster_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

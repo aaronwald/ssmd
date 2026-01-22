@@ -4,7 +4,7 @@
 //! Raw JSON passthrough - no transformation.
 
 use clap::Parser;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,9 +14,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_connector_lib::{
     kalshi::{KalshiConfig, KalshiConnector, KalshiCredentials},
+    secmaster::SecmasterClient,
     EnvResolver, KeyResolver, NatsWriter, Runner, ServerState, WebSocketConnector,
 };
-use ssmd_metadata::{Environment, Feed, FeedType, KeyType, LifecycleConfig, TransportType};
+use ssmd_metadata::{Environment, Feed, FeedType, KeyType, TransportType};
 use ssmd_middleware::MiddlewareFactory;
 
 #[derive(Parser, Debug)]
@@ -140,11 +141,76 @@ async fn run_kalshi_connector(
     // Check if lifecycle mode is enabled (dedicated lifecycle collector)
     let lifecycle_enabled = env_config.lifecycle.as_ref().is_some_and(|c| c.enabled);
 
+    // Build lifecycle filter if series are configured
+    let lifecycle_filter: Option<HashSet<String>> = if lifecycle_enabled {
+        if let Some(ref lifecycle_config) = env_config.lifecycle {
+            if !lifecycle_config.series.is_empty() {
+                // Fetch markets for configured series from secmaster
+                let secmaster_url = lifecycle_config.secmaster_url.clone()
+                    .or_else(|| std::env::var("SSMD_DATA_URL").ok())
+                    .unwrap_or_else(|| "http://ssmd-data-ts:3000".to_string());
+
+                let api_key = lifecycle_config.secmaster_api_key.clone()
+                    .or_else(|| std::env::var("SSMD_DATA_API_KEY").ok());
+
+                info!(
+                    series = ?lifecycle_config.series,
+                    secmaster_url = %secmaster_url,
+                    "Building lifecycle filter from series"
+                );
+
+                let client = SecmasterClient::with_config(&secmaster_url, api_key, 3, 1000);
+                let mut all_tickers: HashSet<String> = HashSet::new();
+
+                for series_ticker in &lifecycle_config.series {
+                    match client.get_markets_by_series(series_ticker).await {
+                        Ok(tickers) => {
+                            info!(
+                                series = %series_ticker,
+                                market_count = tickers.len(),
+                                "Fetched markets for series"
+                            );
+                            all_tickers.extend(tickers);
+                        }
+                        Err(e) => {
+                            warn!(
+                                series = %series_ticker,
+                                error = %e,
+                                "Failed to fetch markets for series, continuing"
+                            );
+                        }
+                    }
+                }
+
+                if all_tickers.is_empty() {
+                    warn!("No markets found for configured series, lifecycle filter will block all events");
+                }
+
+                info!(
+                    total_markets = all_tickers.len(),
+                    "Lifecycle filter built from series"
+                );
+                Some(all_tickers)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Create connector with optional secmaster filtering, CDC, or lifecycle mode
     let connector = if lifecycle_enabled {
         // Lifecycle-only mode: subscribe only to market_lifecycle_v2 channel
-        let lifecycle_config = env_config.lifecycle.clone().unwrap_or(LifecycleConfig { enabled: true });
-        info!(use_demo = use_demo, "Creating Kalshi connector (lifecycle mode)");
+        let lifecycle_config = env_config.lifecycle.clone().unwrap_or_default();
+        info!(
+            use_demo = use_demo,
+            has_filter = lifecycle_filter.is_some(),
+            filter_size = lifecycle_filter.as_ref().map(|f| f.len()).unwrap_or(0),
+            "Creating Kalshi connector (lifecycle mode)"
+        );
         KalshiConnector::with_lifecycle(credentials, use_demo, lifecycle_config)
     } else if let Some(ref secmaster) = env_config.secmaster {
         if !secmaster.categories.is_empty() {
@@ -208,7 +274,7 @@ async fn run_kalshi_connector(
         TransportType::Nats => {
             info!(transport = "nats", "Using NATS writer (raw JSON)");
             let transport = MiddlewareFactory::create_nats_transport_validated(env_config).await?;
-            let writer = create_nats_writer(transport, env_config, feed);
+            let writer = create_nats_writer(transport, env_config, feed, lifecycle_filter);
             run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
         }
         TransportType::Memory => {
@@ -223,14 +289,15 @@ async fn run_kalshi_connector(
     }
 }
 
-/// Create NatsWriter with optional custom subject prefix for sharding
+/// Create NatsWriter with optional custom subject prefix for sharding and lifecycle filter
 fn create_nats_writer(
     transport: Arc<dyn ssmd_middleware::Transport>,
     env_config: &Environment,
     feed: &Feed,
+    lifecycle_filter: Option<HashSet<String>>,
 ) -> NatsWriter {
     // Use custom subject_prefix and stream if configured, otherwise default
-    if let (Some(ref prefix), Some(ref stream)) = (
+    let writer = if let (Some(ref prefix), Some(ref stream)) = (
         &env_config.transport.subject_prefix,
         &env_config.transport.stream,
     ) {
@@ -247,6 +314,17 @@ fn create_nats_writer(
             "Using default subject prefix"
         );
         NatsWriter::new(transport, &env_config.name, &feed.name)
+    };
+
+    // Apply lifecycle filter if configured
+    if let Some(filter) = lifecycle_filter {
+        info!(
+            filter_size = filter.len(),
+            "Applying lifecycle series filter to writer"
+        );
+        writer.with_lifecycle_filter(filter)
+    } else {
+        writer
     }
 }
 
@@ -351,7 +429,7 @@ async fn run_generic_connector(
             info!(transport = "nats", "Using NATS writer (raw JSON)");
             let transport = MiddlewareFactory::create_nats_transport_validated(env_config).await?;
             let connector = WebSocketConnector::new(&url, creds);
-            let writer = create_nats_writer(transport, env_config, feed);
+            let writer = create_nats_writer(transport, env_config, feed, None);
             run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
         }
         TransportType::Memory => {
