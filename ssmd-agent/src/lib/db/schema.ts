@@ -11,6 +11,7 @@ import {
   timestamp,
   integer,
   bigint,
+  bigserial,
   serial,
   numeric,
   jsonb,
@@ -105,6 +106,18 @@ export const series = pgTable("series", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Market lifecycle events from Kalshi market_lifecycle_v2 channel
+export const marketLifecycleEvents = pgTable("market_lifecycle_events", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  marketTicker: varchar("market_ticker", { length: 128 }).notNull(),
+  eventType: varchar("event_type", { length: 32 }).notNull(), // created, activated, deactivated, close_date_updated, determined, settled
+  openTs: timestamp("open_ts", { withTimezone: true }),
+  closeTs: timestamp("close_ts", { withTimezone: true }),
+  settledTs: timestamp("settled_ts", { withTimezone: true }),
+  metadata: jsonb("metadata"),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Inferred types for select/insert
 export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
@@ -118,3 +131,5 @@ export type Setting = typeof settings.$inferSelect;
 export type NewSetting = typeof settings.$inferInsert;
 export type Series = typeof series.$inferSelect;
 export type NewSeries = typeof series.$inferInsert;
+export type MarketLifecycleEvent = typeof marketLifecycleEvents.$inferSelect;
+export type NewMarketLifecycleEvent = typeof marketLifecycleEvents.$inferInsert;

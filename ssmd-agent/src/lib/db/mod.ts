@@ -11,6 +11,7 @@ export {
   apiKeys,
   settings,
   series,
+  marketLifecycleEvents,
   feeTypeEnum,
   type Event,
   type NewEvent,
@@ -24,6 +25,8 @@ export {
   type NewSetting,
   type Series,
   type NewSeries,
+  type MarketLifecycleEvent,
+  type NewMarketLifecycleEvent,
 } from "./schema.ts";
 
 // Event operations
@@ -89,3 +92,13 @@ export {
   getSeries,
   listSeries,
 } from "./series.ts";
+
+// Lifecycle operations
+export {
+  insertLifecycleEvent,
+  insertLifecycleEvents,
+  getLifecycleEventsByMarket,
+  getLifecycleEventsByType,
+  getRecentLifecycleEvents,
+  getLifecycleStats,
+} from "./lifecycle.ts";
