@@ -22,9 +22,10 @@ pub struct NatsWriter {
     transport: Arc<dyn Transport>,
     subjects: SubjectBuilder,
     message_count: u64,
-    /// Optional filter for lifecycle events - only publish if market_ticker is in this set
+    /// Optional filter for lifecycle events by series ticker.
+    /// Extracts series from market_ticker (first segment before '-') and checks HashSet.
     /// If None, all lifecycle events are published.
-    lifecycle_filter: Option<HashSet<String>>,
+    series_filter: Option<HashSet<String>>,
     /// Counters for filtered messages
     lifecycle_filtered_count: u64,
 }
@@ -40,7 +41,7 @@ impl NatsWriter {
             transport,
             subjects: SubjectBuilder::new(env_name, feed_name),
             message_count: 0,
-            lifecycle_filter: None,
+            series_filter: None,
             lifecycle_filtered_count: 0,
         }
     }
@@ -62,17 +63,23 @@ impl NatsWriter {
             transport,
             subjects: SubjectBuilder::with_prefix(subject_prefix, stream_name),
             message_count: 0,
-            lifecycle_filter: None,
+            series_filter: None,
             lifecycle_filtered_count: 0,
         }
     }
 
-    /// Set a filter for lifecycle events.
-    /// Only lifecycle events with market_ticker in this set will be published.
+    /// Set a series filter for lifecycle events.
+    /// Extracts series from market_ticker (e.g., "KXBTCD" from "KXBTCD-26JAN25-T95000")
+    /// and only publishes if the series is in this set.
     /// If not set, all lifecycle events are published.
-    pub fn with_lifecycle_filter(mut self, filter: HashSet<String>) -> Self {
-        self.lifecycle_filter = Some(filter);
+    pub fn with_series_filter(mut self, series: HashSet<String>) -> Self {
+        self.series_filter = Some(series);
         self
+    }
+
+    /// Extract series ticker from market ticker (first segment before '-')
+    fn extract_series(market_ticker: &str) -> &str {
+        market_ticker.split('-').next().unwrap_or(market_ticker)
     }
 
     /// Get count of published messages
@@ -119,12 +126,14 @@ impl Writer for NatsWriter {
                 self.subjects.json_orderbook(&ob_data.market_ticker)
             }
             WsMessage::MarketLifecycleV2 { msg: lifecycle_data, .. } => {
-                // Apply lifecycle filter if configured
-                if let Some(ref filter) = self.lifecycle_filter {
-                    if !filter.contains(&lifecycle_data.market_ticker) {
+                // Apply series filter if configured
+                if let Some(ref filter) = self.series_filter {
+                    let series = Self::extract_series(&lifecycle_data.market_ticker);
+                    if !filter.contains(series) {
                         trace!(
                             market_ticker = %lifecycle_data.market_ticker,
-                            "Lifecycle event filtered out (market not in series filter)"
+                            series = %series,
+                            "Lifecycle event filtered out (series not in filter)"
                         );
                         self.lifecycle_filtered_count += 1;
                         return Ok(());
@@ -133,15 +142,19 @@ impl Writer for NatsWriter {
                 self.subjects.json_lifecycle(&lifecycle_data.market_ticker)
             }
             WsMessage::EventLifecycle { msg: event_data, .. } => {
-                // For event lifecycle, we pass through all events as they provide context
-                // for market lifecycle events. The market_ticker filter only applies to
-                // MarketLifecycleV2 messages.
-                if self.lifecycle_filter.is_some() {
-                    trace!(
-                        event_ticker = %event_data.event_ticker,
-                        series_ticker = ?event_data.series_ticker,
-                        "Event lifecycle - passing through (series context)"
-                    );
+                // Apply series filter to event lifecycle if configured
+                if let Some(ref filter) = self.series_filter {
+                    if let Some(ref series_ticker) = event_data.series_ticker {
+                        if !filter.contains(series_ticker.as_str()) {
+                            trace!(
+                                event_ticker = %event_data.event_ticker,
+                                series_ticker = %series_ticker,
+                                "Event lifecycle filtered out (series not in filter)"
+                            );
+                            self.lifecycle_filtered_count += 1;
+                            return Ok(());
+                        }
+                    }
                 }
                 self.subjects.json_event_lifecycle(&event_data.event_ticker)
             }
