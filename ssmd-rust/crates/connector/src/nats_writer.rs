@@ -95,6 +95,12 @@ impl Writer for NatsWriter {
             WsMessage::OrderbookDelta { msg: ob_data } => {
                 self.subjects.json_orderbook(&ob_data.market_ticker)
             }
+            WsMessage::MarketLifecycleV2 { msg: lifecycle_data, .. } => {
+                self.subjects.json_lifecycle(&lifecycle_data.market_ticker)
+            }
+            WsMessage::EventLifecycle { msg: event_data, .. } => {
+                self.subjects.json_event_lifecycle(&event_data.event_ticker)
+            }
             WsMessage::Subscribed { .. } | WsMessage::Unsubscribed { .. } => {
                 // Control messages, don't publish
                 return Ok(());
