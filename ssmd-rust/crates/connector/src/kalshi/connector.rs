@@ -30,7 +30,7 @@ use crate::metrics::{ConnectorMetrics, ShardMetrics};
 use crate::secmaster::SecmasterClient;
 use crate::traits::Connector;
 use async_trait::async_trait;
-use ssmd_metadata::{CdcConfig, SecmasterConfig, SubscriptionConfig};
+use ssmd_metadata::{CdcConfig, LifecycleConfig, SecmasterConfig, SubscriptionConfig};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -54,6 +54,8 @@ pub struct KalshiConnector {
     subscription_config: SubscriptionConfig,
     /// CDC configuration for dynamic subscriptions
     cdc_config: Option<CdcConfig>,
+    /// Lifecycle channel configuration
+    lifecycle_config: Option<LifecycleConfig>,
     /// NATS URL for CDC (from transport config)
     nats_url: Option<String>,
     tx: Option<mpsc::Sender<Vec<u8>>>,
@@ -72,6 +74,7 @@ impl KalshiConnector {
             secmaster_config: None,
             subscription_config: SubscriptionConfig::default(),
             cdc_config: None,
+            lifecycle_config: None,
             nats_url: None,
             tx: Some(tx),
             rx: Some(rx),
@@ -101,6 +104,7 @@ impl KalshiConnector {
             secmaster_config: Some(secmaster_config),
             subscription_config: validated_config,
             cdc_config: None,
+            lifecycle_config: None,
             nats_url: None,
             tx: Some(tx),
             rx: Some(rx),
@@ -131,7 +135,32 @@ impl KalshiConnector {
             secmaster_config: Some(secmaster_config),
             subscription_config: validated_config,
             cdc_config: Some(cdc_config),
+            lifecycle_config: None,
             nats_url: Some(nats_url),
+            tx: Some(tx),
+            rx: Some(rx),
+            last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Create connector for lifecycle events only (no market data)
+    ///
+    /// This is used for dedicated lifecycle collectors that subscribe
+    /// only to the market_lifecycle_v2 channel.
+    pub fn with_lifecycle(
+        credentials: KalshiCredentials,
+        use_demo: bool,
+        lifecycle_config: LifecycleConfig,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel(1000);
+        Self {
+            credentials,
+            use_demo,
+            secmaster_config: None,
+            subscription_config: SubscriptionConfig::default(),
+            cdc_config: None,
+            lifecycle_config: Some(lifecycle_config),
+            nats_url: None,
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
@@ -151,6 +180,18 @@ impl KalshiConnector {
             .map_err(|e| ConnectorError::ConnectionFailed(format!("trade subscription: {}", e)))?;
 
         info!("Kalshi connector subscribed to all tickers and trades");
+        Ok(())
+    }
+
+    /// Subscribe to lifecycle channel only (for dedicated lifecycle collector)
+    async fn subscribe_lifecycle_only(&self, ws: &mut KalshiWebSocket) -> Result<(), ConnectorError> {
+        info!("Using lifecycle-only subscription (market_lifecycle_v2)");
+
+        ws.subscribe_lifecycle()
+            .await
+            .map_err(|e| ConnectorError::ConnectionFailed(format!("lifecycle subscription: {}", e)))?;
+
+        info!("Kalshi connector subscribed to market lifecycle events");
         Ok(())
     }
 
@@ -339,6 +380,14 @@ impl KalshiConnector {
                                     }
                                     WsMessage::OrderbookSnapshot { .. } | WsMessage::OrderbookDelta { .. } => {
                                         shard_metrics.inc_orderbook();
+                                        true
+                                    }
+                                    WsMessage::MarketLifecycleV2 { .. } => {
+                                        shard_metrics.inc_lifecycle();
+                                        true
+                                    }
+                                    WsMessage::EventLifecycle { .. } => {
+                                        shard_metrics.inc_event_lifecycle();
                                         true
                                     }
                                     _ => false,
@@ -552,6 +601,25 @@ impl Connector for KalshiConnector {
                 self.subscribe_global(&mut ws).await?;
                 let shard_metrics = connector_metrics.for_shard(0);
                 Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics, None);
+            }
+        } else if let Some(ref lifecycle) = self.lifecycle_config {
+            if lifecycle.enabled {
+                // Lifecycle-only mode: single connection for market lifecycle events
+                let connector_metrics = ConnectorMetrics::new("kalshi", "lifecycle");
+                connector_metrics.set_shards_total(1);
+                connector_metrics.set_markets_subscribed(0, 0);
+
+                let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
+                    .await
+                    .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
+
+                self.subscribe_lifecycle_only(&mut ws).await?;
+                let shard_metrics = connector_metrics.for_shard(0);
+                Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics, None);
+            } else {
+                return Err(ConnectorError::ConnectionFailed(
+                    "Lifecycle config present but disabled".to_string()
+                ));
             }
         } else {
             // No secmaster config: global mode with single connection

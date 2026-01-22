@@ -10,8 +10,8 @@ pub use feed::{
     MessageProtocol, Protocol, SiteType, TransportProtocol,
 };
 pub use environment::{
-    CacheConfig, CacheType, CdcConfig, Environment, KeySpec, KeyType, Schedule, SecmasterConfig,
-    StorageConfig, StorageType, SubscriptionConfig, TransportConfig, TransportType,
+    CacheConfig, CacheType, CdcConfig, Environment, KeySpec, KeyType, LifecycleConfig, Schedule,
+    SecmasterConfig, StorageConfig, StorageType, SubscriptionConfig, TransportConfig, TransportType,
     DEFAULT_BATCH_SIZE, DEFAULT_RETRY_ATTEMPTS, DEFAULT_RETRY_DELAY_MS,
     MAX_BATCH_SIZE, MIN_BATCH_SIZE,
 };

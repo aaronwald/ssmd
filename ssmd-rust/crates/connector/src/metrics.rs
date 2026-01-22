@@ -164,6 +164,16 @@ impl ShardMetrics {
         self.inc_message("orderbook");
     }
 
+    /// Record lifecycle message received
+    pub fn inc_lifecycle(&self) {
+        self.inc_message("lifecycle");
+    }
+
+    /// Record event lifecycle message received
+    pub fn inc_event_lifecycle(&self) {
+        self.inc_message("event_lifecycle");
+    }
+
     /// Update last activity timestamp
     pub fn set_last_activity(&self, epoch_secs: f64) {
         LAST_ACTIVITY_TIMESTAMP

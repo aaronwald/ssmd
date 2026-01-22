@@ -16,6 +16,23 @@ where
         .ok_or_else(|| D::Error::custom(format!("Invalid unix timestamp: {}", ts)))
 }
 
+/// Custom deserializer for optional Kalshi timestamps (Unix timestamp in seconds as integer)
+pub fn deserialize_optional_unix_timestamp<'de, D>(
+    deserializer: D,
+) -> Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    let opt_ts: Option<i64> = Option::deserialize(deserializer)?;
+    match opt_ts {
+        Some(ts) => DateTime::from_timestamp(ts, 0)
+            .map(Some)
+            .ok_or_else(|| D::Error::custom(format!("Invalid unix timestamp: {}", ts))),
+        None => Ok(None),
+    }
+}
+
 /// Subscription confirmation data (inside "msg" field)
 #[derive(Debug, Clone, Deserialize)]
 pub struct SubscribedData {
@@ -60,6 +77,18 @@ pub enum WsMessage {
     Trade { msg: TradeData },
     OrderbookSnapshot { msg: OrderbookData },
     OrderbookDelta { msg: OrderbookData },
+    /// Market lifecycle events (market_lifecycle_v2 channel)
+    MarketLifecycleV2 {
+        #[serde(default)]
+        sid: Option<u64>,
+        msg: MarketLifecycleData,
+    },
+    /// Event lifecycle events (parent event creation)
+    EventLifecycle {
+        #[serde(default)]
+        sid: Option<u64>,
+        msg: EventLifecycleData,
+    },
     Error {
         id: Option<u64>,
         /// Error details with code and message
@@ -105,6 +134,37 @@ pub struct OrderbookData {
     pub market_ticker: String,
     pub yes: Option<Vec<(i64, i64)>>, // (price, quantity)
     pub no: Option<Vec<(i64, i64)>>,
+}
+
+/// Market lifecycle event data (market_lifecycle_v2 channel)
+///
+/// Event types: created, activated, deactivated, close_date_updated, determined, settled
+#[derive(Debug, Clone, Deserialize)]
+pub struct MarketLifecycleData {
+    pub market_ticker: String,
+    pub event_type: String,
+    #[serde(default, deserialize_with = "deserialize_optional_unix_timestamp")]
+    pub open_ts: Option<DateTime<Utc>>,
+    #[serde(default, deserialize_with = "deserialize_optional_unix_timestamp")]
+    pub close_ts: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub additional_metadata: Option<serde_json::Value>,
+}
+
+/// Event lifecycle data (event creation events)
+#[derive(Debug, Clone, Deserialize)]
+pub struct EventLifecycleData {
+    pub event_ticker: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub sub_title: Option<String>,
+    #[serde(default)]
+    pub collateral_return_type: Option<String>,
+    #[serde(default)]
+    pub series_ticker: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_unix_timestamp")]
+    pub strike_date: Option<DateTime<Utc>>,
 }
 
 /// WebSocket command message (outgoing)
@@ -359,5 +419,94 @@ mod tests {
             }
             _ => panic!("Expected Error variant, got {:?}", msg),
         }
+    }
+
+    /// Market lifecycle message (market_lifecycle_v2 channel)
+    const LIFECYCLE_MESSAGE: &str = r#"{"type":"market_lifecycle_v2","sid":13,"msg":{"market_ticker":"KXBTCD-26JAN2310-T105000","event_type":"activated","open_ts":1737554400,"close_ts":1737558000,"additional_metadata":{"settlement_value":null}}}"#;
+
+    /// Market lifecycle message with minimal fields
+    const LIFECYCLE_MESSAGE_MINIMAL: &str = r#"{"type":"market_lifecycle_v2","sid":13,"msg":{"market_ticker":"KXBTCD-26JAN2310-T105000","event_type":"created"}}"#;
+
+    /// Event lifecycle message
+    const EVENT_LIFECYCLE_MESSAGE: &str = r#"{"type":"event_lifecycle","sid":14,"msg":{"event_ticker":"KXBTCD-26JAN2310","title":"Bitcoin Price","sub_title":"Will BTC exceed $105,000?","series_ticker":"KXBTCD"}}"#;
+
+    #[test]
+    fn test_parse_market_lifecycle_message() {
+        let msg: WsMessage =
+            serde_json::from_str(LIFECYCLE_MESSAGE).expect("Failed to parse lifecycle");
+
+        match msg {
+            WsMessage::MarketLifecycleV2 { sid, msg } => {
+                assert_eq!(sid, Some(13));
+                assert_eq!(msg.market_ticker, "KXBTCD-26JAN2310-T105000");
+                assert_eq!(msg.event_type, "activated");
+                assert!(msg.open_ts.is_some());
+                assert_eq!(msg.open_ts.unwrap().timestamp(), 1737554400);
+                assert!(msg.close_ts.is_some());
+                assert_eq!(msg.close_ts.unwrap().timestamp(), 1737558000);
+                assert!(msg.additional_metadata.is_some());
+            }
+            _ => panic!("Expected MarketLifecycleV2 variant, got {:?}", msg),
+        }
+    }
+
+    #[test]
+    fn test_parse_market_lifecycle_message_minimal() {
+        let msg: WsMessage =
+            serde_json::from_str(LIFECYCLE_MESSAGE_MINIMAL).expect("Failed to parse lifecycle");
+
+        match msg {
+            WsMessage::MarketLifecycleV2 { sid, msg } => {
+                assert_eq!(sid, Some(13));
+                assert_eq!(msg.market_ticker, "KXBTCD-26JAN2310-T105000");
+                assert_eq!(msg.event_type, "created");
+                assert!(msg.open_ts.is_none());
+                assert!(msg.close_ts.is_none());
+                assert!(msg.additional_metadata.is_none());
+            }
+            _ => panic!("Expected MarketLifecycleV2 variant, got {:?}", msg),
+        }
+    }
+
+    #[test]
+    fn test_parse_event_lifecycle_message() {
+        let msg: WsMessage =
+            serde_json::from_str(EVENT_LIFECYCLE_MESSAGE).expect("Failed to parse event lifecycle");
+
+        match msg {
+            WsMessage::EventLifecycle { sid, msg } => {
+                assert_eq!(sid, Some(14));
+                assert_eq!(msg.event_ticker, "KXBTCD-26JAN2310");
+                assert_eq!(msg.title, Some("Bitcoin Price".to_string()));
+                assert_eq!(msg.sub_title, Some("Will BTC exceed $105,000?".to_string()));
+                assert_eq!(msg.series_ticker, Some("KXBTCD".to_string()));
+            }
+            _ => panic!("Expected EventLifecycle variant, got {:?}", msg),
+        }
+    }
+
+    #[test]
+    fn test_optional_timestamp_deserializer() {
+        #[derive(Deserialize)]
+        struct TestStruct {
+            #[serde(default, deserialize_with = "deserialize_optional_unix_timestamp")]
+            ts: Option<DateTime<Utc>>,
+        }
+
+        // Test with timestamp
+        let json = r#"{"ts":1732579880}"#;
+        let result: TestStruct = serde_json::from_str(json).expect("Failed to parse");
+        assert!(result.ts.is_some());
+        assert_eq!(result.ts.unwrap().timestamp(), 1732579880);
+
+        // Test with null
+        let json_null = r#"{"ts":null}"#;
+        let result_null: TestStruct = serde_json::from_str(json_null).expect("Failed to parse");
+        assert!(result_null.ts.is_none());
+
+        // Test with missing field
+        let json_missing = r#"{}"#;
+        let result_missing: TestStruct = serde_json::from_str(json_missing).expect("Failed to parse");
+        assert!(result_missing.ts.is_none());
     }
 }

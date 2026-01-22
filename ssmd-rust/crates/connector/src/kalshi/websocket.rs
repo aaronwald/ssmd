@@ -175,6 +175,30 @@ impl KalshiWebSocket {
         self.wait_for_subscription(self.command_id).await
     }
 
+    /// Subscribe to market lifecycle events (all markets)
+    ///
+    /// This channel provides events when markets are created, activated, deactivated,
+    /// have their close dates updated, are determined, or settled.
+    pub async fn subscribe_lifecycle(&mut self) -> Result<(), WebSocketError> {
+        self.command_id += 1;
+        let cmd = WsCommand {
+            id: self.command_id,
+            cmd: "subscribe".to_string(),
+            params: WsParams {
+                channels: vec!["market_lifecycle_v2".to_string()],
+                market_ticker: None,
+                market_tickers: None,
+                sids: None,
+            },
+        };
+
+        let msg = serde_json::to_string(&cmd)?;
+        debug!(cmd = %msg, "Subscribing to market lifecycle events");
+
+        self.ws.send(Message::Text(msg)).await?;
+        self.wait_for_subscription(self.command_id).await
+    }
+
     /// Subscribe to orderbook for a specific market
     pub async fn subscribe_orderbook(&mut self, market_ticker: &str) -> Result<(), WebSocketError> {
         self.command_id += 1;
