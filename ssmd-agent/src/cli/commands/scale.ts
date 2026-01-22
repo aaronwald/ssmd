@@ -11,10 +11,11 @@ interface ScaleFlags {
 }
 
 // Components in scale-down order (operator first to stop reconciliation, then upstream)
+// Note: ssmd-lifecycle-connector has label app.kubernetes.io/name=ssmd-connector so it's
+// included in the connectors selector. ssmd-lifecycle-consumer is separate (no operator label).
 const COMPONENTS = [
   { label: "operator", deployment: "ssmd-operator" },
   { label: "connectors", selector: "app.kubernetes.io/name=ssmd-connector" },
-  { label: "lifecycle-connector", deployment: "ssmd-lifecycle-connector" },
   { label: "lifecycle-consumer", deployment: "ssmd-lifecycle-consumer" },
   { label: "signals", selector: "app.kubernetes.io/name=ssmd-signal" },
   { label: "notifier", deployment: "ssmd-notifier" },
