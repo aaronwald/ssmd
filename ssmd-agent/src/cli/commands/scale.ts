@@ -14,6 +14,7 @@ interface ScaleFlags {
 const COMPONENTS = [
   { label: "operator", deployment: "ssmd-operator" },
   { label: "connectors", selector: "app.kubernetes.io/name=ssmd-connector" },
+  { label: "lifecycle", deployment: "ssmd-lifecycle-connector" },
   { label: "signals", selector: "app.kubernetes.io/name=ssmd-signal" },
   { label: "notifier", deployment: "ssmd-notifier" },
   { label: "archiver", selector: "app.kubernetes.io/name=ssmd-archiver" },
