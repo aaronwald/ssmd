@@ -122,6 +122,16 @@ impl SubjectBuilder {
     pub fn json_orderbook(&self, ticker: &str) -> String {
         format!("{}json.orderbook.{}", self.base_prefix, ticker)
     }
+
+    /// Build subject for JSON lifecycle messages: {env}.{feed}.json.lifecycle.{ticker}
+    pub fn json_lifecycle(&self, ticker: &str) -> String {
+        format!("{}json.lifecycle.{}", self.base_prefix, ticker)
+    }
+
+    /// Build subject for JSON event lifecycle messages: {env}.{feed}.json.event_lifecycle.{ticker}
+    pub fn json_event_lifecycle(&self, ticker: &str) -> String {
+        format!("{}json.event_lifecycle.{}", self.base_prefix, ticker)
+    }
 }
 
 #[cfg(test)]
@@ -202,5 +212,23 @@ mod tests {
         let builder = SubjectBuilder::with_prefix("prod.kalshi.politics", "PROD_KALSHI_POLITICS");
         assert_eq!(builder.json_trade("KXTRUMP-25"), "prod.kalshi.politics.json.trade.KXTRUMP-25");
         assert_eq!(builder.stream_name(), "PROD_KALSHI_POLITICS");
+    }
+
+    #[test]
+    fn test_json_lifecycle_subject() {
+        let builder = SubjectBuilder::new("prod", "kalshi");
+        assert_eq!(
+            builder.json_lifecycle("KXBTCD-26JAN2310-T105000"),
+            "prod.kalshi.json.lifecycle.KXBTCD-26JAN2310-T105000"
+        );
+    }
+
+    #[test]
+    fn test_json_event_lifecycle_subject() {
+        let builder = SubjectBuilder::new("prod", "kalshi");
+        assert_eq!(
+            builder.json_event_lifecycle("KXBTCD-26JAN2310"),
+            "prod.kalshi.json.event_lifecycle.KXBTCD-26JAN2310"
+        );
     }
 }

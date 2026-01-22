@@ -140,6 +140,7 @@ mod tests {
             secmaster: None,
             subscription: None,
             cdc: None,
+            lifecycle: None,
             transport: TransportConfig {
                 transport_type: TransportType::Memory,
                 url: None,

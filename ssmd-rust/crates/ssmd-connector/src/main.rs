@@ -16,7 +16,7 @@ use ssmd_connector_lib::{
     kalshi::{KalshiConfig, KalshiConnector, KalshiCredentials},
     EnvResolver, KeyResolver, NatsWriter, Runner, ServerState, WebSocketConnector,
 };
-use ssmd_metadata::{Environment, Feed, FeedType, KeyType, TransportType};
+use ssmd_metadata::{Environment, Feed, FeedType, KeyType, LifecycleConfig, TransportType};
 use ssmd_middleware::MiddlewareFactory;
 
 #[derive(Parser, Debug)]
@@ -137,8 +137,16 @@ async fn run_kalshi_connector(
         .map(|v| v.to_lowercase() == "true" || v == "1")
         .unwrap_or(false);
 
-    // Create connector with optional secmaster filtering and CDC
-    let connector = if let Some(ref secmaster) = env_config.secmaster {
+    // Check if lifecycle mode is enabled (dedicated lifecycle collector)
+    let lifecycle_enabled = env_config.lifecycle.as_ref().is_some_and(|c| c.enabled);
+
+    // Create connector with optional secmaster filtering, CDC, or lifecycle mode
+    let connector = if lifecycle_enabled {
+        // Lifecycle-only mode: subscribe only to market_lifecycle_v2 channel
+        let lifecycle_config = env_config.lifecycle.clone().unwrap_or(LifecycleConfig { enabled: true });
+        info!(use_demo = use_demo, "Creating Kalshi connector (lifecycle mode)");
+        KalshiConnector::with_lifecycle(credentials, use_demo, lifecycle_config)
+    } else if let Some(ref secmaster) = env_config.secmaster {
         if !secmaster.categories.is_empty() {
             // Inject API key from environment variable if not set in config
             let mut secmaster_config = secmaster.clone();

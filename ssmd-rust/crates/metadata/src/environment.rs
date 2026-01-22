@@ -118,6 +118,14 @@ fn default_cdc_stream() -> String {
     "SECMASTER_CDC".to_string()
 }
 
+/// Lifecycle channel configuration for market lifecycle events
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LifecycleConfig {
+    /// Enable lifecycle channel subscription (market_lifecycle_v2)
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionConfig {
     #[serde(default = "default_batch_size")]
@@ -200,6 +208,9 @@ pub struct Environment {
     /// CDC configuration for dynamic market subscriptions
     #[serde(default)]
     pub cdc: Option<CdcConfig>,
+    /// Lifecycle channel configuration for market lifecycle events
+    #[serde(default)]
+    pub lifecycle: Option<LifecycleConfig>,
     pub transport: TransportConfig,
     pub storage: StorageConfig,
     pub cache: Option<CacheConfig>,

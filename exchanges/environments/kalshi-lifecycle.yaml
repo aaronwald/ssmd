@@ -1,0 +1,23 @@
+name: kalshi-lifecycle
+feed: kalshi
+schema: trade:v1
+keys:
+    kalshi:
+        type: api_key
+        description: Kalshi trading API credentials (RSA key pair)
+        required: true
+        fields:
+            - api_key
+            - private_key
+        source: env:KALSHI_API_KEY,KALSHI_PRIVATE_KEY
+# Lifecycle mode - subscribe only to market_lifecycle_v2 channel
+lifecycle:
+    enabled: true
+transport:
+    type: nats
+    url: nats://nats.nats.svc.cluster.local:4222
+    stream: PROD_KALSHI_LIFECYCLE
+    subject_prefix: prod.kalshi.lifecycle
+storage:
+    type: local
+    path: /var/lib/ssmd/data
