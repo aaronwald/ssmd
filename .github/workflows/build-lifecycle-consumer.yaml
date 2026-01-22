@@ -1,0 +1,62 @@
+name: Build ssmd-lifecycle-consumer
+
+on:
+  push:
+    tags:
+      - 'lifecycle-consumer-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (default: sha-<commit>)'
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/ssmd-lifecycle-consumer
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # Tag with version (lifecycle-consumer-v0.1.0 -> 0.1.0)
+            type=match,pattern=lifecycle-consumer-v(.*),group=1
+            # Manual tag override
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
+            # SHA tag for manual runs without tag input
+            type=sha,prefix=sha-,enable=${{ github.event_name == 'workflow_dispatch' && inputs.tag == '' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ssmd-agent
+          file: ./ssmd-agent/Dockerfile.lifecycle-consumer
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
