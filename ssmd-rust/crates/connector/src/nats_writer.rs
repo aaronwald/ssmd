@@ -3,6 +3,7 @@
 //! Passes through incoming JSON messages from connectors directly to NATS.
 //! No transformation - raw bytes are preserved for archiving.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -21,6 +22,11 @@ pub struct NatsWriter {
     transport: Arc<dyn Transport>,
     subjects: SubjectBuilder,
     message_count: u64,
+    /// Optional filter for lifecycle events - only publish if market_ticker is in this set
+    /// If None, all lifecycle events are published.
+    lifecycle_filter: Option<HashSet<String>>,
+    /// Counters for filtered messages
+    lifecycle_filtered_count: u64,
 }
 
 impl NatsWriter {
@@ -34,6 +40,8 @@ impl NatsWriter {
             transport,
             subjects: SubjectBuilder::new(env_name, feed_name),
             message_count: 0,
+            lifecycle_filter: None,
+            lifecycle_filtered_count: 0,
         }
     }
 
@@ -54,12 +62,27 @@ impl NatsWriter {
             transport,
             subjects: SubjectBuilder::with_prefix(subject_prefix, stream_name),
             message_count: 0,
+            lifecycle_filter: None,
+            lifecycle_filtered_count: 0,
         }
+    }
+
+    /// Set a filter for lifecycle events.
+    /// Only lifecycle events with market_ticker in this set will be published.
+    /// If not set, all lifecycle events are published.
+    pub fn with_lifecycle_filter(mut self, filter: HashSet<String>) -> Self {
+        self.lifecycle_filter = Some(filter);
+        self
     }
 
     /// Get count of published messages
     pub fn message_count(&self) -> u64 {
         self.message_count
+    }
+
+    /// Get count of lifecycle messages that were filtered out
+    pub fn lifecycle_filtered_count(&self) -> u64 {
+        self.lifecycle_filtered_count
     }
 }
 
@@ -96,9 +119,30 @@ impl Writer for NatsWriter {
                 self.subjects.json_orderbook(&ob_data.market_ticker)
             }
             WsMessage::MarketLifecycleV2 { msg: lifecycle_data, .. } => {
+                // Apply lifecycle filter if configured
+                if let Some(ref filter) = self.lifecycle_filter {
+                    if !filter.contains(&lifecycle_data.market_ticker) {
+                        trace!(
+                            market_ticker = %lifecycle_data.market_ticker,
+                            "Lifecycle event filtered out (market not in series filter)"
+                        );
+                        self.lifecycle_filtered_count += 1;
+                        return Ok(());
+                    }
+                }
                 self.subjects.json_lifecycle(&lifecycle_data.market_ticker)
             }
             WsMessage::EventLifecycle { msg: event_data, .. } => {
+                // For event lifecycle, we pass through all events as they provide context
+                // for market lifecycle events. The market_ticker filter only applies to
+                // MarketLifecycleV2 messages.
+                if self.lifecycle_filter.is_some() {
+                    trace!(
+                        event_ticker = %event_data.event_ticker,
+                        series_ticker = ?event_data.series_ticker,
+                        "Event lifecycle - passing through (series context)"
+                    );
+                }
                 self.subjects.json_event_lifecycle(&event_data.event_ticker)
             }
             WsMessage::Subscribed { .. } | WsMessage::Unsubscribed { .. } => {
