@@ -24,6 +24,24 @@ import {
 const sc = StringCodec();
 
 /**
+ * Timestamped console output
+ */
+function log(message: string): void {
+  const ts = new Date().toISOString();
+  console.log(`${ts} ${message}`);
+}
+
+function logWarn(message: string): void {
+  const ts = new Date().toISOString();
+  console.warn(`${ts} WARN ${message}`);
+}
+
+function logError(message: string): void {
+  const ts = new Date().toISOString();
+  console.error(`${ts} ERROR ${message}`);
+}
+
+/**
  * Raw lifecycle message from NATS (matches connector output)
  */
 interface RawLifecycleMessage {
@@ -115,33 +133,31 @@ Environment variables:
     return;
   }
 
-  console.log("=== SSMD Lifecycle Consumer ===");
-  console.log();
+  log("=== SSMD Lifecycle Consumer ===");
 
   const config = loadConfig();
-  console.log(`NATS: ${config.natsUrl}`);
-  console.log(`Stream: ${config.stream}`);
-  console.log(`Filter: ${config.filter}`);
-  console.log(`Consumer: ${config.consumerName}`);
-  console.log();
+  log(`NATS: ${config.natsUrl}`);
+  log(`Stream: ${config.stream}`);
+  log(`Filter: ${config.filter}`);
+  log(`Consumer: ${config.consumerName}`);
 
   // Verify DATABASE_URL is set
   if (!Deno.env.get("DATABASE_URL")) {
-    console.error("DATABASE_URL environment variable not set");
+    logError("DATABASE_URL environment variable not set");
     Deno.exit(1);
   }
 
   // Initialize database connection
   const db = getDb();
-  console.log("Database connected");
+  log("Database connected");
 
   // Connect to NATS
   let nc: NatsConnection;
   try {
     nc = await connect({ servers: config.natsUrl });
-    console.log("NATS connected");
+    log("NATS connected");
   } catch (e) {
-    console.error(`Failed to connect to NATS: ${e}`);
+    logError(`Failed to connect to NATS: ${e}`);
     await closeDb();
     Deno.exit(1);
   }
@@ -157,17 +173,16 @@ Environment variables:
       ack_policy: AckPolicy.Explicit,
       deliver_policy: DeliverPolicy.All,
     });
-    console.log(`Created durable consumer: ${config.consumerName}`);
+    log(`Created durable consumer: ${config.consumerName}`);
   } catch (e) {
     // Consumer might already exist, try to get it
     if (!String(e).includes("already exists")) {
-      console.error(`Failed to create consumer: ${e}`);
+      logError(`Failed to create consumer: ${e}`);
     }
   }
 
   const consumer = await js.consumers.get(config.stream, config.consumerName);
-  console.log("Consumer ready, starting message consumption...");
-  console.log();
+  log("Consumer ready, starting message consumption...");
 
   // Stats
   let messagesProcessed = 0;
@@ -179,14 +194,14 @@ Environment variables:
 
   // Setup graceful shutdown
   const shutdown = async () => {
-    console.log("\nShutting down...");
+    log("Shutting down...");
     const runtime = Math.round((Date.now() - startTime) / 1000);
-    console.log(`Processed: ${messagesProcessed} messages`);
-    console.log(`Markets created: ${marketsCreated}`);
-    console.log(`Markets updated: ${marketsUpdated}`);
-    console.log(`Series not found: ${seriesNotFound}`);
-    console.log(`Errors: ${messagesErrored}`);
-    console.log(`Runtime: ${runtime}s`);
+    log(`Processed: ${messagesProcessed} messages`);
+    log(`Markets created: ${marketsCreated}`);
+    log(`Markets updated: ${marketsUpdated}`);
+    log(`Series not found: ${seriesNotFound}`);
+    log(`Errors: ${messagesErrored}`);
+    log(`Runtime: ${runtime}s`);
     await nc.drain();
     await nc.close();
     await closeDb();
@@ -247,11 +262,11 @@ Environment variables:
             );
 
             marketsCreated++;
-            console.log(
+            log(
               `[created] market=${marketTicker} event=${eventTicker} series=${seriesTicker} category=${series.category}`
             );
           } else {
-            console.warn(
+            logWarn(
               `Series not found for ${seriesTicker} (event: ${eventTicker}), skipping market creation`
             );
             seriesNotFound++;
@@ -264,7 +279,7 @@ Environment variables:
         const updated = await updateMarketStatus(db, marketTicker, "settled");
         if (updated) {
           marketsUpdated++;
-          console.log(`[${eventType}] market=${marketTicker} status=settled`);
+          log(`[${eventType}] market=${marketTicker} status=settled`);
         }
       }
 
@@ -276,14 +291,14 @@ Environment variables:
 
       // Log progress every 100 messages
       if (messagesProcessed % 100 === 0) {
-        console.log(
+        log(
           `Processed ${messagesProcessed} messages (created: ${marketsCreated}, updated: ${marketsUpdated})`
         );
       }
 
       msg.ack();
     } catch (e) {
-      console.error(`Error processing message: ${e}`);
+      logError(`Error processing message: ${e}`);
       messagesErrored++;
       // Negative ack to requeue (or just ack to skip bad messages)
       msg.nak();
