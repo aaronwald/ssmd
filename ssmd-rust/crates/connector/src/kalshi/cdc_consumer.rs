@@ -4,7 +4,7 @@
 //! for subscription when they match the configured categories.
 
 use crate::secmaster::SecmasterClient;
-use async_nats::jetstream::{self, consumer::pull::Stream, Context};
+use async_nats::jetstream::{self, consumer::pull::Stream, consumer::DeliverPolicy, Context};
 use futures_util::StreamExt;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -95,18 +95,36 @@ impl CdcSubscriptionConsumer {
             .map_err(|e| CdcError::Nats(format!("Get stream '{}' failed: {}", config.stream_name, e)))?;
 
         // Create durable consumer for market inserts only
-        let consumer = stream_obj
+        // Use DeliverPolicy::New to only process new messages (not replay history)
+        let mut consumer = stream_obj
             .get_or_create_consumer(
                 &config.consumer_name,
                 jetstream::consumer::pull::Config {
                     durable_name: Some(config.consumer_name.clone()),
                     // Only listen to market insert events
                     filter_subject: "cdc.markets.insert".to_string(),
+                    // Start from new messages only - don't replay historical CDC events
+                    deliver_policy: DeliverPolicy::New,
                     ..Default::default()
                 },
             )
             .await
             .map_err(|e| CdcError::Nats(format!("Create consumer failed: {}", e)))?;
+
+        // Log consumer info to show starting position
+        let consumer_info = consumer
+            .info()
+            .await
+            .map_err(|e| CdcError::Nats(format!("Get consumer info failed: {}", e)))?;
+        info!(
+            consumer_name = %config.consumer_name,
+            stream = %config.stream_name,
+            delivered_stream_seq = consumer_info.delivered.stream_sequence,
+            delivered_consumer_seq = consumer_info.delivered.consumer_sequence,
+            ack_floor_stream_seq = consumer_info.ack_floor.stream_sequence,
+            num_pending = consumer_info.num_pending,
+            "CDC consumer starting position"
+        );
 
         let messages = consumer
             .messages()
