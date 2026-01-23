@@ -471,10 +471,23 @@ impl Connector for KalshiConnector {
                 let connector_metrics = ConnectorMetrics::new("kalshi", &category_label);
 
                 // Shard markets into groups of MAX_MARKETS_PER_SUBSCRIPTION
-                let shards: Vec<Vec<String>> = tickers
+                let mut shards: Vec<Vec<String>> = tickers
                     .chunks(MAX_MARKETS_PER_SUBSCRIPTION)
                     .map(|chunk| chunk.to_vec())
                     .collect();
+
+                // When CDC is enabled, ensure at least one shard has capacity for new markets
+                // Add an extra empty shard if the last shard is at or near capacity (>80% full)
+                if cdc_enabled {
+                    let needs_headroom = shards.last()
+                        .map(|s| s.len() >= (MAX_MARKETS_PER_SUBSCRIPTION * 4 / 5))
+                        .unwrap_or(true); // Also add if no shards exist
+
+                    if needs_headroom {
+                        info!("CDC enabled: adding headroom shard for dynamic subscriptions");
+                        shards.push(Vec::new());
+                    }
+                }
 
                 let num_shards = shards.len();
                 connector_metrics.set_shards_total(num_shards);
@@ -512,11 +525,14 @@ impl Connector for KalshiConnector {
                             "shard {} connection: {}", shard_id, e
                         )))?;
 
-                    Self::subscribe_shard(&mut ws, &shard_tickers).await.map_err(|e| {
-                        ConnectorError::ConnectionFailed(format!(
-                            "shard {} subscription: {}", shard_id, e
-                        ))
-                    })?;
+                    // Only subscribe if shard has initial markets (headroom shards start empty)
+                    if !shard_tickers.is_empty() {
+                        Self::subscribe_shard(&mut ws, &shard_tickers).await.map_err(|e| {
+                            ConnectorError::ConnectionFailed(format!(
+                                "shard {} subscription: {}", shard_id, e
+                            ))
+                        })?;
+                    }
 
                     info!(
                         shard_id = shard_id,
