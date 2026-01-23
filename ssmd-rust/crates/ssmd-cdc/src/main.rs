@@ -58,10 +58,27 @@ async fn main() -> anyhow::Result<()> {
     let poll_interval = Duration::from_millis(args.poll_interval_ms);
     let mut events_published: u64 = 0;
     let mut events_skipped: u64 = 0;
+    let mut consecutive_failures: u32 = 0;
+    let mut poll_count: u64 = 0;
+    const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
     loop {
+        poll_count += 1;
+
+        // Log heartbeat every 10 minutes (6000 polls at 100ms interval)
+        if poll_count % 6000 == 0 {
+            tracing::info!(
+                polls = poll_count,
+                published = events_published,
+                skipped = events_skipped,
+                "CDC heartbeat"
+            );
+        }
+
         match replication.poll_changes().await {
             Ok(events) => {
+                consecutive_failures = 0; // Reset on success
+
                 for event in events {
                     // Skip tables we don't need CDC for
                     if !publish_tables.contains(event.table.as_str()) {
@@ -70,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
                     }
 
                     if let Err(e) = publisher.publish(&event).await {
-                        tracing::error!(error = %e, table = %event.table, "Failed to publish event");
+                        tracing::error!(error = ?e, table = %event.table, "Failed to publish event");
                     } else {
                         events_published += 1;
                         if events_published % 100 == 0 {
@@ -80,7 +97,18 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             Err(e) => {
-                tracing::error!(error = %e, "Failed to poll changes");
+                consecutive_failures += 1;
+                tracing::error!(
+                    error = ?e,
+                    consecutive_failures = consecutive_failures,
+                    "Failed to poll changes"
+                );
+
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    tracing::error!("Max consecutive failures reached, exiting for restart");
+                    return Err(e.into());
+                }
+
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
