@@ -182,9 +182,14 @@ export async function listMarketsWithSnapshot(
   const rawSql = getRawSql();
 
   // Get current WAL LSN and timestamp BEFORE the query
-  const [lsnResult] = await rawSql`SELECT pg_current_wal_lsn()::text as lsn, NOW() as snapshot_time`;
-  const snapshotLsn = lsnResult.lsn;
-  const snapshotTime = lsnResult.snapshot_time.toISOString();
+  // Use to_char for ISO 8601 format directly in SQL to avoid type conversion issues
+  const [lsnResult] = await rawSql`
+    SELECT
+      pg_current_wal_lsn()::text as lsn,
+      to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as snapshot_time
+  `;
+  const snapshotLsn = lsnResult.lsn as string;
+  const snapshotTime = lsnResult.snapshot_time as string;
 
   // Get markets using existing logic
   const markets = await listMarkets(db, options);
