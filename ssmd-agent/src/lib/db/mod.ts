@@ -49,6 +49,7 @@ export {
   updateMarketStatus,
   softDeleteMissingMarkets,
   listMarkets,
+  listMarketsWithSnapshot,
   getMarket,
   getMarketStats,
   getMarketTimeseries,
@@ -56,6 +57,7 @@ export {
   type UpsertResult,
   type MarketDayActivity,
   type ActiveByCategoryDay,
+  type MarketsWithSnapshot,
 } from "./markets.ts";
 
 // Fee operations

@@ -5,6 +5,7 @@
 
 use crate::secmaster::SecmasterClient;
 use async_nats::jetstream::{self, consumer::pull::Stream, consumer::DeliverPolicy, Context};
+use chrono::Duration as ChronoDuration;
 use futures_util::StreamExt;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -69,6 +70,10 @@ pub struct CdcSubscriptionConsumer {
     subscribed_markets: HashSet<String>,
 }
 
+/// Buffer time (seconds) to subtract from snapshot_time for CDC start position
+/// This ensures we don't miss events due to clock skew between DB and NATS
+const CDC_START_TIME_BUFFER_SECS: i64 = 120;
+
 impl CdcSubscriptionConsumer {
     /// Create a new CDC consumer
     ///
@@ -76,11 +81,13 @@ impl CdcSubscriptionConsumer {
     /// * `config` - CDC configuration
     /// * `categories` - Categories to filter by (empty = all markets)
     /// * `snapshot_lsn` - LSN from initial market fetch (skip events before this)
+    /// * `snapshot_time` - ISO timestamp from initial market fetch (for ByStartTime)
     /// * `initial_markets` - Markets already subscribed at startup
     pub async fn new(
         config: &CdcConfig,
         categories: Vec<String>,
         snapshot_lsn: String,
+        snapshot_time: String,
         initial_markets: Vec<String>,
     ) -> Result<Self, CdcError> {
         let client = async_nats::connect(&config.nats_url)
@@ -94,8 +101,43 @@ impl CdcSubscriptionConsumer {
             .await
             .map_err(|e| CdcError::Nats(format!("Get stream '{}' failed: {}", config.stream_name, e)))?;
 
+        // Calculate start time for CDC consumer: snapshot_time minus buffer
+        // This ensures we catch any events that might have occurred during the market fetch
+        // LSN filtering will dedupe any events we've already processed
+        let deliver_policy = if !snapshot_time.is_empty() {
+            match chrono::DateTime::parse_from_rfc3339(&snapshot_time) {
+                Ok(parsed) => {
+                    let start_time = parsed - ChronoDuration::seconds(CDC_START_TIME_BUFFER_SECS);
+                    info!(
+                        snapshot_time = %snapshot_time,
+                        start_time = %start_time.to_rfc3339(),
+                        buffer_secs = CDC_START_TIME_BUFFER_SECS,
+                        "Using ByStartTime for CDC consumer"
+                    );
+                    // Convert chrono DateTime to time::OffsetDateTime via SystemTime
+                    let system_time = std::time::UNIX_EPOCH +
+                        Duration::from_secs(start_time.timestamp() as u64);
+                    DeliverPolicy::ByStartTime {
+                        start_time: system_time.into(),
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        snapshot_time = %snapshot_time,
+                        error = %e,
+                        "Failed to parse snapshot_time, falling back to DeliverPolicy::New"
+                    );
+                    DeliverPolicy::New
+                }
+            }
+        } else {
+            info!("No snapshot_time provided, using DeliverPolicy::New");
+            DeliverPolicy::New
+        };
+
         // Create durable consumer for market inserts only
-        // Use DeliverPolicy::New to only process new messages (not replay history)
+        // Uses ByStartTime when snapshot available, falls back to New otherwise
+        // LSN filtering provides precise deduplication
         let mut consumer = stream_obj
             .get_or_create_consumer(
                 &config.consumer_name,
@@ -103,8 +145,7 @@ impl CdcSubscriptionConsumer {
                     durable_name: Some(config.consumer_name.clone()),
                     // Only listen to market insert events
                     filter_subject: "cdc.markets.insert".to_string(),
-                    // Start from new messages only - don't replay historical CDC events
-                    deliver_policy: DeliverPolicy::New,
+                    deliver_policy,
                     ..Default::default()
                 },
             )
@@ -119,6 +160,7 @@ impl CdcSubscriptionConsumer {
         info!(
             consumer_name = %config.consumer_name,
             stream = %config.stream_name,
+            snapshot_lsn = %snapshot_lsn,
             delivered_stream_seq = consumer_info.delivered.stream_sequence,
             delivered_consumer_seq = consumer_info.delivered.consumer_sequence,
             ack_floor_stream_seq = consumer_info.ack_floor.stream_sequence,

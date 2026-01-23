@@ -200,11 +200,21 @@ impl KalshiConnector {
         &self,
         secmaster: &SecmasterConfig,
     ) -> Result<Vec<String>, ConnectorError> {
+        let result = self.fetch_filtered_markets_with_snapshot(secmaster).await?;
+        Ok(result.tickers)
+    }
+
+    /// Fetch filtered markets from secmaster with CDC snapshot metadata
+    /// Returns tickers plus snapshot_time and snapshot_lsn for CDC synchronization
+    async fn fetch_filtered_markets_with_snapshot(
+        &self,
+        secmaster: &SecmasterConfig,
+    ) -> Result<crate::secmaster::MarketsWithSnapshot, ConnectorError> {
         info!(
             categories = ?secmaster.categories,
             close_within_hours = ?secmaster.close_within_hours,
             url = %secmaster.url,
-            "Using filtered subscription mode"
+            "Using filtered subscription mode with CDC snapshot"
         );
 
         // Fetch markets from secmaster with retry config and API key
@@ -220,12 +230,12 @@ impl KalshiConnector {
             self.subscription_config.retry_attempts,
             self.subscription_config.retry_delay_ms,
         );
-        let tickers = client
-            .get_markets_by_categories(&secmaster.categories, secmaster.close_within_hours)
+        let result = client
+            .get_markets_by_categories_with_snapshot(&secmaster.categories, secmaster.close_within_hours)
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(format!("secmaster query: {}", e)))?;
 
-        if tickers.is_empty() {
+        if result.tickers.is_empty() {
             return Err(ConnectorError::ConnectionFailed(format!(
                 "No markets found for categories: {:?}",
                 secmaster.categories
@@ -233,9 +243,9 @@ impl KalshiConnector {
         }
 
         // Log market list at debug level
-        debug!(markets = ?tickers, "Market ticker list");
+        debug!(markets = ?result.tickers, "Market ticker list");
 
-        Ok(tickers)
+        Ok(result)
     }
 
     /// Subscribe a single WebSocket to markets (up to MAX_MARKETS_PER_SUBSCRIPTION)
@@ -441,8 +451,18 @@ impl Connector for KalshiConnector {
         // Determine subscription mode and get markets
         if let Some(ref secmaster) = self.secmaster_config {
             if !secmaster.categories.is_empty() {
+                // Check if CDC is enabled
+                let cdc_enabled = self.cdc_config.as_ref().map_or(false, |c| c.enabled);
+
                 // Filtered mode: fetch markets and create sharded connections
-                let tickers = self.fetch_filtered_markets(secmaster).await?;
+                // Use snapshot-aware fetch when CDC is enabled for proper synchronization
+                let (tickers, snapshot_lsn, snapshot_time) = if cdc_enabled {
+                    let result = self.fetch_filtered_markets_with_snapshot(secmaster).await?;
+                    (result.tickers, result.snapshot_lsn, result.snapshot_time)
+                } else {
+                    let tickers = self.fetch_filtered_markets(secmaster).await?;
+                    (tickers, "0/0".to_string(), String::new())
+                };
 
                 // Create metrics for this connector (use first category as label)
                 let category_label = secmaster.categories.first()
@@ -459,14 +479,12 @@ impl Connector for KalshiConnector {
                 let num_shards = shards.len();
                 connector_metrics.set_shards_total(num_shards);
 
-                // Check if CDC is enabled
-                let cdc_enabled = self.cdc_config.as_ref().map_or(false, |c| c.enabled);
-
                 info!(
                     total_markets = tickers.len(),
                     num_shards = num_shards,
                     max_per_shard = MAX_MARKETS_PER_SUBSCRIPTION,
                     cdc_enabled = cdc_enabled,
+                    snapshot_lsn = %snapshot_lsn,
                     "Creating sharded WebSocket connections"
                 );
 
@@ -559,14 +577,16 @@ impl Connector for KalshiConnector {
                         // Create channel for CDC → ShardManager communication
                         let (new_market_tx, new_market_rx) = mpsc::channel::<String>(1000);
 
-                        // Spawn CDC consumer task
-                        let snapshot_lsn = "0/0".to_string(); // TODO: Get actual LSN from initial fetch
+                        // Spawn CDC consumer task with snapshot data from initial fetch
+                        let cdc_snapshot_lsn = snapshot_lsn.clone();
+                        let cdc_snapshot_time = snapshot_time.clone();
                         let initial_markets = tickers.clone();
                         tokio::spawn(async move {
                             match CdcSubscriptionConsumer::new(
                                 &cdc_consumer_config,
                                 categories,
-                                snapshot_lsn,
+                                cdc_snapshot_lsn,
+                                cdc_snapshot_time,
                                 initial_markets,
                             ).await {
                                 Ok(consumer) => {
