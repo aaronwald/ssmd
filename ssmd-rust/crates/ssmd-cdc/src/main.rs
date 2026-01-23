@@ -49,20 +49,32 @@ async fn main() -> anyhow::Result<()> {
     let lsn = replication.current_lsn().await?;
     tracing::info!(lsn = %lsn, "Starting from LSN");
 
+    // Tables to publish CDC events for (others are ignored)
+    // Only markets table is needed for connector dynamic subscriptions
+    // Stream is configured for cdc.markets.> subjects only
+    let publish_tables: std::collections::HashSet<&str> = ["markets"].into_iter().collect();
+
     // Main polling loop
     let poll_interval = Duration::from_millis(args.poll_interval_ms);
     let mut events_published: u64 = 0;
+    let mut events_skipped: u64 = 0;
 
     loop {
         match replication.poll_changes().await {
             Ok(events) => {
                 for event in events {
+                    // Skip tables we don't need CDC for
+                    if !publish_tables.contains(event.table.as_str()) {
+                        events_skipped += 1;
+                        continue;
+                    }
+
                     if let Err(e) = publisher.publish(&event).await {
                         tracing::error!(error = %e, table = %event.table, "Failed to publish event");
                     } else {
                         events_published += 1;
                         if events_published % 100 == 0 {
-                            tracing::info!(total = events_published, "Events published");
+                            tracing::info!(total = events_published, skipped = events_skipped, "Events published");
                         }
                     }
                 }
