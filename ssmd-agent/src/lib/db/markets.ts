@@ -152,6 +152,51 @@ export async function softDeleteMissingMarkets(
 export type MarketRow = Market;
 
 /**
+ * Result of listMarketsWithSnapshot - includes CDC sync metadata
+ */
+export interface MarketsWithSnapshot {
+  markets: MarketRow[];
+  /** ISO timestamp of when this snapshot was taken (for CDC ByStartTime) */
+  snapshotTime: string;
+  /** PostgreSQL WAL LSN at snapshot time (for precise CDC filtering) */
+  snapshotLsn: string;
+}
+
+/**
+ * List markets with optional filters, including CDC snapshot metadata.
+ * Returns snapshot_time and snapshot_lsn for CDC consumer synchronization.
+ */
+export async function listMarketsWithSnapshot(
+  db: Database,
+  options: {
+    category?: string;
+    status?: string;
+    series?: string;
+    eventTicker?: string;
+    closingBefore?: string;
+    closingAfter?: string;
+    asOf?: string;
+    limit?: number;
+  } = {}
+): Promise<MarketsWithSnapshot> {
+  const rawSql = getRawSql();
+
+  // Get current WAL LSN and timestamp BEFORE the query
+  const [lsnResult] = await rawSql`SELECT pg_current_wal_lsn()::text as lsn, NOW() as snapshot_time`;
+  const snapshotLsn = lsnResult.lsn;
+  const snapshotTime = lsnResult.snapshot_time.toISOString();
+
+  // Get markets using existing logic
+  const markets = await listMarkets(db, options);
+
+  return {
+    markets,
+    snapshotTime,
+    snapshotLsn,
+  };
+}
+
+/**
  * List markets with optional filters.
  * @param options.asOf - Point-in-time filter (ISO timestamp). Returns markets that existed
  *                       and were tradeable at this time. Defaults to now.

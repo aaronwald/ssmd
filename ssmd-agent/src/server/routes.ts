@@ -7,6 +7,7 @@ import {
   getEvent,
   getEventStats,
   listMarkets,
+  listMarketsWithSnapshot,
   getMarket,
   getMarketStats,
   getMarketTimeseries,
@@ -144,7 +145,7 @@ route("GET", "/v1/markets", async (req, ctx) => {
     }
   }
 
-  const markets = await listMarkets(ctx.db, {
+  const options = {
     category: url.searchParams.get("category") ?? undefined,
     status: url.searchParams.get("status") ?? undefined,
     series: url.searchParams.get("series") ?? undefined,
@@ -153,7 +154,20 @@ route("GET", "/v1/markets", async (req, ctx) => {
     closingAfter: url.searchParams.get("closing_after") ?? undefined,
     asOf: url.searchParams.get("as_of") ?? undefined,
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
-  });
+  };
+
+  // If include_snapshot=true, return CDC sync metadata (snapshot_time, snapshot_lsn)
+  const includeSnapshot = url.searchParams.get("include_snapshot") === "true";
+  if (includeSnapshot) {
+    const result = await listMarketsWithSnapshot(ctx.db, options);
+    return json({
+      markets: result.markets,
+      snapshot_time: result.snapshotTime,
+      snapshot_lsn: result.snapshotLsn,
+    });
+  }
+
+  const markets = await listMarkets(ctx.db, options);
   return json({ markets });
 }, true, "secmaster:read");
 
