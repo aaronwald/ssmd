@@ -247,6 +247,37 @@ export async function getEvent(
 }
 
 /**
+ * Upsert a single event from lifecycle data (simpler than API format).
+ * Used by lifecycle-consumer for real-time market creation.
+ */
+export async function upsertEventFromLifecycle(
+  db: Database,
+  eventTicker: string,
+  title: string,
+  category: string,
+  seriesTicker: string
+): Promise<void> {
+  await db
+    .insert(events)
+    .values({
+      eventTicker,
+      title,
+      category,
+      seriesTicker,
+      status: "active",
+    })
+    .onConflictDoUpdate({
+      target: events.eventTicker,
+      set: {
+        title,
+        category,
+        seriesTicker,
+        deletedAt: sql`NULL`,
+      },
+    });
+}
+
+/**
  * Get event statistics.
  */
 export async function getEventStats(
