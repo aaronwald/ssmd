@@ -362,6 +362,57 @@ export async function getActiveMarketsByCategoryTimeseries(
 }
 
 /**
+ * Upsert a single market from lifecycle data (simpler than API format).
+ * Used by lifecycle-consumer for real-time market creation.
+ * Note: Parent event must exist (FK constraint).
+ */
+export async function upsertMarketFromLifecycle(
+  db: Database,
+  ticker: string,
+  eventTicker: string,
+  title: string,
+  closeTime: Date | null,
+  status: string = "active"
+): Promise<void> {
+  await db
+    .insert(markets)
+    .values({
+      ticker,
+      eventTicker,
+      title,
+      status,
+      closeTime,
+    })
+    .onConflictDoUpdate({
+      target: markets.ticker,
+      set: {
+        title,
+        status,
+        closeTime,
+        deletedAt: sql`NULL`,
+      },
+    });
+}
+
+/**
+ * Update market status (e.g., on settled/determined lifecycle events).
+ * Returns true if the market was found and updated.
+ */
+export async function updateMarketStatus(
+  db: Database,
+  ticker: string,
+  status: string
+): Promise<boolean> {
+  const result = await db
+    .update(markets)
+    .set({ status })
+    .where(eq(markets.ticker, ticker))
+    .returning({ ticker: markets.ticker });
+
+  return result.length > 0;
+}
+
+/**
  * Get market activity over time (added, closed, and settled per day).
  * @param days Number of days to look back (default 30)
  */

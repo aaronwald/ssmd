@@ -9,7 +9,17 @@ import {
   AckPolicy,
   DeliverPolicy,
 } from "npm:nats";
-import { getDb, closeDb, insertLifecycleEvent, type NewMarketLifecycleEvent } from "../../lib/db/mod.ts";
+import {
+  getDb,
+  closeDb,
+  insertLifecycleEvent,
+  getSeries,
+  upsertEventFromLifecycle,
+  upsertMarketFromLifecycle,
+  updateMarketStatus,
+  type NewMarketLifecycleEvent,
+  type Database,
+} from "../../lib/db/mod.ts";
 
 const sc = StringCodec();
 
@@ -30,6 +40,14 @@ interface RawLifecycleMessage {
     result?: string;
     additional_metadata?: Record<string, unknown>;
   };
+}
+
+/**
+ * Extract series ticker from event_ticker (e.g., "KXBTCD-26JAN2317" -> "KXBTCD")
+ */
+function extractSeriesTicker(eventTicker: string): string {
+  const parts = eventTicker.split("-");
+  return parts[0];
 }
 
 /**
@@ -154,6 +172,9 @@ Environment variables:
   // Stats
   let messagesProcessed = 0;
   let messagesErrored = 0;
+  let marketsCreated = 0;
+  let marketsUpdated = 0;
+  let seriesNotFound = 0;
   const startTime = Date.now();
 
   // Setup graceful shutdown
@@ -161,6 +182,9 @@ Environment variables:
     console.log("\nShutting down...");
     const runtime = Math.round((Date.now() - startTime) / 1000);
     console.log(`Processed: ${messagesProcessed} messages`);
+    console.log(`Markets created: ${marketsCreated}`);
+    console.log(`Markets updated: ${marketsUpdated}`);
+    console.log(`Series not found: ${seriesNotFound}`);
     console.log(`Errors: ${messagesErrored}`);
     console.log(`Runtime: ${runtime}s`);
     await nc.drain();
@@ -185,6 +209,62 @@ Environment variables:
         continue;
       }
 
+      const lifecycleMsg = raw.msg;
+      const eventType = lifecycleMsg.event_type;
+      const marketTicker = lifecycleMsg.market_ticker;
+      const metadata = lifecycleMsg.additional_metadata as Record<string, unknown> | undefined;
+
+      // Handle 'created' events - create event and market records
+      if (eventType === "created" && metadata) {
+        const eventTicker = metadata.event_ticker as string | undefined;
+        const title = metadata.title as string | undefined;
+        const expectedExpirationTs = metadata.expected_expiration_ts as number | undefined;
+
+        if (eventTicker && title) {
+          const seriesTicker = extractSeriesTicker(eventTicker);
+          const series = await getSeries(seriesTicker);
+
+          if (series) {
+            // Upsert event record
+            await upsertEventFromLifecycle(
+              db,
+              eventTicker,
+              title,
+              series.category,
+              seriesTicker
+            );
+
+            // Upsert market record
+            const closeTime = expectedExpirationTs
+              ? new Date(expectedExpirationTs * 1000)
+              : null;
+            await upsertMarketFromLifecycle(
+              db,
+              marketTicker,
+              eventTicker,
+              title,
+              closeTime
+            );
+
+            marketsCreated++;
+          } else {
+            console.warn(
+              `Series not found for ${seriesTicker} (event: ${eventTicker}), skipping market creation`
+            );
+            seriesNotFound++;
+          }
+        }
+      }
+
+      // Handle 'settled' and 'determined' events - update market status
+      if (eventType === "settled" || eventType === "determined") {
+        const updated = await updateMarketStatus(db, marketTicker, "settled");
+        if (updated) {
+          marketsUpdated++;
+        }
+      }
+
+      // Always insert lifecycle event (existing behavior)
       const record = toDbRecord(raw);
       await insertLifecycleEvent(db, record);
 
@@ -192,7 +272,9 @@ Environment variables:
 
       // Log progress every 100 messages
       if (messagesProcessed % 100 === 0) {
-        console.log(`Processed ${messagesProcessed} messages`);
+        console.log(
+          `Processed ${messagesProcessed} messages (created: ${marketsCreated}, updated: ${marketsUpdated})`
+        );
       }
 
       msg.ack();

@@ -33,6 +33,7 @@ export {
 export {
   upsertEvents,
   bulkUpsertEvents,  // deprecated
+  upsertEventFromLifecycle,
   getExistingEventTickers,
   softDeleteMissingEvents,
   listEvents,
@@ -44,6 +45,8 @@ export {
 export {
   upsertMarkets,
   bulkUpsertMarkets,  // deprecated
+  upsertMarketFromLifecycle,
+  updateMarketStatus,
   softDeleteMissingMarkets,
   listMarkets,
   getMarket,
