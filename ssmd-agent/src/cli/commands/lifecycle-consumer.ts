@@ -247,6 +247,9 @@ Environment variables:
             );
 
             marketsCreated++;
+            console.log(
+              `[created] market=${marketTicker} event=${eventTicker} series=${seriesTicker} category=${series.category}`
+            );
           } else {
             console.warn(
               `Series not found for ${seriesTicker} (event: ${eventTicker}), skipping market creation`
@@ -261,6 +264,7 @@ Environment variables:
         const updated = await updateMarketStatus(db, marketTicker, "settled");
         if (updated) {
           marketsUpdated++;
+          console.log(`[${eventType}] market=${marketTicker} status=settled`);
         }
       }
 
