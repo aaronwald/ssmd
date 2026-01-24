@@ -72,7 +72,7 @@ impl Subscriber {
             .consumer
             .fetch()
             .max_messages(batch_size)
-            .heartbeat(Duration::from_secs(30)) // Heartbeat to handle quiet periods
+            .heartbeat(Duration::from_secs(5)) // Heartbeat to detect stale connections (must be < expires)
             .expires(Duration::from_secs(30)) // Timeout to prevent indefinite hangs
             .messages()
             .await
