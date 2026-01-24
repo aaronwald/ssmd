@@ -6,8 +6,10 @@ Homelab-friendly market data capture, archival, and signal development.
 
 | Component | Language | Purpose |
 |-----------|----------|---------|
-| **ssmd-connector** | Rust | WebSocket → NATS publisher |
+| **ssmd-connector** | Rust | WebSocket → NATS (trades, tickers, orderbook) |
+| **ssmd-connector** (lifecycle) | Rust | WebSocket → NATS (market lifecycle events) |
 | **ssmd-archiver** | Rust | NATS → JSONL.gz files |
+| **ssmd-lifecycle-consumer** | Deno | NATS → PostgreSQL (lifecycle events) |
 | **ssmd-cdc** | Rust | PostgreSQL CDC → NATS |
 | **ssmd-cache** | Rust | Redis cache from CDC |
 | **ssmd** (CLI) | Deno | Metadata sync, backtesting, ops |
@@ -68,11 +70,22 @@ deno task agent
 ## Architecture
 
 ```
-Kalshi WS → Connector → NATS JetStream → Archiver → JSONL.gz
-                ↓                              ↓
-           ssmd-data-ts ← PostgreSQL ← secmaster sync
-                ↓
-           ssmd-agent (local dev)
+                        ┌─────────────────────────────────────────────────┐
+                        │                 NATS JetStream                  │
+                        └─────────────────────────────────────────────────┘
+                              ↑                    ↑              │
+Kalshi WS ──┬── Connector ────┘                    │              ↓
+            │   (trades/tickers)                   │         Archiver → JSONL.gz
+            │                                      │              │
+            └── Lifecycle Connector ───────────────┘              ↓
+                (market create/settle)             │         Signal Runner → Notifier
+                        │                          │
+                        ↓                          ↓
+                Lifecycle Consumer ──→ PostgreSQL ←── secmaster sync
+                                            ↓
+                                       ssmd-data-ts
+                                            ↓
+                                    ssmd-agent (local)
 ```
 
 ## License
