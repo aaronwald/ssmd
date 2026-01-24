@@ -227,7 +227,7 @@ impl CdcConsumer {
 
                     // Look up series_ticker
                     if let Some(series_ticker) = self.event_series_lookup.get_or_insert(event_ticker, data) {
-                        if !cache.set_market(&series_ticker, market_ticker, data).await? {
+                        if !cache.set_market(&series_ticker, event_ticker, market_ticker, data).await? {
                             *skipped_expired += 1;
                         }
                     } else {
@@ -237,17 +237,17 @@ impl CdcConsumer {
                             event_ticker,
                             "Series lookup failed, storing under 'unknown'"
                         );
-                        if !cache.set_market("unknown", market_ticker, data).await? {
+                        if !cache.set_market("unknown", event_ticker, market_ticker, data).await? {
                             *skipped_expired += 1;
                         }
                     }
                 }
             }
             "delete" => {
-                // For delete, we need the series_ticker but don't have it in the event
+                // For delete, we need the series_ticker and event_ticker but don't have them in the event
                 // The safest approach is to delete from all possible locations
                 // In practice, we could track this in the lookup cache
-                tracing::debug!(market_ticker, "Market delete - cannot determine series");
+                tracing::debug!(market_ticker, "Market delete - cannot determine series/event");
             }
             _ => {}
         }
@@ -268,14 +268,22 @@ impl CdcConsumer {
                 if let Some(data) = &event.data {
                     // Update our lookup cache
                     self.event_series_lookup.update_from_event(event_ticker, data);
+
+                    // Get series_ticker from event data
+                    let series_ticker = data.get("series_ticker")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+
                     // Store event data with TTL logic
-                    if !cache.set_event(event_ticker, data).await? {
+                    if !cache.set_event(series_ticker, event_ticker, data).await? {
                         *skipped_expired += 1;
                     }
                 }
             }
             "delete" => {
-                cache.delete("event", event_ticker).await?;
+                // For delete, we don't have the series_ticker
+                // Would need to track this in a lookup cache
+                tracing::debug!(event_ticker, "Event delete - cannot determine series");
             }
             _ => {}
         }
