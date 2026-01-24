@@ -98,6 +98,11 @@ spec:
                 description: Feed references the feed ConfigMap (e.g., "kalshi" →
                   feed-kalshi ConfigMap)
                 type: string
+              gamesOnly:
+                description: |-
+                  GamesOnly filters to only markets from game series (is_game=true in series table)
+                  Useful for Sports category to exclude awards, championships, props, etc.
+                type: boolean
               image:
                 description: Image is the container image to use (optional, defaults
                   from feed ConfigMap)

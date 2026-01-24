@@ -153,6 +153,7 @@ route("GET", "/v1/markets", async (req, ctx) => {
     closingBefore,
     closingAfter: url.searchParams.get("closing_after") ?? undefined,
     asOf: url.searchParams.get("as_of") ?? undefined,
+    gamesOnly: url.searchParams.get("games_only") === "true",
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   };
 

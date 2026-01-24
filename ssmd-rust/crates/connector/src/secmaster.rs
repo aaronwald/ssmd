@@ -119,10 +119,12 @@ impl SecmasterClient {
 
     /// Fetch market tickers for a single category with retry logic
     /// If close_within_hours is Some, only returns markets closing within that many hours
+    /// If games_only is true, only returns markets from game series (is_game=true)
     pub async fn get_markets_by_category(
         &self,
         category: &str,
         close_within_hours: Option<u32>,
+        games_only: bool,
     ) -> Result<Vec<String>, SecmasterError> {
         let mut url = format!(
             "{}/v1/markets?category={}&status=active&limit=10000",
@@ -131,6 +133,9 @@ impl SecmasterClient {
         );
         if let Some(hours) = close_within_hours {
             url.push_str(&format!("&close_within_hours={}", hours));
+        }
+        if games_only {
+            url.push_str("&games_only=true");
         }
 
         let mut last_error = None;
@@ -187,21 +192,23 @@ impl SecmasterClient {
 
     /// Fetch market tickers for multiple categories, merged and deduped
     /// If close_within_hours is Some, only returns markets closing within that many hours
+    /// If games_only is true, only returns markets from game series (is_game=true)
     pub async fn get_markets_by_categories(
         &self,
         categories: &[String],
         close_within_hours: Option<u32>,
+        games_only: bool,
     ) -> Result<Vec<String>, SecmasterError> {
         if categories.is_empty() {
             return Ok(Vec::new());
         }
 
-        info!(categories = ?categories, close_within_hours = ?close_within_hours, "Loading markets from secmaster");
+        info!(categories = ?categories, close_within_hours = ?close_within_hours, games_only = games_only, "Loading markets from secmaster");
 
         let mut all_tickers = HashSet::new();
 
         for category in categories {
-            match self.get_markets_by_category(category, close_within_hours).await {
+            match self.get_markets_by_category(category, close_within_hours, games_only).await {
                 Ok(tickers) => {
                     all_tickers.extend(tickers);
                 }
@@ -228,10 +235,12 @@ impl SecmasterClient {
 
     /// Fetch market tickers with CDC snapshot metadata (snapshot_time, snapshot_lsn)
     /// Used by connectors with CDC enabled to synchronize market fetch with CDC stream
+    /// If games_only is true, only returns markets from game series (is_game=true)
     pub async fn get_markets_with_snapshot(
         &self,
         category: &str,
         close_within_hours: Option<u32>,
+        games_only: bool,
     ) -> Result<MarketsWithSnapshot, SecmasterError> {
         let mut url = format!(
             "{}/v1/markets?category={}&status=active&limit=10000&include_snapshot=true",
@@ -240,6 +249,9 @@ impl SecmasterClient {
         );
         if let Some(hours) = close_within_hours {
             url.push_str(&format!("&close_within_hours={}", hours));
+        }
+        if games_only {
+            url.push_str("&games_only=true");
         }
 
         let mut last_error = None;
@@ -308,10 +320,12 @@ impl SecmasterClient {
 
     /// Fetch market tickers for multiple categories with CDC snapshot metadata
     /// Returns the snapshot from the first successful category fetch
+    /// If games_only is true, only returns markets from game series (is_game=true)
     pub async fn get_markets_by_categories_with_snapshot(
         &self,
         categories: &[String],
         close_within_hours: Option<u32>,
+        games_only: bool,
     ) -> Result<MarketsWithSnapshot, SecmasterError> {
         if categories.is_empty() {
             return Ok(MarketsWithSnapshot {
@@ -321,14 +335,14 @@ impl SecmasterClient {
             });
         }
 
-        info!(categories = ?categories, close_within_hours = ?close_within_hours, "Loading markets with snapshot from secmaster");
+        info!(categories = ?categories, close_within_hours = ?close_within_hours, games_only = games_only, "Loading markets with snapshot from secmaster");
 
         let mut all_tickers = HashSet::new();
         let mut earliest_snapshot_lsn: Option<String> = None;
         let mut earliest_snapshot_time: Option<String> = None;
 
         for category in categories {
-            match self.get_markets_with_snapshot(category, close_within_hours).await {
+            match self.get_markets_with_snapshot(category, close_within_hours, games_only).await {
                 Ok(result) => {
                     all_tickers.extend(result.tickers);
                     // Keep the earliest (first) snapshot for consistency

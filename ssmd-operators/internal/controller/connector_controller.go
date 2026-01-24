@@ -243,14 +243,20 @@ storage:
 			closeWithinHoursYAML = fmt.Sprintf("  close_within_hours: %d\n", *connector.Spec.CloseWithinHours)
 		}
 
+		// Add games_only if specified (for Sports to filter to actual games)
+		gamesOnlyYAML := ""
+		if connector.Spec.GamesOnly {
+			gamesOnlyYAML = "  games_only: true\n"
+		}
+
 		envConfig += fmt.Sprintf(`secmaster:
   url: "http://ssmd-data-ts.%s.svc.cluster.local:8080"
   categories:
-%s%ssubscription:
+%s%s%ssubscription:
   batch_size: 100
   retry_attempts: 3
   retry_delay_ms: 1000
-`, connector.Namespace, categoriesYAML, closeWithinHoursYAML)
+`, connector.Namespace, categoriesYAML, closeWithinHoursYAML, gamesOnlyYAML)
 	}
 
 	// Add CDC config if enabled
