@@ -45,9 +45,9 @@ impl CdcConsumer {
             .await
             .map_err(|e| Error::Nats(format!("Create consumer failed: {}", e)))?;
 
-        // Set heartbeat to 30s to handle quiet periods without false timeouts
+        // Set heartbeat to 5s to detect stale connections
         let messages = consumer.stream()
-            .heartbeat(Duration::from_secs(30))
+            .heartbeat(Duration::from_secs(5))
             .messages()
             .await
             .map_err(|e| Error::Nats(format!("Get messages failed: {}", e)))?;
