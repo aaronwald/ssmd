@@ -159,7 +159,7 @@ impl CdcConsumer {
                     }
 
                     processed += 1;
-                    if processed.is_multiple_of(100) {
+                    if processed % 100 == 0 {
                         tracing::info!(
                             processed,
                             skipped_lsn,
