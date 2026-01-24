@@ -1,227 +1,79 @@
 # ssmd - Stupid Simple Market Data
 
-A homelab-friendly market data system. Capture, archive, and analyze market data with GitOps configuration and AI-powered signal development.
-
-## Vision
-
-- **Simple enough for homelab** - No enterprise infrastructure required
-- **Simple enough for a TUI** - Minimal operational complexity
-- **Simple enough for Claude** - Easy to define new skills and integrations
-- **Cloud-first** - Kubernetes-native, GitOps-driven
-- **Quality data platform** - Provenance tracking, versioned schemas, gap detection
-
-## Architecture
-
-![Architecture](docs/architecture.svg)
-
-<!-- Source: docs/architecture.d2 - regenerate with: d2 docs/architecture.d2 docs/architecture.svg -->
-
-### Reference Data
-
-![Reference Data](docs/refdata.svg)
-
-<!-- Source: docs/refdata.d2 - regenerate with: d2 docs/refdata.d2 docs/refdata.svg -->
-
-### Agent
-
-![Agent](docs/agent.svg)
-
-<!-- Source: docs/agent.d2 - regenerate with: d2 docs/agent.d2 docs/agent.svg -->
-
-### Signal Runtime
-
-![Signal Runtime](docs/signal-runtime.svg)
-
-<!-- Source: docs/signal-runtime.d2 - regenerate with: d2 docs/signal-runtime.d2 docs/signal-runtime.svg -->
+Homelab-friendly market data capture, archival, and signal development.
 
 ## Components
 
-### Core Pipeline (Rust)
-
-| Component | Image | Purpose |
-|-----------|-------|---------|
-| **ssmd-connector** | `ghcr.io/aaronwald/ssmd-connector` | WebSocket → NATS publisher |
-| **ssmd-archiver** | `ghcr.io/aaronwald/ssmd-archiver` | NATS → JSONL.gz files |
-| **ssmd-cdc** | `ghcr.io/aaronwald/ssmd-cdc` | PostgreSQL CDC → NATS publisher |
-| **ssmd-cache** | `ghcr.io/aaronwald/ssmd-cache` | Redis cache warmer from CDC/PostgreSQL |
-
-### TypeScript Services (Deno)
-
-| Component | Image | Purpose |
-|-----------|-------|---------|
-| **ssmd** (CLI) | `ghcr.io/aaronwald/ssmd-cli-ts` | CLI for metadata, syncs, and backtesting |
-| **ssmd-data-ts** | `ghcr.io/aaronwald/ssmd-data-ts` | HTTP API for market data and secmaster |
-| **ssmd-agent** | `ghcr.io/aaronwald/ssmd-agent` | LangGraph REPL for signal development |
-| **ssmd-signal-runner** | `ghcr.io/aaronwald/ssmd-signal-runner` | Real-time signal computation daemon |
-
-### Operators (Go)
-
-| Component | Image | Purpose |
-|-----------|-------|---------|
-| **ssmd-operators** | `ghcr.io/aaronwald/ssmd-operator` | Kubernetes operators for pipeline CRDs |
-
-### Admin UI (Next.js)
-
-| Component | Image | Purpose |
-|-----------|-------|---------|
-| **ssmd-admin** | `ghcr.io/aaronwald/ssmd-admin` | Web UI for API keys, stats, settings |
-
-> **Note:** ssmd-admin source is in varlab repo (`varlab/apps/ssmd-admin`)
+| Component | Language | Purpose |
+|-----------|----------|---------|
+| **ssmd-connector** | Rust | WebSocket → NATS publisher |
+| **ssmd-archiver** | Rust | NATS → JSONL.gz files |
+| **ssmd-cdc** | Rust | PostgreSQL CDC → NATS |
+| **ssmd-cache** | Rust | Redis cache from CDC |
+| **ssmd** (CLI) | Deno | Metadata sync, backtesting, ops |
+| **ssmd-data-ts** | Deno | HTTP API for data/secmaster |
+| **ssmd-signal-runner** | Deno | Real-time signal daemon |
+| **ssmd-notifier** | Deno | Signal → ntfy.sh routing |
+| **ssmd-operator** | Go | K8s CRDs for pipeline |
+| **ssmd-agent** | Deno | LangGraph REPL for signals |
 
 ## Quick Start
 
 ```bash
-# Prerequisites
-sudo apt-get install -y capnproto
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-# Deno 2.x required for TypeScript components
+# Prerequisites: capnproto, rust, deno 2.x
+make setup
 
-# Build and test everything
+# Build and test
 make all
 ```
 
-## CLI Usage
-
-The `ssmd` CLI is built with Deno. Run from the `ssmd-agent/` directory:
+## CLI
 
 ```bash
 cd ssmd-agent
 
-# Show help
-deno task cli --help
+# Secmaster sync
+deno task cli secmaster sync --category Economics
 
-# Or run directly
-deno run -A src/cli/main.ts --help
-```
-
-### Commands
-
-#### Feed Management
-```bash
-# List configured feeds
-deno task cli feed list
-
-# Show feed details
-deno task cli feed show kalshi
-
-# Create a new feed
-deno task cli feed add polymarket --type websocket --endpoint wss://...
-```
-
-#### Security Master (Kalshi)
-```bash
-# Sync events and markets from Kalshi API
-deno task cli secmaster sync
-
-# Sync only events
-deno task cli secmaster sync --events-only
-
-# Sync only markets
-deno task cli secmaster sync --markets-only
-
-# Dry run (fetch but don't write)
-deno task cli secmaster sync --dry-run
-```
-
-#### Fee Schedules (Kalshi)
-```bash
-# Sync fee schedules from Kalshi API
-deno task cli fees sync
-
-# Show fee statistics
-deno task cli fees stats
-
-# List current fee schedules
-deno task cli fees list
-deno task cli fees list --limit 100
-```
-
-#### Backtesting
-```bash
-# Run a backtest
-deno task cli backtest run my-signal --dates 2025-01-01,2025-01-02
-deno task cli backtest run my-signal --from 2025-01-01 --to 2025-01-31
-
-# Check status
-deno task cli backtest status <run-id>
-
-# Get results
-deno task cli backtest results <run-id>
-
-# List recent runs
-deno task cli backtest list
-```
-
-#### Signal Runtime
-```bash
-# List available signals
+# Signals
 deno task cli signal list
-
-# Run signal against NATS stream (real-time)
 deno task cli signal run volume-1m-30min
 
-# Run with console output (no NATS publish)
-deno task cli signal run volume-1m-30min --console
+# Backtesting
+deno task cli backtest run my-signal --from 2025-01-01 --to 2025-01-31
 
-# Run against local file data
-deno task cli signal run volume-1m-30min --source file --dates 2025-12-29 --data data
-
-# Subscribe to signal fire stream
-deno task cli signal subscribe volume-1m-30min
-```
-
-#### Agent REPL
-```bash
-# Start the interactive agent
-deno task cli agent
-
-# Or run directly
+# Agent REPL
 deno task agent
 ```
 
-### Environment Variables
+## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `KALSHI_API_KEY` | Kalshi API key for secmaster/fees sync |
-| `ANTHROPIC_API_KEY` | For agent REPL |
-| `SSMD_API_URL` | HTTP API endpoint (default: http://localhost:8080) |
+| Variable | Purpose |
+|----------|---------|
+| `DATABASE_URL` | PostgreSQL connection |
+| `NATS_URL` | NATS server (default: nats://localhost:4222) |
+| `KALSHI_API_KEY` | Kalshi API key |
+| `KALSHI_PRIVATE_KEY_PATH` | Path to RSA private key |
+| `SSMD_API_URL` | ssmd-data-ts endpoint |
 | `SSMD_DATA_API_KEY` | API key for ssmd-data-ts |
-| `NATS_URL` | NATS server URL (default: nats://localhost:4222) |
 
 ## Documentation
 
-| Document | Purpose |
-|----------|---------|
-| [CLAUDE.md](CLAUDE.md) | Build commands and development guide |
+| Doc | Purpose |
+|-----|---------|
+| [CLAUDE.md](CLAUDE.md) | Build commands, architecture |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Kubernetes deployment |
-| [AGENT.md](AGENT.md) | Signal development with ssmd-agent |
-| [TODO.md](TODO.md) | Task tracking and roadmap |
-| [docs/designs/](docs/designs/) | Architecture and design documents |
-| [docs/plans/](docs/plans/) | Implementation plans |
-| [docs/reference/](docs/reference/) | CLI reference, file formats |
+| [AGENT.md](AGENT.md) | Signal development agent |
 
-## Key Design Decisions
+## Architecture
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Deno/TypeScript for CLI | `ssmd` | Code sharing with agent, native TS |
-| Rust for hot path | Connector, archiver | Zero-cost abstractions |
-| NATS JetStream | Transport | Persistence, replay, simple ops |
-| GitOps | Config | Versioned, reviewable, auditable |
-| JSONL.gz | Archive | Grep-friendly, compressed |
-| Deno + LangGraph | Agent | Native TS, stateful tools |
-
-## Current Status
-
-See [TODO.md](TODO.md) for detailed status. Summary:
-
-- **Phase 1** (GitOps Metadata): Complete
-- **Phase 2** (NATS Streaming): Complete
-- **Phase 3** (Agent Pipeline): Complete
-- **Phase 4** (Signal Runtime): Complete
-- **Phase 5+** (Gateway, Trading Day): Planned
+```
+Kalshi WS → Connector → NATS JetStream → Archiver → JSONL.gz
+                ↓                              ↓
+           ssmd-data-ts ← PostgreSQL ← secmaster sync
+                ↓
+           ssmd-agent (local dev)
+```
 
 ## License
 
