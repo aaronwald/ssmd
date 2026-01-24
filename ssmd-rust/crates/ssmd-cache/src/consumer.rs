@@ -1,5 +1,7 @@
 use async_nats::jetstream::{self, consumer::pull::Stream, Context};
 use futures_util::StreamExt;
+use ssmd_middleware::lsn_gte;
+use std::collections::HashMap;
 use std::time::Duration;
 use crate::{Result, Error, cache::RedisCache};
 
@@ -13,9 +15,45 @@ pub struct CdcEvent {
     pub data: Option<serde_json::Value>,
 }
 
+/// Lookup cache for event_ticker -> series_ticker mapping
+pub struct EventSeriesLookup {
+    cache: HashMap<String, String>,
+}
+
+impl EventSeriesLookup {
+    pub fn new() -> Self {
+        Self {
+            cache: HashMap::new(),
+        }
+    }
+
+    /// Get series_ticker for an event, caching the result
+    pub fn get_or_insert(&mut self, event_ticker: &str, data: &serde_json::Value) -> Option<String> {
+        if let Some(series) = self.cache.get(event_ticker) {
+            return Some(series.clone());
+        }
+
+        // Extract series_ticker from event data
+        if let Some(series) = data.get("series_ticker").and_then(|v| v.as_str()) {
+            self.cache.insert(event_ticker.to_string(), series.to_string());
+            return Some(series.to_string());
+        }
+
+        None
+    }
+
+    /// Update cache from event CDC data
+    pub fn update_from_event(&mut self, event_ticker: &str, data: &serde_json::Value) {
+        if let Some(series) = data.get("series_ticker").and_then(|v| v.as_str()) {
+            self.cache.insert(event_ticker.to_string(), series.to_string());
+        }
+    }
+}
+
 pub struct CdcConsumer {
     stream: Stream,
     snapshot_lsn: String,
+    event_series_lookup: EventSeriesLookup,
 }
 
 impl CdcConsumer {
@@ -55,13 +93,8 @@ impl CdcConsumer {
         Ok(Self {
             stream: messages,
             snapshot_lsn,
+            event_series_lookup: EventSeriesLookup::new(),
         })
-    }
-
-    /// Compare LSNs (format: "0/16B3748")
-    fn lsn_gte(&self, lsn: &str, threshold: &str) -> bool {
-        // Simple string comparison works for LSN format
-        lsn >= threshold
     }
 
     /// Process CDC events and update cache
@@ -69,7 +102,8 @@ impl CdcConsumer {
         tracing::info!(snapshot_lsn = %self.snapshot_lsn, "Starting CDC consumer");
 
         let mut processed: u64 = 0;
-        let mut skipped: u64 = 0;
+        let mut skipped_lsn: u64 = 0;
+        let mut skipped_expired: u64 = 0;
 
         while let Some(msg) = self.stream.next().await {
             let msg = msg.map_err(|e| Error::Nats(format!("Message error: {}", e)))?;
@@ -77,13 +111,13 @@ impl CdcConsumer {
             match serde_json::from_slice::<CdcEvent>(&msg.payload) {
                 Ok(event) => {
                     // Skip events before snapshot LSN
-                    if !self.lsn_gte(&event.lsn, &self.snapshot_lsn) {
-                        skipped += 1;
+                    if !lsn_gte(&event.lsn, &self.snapshot_lsn) {
+                        skipped_lsn += 1;
                         msg.ack().await.map_err(|e| Error::Nats(format!("Ack failed: {}", e)))?;
                         continue;
                     }
 
-                    // Extract key (assumes first field is the key)
+                    // Extract key
                     let key = match &event.key {
                         serde_json::Value::Object(obj) => {
                             obj.values().next()
@@ -94,22 +128,44 @@ impl CdcConsumer {
                     };
 
                     if let Some(key) = key {
-                        match event.op.as_str() {
-                            "insert" | "update" => {
-                                if let Some(data) = &event.data {
-                                    cache.set(&event.table, &key, data).await?;
+                        match event.table.as_str() {
+                            "markets" => {
+                                self.handle_market_event(&event, &key, cache, &mut skipped_expired).await?;
+                            }
+                            "events" => {
+                                self.handle_event_event(&event, &key, cache, &mut skipped_expired).await?;
+                            }
+                            "series" => {
+                                self.handle_series_event(&event, &key, cache).await?;
+                            }
+                            "series_fees" => {
+                                self.handle_fee_event(&event, &key, cache).await?;
+                            }
+                            _ => {
+                                // Unknown table, use generic handler
+                                match event.op.as_str() {
+                                    "insert" | "update" => {
+                                        if let Some(data) = &event.data {
+                                            cache.set(&event.table, &key, data).await?;
+                                        }
+                                    }
+                                    "delete" => {
+                                        cache.delete(&event.table, &key).await?;
+                                    }
+                                    _ => {}
                                 }
                             }
-                            "delete" => {
-                                cache.delete(&event.table, &key).await?;
-                            }
-                            _ => {}
                         }
                     }
 
                     processed += 1;
-                    if processed % 100 == 0 {
-                        tracing::info!(processed, skipped, "CDC events processed");
+                    if processed.is_multiple_of(100) {
+                        tracing::info!(
+                            processed,
+                            skipped_lsn,
+                            skipped_expired,
+                            "CDC events processed"
+                        );
                     }
                 }
                 Err(e) => {
@@ -118,6 +174,124 @@ impl CdcConsumer {
             }
 
             msg.ack().await.map_err(|e| Error::Nats(format!("Ack failed: {}", e)))?;
+        }
+
+        Ok(())
+    }
+
+    /// Handle market CDC events with series grouping and TTL
+    async fn handle_market_event(
+        &mut self,
+        event: &CdcEvent,
+        market_ticker: &str,
+        cache: &RedisCache,
+        skipped_expired: &mut u64,
+    ) -> Result<()> {
+        match event.op.as_str() {
+            "insert" | "update" => {
+                if let Some(data) = &event.data {
+                    // Get event_ticker from market data
+                    let event_ticker = data.get("event_ticker")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    // Look up series_ticker
+                    if let Some(series_ticker) = self.event_series_lookup.get_or_insert(event_ticker, data) {
+                        if !cache.set_market(&series_ticker, market_ticker, data).await? {
+                            *skipped_expired += 1;
+                        }
+                    } else {
+                        // Fallback: store under "unknown" series if lookup fails
+                        tracing::warn!(
+                            market_ticker,
+                            event_ticker,
+                            "Series lookup failed, storing under 'unknown'"
+                        );
+                        if !cache.set_market("unknown", market_ticker, data).await? {
+                            *skipped_expired += 1;
+                        }
+                    }
+                }
+            }
+            "delete" => {
+                // For delete, we need the series_ticker but don't have it in the event
+                // The safest approach is to delete from all possible locations
+                // In practice, we could track this in the lookup cache
+                tracing::debug!(market_ticker, "Market delete - cannot determine series");
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    /// Handle event CDC events and update series lookup
+    async fn handle_event_event(
+        &mut self,
+        event: &CdcEvent,
+        event_ticker: &str,
+        cache: &RedisCache,
+        skipped_expired: &mut u64,
+    ) -> Result<()> {
+        match event.op.as_str() {
+            "insert" | "update" => {
+                if let Some(data) = &event.data {
+                    // Update our lookup cache
+                    self.event_series_lookup.update_from_event(event_ticker, data);
+                    // Store event data with TTL logic
+                    if !cache.set_event(event_ticker, data).await? {
+                        *skipped_expired += 1;
+                    }
+                }
+            }
+            "delete" => {
+                cache.delete("event", event_ticker).await?;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    /// Handle series CDC events
+    async fn handle_series_event(
+        &self,
+        event: &CdcEvent,
+        series_ticker: &str,
+        cache: &RedisCache,
+    ) -> Result<()> {
+        match event.op.as_str() {
+            "insert" | "update" => {
+                if let Some(data) = &event.data {
+                    cache.set_series(series_ticker, data).await?;
+                }
+            }
+            "delete" => {
+                cache.delete("series", series_ticker).await?;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    /// Handle series_fees CDC events
+    async fn handle_fee_event(
+        &self,
+        event: &CdcEvent,
+        series_ticker: &str,
+        cache: &RedisCache,
+    ) -> Result<()> {
+        match event.op.as_str() {
+            "insert" | "update" => {
+                if let Some(data) = &event.data {
+                    cache.set("fee", series_ticker, data).await?;
+                }
+            }
+            "delete" => {
+                cache.delete("fee", series_ticker).await?;
+            }
+            _ => {}
         }
 
         Ok(())

@@ -7,6 +7,7 @@ use crate::secmaster::SecmasterClient;
 use async_nats::jetstream::{self, consumer::pull::Stream, consumer::DeliverPolicy, Context};
 use chrono::Duration as ChronoDuration;
 use futures_util::StreamExt;
+use ssmd_middleware::lsn_gte;
 use std::collections::HashSet;
 use std::time::Duration;
 use thiserror::Error;
@@ -192,11 +193,6 @@ impl CdcSubscriptionConsumer {
         })
     }
 
-    /// Compare LSNs (format: "0/16B3748")
-    fn lsn_gte(lsn: &str, threshold: &str) -> bool {
-        lsn >= threshold
-    }
-
     /// Check if a market's event category matches our filter
     async fn should_subscribe(&self, event_ticker: &str) -> bool {
         // If no categories configured, subscribe to all
@@ -291,7 +287,7 @@ impl CdcSubscriptionConsumer {
             processed += 1;
 
             // Skip events before our snapshot LSN
-            if !Self::lsn_gte(&event.lsn, &self.snapshot_lsn) {
+            if !lsn_gte(&event.lsn, &self.snapshot_lsn) {
                 skipped_lsn += 1;
                 if let Err(e) = msg.ack().await {
                     warn!(error = %e, "Failed to ack message");
@@ -390,10 +386,10 @@ mod tests {
 
     #[test]
     fn test_lsn_comparison() {
-        assert!(CdcSubscriptionConsumer::lsn_gte("0/16B3748", "0/16B3748"));
-        assert!(CdcSubscriptionConsumer::lsn_gte("0/16B3749", "0/16B3748"));
-        assert!(!CdcSubscriptionConsumer::lsn_gte("0/16B3747", "0/16B3748"));
-        assert!(CdcSubscriptionConsumer::lsn_gte("1/0", "0/FFFFFF"));
+        assert!(lsn_gte("0/16B3748", "0/16B3748"));
+        assert!(lsn_gte("0/16B3749", "0/16B3748"));
+        assert!(!lsn_gte("0/16B3747", "0/16B3748"));
+        assert!(lsn_gte("1/0", "0/FFFFFF"));
     }
 
     #[test]

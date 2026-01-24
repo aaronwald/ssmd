@@ -11,6 +11,7 @@ name = "ssmd-cache"
 path = "src/main.rs"
 
 [dependencies]
+ssmd-middleware = { path = "../middleware" }
 tokio = { workspace = true }
 tokio-postgres = { workspace = true }
 async-nats = { workspace = true }
@@ -23,6 +24,7 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 futures-util = { workspace = true }
 anyhow = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
