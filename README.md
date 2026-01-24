@@ -10,8 +10,7 @@ Homelab-friendly market data capture, archival, and signal development.
 | **ssmd-connector** (lifecycle) | Rust | WebSocket → NATS (market lifecycle events) |
 | **ssmd-archiver** | Rust | NATS → JSONL.gz files |
 | **ssmd-lifecycle-consumer** | Deno | NATS → PostgreSQL (lifecycle events) |
-| **ssmd-cdc** | Rust | PostgreSQL CDC → NATS |
-| **ssmd-cache** | Rust | Redis cache from CDC |
+| **ssmd-cdc** | Rust | PostgreSQL CDC → NATS (for dynamic subs) |
 | **ssmd** (CLI) | Deno | Metadata sync, backtesting, ops |
 | **ssmd-data-ts** | Deno | HTTP API for data/secmaster |
 | **ssmd-signal-runner** | Deno | Real-time signal daemon |
@@ -70,37 +69,36 @@ deno task agent
 ## Architecture
 
 ```
-                           ┌─────────────────────────────────────────────────┐
-                           │                 NATS JetStream                  │
-                           └─────────────────────────────────────────────────┘
-                              ↑         ↑         ↑              │         │
-Kalshi WS ──┬── Connector ────┘         │         │              ↓         │
-            │   (trades/tickers)  ......│.........│.....   Archiver → JSONL.gz
-            │         ↑           :     │         │    :         │
-            │   (dynamic subs)    :     │         │    :         ↓
-            │         │           :     │         │    :   Signal Runner
-            └── Lifecycle ────────│─────┘         │    :         │
-                Connector         │               │    :         ↓
-                    │             │               │    :      Notifier
-                    ↓             │               │    :
-            Lifecycle Consumer    │               │    :
-                    │             │               │    :
-                    ↓             ↓               │    :
-               PostgreSQL ←── secmaster sync      │    :
-                    │                             │    :
-                    ├──────── ssmd-cdc ───────────┘    :
-                    │          (CDC stream)            :
-                    │               │                  :
-                    ↓               ↓                  :
-               ssmd-data-ts    ssmd-cache → Redis .....:
-                    ↓
-             ssmd-agent (local)
+                         ┌───────────────────────────────────────────┐
+                         │              NATS JetStream               │
+                         └───────────────────────────────────────────┘
+                            ↑              ↑              │         │
+Kalshi WS ──┬── Connector ──┘              │              ↓         ↓
+            │   (trades/tickers)           │        Archiver    Signal Runner
+            │         ↑                    │            │            │
+            │    (dynamic subs)            │            ↓            ↓
+            │         │                    │        JSONL.gz      Notifier
+            │         │                    │
+            └── Lifecycle Connector ───────┘
+                      │
+                      ↓
+              Lifecycle Consumer
+                      │
+                      ↓
+                 PostgreSQL ←── secmaster sync (CLI/Temporal)
+                      │
+                      ├──── ssmd-cdc ──→ NATS (CDC stream) ──→ Connector
+                      │                   (dynamic subs)
+                      ↓
+                 ssmd-data-ts
+                      ↓
+               ssmd-agent (local)
 ```
 
 **Data flows:**
-- **Market data**: Kalshi WS → Connector → NATS → Archiver/Signals
+- **Market data**: Kalshi WS → Connector → NATS → Archiver + Signal Runner
 - **Lifecycle**: Kalshi WS → Lifecycle Connector → NATS → Consumer → PostgreSQL
-- **CDC**: PostgreSQL → ssmd-cdc → NATS → Connector (dynamic subs) + ssmd-cache → Redis
+- **CDC**: PostgreSQL → ssmd-cdc → NATS → Connector (dynamic market subscriptions)
 
 ## License
 
