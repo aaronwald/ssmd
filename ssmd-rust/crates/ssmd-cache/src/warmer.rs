@@ -61,11 +61,11 @@ impl CacheWarmer {
         Ok(count)
     }
 
-    /// Warm events table into Redis (only open events during warming)
+    /// Warm events table into Redis (only active events during warming)
     pub async fn warm_events(&self, cache: &RedisCache) -> Result<u64> {
         let rows = self.client
             .query(
-                "SELECT event_ticker, row_to_json(events.*) FROM events WHERE status = 'open'",
+                "SELECT event_ticker, row_to_json(events.*) FROM events WHERE status = 'active'",
                 &[],
             )
             .await?;
@@ -79,7 +79,7 @@ impl CacheWarmer {
             }
         }
 
-        tracing::info!(count, "Warmed open events");
+        tracing::info!(count, "Warmed active events");
         Ok(count)
     }
 
