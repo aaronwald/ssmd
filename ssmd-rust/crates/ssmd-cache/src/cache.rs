@@ -121,19 +121,19 @@ impl RedisCache {
 
     /// Set an event record with status-aware TTL
     /// Key: secmaster:event:EVENT_TICKER
-    /// - Open events: no expiry
-    /// - Settled events: expire 1 day after strike_date (or now if no strike_date)
-    /// - Already expired settled events (>1 day old): not cached
+    /// - Active events: no expiry
+    /// - Non-active events (settled, closed, etc.): expire 1 day after strike_date
+    /// - Already expired events (>1 day old): not cached
     pub async fn set_event(
         &self,
         event_ticker: &str,
         data: &serde_json::Value,
     ) -> Result<bool> {
         let redis_key = format!("secmaster:event:{}", event_ticker);
-        let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("open");
+        let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
 
-        // Treat 'settled' or 'closed' as terminal states
-        if status == "settled" || status == "closed" {
+        // Treat non-active status as terminal states (settled, closed, finalized, etc.)
+        if status != "active" {
             let now = chrono::Utc::now().timestamp();
 
             // Parse strike_date if available
@@ -161,7 +161,7 @@ impl RedisCache {
 
             self.set_with_expiry(&redis_key, data, expire_at).await?;
         } else {
-            // Open events: no expiry
+            // Active events: no expiry
             let json = serde_json::to_string(data)?;
             let mut conn = self.conn.clone();
             conn.set::<_, _, ()>(&redis_key, &json).await?;
