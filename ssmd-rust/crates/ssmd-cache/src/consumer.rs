@@ -3,6 +3,7 @@ use futures_util::StreamExt;
 use ssmd_middleware::{lsn_gte, lsn::Lsn};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use tokio_postgres::{Client, NoTls};
 use crate::{Result, Error, cache::RedisCache};
 
 /// CDC event from NATS (matches ssmd-cdc publisher format)
@@ -16,33 +17,63 @@ pub struct CdcEvent {
 }
 
 /// Lookup cache for event_ticker -> series_ticker mapping
+/// Uses in-memory HashMap as L1 cache, PostgreSQL as L2 fallback
 pub struct EventSeriesLookup {
     cache: HashMap<String, String>,
+    db_client: Client,
 }
 
 impl EventSeriesLookup {
-    pub fn new() -> Self {
-        Self {
+    pub async fn new(database_url: &str) -> Result<Self> {
+        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await
+            .map_err(|e| Error::Database(format!("Connection failed: {}", e)))?;
+
+        // Spawn connection handler
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                tracing::error!(error = %e, "EventSeriesLookup DB connection error");
+            }
+        });
+
+        Ok(Self {
             cache: HashMap::new(),
-        }
+            db_client: client,
+        })
     }
 
-    /// Get series_ticker for an event, caching the result
-    pub fn get_or_insert(&mut self, event_ticker: &str, data: &serde_json::Value) -> Option<String> {
+    /// Get series_ticker - check in-memory first, then query PostgreSQL
+    pub async fn get_series(&mut self, event_ticker: &str) -> Option<String> {
+        // L1: Check in-memory cache first (fast path)
         if let Some(series) = self.cache.get(event_ticker) {
             return Some(series.clone());
         }
 
-        // Extract series_ticker from event data
-        if let Some(series) = data.get("series_ticker").and_then(|v| v.as_str()) {
-            self.cache.insert(event_ticker.to_string(), series.to_string());
-            return Some(series.to_string());
+        // L2: Query PostgreSQL
+        match self.db_client
+            .query_opt(
+                "SELECT series_ticker FROM events WHERE event_ticker = $1",
+                &[&event_ticker],
+            )
+            .await
+        {
+            Ok(Some(row)) => {
+                let series_ticker: String = row.get(0);
+                // Cache for future lookups
+                self.cache.insert(event_ticker.to_string(), series_ticker.clone());
+                Some(series_ticker)
+            }
+            Ok(None) => {
+                tracing::debug!(event_ticker, "Event not found in database");
+                None
+            }
+            Err(e) => {
+                tracing::warn!(event_ticker, error = %e, "Failed to query series_ticker");
+                None
+            }
         }
-
-        None
     }
 
-    /// Update cache from event CDC data
+    /// Update cache from event CDC data (no DB query needed)
     pub fn update_from_event(&mut self, event_ticker: &str, data: &serde_json::Value) {
         if let Some(series) = data.get("series_ticker").and_then(|v| v.as_str()) {
             self.cache.insert(event_ticker.to_string(), series.to_string());
@@ -62,6 +93,7 @@ impl CdcConsumer {
         stream_name: &str,
         consumer_name: &str,
         snapshot_lsn: String,
+        database_url: &str,
     ) -> Result<Self> {
         let client = async_nats::connect(nats_url).await
             .map_err(|e| Error::Nats(format!("Connection failed: {}", e)))?;
@@ -90,10 +122,13 @@ impl CdcConsumer {
             .await
             .map_err(|e| Error::Nats(format!("Get messages failed: {}", e)))?;
 
+        // Create event→series lookup with DB connection
+        let event_series_lookup = EventSeriesLookup::new(database_url).await?;
+
         Ok(Self {
             stream: messages,
             snapshot_lsn,
-            event_series_lookup: EventSeriesLookup::new(),
+            event_series_lookup,
         })
     }
 
@@ -210,6 +245,7 @@ impl CdcConsumer {
     }
 
     /// Handle market CDC events with series grouping and TTL
+    /// Uses L1 (in-memory) then L2 (PostgreSQL) lookup for event→series mapping
     async fn handle_market_event(
         &mut self,
         event: &CdcEvent,
@@ -225,17 +261,19 @@ impl CdcConsumer {
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
 
-                    // Look up series_ticker
-                    if let Some(series_ticker) = self.event_series_lookup.get_or_insert(event_ticker, data) {
+                    // Get series_ticker (L1: in-memory, L2: PostgreSQL)
+                    let series_ticker = self.event_series_lookup.get_series(event_ticker).await;
+
+                    if let Some(series_ticker) = series_ticker {
                         if !cache.set_market(&series_ticker, event_ticker, market_ticker, data).await? {
                             *skipped_expired += 1;
                         }
                     } else {
-                        // Fallback: store under "unknown" series if lookup fails
+                        // Fallback: store under "unknown" series if event not found
                         tracing::warn!(
                             market_ticker,
                             event_ticker,
-                            "Series lookup failed, storing under 'unknown'"
+                            "Series lookup failed (event not in DB), storing under 'unknown'"
                         );
                         if !cache.set_market("unknown", event_ticker, market_ticker, data).await? {
                             *skipped_expired += 1;

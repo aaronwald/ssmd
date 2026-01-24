@@ -43,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
         &config.stream_name,
         &config.consumer_name,
         snapshot_lsn,
+        &config.database_url,
     ).await?;
 
     consumer.run(&cache).await?;
