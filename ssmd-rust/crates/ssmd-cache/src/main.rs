@@ -31,10 +31,11 @@ async fn main() -> anyhow::Result<()> {
     let snapshot_lsn = warmer.warm_all(&cache).await?;
 
     // Log cache stats
-    let markets = cache.count("market").await?;
-    let events = cache.count("event").await?;
-    let fees = cache.count("fee").await?;
-    tracing::info!(markets, events, fees, "Cache populated");
+    let series = cache.count("secmaster:series:*").await?;
+    let markets = cache.count("secmaster:series:*:market:*").await?;
+    let events = cache.count("secmaster:event:*").await?;
+    let fees = cache.count("secmaster:fee:*").await?;
+    tracing::info!(series, markets, events, fees, "Cache populated");
 
     // Start consuming CDC events
     let mut consumer = CdcConsumer::new(

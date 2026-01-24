@@ -2562,11 +2562,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
+ "chrono",
  "clap",
  "futures-util",
  "redis",
  "serde",
  "serde_json",
+ "ssmd-middleware",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
