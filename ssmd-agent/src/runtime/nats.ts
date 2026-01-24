@@ -5,11 +5,45 @@ import {
   type JetStreamClient,
   type Consumer,
   StringCodec,
+  Events,
 } from "npm:nats";
 import type { MarketRecord } from "../state/types.ts";
 import type { RecordSource, FireSink, SignalFire } from "./interfaces.ts";
 
 const sc = StringCodec();
+
+/**
+ * Default NATS connection options with reconnection enabled
+ */
+const DEFAULT_NATS_OPTIONS = {
+  reconnect: true,
+  maxReconnectAttempts: -1, // unlimited
+  reconnectTimeWait: 2000, // 2 seconds between attempts
+  pingInterval: 30000, // 30 second ping
+  maxPingOut: 3, // 3 missed pings before disconnect
+};
+
+/**
+ * Monitor NATS connection status and log events
+ */
+async function monitorConnection(nc: NatsConnection, name: string): Promise<void> {
+  for await (const status of nc.status()) {
+    switch (status.type) {
+      case Events.Disconnect:
+        console.warn(`[${name}] NATS disconnected`);
+        break;
+      case Events.Reconnect:
+        console.log(`[${name}] NATS reconnected to ${status.data}`);
+        break;
+      case Events.Error:
+        console.error(`[${name}] NATS error: ${status.data}`);
+        break;
+      case Events.LDM:
+        console.warn(`[${name}] NATS entered lame duck mode`);
+        break;
+    }
+  }
+}
 
 /**
  * Raw record format from NATS (matches archiver output)
@@ -58,8 +92,14 @@ export class NatsRecordSource implements RecordSource {
   ) {}
 
   async *subscribe(): AsyncIterable<MarketRecord> {
-    this.nc = await connect({ servers: this.servers });
+    this.nc = await connect({
+      servers: this.servers,
+      ...DEFAULT_NATS_OPTIONS,
+    });
     this.js = this.nc.jetstream();
+
+    // Start connection monitor (fire and forget)
+    monitorConnection(this.nc, `RecordSource:${this.stream}`).catch(() => {});
 
     console.log(`Connected to NATS: ${this.servers}`);
     console.log(`Stream: ${this.stream}, Filter: ${this.filterSubject ?? "all"}`);
@@ -115,8 +155,13 @@ export class NatsFireSink implements FireSink {
 
   async publish(fire: SignalFire): Promise<void> {
     if (!this.nc) {
-      this.nc = await connect({ servers: this.servers });
+      this.nc = await connect({
+        servers: this.servers,
+        ...DEFAULT_NATS_OPTIONS,
+      });
       this.js = this.nc.jetstream();
+      // Start connection monitor (fire and forget)
+      monitorConnection(this.nc, "FireSink").catch(() => {});
       console.log(`Fire sink connected to NATS JetStream: ${this.servers}`);
     }
 
