@@ -26,16 +26,17 @@ impl CacheWarmer {
         Ok(row.get(0))
     }
 
-    /// Warm markets table into Redis (only active markets, grouped under series)
-    /// Key structure: secmaster:series:SERIES_TICKER:market:MARKET_TICKER
+    /// Warm markets table into Redis (only active markets)
+    /// Key structure: secmaster:series:SERIES:event:EVENT:market:MARKET
     pub async fn warm_markets(&self, cache: &RedisCache) -> Result<u64> {
-        // Join markets with events to get series_ticker
+        // Join markets with events to get series_ticker and event_ticker
         // Only cache active markets during warming
         let rows = self.client
             .query(
                 r#"
                 SELECT
                     m.ticker,
+                    m.event_ticker,
                     e.series_ticker,
                     row_to_json(m.*)
                 FROM markets m
@@ -49,10 +50,11 @@ impl CacheWarmer {
         let mut count = 0;
         for row in rows {
             let market_ticker: String = row.get(0);
-            let series_ticker: String = row.get(1);
-            let json: serde_json::Value = row.get(2);
+            let event_ticker: String = row.get(1);
+            let series_ticker: String = row.get(2);
+            let json: serde_json::Value = row.get(3);
 
-            if cache.set_market(&series_ticker, &market_ticker, &json).await? {
+            if cache.set_market(&series_ticker, &event_ticker, &market_ticker, &json).await? {
                 count += 1;
             }
         }
@@ -62,10 +64,11 @@ impl CacheWarmer {
     }
 
     /// Warm events table into Redis (only active events during warming)
+    /// Key structure: secmaster:series:SERIES:event:EVENT
     pub async fn warm_events(&self, cache: &RedisCache) -> Result<u64> {
         let rows = self.client
             .query(
-                "SELECT event_ticker, row_to_json(events.*) FROM events WHERE status = 'active'",
+                "SELECT event_ticker, series_ticker, row_to_json(events.*) FROM events WHERE status = 'active'",
                 &[],
             )
             .await?;
@@ -73,8 +76,9 @@ impl CacheWarmer {
         let mut count = 0;
         for row in rows {
             let event_ticker: String = row.get(0);
-            let json: serde_json::Value = row.get(1);
-            if cache.set_event(&event_ticker, &json).await? {
+            let series_ticker: String = row.get(1);
+            let json: serde_json::Value = row.get(2);
+            if cache.set_event(&series_ticker, &event_ticker, &json).await? {
                 count += 1;
             }
         }

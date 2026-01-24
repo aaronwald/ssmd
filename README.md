@@ -110,10 +110,10 @@ ssmd-cache maintains a Redis cache of secmaster data with intelligent TTL manage
 
 **Key Structure:**
 ```
-secmaster:series:{SERIES_TICKER}                    # Series metadata
-secmaster:series:{SERIES_TICKER}:market:{TICKER}    # Markets grouped under series
-secmaster:event:{EVENT_TICKER}                      # Event metadata
-secmaster:fee:{SERIES_TICKER}                       # Fee schedules
+secmaster:series:{SERIES}                  # Series metadata
+secmaster:series:{SERIES}:{EVENT}          # Event under series
+secmaster:series:{SERIES}:{EVENT}:{MARKET} # Market under event
+secmaster:fee:{SERIES}                     # Fee schedules
 ```
 
 **TTL Policy:**

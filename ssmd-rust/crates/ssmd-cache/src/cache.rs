@@ -66,18 +66,22 @@ impl RedisCache {
         Ok(())
     }
 
-    /// Set a market record under its series with status-aware TTL
-    /// Key: secmaster:series:SERIES_TICKER:market:MARKET_TICKER
+    /// Set a market record under series/event hierarchy with status-aware TTL
+    /// Key: secmaster:series:SERIES:EVENT:MARKET
     /// - Active/closed markets: no expiry
     /// - Settled markets: expire 1 day after close_time (or now if no close_time)
     /// - Already expired settled markets (>1 day old): not cached
     pub async fn set_market(
         &self,
         series_ticker: &str,
+        event_ticker: &str,
         market_ticker: &str,
         data: &serde_json::Value,
     ) -> Result<bool> {
-        let redis_key = format!("secmaster:series:{}:market:{}", series_ticker, market_ticker);
+        let redis_key = format!(
+            "secmaster:series:{}:{}:{}",
+            series_ticker, event_ticker, market_ticker
+        );
         let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
 
         if status == "settled" {
@@ -119,17 +123,18 @@ impl RedisCache {
         Ok(true)
     }
 
-    /// Set an event record with status-aware TTL
-    /// Key: secmaster:event:EVENT_TICKER
+    /// Set an event record under series hierarchy with status-aware TTL
+    /// Key: secmaster:series:SERIES:EVENT
     /// - Active events: no expiry
     /// - Non-active events (settled, closed, etc.): expire 1 day after strike_date
     /// - Already expired events (>1 day old): not cached
     pub async fn set_event(
         &self,
+        series_ticker: &str,
         event_ticker: &str,
         data: &serde_json::Value,
     ) -> Result<bool> {
-        let redis_key = format!("secmaster:event:{}", event_ticker);
+        let redis_key = format!("secmaster:series:{}:{}", series_ticker, event_ticker);
         let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
 
         // Treat non-active status as terminal states (settled, closed, finalized, etc.)
@@ -182,9 +187,23 @@ impl RedisCache {
         Ok(())
     }
 
-    /// Delete a market under its series
-    pub async fn delete_market(&self, series_ticker: &str, market_ticker: &str) -> Result<()> {
-        let redis_key = format!("secmaster:series:{}:market:{}", series_ticker, market_ticker);
+    /// Delete an event under series hierarchy
+    pub async fn delete_event(&self, series_ticker: &str, event_ticker: &str) -> Result<()> {
+        let redis_key = format!("secmaster:series:{}:{}", series_ticker, event_ticker);
+
+        let mut conn = self.conn.clone();
+        conn.del::<_, ()>(&redis_key).await?;
+
+        tracing::debug!(key = %redis_key, "DEL event");
+        Ok(())
+    }
+
+    /// Delete a market under series/event hierarchy
+    pub async fn delete_market(&self, series_ticker: &str, event_ticker: &str, market_ticker: &str) -> Result<()> {
+        let redis_key = format!(
+            "secmaster:series:{}:{}:{}",
+            series_ticker, event_ticker, market_ticker
+        );
 
         let mut conn = self.conn.clone();
         conn.del::<_, ()>(&redis_key).await?;
