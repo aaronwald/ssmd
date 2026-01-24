@@ -168,7 +168,10 @@ impl CdcSubscriptionConsumer {
             "CDC consumer starting position"
         );
 
+        // Set heartbeat to 30s to handle quiet periods without false timeouts
         let messages = consumer
+            .stream()
+            .heartbeat(Duration::from_secs(30))
             .messages()
             .await
             .map_err(|e| CdcError::Nats(format!("Get messages failed: {}", e)))?;
@@ -246,11 +249,29 @@ impl CdcSubscriptionConsumer {
         let mut skipped_duplicate: u64 = 0;
         let mut subscribed: u64 = 0;
 
+        let mut consecutive_errors = 0u32;
+        const MAX_CONSECUTIVE_ERRORS: u32 = 5;
+
         while let Some(msg) = self.stream.next().await {
             let msg = match msg {
-                Ok(m) => m,
+                Ok(m) => {
+                    consecutive_errors = 0; // Reset on success
+                    m
+                }
                 Err(e) => {
-                    error!(error = %e, "Error receiving message, will retry");
+                    consecutive_errors += 1;
+                    error!(
+                        error = %e,
+                        consecutive_errors,
+                        "Error receiving message"
+                    );
+                    // After too many consecutive errors, return to trigger reconnection
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        return Err(CdcError::Nats(format!(
+                            "Too many consecutive errors ({}), reconnection needed: {}",
+                            consecutive_errors, e
+                        )));
+                    }
                     sleep(Duration::from_secs(1)).await;
                     continue;
                 }
