@@ -1,5 +1,6 @@
 use async_nats::jetstream::{self, consumer::PullConsumer, message::Message};
 use futures_util::StreamExt;
+use std::time::Duration;
 use tracing::{error, info, trace, warn};
 
 use crate::config::StreamConfig;
@@ -71,6 +72,8 @@ impl Subscriber {
             .consumer
             .fetch()
             .max_messages(batch_size)
+            .heartbeat(Duration::from_secs(30)) // Heartbeat to handle quiet periods
+            .expires(Duration::from_secs(30)) // Timeout to prevent indefinite hangs
             .messages()
             .await
             .map_err(|e| ArchiverError::Nats(e.to_string()))?;

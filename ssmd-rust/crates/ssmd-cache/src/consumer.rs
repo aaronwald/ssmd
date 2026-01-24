@@ -1,5 +1,6 @@
 use async_nats::jetstream::{self, consumer::pull::Stream, Context};
 use futures_util::StreamExt;
+use std::time::Duration;
 use crate::{Result, Error, cache::RedisCache};
 
 /// CDC event from NATS (matches ssmd-cdc publisher format)
@@ -44,7 +45,11 @@ impl CdcConsumer {
             .await
             .map_err(|e| Error::Nats(format!("Create consumer failed: {}", e)))?;
 
-        let messages = consumer.messages().await
+        // Set heartbeat to 30s to handle quiet periods without false timeouts
+        let messages = consumer.stream()
+            .heartbeat(Duration::from_secs(30))
+            .messages()
+            .await
             .map_err(|e| Error::Nats(format!("Get messages failed: {}", e)))?;
 
         Ok(Self {
