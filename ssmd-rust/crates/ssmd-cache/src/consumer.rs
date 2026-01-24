@@ -1,8 +1,8 @@
 use async_nats::jetstream::{self, consumer::pull::Stream, Context};
 use futures_util::StreamExt;
-use ssmd_middleware::lsn_gte;
+use ssmd_middleware::{lsn_gte, lsn::Lsn};
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use crate::{Result, Error, cache::RedisCache};
 
 /// CDC event from NATS (matches ssmd-cdc publisher format)
@@ -104,8 +104,20 @@ impl CdcConsumer {
         let mut processed: u64 = 0;
         let mut skipped_lsn: u64 = 0;
         let mut skipped_expired: u64 = 0;
+        let mut last_lsn: Option<Lsn> = None;
+        let mut last_event_time = Instant::now();
+        let mut gaps_detected: u64 = 0;
 
         while let Some(msg) = self.stream.next().await {
+            // Warn if no events for more than 1 hour (potential stall)
+            let elapsed = last_event_time.elapsed();
+            if elapsed > Duration::from_secs(3600) {
+                tracing::warn!(
+                    elapsed_secs = elapsed.as_secs(),
+                    "No CDC events received for extended period (>1hr)"
+                );
+            }
+            last_event_time = Instant::now();
             let msg = msg.map_err(|e| Error::Nats(format!("Message error: {}", e)))?;
 
             match serde_json::from_slice::<CdcEvent>(&msg.payload) {
@@ -115,6 +127,22 @@ impl CdcConsumer {
                         skipped_lsn += 1;
                         msg.ack().await.map_err(|e| Error::Nats(format!("Ack failed: {}", e)))?;
                         continue;
+                    }
+
+                    // Detect gaps in LSN sequence
+                    if let Some(current_lsn) = Lsn::parse(&event.lsn) {
+                        if let Some(ref prev_lsn) = last_lsn {
+                            // Log if LSN goes backwards (shouldn't happen normally)
+                            if !current_lsn.gte(prev_lsn) {
+                                tracing::warn!(
+                                    current = %event.lsn,
+                                    previous = ?prev_lsn,
+                                    "LSN went backwards - possible reprocessing"
+                                );
+                                gaps_detected += 1;
+                            }
+                        }
+                        last_lsn = Some(current_lsn);
                     }
 
                     // Extract key
@@ -164,6 +192,8 @@ impl CdcConsumer {
                             processed,
                             skipped_lsn,
                             skipped_expired,
+                            gaps_detected,
+                            last_lsn = ?last_lsn,
                             "CDC events processed"
                         );
                     }
