@@ -66,7 +66,6 @@ function isSignalFire(obj: unknown): obj is SignalFire {
   );
 }
 
-const IDLE_HEARTBEAT_MS = 30_000;
 
 export async function runConsumer(config: NotifierConfig): Promise<void> {
   const sender = new NtfySender();
@@ -103,7 +102,6 @@ export async function runConsumer(config: NotifierConfig): Promise<void> {
       ack_policy: AckPolicy.Explicit,
       deliver_policy: DeliverPolicy.New,
       filter_subject: config.filterSubject,
-      idle_heartbeat: IDLE_HEARTBEAT_MS * 1_000_000, // nanoseconds
     });
     consumer = await js.consumers.get(config.stream, config.consumer);
   }
