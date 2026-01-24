@@ -70,23 +70,37 @@ deno task agent
 ## Architecture
 
 ```
-                        ┌─────────────────────────────────────────────────┐
-                        │                 NATS JetStream                  │
-                        └─────────────────────────────────────────────────┘
-                              ↑                    ↑              │
-Kalshi WS ──┬── Connector ────┘                    │              ↓
-            │   (trades/tickers)                   │         Archiver → JSONL.gz
-            │                                      │              │
-            └── Lifecycle Connector ───────────────┘              ↓
-                (market create/settle)             │         Signal Runner → Notifier
-                        │                          │
-                        ↓                          ↓
-                Lifecycle Consumer ──→ PostgreSQL ←── secmaster sync
-                                            ↓
-                                       ssmd-data-ts
-                                            ↓
-                                    ssmd-agent (local)
+                           ┌─────────────────────────────────────────────────┐
+                           │                 NATS JetStream                  │
+                           └─────────────────────────────────────────────────┘
+                              ↑         ↑         ↑              │         │
+Kalshi WS ──┬── Connector ────┘         │         │              ↓         │
+            │   (trades/tickers)  ......│.........│.....   Archiver → JSONL.gz
+            │         ↑           :     │         │    :         │
+            │   (dynamic subs)    :     │         │    :         ↓
+            │         │           :     │         │    :   Signal Runner
+            └── Lifecycle ────────│─────┘         │    :         │
+                Connector         │               │    :         ↓
+                    │             │               │    :      Notifier
+                    ↓             │               │    :
+            Lifecycle Consumer    │               │    :
+                    │             │               │    :
+                    ↓             ↓               │    :
+               PostgreSQL ←── secmaster sync      │    :
+                    │                             │    :
+                    ├──────── ssmd-cdc ───────────┘    :
+                    │          (CDC stream)            :
+                    │               │                  :
+                    ↓               ↓                  :
+               ssmd-data-ts    ssmd-cache → Redis .....:
+                    ↓
+             ssmd-agent (local)
 ```
+
+**Data flows:**
+- **Market data**: Kalshi WS → Connector → NATS → Archiver/Signals
+- **Lifecycle**: Kalshi WS → Lifecycle Connector → NATS → Consumer → PostgreSQL
+- **CDC**: PostgreSQL → ssmd-cdc → NATS → Connector (dynamic subs) + ssmd-cache → Redis
 
 ## License
 
