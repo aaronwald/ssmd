@@ -415,14 +415,14 @@ impl KalshiConnector {
                                 }
                             }
                             Err(WebSocketError::ConnectionClosed) => {
-                                info!(shard_id, "Kalshi WebSocket connection closed");
+                                error!(shard_id, "Kalshi WebSocket connection closed, exiting for restart");
                                 shard_metrics.set_disconnected();
-                                break;
+                                std::process::exit(1);
                             }
                             Err(e) => {
-                                error!(shard_id, error = %e, "Kalshi WebSocket error");
+                                error!(shard_id, error = %e, "Kalshi WebSocket error, exiting for restart");
                                 shard_metrics.set_disconnected();
-                                break;
+                                std::process::exit(1);
                             }
                         }
                     }
