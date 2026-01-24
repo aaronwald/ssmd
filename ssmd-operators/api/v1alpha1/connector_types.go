@@ -44,6 +44,11 @@ type ConnectorSpec struct {
 	// +optional
 	Categories []string `json:"categories,omitempty"`
 
+	// GamesOnly filters to only markets from game series (is_game=true in series table)
+	// Useful for Sports category to exclude awards, championships, props, etc.
+	// +optional
+	GamesOnly bool `json:"gamesOnly,omitempty"`
+
 	// CloseWithinHours only subscribes to markets closing within this many hours
 	// Useful for high-volume categories like Sports where only near-term markets are relevant
 	// Requires daily connector restart to pick up newly eligible markets

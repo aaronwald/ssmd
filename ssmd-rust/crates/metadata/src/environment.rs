@@ -94,6 +94,10 @@ pub struct SecmasterConfig {
     /// Only subscribe to markets closing within this many hours (for high-volume categories like Sports)
     #[serde(default)]
     pub close_within_hours: Option<u32>,
+    /// Only subscribe to markets from game series (is_game=true in series table)
+    /// Useful for Sports category to exclude awards, championships, props, etc.
+    #[serde(default)]
+    pub games_only: bool,
 }
 
 /// CDC configuration for dynamic market subscriptions

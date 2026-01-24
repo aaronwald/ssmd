@@ -231,7 +231,7 @@ impl KalshiConnector {
             self.subscription_config.retry_delay_ms,
         );
         let result = client
-            .get_markets_by_categories_with_snapshot(&secmaster.categories, secmaster.close_within_hours)
+            .get_markets_by_categories_with_snapshot(&secmaster.categories, secmaster.close_within_hours, secmaster.games_only)
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(format!("secmaster query: {}", e)))?;
 

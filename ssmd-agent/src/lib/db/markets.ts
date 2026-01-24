@@ -3,7 +3,7 @@
  */
 import { eq, isNull, desc, sql, notInArray, count } from "drizzle-orm";
 import { type Database, getRawSql } from "./client.ts";
-import { markets, events, type Market, type NewMarket } from "./schema.ts";
+import { markets, events, series, type Market, type NewMarket } from "./schema.ts";
 import { getExistingEventTickers } from "./events.ts";
 import type { Market as ApiMarket } from "../types/market.ts";
 
@@ -176,6 +176,7 @@ export async function listMarketsWithSnapshot(
     closingBefore?: string;
     closingAfter?: string;
     asOf?: string;
+    gamesOnly?: boolean;
     limit?: number;
   } = {}
 ): Promise<MarketsWithSnapshot> {
@@ -205,6 +206,7 @@ export async function listMarketsWithSnapshot(
  * List markets with optional filters.
  * @param options.asOf - Point-in-time filter (ISO timestamp). Returns markets that existed
  *                       and were tradeable at this time. Defaults to now.
+ * @param options.gamesOnly - If true, only return markets from series where is_game = true
  */
 export async function listMarkets(
   db: Database,
@@ -216,6 +218,7 @@ export async function listMarkets(
     closingBefore?: string;
     closingAfter?: string;
     asOf?: string;
+    gamesOnly?: boolean;
     limit?: number;
   } = {}
 ): Promise<MarketRow[]> {
@@ -245,8 +248,8 @@ export async function listMarkets(
     conditions.push(sql`${markets.closeTime} > ${options.closingAfter}`);
   }
 
-  // If filtering by category or series, need to join events
-  if (options.category || options.series) {
+  // If filtering by category, series, or gamesOnly, need to join events (and possibly series)
+  if (options.category || options.series || options.gamesOnly) {
     const eventConditions: ReturnType<typeof sql>[] = [];
     if (options.category) {
       eventConditions.push(eq(events.category, options.category));
@@ -254,6 +257,37 @@ export async function listMarkets(
     if (options.series) {
       // Case-insensitive match (Kalshi tickers are uppercase but allow lowercase input)
       eventConditions.push(sql`LOWER(${events.seriesTicker}) = LOWER(${options.series})`);
+    }
+
+    // If gamesOnly, need to join series table and filter on is_game
+    if (options.gamesOnly) {
+      const rows = await db
+        .select({
+          ticker: markets.ticker,
+          eventTicker: markets.eventTicker,
+          title: markets.title,
+          status: markets.status,
+          closeTime: markets.closeTime,
+          yesBid: markets.yesBid,
+          yesAsk: markets.yesAsk,
+          noBid: markets.noBid,
+          noAsk: markets.noAsk,
+          lastPrice: markets.lastPrice,
+          volume: markets.volume,
+          volume24h: markets.volume24h,
+          openInterest: markets.openInterest,
+          createdAt: markets.createdAt,
+          updatedAt: markets.updatedAt,
+          deletedAt: markets.deletedAt,
+        })
+        .from(markets)
+        .innerJoin(events, eq(markets.eventTicker, events.eventTicker))
+        .innerJoin(series, eq(events.seriesTicker, series.ticker))
+        .where(sql.join([...conditions, ...eventConditions, eq(series.isGame, true)], sql` AND `))
+        .orderBy(desc(markets.updatedAt))
+        .limit(limit);
+
+      return rows;
     }
 
     const rows = await db
