@@ -5,6 +5,9 @@ pub enum Error {
     #[error("PostgreSQL error: {0}")]
     Postgres(#[from] tokio_postgres::Error),
 
+    #[error("Database error: {0}")]
+    Database(String),
+
     #[error("NATS error: {0}")]
     Nats(String),
 
