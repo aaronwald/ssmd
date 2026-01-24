@@ -1,5 +1,6 @@
 # Binaries
 *.exe
+bin/
 
 # Local CLI config
 .ssmd/
