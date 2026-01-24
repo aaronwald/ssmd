@@ -11,6 +11,7 @@ Homelab-friendly market data capture, archival, and signal development.
 | **ssmd-archiver** | Rust | NATS → JSONL.gz files |
 | **ssmd-lifecycle-consumer** | Deno | NATS → PostgreSQL (lifecycle events) |
 | **ssmd-cdc** | Rust | PostgreSQL CDC → NATS (for dynamic subs) |
+| **ssmd-cache** | Rust | PostgreSQL + CDC → Redis cache |
 | **ssmd** (CLI) | Deno | Metadata sync, backtesting, ops |
 | **ssmd-data-ts** | Deno | HTTP API for data/secmaster |
 | **ssmd-signal-runner** | Deno | Real-time signal daemon |
@@ -87,8 +88,10 @@ Kalshi WS ──┬── Connector ──┘              │              ↓ 
                       ↓
                  PostgreSQL ←── secmaster sync (CLI/Temporal)
                       │
-                      ├──── ssmd-cdc ──→ NATS (CDC stream) ──→ Connector
-                      │                   (dynamic subs)
+                      ├──── ssmd-cdc ──→ NATS (CDC stream) ──┬→ Connector
+                      │                   (dynamic subs)     │  (dynamic subs)
+                      │                                      ↓
+                      │                                  ssmd-cache → Redis
                       ↓
                  ssmd-data-ts
                       ↓
@@ -99,6 +102,34 @@ Kalshi WS ──┬── Connector ──┘              │              ↓ 
 - **Market data**: Kalshi WS → Connector → NATS → Archiver + Signal Runner
 - **Lifecycle**: Kalshi WS → Lifecycle Connector → NATS → Consumer → PostgreSQL
 - **CDC**: PostgreSQL → ssmd-cdc → NATS → Connector (dynamic market subscriptions)
+- **Cache**: PostgreSQL (initial) + CDC stream → ssmd-cache → Redis
+
+## Redis Cache Design
+
+ssmd-cache maintains a Redis cache of secmaster data with intelligent TTL management.
+
+**Key Structure:**
+```
+secmaster:series:{SERIES_TICKER}                    # Series metadata
+secmaster:series:{SERIES_TICKER}:market:{TICKER}    # Markets grouped under series
+secmaster:event:{EVENT_TICKER}                      # Event metadata
+secmaster:fee:{SERIES_TICKER}                       # Fee schedules
+```
+
+**TTL Policy:**
+| Entity | Status | TTL |
+|--------|--------|-----|
+| Series | any | no expiry |
+| Markets | active | no expiry |
+| Markets | settled | +1 day from close_time |
+| Events | active | no expiry |
+| Events | non-active | +1 day from strike_date |
+
+**Startup behavior:**
+1. Capture snapshot LSN from PostgreSQL
+2. Warm cache with active markets and events only
+3. Subscribe to CDC stream, skip events before snapshot LSN
+4. Apply CDC updates with TTL rules
 
 ## License
 
