@@ -40,7 +40,7 @@ capnp = "0.25"
 capnpc = "0.25"
 quanta = "0.12"
 dashmap = "6"
-simd-json = "0.14"
+simd-json = "0.17"
 lasso = { version = "0.7", features = ["multi-threaded"] }
 arrayvec = "0.7"
 memmap2 = "0.9"
