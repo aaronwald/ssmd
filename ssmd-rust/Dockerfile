@@ -1,6 +1,6 @@
 # Multi-stage build for ssmd-connector
 # Stage 1: Build
-FROM rust:1.92-bookworm AS builder
+FROM rust:1.93-bookworm AS builder
 
 # Install Cap'n Proto compiler (required for ssmd-schema)
 RUN apt-get update && apt-get install -y capnproto && rm -rf /var/lib/apt/lists/*
