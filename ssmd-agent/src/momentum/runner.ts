@@ -2,6 +2,8 @@ import {
   connect,
   StringCodec,
   Events,
+  AckPolicy,
+  DeliverPolicy,
 } from "npm:nats";
 import type { MomentumConfig } from "./config.ts";
 import { MarketState } from "./market-state.ts";
@@ -76,7 +78,24 @@ export async function runMomentum(config: MomentumConfig): Promise<void> {
   })();
 
   const js = nc.jetstream();
-  const consumer = await js.consumers.get(config.nats.stream);
+  const jsm = await nc.jetstreamManager();
+
+  // Create ephemeral consumer that starts from new messages only
+  const consumerName = "ssmd-momentum";
+  try {
+    await jsm.consumers.add(config.nats.stream, {
+      durable_name: consumerName,
+      filter_subject: config.nats.filter ?? undefined,
+      ack_policy: AckPolicy.Explicit,
+      deliver_policy: DeliverPolicy.New,
+    });
+  } catch (e) {
+    if (!String(e).includes("already exists")) {
+      throw e;
+    }
+  }
+
+  const consumer = await js.consumers.get(config.nats.stream, consumerName);
   const messages = await consumer.consume();
 
   console.log(`[momentum] Connected to NATS: ${config.nats.url}`);
