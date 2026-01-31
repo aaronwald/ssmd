@@ -1,0 +1,51 @@
+nats:
+  url: nats://nats.nats.svc.cluster.local:4222
+  stream: PROD_KALSHI_SPORTS
+  filter: prod.kalshi.sports.>
+
+activation:
+  dollarVolume: 250000
+  windowMinutes: 30
+
+portfolio:
+  startingBalance: 500
+  tradeSize: 100
+  drawdownHaltPercent: 10
+
+positions:
+  takeProfitCents: 5
+  stopLossCents: 5
+  timeStopMinutes: 15
+
+fees:
+  defaultMakerPerContract: 0
+  defaultTakerPerContract: 2
+
+marketClose:
+  noEntryBufferMinutes: 5
+  forceExitBufferMinutes: 2
+
+models:
+  volumeSpike:
+    enabled: true
+    spikeMultiplier: 3.0
+    spikeWindowMinutes: 1
+    baselineWindowMinutes: 10
+    minPriceMoveCents: 3
+  tradeFlow:
+    enabled: true
+    dominanceThreshold: 0.70
+    windowMinutes: 2
+    minTrades: 5
+    minPriceMoveCents: 2
+  priceAcceleration:
+    enabled: true
+    accelerationMultiplier: 2.0
+    shortWindowMinutes: 1
+    longWindowMinutes: 5
+    minShortRateCentsPerMin: 2
+    minLongMoveCents: 3
+
+reporting:
+  summaryIntervalMinutes: 5
+  publishToNats: false

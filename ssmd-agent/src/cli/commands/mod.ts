@@ -23,10 +23,11 @@ import { handleScale } from "./scale.ts";
 import { handleSchedule } from "./schedule.ts";
 import { handleStatus } from "./status.ts";
 import { handleEnv } from "./env.ts";
+import { handleMomentum } from "./momentum.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
-    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag", "env"],
+    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag", "env", "config", "balance", "filter"],
     boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait", "follow", "games-only", "by-series"],
     alias: { h: "help", v: "version", t: "type", e: "endpoint", f: "follow" },
     default: { wait: true },
@@ -117,6 +118,10 @@ export async function run(args: string[]): Promise<void> {
       await handleEnv(subcommand, flags);
       break;
 
+    case "momentum":
+      await handleMomentum(subcommand, flags);
+      break;
+
     case "agent":
       // Launch the existing agent REPL
       await import("../../cli.ts");
@@ -205,6 +210,7 @@ function printHelp(): void {
   console.log("  archiver          Manage Archiver CRs in Kubernetes");
   console.log("  scale             Scale SSMD components up/down for maintenance");
   console.log("  schedule          List and describe Temporal schedules");
+  console.log("  momentum          Paper trading momentum models on live data");
   console.log("  agent             Start interactive agent REPL");
   console.log("");
   console.log("OPTIONS:");
