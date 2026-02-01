@@ -4,6 +4,7 @@ import type { Signal, SignalResult, ComposerDecision } from "./types.ts";
 export interface ComposerConfig {
   entryThreshold: number;
   minSignals: number;
+  maxSlippageCents: number;
 }
 
 export class Composer {
@@ -55,11 +56,17 @@ export class Composer {
     // 7. If weightedSum < entryThreshold, no entry (include signals for diagnostics)
     if (weightedSum < this.config.entryThreshold) return noEntry(nonZero);
 
-    // 8. Entry price: yesAsk for YES, noBid for NO
-    const price = side === "yes" ? state.yesAsk : state.noBid;
+    // 8. Entry price: use lastPrice (what signals evaluated against)
+    const price = state.lastPrice;
 
     // 9. If price <= 0, no entry
     if (price <= 0) return noEntry(agreeing);
+
+    // 10. Slippage guard: reject if order book price diverges too far from lastPrice
+    const bookPrice = side === "yes" ? state.yesAsk : state.noBid;
+    if (bookPrice > 0 && Math.abs(bookPrice - price) > this.config.maxSlippageCents) {
+      return noEntry(agreeing);
+    }
 
     return {
       enter: true,

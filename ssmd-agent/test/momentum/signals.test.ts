@@ -179,7 +179,7 @@ Deno.test("Composer: no entry when signals disagree on direction", () => {
   const composer = new Composer(
     [new StubSignal("a", 0.5, 0.8), new StubSignal("b", -0.5, 0.8)],
     [1.0, 1.0],
-    { entryThreshold: 0.3, minSignals: 2 },
+    { entryThreshold: 0.3, minSignals: 2, maxSlippageCents: 10 },
   );
   const state = new MarketState("T1");
   state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 52 } as MarketRecord);
@@ -191,7 +191,7 @@ Deno.test("Composer: no entry when fewer than minSignals agree", () => {
   const composer = new Composer(
     [new StubSignal("a", 0.5, 0.8), new StubSignal("b", 0, 0)],
     [1.0, 1.0],
-    { entryThreshold: 0.3, minSignals: 2 },
+    { entryThreshold: 0.3, minSignals: 2, maxSlippageCents: 10 },
   );
   const state = new MarketState("T1");
   state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 52 } as MarketRecord);
@@ -203,14 +203,14 @@ Deno.test("Composer: enters YES when signals converge positive above threshold",
   const composer = new Composer(
     [new StubSignal("a", 0.6, 0.9), new StubSignal("b", 0.5, 0.8)],
     [1.0, 1.0],
-    { entryThreshold: 0.3, minSignals: 2 },
+    { entryThreshold: 0.3, minSignals: 2, maxSlippageCents: 10 },
   );
   const state = new MarketState("T1");
   state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 52 } as MarketRecord);
   const decision = composer.evaluate(state);
   assertEquals(decision.enter, true);
   assertEquals(decision.side, "yes");
-  assertEquals(decision.price, 52);
+  assertEquals(decision.price, 50); // lastPrice, not yesAsk
   assertEquals(decision.signals.length, 2);
 });
 
@@ -218,21 +218,21 @@ Deno.test("Composer: enters NO when signals converge negative above threshold", 
   const composer = new Composer(
     [new StubSignal("a", -0.6, 0.9), new StubSignal("b", -0.5, 0.8)],
     [1.0, 1.0],
-    { entryThreshold: 0.3, minSignals: 2 },
+    { entryThreshold: 0.3, minSignals: 2, maxSlippageCents: 10 },
   );
   const state = new MarketState("T1");
   state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 52, no_bid: 48, no_ask: 52 } as MarketRecord);
   const decision = composer.evaluate(state);
   assertEquals(decision.enter, true);
   assertEquals(decision.side, "no");
-  assertEquals(decision.price, 48);
+  assertEquals(decision.price, 50); // lastPrice, not noBid
 });
 
 Deno.test("Composer: enters with single signal when minSignals=1", () => {
   const composer = new Composer(
     [new StubSignal("a", 0.5, 0.8), new StubSignal("b", 0, 0)],
     [1.0, 1.0],
-    { entryThreshold: 0.15, minSignals: 1 },
+    { entryThreshold: 0.15, minSignals: 1, maxSlippageCents: 10 },
   );
   const state = new MarketState("T1");
   state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 52 } as MarketRecord);
@@ -247,7 +247,7 @@ Deno.test("Composer: no-entry decision includes non-zero signals for diagnostics
   const composer = new Composer(
     [new StubSignal("a", 0.1, 0.1), new StubSignal("b", 0, 0)],
     [1.0, 1.0],
-    { entryThreshold: 0.5, minSignals: 1 },
+    { entryThreshold: 0.5, minSignals: 1, maxSlippageCents: 10 },
   );
   const state = new MarketState("T1");
   state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 52 } as MarketRecord);
@@ -261,11 +261,39 @@ Deno.test("Composer: respects signal weights", () => {
   const composer = new Composer(
     [new StubSignal("a", 0.8, 1.0), new StubSignal("b", 0.2, 1.0)],
     [0.1, 2.0],
-    { entryThreshold: 0.5, minSignals: 2 },
+    { entryThreshold: 0.5, minSignals: 2, maxSlippageCents: 10 },
   );
   const state = new MarketState("T1");
   state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 52 } as MarketRecord);
   const decision = composer.evaluate(state);
   // Weighted sum = (0.8 * 1.0 * 0.1 + 0.2 * 1.0 * 2.0) = 0.08 + 0.4 = 0.48, below 0.5
   assertEquals(decision.enter, false);
+});
+
+Deno.test("Composer: rejects entry when order book diverges beyond maxSlippageCents", () => {
+  const composer = new Composer(
+    [new StubSignal("a", 0.6, 0.9), new StubSignal("b", 0.5, 0.8)],
+    [1.0, 1.0],
+    { entryThreshold: 0.3, minSignals: 2, maxSlippageCents: 5 },
+  );
+  const state = new MarketState("T1");
+  // lastPrice=23 but yesAsk=63 — 40c slippage, way beyond 5c limit
+  state.update({ type: "trade", ticker: "T1", ts: 999, price: 23, count: 1, side: "yes" } as MarketRecord);
+  state.update({ type: "ticker", ticker: "T1", ts: 1000, yes_bid: 60, yes_ask: 63 } as MarketRecord);
+  const decision = composer.evaluate(state);
+  assertEquals(decision.enter, false);
+});
+
+Deno.test("Composer: allows entry when order book is within maxSlippageCents", () => {
+  const composer = new Composer(
+    [new StubSignal("a", 0.6, 0.9), new StubSignal("b", 0.5, 0.8)],
+    [1.0, 1.0],
+    { entryThreshold: 0.3, minSignals: 2, maxSlippageCents: 5 },
+  );
+  const state = new MarketState("T1");
+  // lastPrice=50, yesAsk=53 — 3c slippage, within 5c limit
+  state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 53 } as MarketRecord);
+  const decision = composer.evaluate(state);
+  assertEquals(decision.enter, true);
+  assertEquals(decision.price, 50); // lastPrice
 });
