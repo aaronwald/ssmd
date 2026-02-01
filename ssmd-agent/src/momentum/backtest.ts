@@ -225,6 +225,11 @@ export async function runMomentumBacktest(options: BacktestOptions): Promise<voi
     }
 
     totalFiles += files.length;
+
+    if (state.pm.isHalted) {
+      console.log(`[backtest] Portfolio halted — stopping early.`);
+      break;
+    }
   }
 
   console.log(`\n[backtest] Complete. ${state.recordCount.toLocaleString()} records across ${totalFiles} files.`);
