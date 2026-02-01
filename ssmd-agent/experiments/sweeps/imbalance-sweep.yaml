@@ -12,4 +12,4 @@ dateRange:
   to: "2026-01-26"
 
 maxParallel: 5
-image: "0.2.0"
+image: "0.2.1"
