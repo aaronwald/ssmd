@@ -27,7 +27,7 @@ import { handleMomentum } from "./momentum.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
-    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag", "env", "config", "balance", "filter"],
+    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag", "env", "config", "balance", "filter", "cache-dir", "results-dir", "run-id", "image", "bucket", "prefix", "trades-out"],
     boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait", "follow", "games-only", "by-series"],
     alias: { h: "help", v: "version", t: "type", e: "endpoint", f: "follow" },
     default: { wait: true },

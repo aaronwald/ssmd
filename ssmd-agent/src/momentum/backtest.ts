@@ -7,15 +7,23 @@ import { parseMomentumRecord } from "./parse.ts";
 
 interface BacktestOptions {
   config: MomentumConfig;
+  configPath: string;
   dates: string[];
   bucket: string;
   prefix: string;
   tradesOut?: string;
+  cacheDir?: string;
+  resultsDir?: string;
+  runId?: string;
 }
 
-function cacheDir(bucket: string, prefix: string, date: string): string {
+function defaultCacheDir(bucket: string, prefix: string): string {
   const home = Deno.env.get("HOME") ?? "/tmp";
-  return join(home, ".cache", "ssmd-backtest", bucket, prefix, date);
+  return join(home, ".cache", "ssmd-backtest", bucket, prefix);
+}
+
+function cacheDirForDate(baseCache: string, date: string): string {
+  return join(baseCache, date);
 }
 
 /**
@@ -49,9 +57,9 @@ async function listGcsFiles(bucket: string, prefix: string, date: string): Promi
  * Download a .jsonl.gz from GCS to local cache. Returns local path.
  * Skips download if already cached.
  */
-async function ensureCached(gsUrl: string, bucket: string, prefix: string, date: string): Promise<string | null> {
+async function ensureCached(gsUrl: string, baseCache: string, date: string): Promise<string | null> {
   const fileName = gsUrl.split("/").pop() ?? "";
-  const dir = cacheDir(bucket, prefix, date);
+  const dir = cacheDirForDate(baseCache, date);
   const localPath = join(dir, fileName);
 
   try {
@@ -109,20 +117,26 @@ async function* readLocalJsonlGz(localPath: string): AsyncGenerator<string> {
 
 /**
  * Run a momentum backtest over historical GCS archive data.
- * Files are cached locally at ~/.cache/ssmd-backtest/ for fast reruns.
+ * Files are cached locally for fast reruns. Results are written to a
+ * run-specific directory with summary.json and trades.jsonl.
  */
 export async function runMomentumBacktest(options: BacktestOptions): Promise<void> {
-  const { config, dates, bucket, prefix } = options;
+  const { config, configPath, dates, bucket, prefix } = options;
+  const runId = options.runId ?? crypto.randomUUID();
+  const baseCache = options.cacheDir ?? defaultCacheDir(bucket, prefix);
+  const resultsDir = options.resultsDir ?? "./results";
+
   const state = createMomentumState(config);
   state.reporter.quiet = true;
 
   console.log(`[backtest] Momentum Backtest`);
+  console.log(`[backtest] Run ID: ${runId}`);
   console.log(`[backtest] Signals: ${state.signals.map((s) => s.name).join(", ")}`);
   console.log(`[backtest] Portfolio: $${config.portfolio.startingBalance} balance, $${config.portfolio.tradeSize}/trade`);
   console.log(`[backtest] Activation: $${state.activationThreshold} in ${config.activation.windowMinutes}min`);
   console.log(`[backtest] Dates: ${dates.join(", ")}`);
   console.log(`[backtest] Source: gs://${bucket}/${prefix}/`);
-  console.log(`[backtest] Cache: ${cacheDir(bucket, prefix, "")}`);
+  console.log(`[backtest] Cache: ${baseCache}`);
   console.log(``);
 
   let totalFiles = 0;
@@ -141,7 +155,7 @@ export async function runMomentumBacktest(options: BacktestOptions): Promise<voi
     files.sort();
 
     // Check how many are already cached
-    const dir = cacheDir(bucket, prefix, date);
+    const dir = cacheDirForDate(baseCache, date);
     let cached = 0;
     try {
       for await (const entry of Deno.readDir(dir)) {
@@ -158,7 +172,7 @@ export async function runMomentumBacktest(options: BacktestOptions): Promise<voi
     }
 
     for (const gsUrl of files) {
-      const localPath = await ensureCached(gsUrl, bucket, prefix, date);
+      const localPath = await ensureCached(gsUrl, baseCache, date);
       if (!localPath) continue;
 
       if (cached > 0) cacheHits++;
@@ -190,8 +204,55 @@ export async function runMomentumBacktest(options: BacktestOptions): Promise<voi
   }
   state.reporter.printSummary(state.pm);
 
-  // Write per-trade JSONL if requested
-  if (options.tradesOut && state.pm.closedPositions.length > 0) {
+  // Write results to {resultsDir}/{runId}/
+  const runDir = join(resultsDir, runId);
+  await ensureDir(runDir);
+
+  // Build per-model stats
+  const byModel = new Map<string, { trades: number; wins: number; losses: number; pnl: number }>();
+  for (const c of state.pm.closedPositions) {
+    const model = c.position.model;
+    const entry = byModel.get(model) ?? { trades: 0, wins: 0, losses: 0, pnl: 0 };
+    entry.trades++;
+    if (c.pnl > 0) entry.wins++;
+    else entry.losses++;
+    entry.pnl += c.pnl;
+    byModel.set(model, entry);
+  }
+
+  const pmSummary = state.pm.getSummary();
+
+  const summary = {
+    runId,
+    timestamp: new Date().toISOString(),
+    config: configPath,
+    dates: { from: dates[0], to: dates[dates.length - 1], count: dates.length },
+    source: { bucket, prefix },
+    records: state.recordCount,
+    files: totalFiles,
+    parseErrors,
+    results: Array.from(byModel.entries()).map(([model, stats]) => ({
+      model,
+      trades: stats.trades,
+      wins: stats.wins,
+      losses: stats.losses,
+      winRate: stats.trades > 0 ? stats.wins / stats.trades : 0,
+      netPnl: stats.pnl,
+    })),
+    portfolio: {
+      startingBalance: state.pm.startingBalance,
+      balance: pmSummary.balance,
+      totalPnl: pmSummary.totalPnl,
+      drawdownPercent: pmSummary.drawdownPercent,
+      halted: state.pm.isHalted,
+    },
+  };
+
+  await Deno.writeTextFile(join(runDir, "summary.json"), JSON.stringify(summary, null, 2));
+  console.log(`[backtest] Wrote summary to ${join(runDir, "summary.json")}`);
+
+  // Always write trades JSONL
+  if (state.pm.closedPositions.length > 0) {
     const lines = state.pm.closedPositions.map((c) =>
       JSON.stringify({
         model: c.position.model,
@@ -208,7 +269,14 @@ export async function runMomentumBacktest(options: BacktestOptions): Promise<voi
         entryCost: c.position.entryCost,
       })
     );
-    await Deno.writeTextFile(options.tradesOut, lines.join("\n") + "\n");
-    console.log(`[backtest] Wrote ${lines.length} trades to ${options.tradesOut}`);
+    const tradesPath = join(runDir, "trades.jsonl");
+    await Deno.writeTextFile(tradesPath, lines.join("\n") + "\n");
+    console.log(`[backtest] Wrote ${lines.length} trades to ${tradesPath}`);
+
+    // Also write to explicit --trades-out if specified
+    if (options.tradesOut) {
+      await Deno.writeTextFile(options.tradesOut, lines.join("\n") + "\n");
+      console.log(`[backtest] Wrote ${lines.length} trades to ${options.tradesOut}`);
+    }
   }
 }
