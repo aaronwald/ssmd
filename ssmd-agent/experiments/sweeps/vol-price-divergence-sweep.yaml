@@ -1,0 +1,16 @@
+name: vol-price-divergence-tuning
+base: ../deployed.yaml
+
+parameters:
+  signals.volumePriceDivergence.enabled: [true]
+  signals.volumePriceDivergence.volumeMultiplier: [1.5, 2.0, 3.0]
+  signals.volumePriceDivergence.windowSec: [30, 60, 120]
+  signals.volumePriceDivergence.maxPriceMoveCents: [1, 2, 3]
+  composer.minSignals: [1]
+
+dateRange:
+  from: "2026-01-16"
+  to: "2026-01-26"
+
+maxParallel: 5
+image: "0.3.0"
