@@ -19,6 +19,7 @@ import { TradeConcentration } from "./signals/trade-concentration.ts";
 import { FlowAsymmetry } from "./signals/flow-asymmetry.ts";
 import { SpreadVelocity } from "./signals/spread-velocity.ts";
 import { VolumePriceDivergence } from "./signals/volume-price-divergence.ts";
+import { TradeClustering } from "./signals/trade-clustering.ts";
 import { Composer } from "./signals/composer.ts";
 import type { Signal } from "./signals/types.ts";
 import { parseMomentumRecord } from "./parse.ts";
@@ -150,6 +151,16 @@ export function createMomentumState(config: MomentumConfig): MomentumState {
       weight: config.signals.volumePriceDivergence.weight,
     }));
     weights.push(config.signals.volumePriceDivergence.weight);
+  }
+  if (config.signals.tradeClustering.enabled) {
+    signals.push(new TradeClustering({
+      windowSec: config.signals.tradeClustering.windowSec,
+      quietThresholdSec: config.signals.tradeClustering.quietThresholdSec,
+      burstGapSec: config.signals.tradeClustering.burstGapSec,
+      minBurstTrades: config.signals.tradeClustering.minBurstTrades,
+      weight: config.signals.tradeClustering.weight,
+    }));
+    weights.push(config.signals.tradeClustering.weight);
   }
 
   if (signals.length === 0) {

@@ -126,6 +126,14 @@ export const MomentumConfigSchema = z.object({
       maxPriceMoveCents: z.number().default(2),
       minTrades: z.number().default(5),
     }).default({}),
+    tradeClustering: z.object({
+      enabled: z.boolean().default(false),
+      weight: z.number().default(1.0),
+      windowSec: z.number().default(120),
+      quietThresholdSec: z.number().default(15),
+      burstGapSec: z.number().default(3),
+      minBurstTrades: z.number().default(4),
+    }).default({}),
   }).default({}),
 
   composer: z.object({
