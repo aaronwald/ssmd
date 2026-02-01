@@ -33,6 +33,7 @@ export async function handleMomentum(
       console.log("  --dates <d1,d2,...>   Specific dates (alternative to --from/--to)");
       console.log("  --bucket <name>       GCS bucket (default: ssmd-archive)");
       console.log("  --prefix <path>       GCS prefix (default: kalshi/sports)");
+      console.log("  --trades-out <path>   Write per-trade JSONL to file");
       Deno.exit(1);
   }
 }
@@ -102,6 +103,7 @@ async function handleBacktest(flags: Record<string, unknown>): Promise<void> {
 
   const bucket = (flags.bucket as string) ?? "ssmd-archive";
   const prefix = (flags.prefix as string) ?? "kalshi/sports";
+  const tradesOut = flags["trades-out"] as string | undefined;
 
-  await runMomentumBacktest({ config, dates, bucket, prefix });
+  await runMomentumBacktest({ config, dates, bucket, prefix, tradesOut });
 }
