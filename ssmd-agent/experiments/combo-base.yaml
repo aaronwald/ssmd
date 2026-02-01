@@ -1,0 +1,96 @@
+nats:
+  url: nats://nats.nats.svc.cluster.local:4222
+  stream: PROD_KALSHI_SPORTS
+  filter: prod.kalshi.sports.>
+
+activation:
+  dollarVolume: 100000
+  windowMinutes: 10
+
+portfolio:
+  startingBalance: 500
+  minContracts: 1
+  maxContracts: 200
+  drawdownHaltPercent: 10
+
+positions:
+  takeProfitCents: 5
+  stopLossCents: 5
+  timeStopMinutes: 15
+  minPriceCents: 30
+  maxPriceCents: 65
+  cooldownSeconds: 50
+
+fees:
+  defaultMakerPerContract: 0
+  defaultTakerPerContract: 2
+
+marketClose:
+  noEntryBufferMinutes: 5
+  forceExitBufferMinutes: 2
+
+signals:
+  spreadTightening:
+    enabled: false
+  volumeOnset:
+    enabled: true
+    weight: 1.0
+    recentWindowSec: 30
+    baselineWindowMinutes: 5
+    onsetMultiplier: 1.5
+  meanReversion:
+    enabled: false
+  volatilitySqueeze:
+    enabled: false
+  priceMomentum:
+    enabled: true
+    weight: 0.6
+    shortWindowSec: 60
+    midWindowSec: 180
+    longWindowSec: 300
+    minTotalMoveCents: 4
+    maxAccelRatio: 3.0
+    minEntryPrice: 40
+    maxEntryPrice: 60
+    minTrades: 5
+
+  # Best Phase A params for new signals
+  tradeConcentration:
+    enabled: true
+    weight: 1.0
+    concentrationThreshold: 0.30
+    windowSec: 60
+    minTrades: 10
+  flowAsymmetry:
+    enabled: true
+    weight: 1.0
+    asymmetryThreshold: 2
+    windowSec: 300
+    minTrades: 8
+  spreadVelocity:
+    enabled: true
+    weight: 1.0
+    velocityThreshold: 0.25
+    windowSec: 60
+  volumePriceDivergence:
+    enabled: true
+    weight: 1.0
+    volumeRatio: 1.5
+    windowSec: 120
+    maxPriceDelta: 3
+  tradeClustering:
+    enabled: true
+    weight: 1.0
+    quietPeriodSec: 15
+    burstCount: 3
+    minTrades: 8
+
+composer:
+  entryThreshold: 0.15
+  minSignals: 1
+  maxSlippageCents: 10
+
+reporting:
+  summaryIntervalMinutes: 5
+  publishToNats: false
+  debug: false
