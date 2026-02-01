@@ -16,6 +16,8 @@ export const MomentumConfigSchema = z.object({
   portfolio: z.object({
     startingBalance: z.number().default(500),
     tradeSize: z.number().default(100),
+    minContracts: z.number().default(1),
+    maxContracts: z.number().default(200),
     drawdownHaltPercent: z.number().default(10),
   }).default({}),
 
@@ -55,13 +57,14 @@ export const MomentumConfigSchema = z.object({
   }).default({}),
 
   composer: z.object({
-    entryThreshold: z.number().default(0.5),
-    minSignals: z.number().default(2),
+    entryThreshold: z.number().default(0.15),
+    minSignals: z.number().default(1),
   }).default({}),
 
   reporting: z.object({
     summaryIntervalMinutes: z.number().default(5),
     publishToNats: z.boolean().default(false),
+    debug: z.boolean().default(false),
   }).default({}),
 });
 

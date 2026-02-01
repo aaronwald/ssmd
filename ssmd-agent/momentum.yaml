@@ -10,6 +10,8 @@ activation:
 portfolio:
   startingBalance: 500
   tradeSize: 100
+  minContracts: 1
+  maxContracts: 200
   drawdownHaltPercent: 10
 
 positions:
@@ -42,9 +44,10 @@ signals:
     onsetMultiplier: 1.5
 
 composer:
-  entryThreshold: 0.5
-  minSignals: 2
+  entryThreshold: 0.15
+  minSignals: 1
 
 reporting:
   summaryIntervalMinutes: 5
   publishToNats: false
+  debug: false

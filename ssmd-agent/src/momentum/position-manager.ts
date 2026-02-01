@@ -1,6 +1,8 @@
 export interface PositionManagerConfig {
   startingBalance: number;
   tradeSize: number;
+  minContracts: number;
+  maxContracts: number;
   drawdownHaltPercent: number;
   takeProfitCents: number;
   stopLossCents: number;
@@ -61,8 +63,10 @@ export class PositionManager {
       return null;
     }
 
-    // Calculate contracts: tradeSize (dollars) / price (cents) * 100
-    const contracts = Math.floor((this.config.tradeSize * 100) / price);
+    // Random contract sizing between minContracts and maxContracts
+    const min = this.config.minContracts;
+    const max = this.config.maxContracts;
+    const contracts = min + Math.floor(Math.random() * (max - min + 1));
     if (contracts <= 0) return null;
 
     // Entry cost = price * contracts (in cents) + maker fee
@@ -121,8 +125,8 @@ export class PositionManager {
       this.closedPositions.push(c);
     }
 
-    // Check drawdown halt
-    if (this.cash <= this.haltThreshold) {
+    // Check drawdown halt using portfolio value (cash + open position value)
+    if (this.portfolioValue(currentPrice, ticker) <= this.haltThreshold) {
       this.isHalted = true;
     }
 
@@ -197,6 +201,19 @@ export class PositionManager {
     if (this.isHalted) return false;
     if (closeTs > 0 && currentTs >= closeTs - noEntryBufferMin * 60) return false;
     return true;
+  }
+
+  /**
+   * Mark-to-market value of open positions at a given price for a ticker.
+   * Positions for other tickers use their entry price (last known).
+   */
+  private portfolioValue(currentPrice: number, ticker: string): number {
+    let openValue = 0;
+    for (const pos of this.openPositions) {
+      const price = pos.ticker === ticker ? currentPrice : pos.entryPrice;
+      openValue += (price * pos.contracts) / 100;
+    }
+    return this.cash + openValue;
   }
 
   getSummary(): { balance: number; totalTrades: number; wins: number; losses: number; totalPnl: number; drawdownPercent: number } {
