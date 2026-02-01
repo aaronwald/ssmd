@@ -1,0 +1,24 @@
+FROM denoland/deno:2.6.5
+
+# Install gcloud CLI for GCS access
+RUN apt-get update && apt-get install -y curl gnupg && \
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+    tee /etc/apt/sources.list.d/google-cloud-sdk.list && \
+    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | \
+    gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
+    apt-get update && apt-get install -y google-cloud-cli && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1000 -s /bin/false ssmd
+WORKDIR /app
+
+COPY deno.json .
+COPY src ./src
+
+RUN deno cache src/cli/main.ts
+
+RUN chown -R ssmd:ssmd /app /deno-dir
+
+USER ssmd
+
+ENTRYPOINT ["deno", "run", "--allow-net", "--allow-env", "--allow-read", "--allow-write", "--allow-run", "src/cli/main.ts", "momentum", "backtest"]
