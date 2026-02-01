@@ -4,8 +4,8 @@ nats:
   filter: prod.kalshi.sports.>
 
 activation:
-  dollarVolume: 250000
-  windowMinutes: 30
+  dollarVolume: 100000
+  windowMinutes: 10
 
 portfolio:
   startingBalance: 500
@@ -16,6 +16,9 @@ positions:
   takeProfitCents: 5
   stopLossCents: 5
   timeStopMinutes: 15
+  minPriceCents: 20
+  maxPriceCents: 80
+  cooldownMinutes: 5
 
 fees:
   defaultMakerPerContract: 0
@@ -25,26 +28,22 @@ marketClose:
   noEntryBufferMinutes: 5
   forceExitBufferMinutes: 2
 
-models:
-  volumeSpike:
+signals:
+  spreadTightening:
     enabled: true
-    spikeMultiplier: 3.0
-    spikeWindowMinutes: 1
-    baselineWindowMinutes: 10
-    minPriceMoveCents: 3
-  tradeFlow:
+    weight: 1.0
+    spreadWindowMinutes: 5
+    narrowingThreshold: 0.5
+  volumeOnset:
     enabled: true
-    dominanceThreshold: 0.70
-    windowMinutes: 2
-    minTrades: 5
-    minPriceMoveCents: 2
-  priceAcceleration:
-    enabled: true
-    accelerationMultiplier: 2.0
-    shortWindowMinutes: 1
-    longWindowMinutes: 5
-    minShortRateCentsPerMin: 2
-    minLongMoveCents: 3
+    weight: 1.0
+    recentWindowSec: 30
+    baselineWindowMinutes: 5
+    onsetMultiplier: 1.5
+
+composer:
+  entryThreshold: 0.5
+  minSignals: 2
 
 reporting:
   summaryIntervalMinutes: 5
