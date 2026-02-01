@@ -346,10 +346,12 @@ export async function collectResults(
 
   for (const cfg of configs) {
     try {
+      // Backtest writes to {resultsDir}/{runId}/summary.json — find the latest run-id subdir
+      const configDir = `/results/sweeps/${sweepRunId}/${cfg.configId}`;
       const json = await kubectl([
         "exec", "-n", "ssmd",
         "deploy/ssmd-debug", "--",
-        "cat", `/results/sweeps/${sweepRunId}/${cfg.configId}/summary.json`,
+        "sh", "-c", `latest=$(ls -t ${configDir} | head -1) && cat ${configDir}/$latest/summary.json`,
       ]);
       results.push(parseSummaryJson(json, cfg.configId, cfg.params));
     } catch {
