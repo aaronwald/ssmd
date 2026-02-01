@@ -11,6 +11,9 @@ import { PositionManager } from "./position-manager.ts";
 import { Reporter } from "./reporter.ts";
 import { SpreadTightening } from "./signals/spread-tightening.ts";
 import { VolumeOnset } from "./signals/volume-onset.ts";
+import { MeanReversion } from "./signals/mean-reversion.ts";
+import { VolatilitySqueeze } from "./signals/volatility-squeeze.ts";
+import { PriceMomentum } from "./signals/price-momentum.ts";
 import { Composer } from "./signals/composer.ts";
 import type { Signal } from "./signals/types.ts";
 import { parseMomentumRecord } from "./parse.ts";
@@ -54,6 +57,45 @@ export function createMomentumState(config: MomentumConfig): MomentumState {
       weight: config.signals.volumeOnset.weight,
     }));
     weights.push(config.signals.volumeOnset.weight);
+  }
+  if (config.signals.meanReversion.enabled) {
+    signals.push(new MeanReversion({
+      anchorWindowMinutes: config.signals.meanReversion.anchorWindowMinutes,
+      deviationThresholdCents: config.signals.meanReversion.deviationThresholdCents,
+      maxDeviationCents: config.signals.meanReversion.maxDeviationCents,
+      recentWindowSec: config.signals.meanReversion.recentWindowSec,
+      stallWindowSec: config.signals.meanReversion.stallWindowSec,
+      minRecentChangeCents: config.signals.meanReversion.minRecentChangeCents,
+      minTrades: config.signals.meanReversion.minTrades,
+      weight: config.signals.meanReversion.weight,
+    }));
+    weights.push(config.signals.meanReversion.weight);
+  }
+  if (config.signals.volatilitySqueeze.enabled) {
+    signals.push(new VolatilitySqueeze({
+      squeezeWindowMinutes: config.signals.volatilitySqueeze.squeezeWindowMinutes,
+      compressionThreshold: config.signals.volatilitySqueeze.compressionThreshold,
+      expansionThreshold: config.signals.volatilitySqueeze.expansionThreshold,
+      minBaselineStdDev: config.signals.volatilitySqueeze.minBaselineStdDev,
+      maxExpansionRatio: config.signals.volatilitySqueeze.maxExpansionRatio,
+      minSnapshots: config.signals.volatilitySqueeze.minSnapshots,
+      weight: config.signals.volatilitySqueeze.weight,
+    }));
+    weights.push(config.signals.volatilitySqueeze.weight);
+  }
+  if (config.signals.priceMomentum.enabled) {
+    signals.push(new PriceMomentum({
+      shortWindowSec: config.signals.priceMomentum.shortWindowSec,
+      midWindowSec: config.signals.priceMomentum.midWindowSec,
+      longWindowSec: config.signals.priceMomentum.longWindowSec,
+      minTotalMoveCents: config.signals.priceMomentum.minTotalMoveCents,
+      maxAccelRatio: config.signals.priceMomentum.maxAccelRatio,
+      minEntryPrice: config.signals.priceMomentum.minEntryPrice,
+      maxEntryPrice: config.signals.priceMomentum.maxEntryPrice,
+      minTrades: config.signals.priceMomentum.minTrades,
+      weight: config.signals.priceMomentum.weight,
+    }));
+    weights.push(config.signals.priceMomentum.weight);
   }
 
   if (signals.length === 0) {
