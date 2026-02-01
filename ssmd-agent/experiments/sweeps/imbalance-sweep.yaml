@@ -2,7 +2,6 @@ name: imbalance-tuning
 base: ../deployed.yaml
 
 parameters:
-  signals.tradeImbalance.enabled: [true]
   signals.tradeImbalance.imbalanceThreshold: [0.70, 0.75, 0.80, 0.85]
   signals.tradeImbalance.windowSec: [60, 120, 300]
   signals.tradeImbalance.minTrades: [5, 10, 15]

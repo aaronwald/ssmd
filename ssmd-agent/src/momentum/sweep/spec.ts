@@ -63,7 +63,7 @@ export function generateConfigs(
   const paramValues = paramKeys.map((k) => parameters[k]);
   const combos = cartesianProduct(paramValues);
 
-  return combos.map((combo) => {
+  const results = combos.map((combo) => {
     const config = JSON.parse(JSON.stringify(base));
     const params: Record<string, unknown> = {};
     for (let i = 0; i < paramKeys.length; i++) {
@@ -76,6 +76,17 @@ export function generateConfigs(
       config,
     };
   });
+
+  // Verify all config IDs are unique
+  const ids = new Set<string>();
+  for (const r of results) {
+    if (ids.has(r.configId)) {
+      throw new Error(`Duplicate config ID "${r.configId}" — parameter names may be too similar. Check generateConfigId logic.`);
+    }
+    ids.add(r.configId);
+  }
+
+  return results;
 }
 
 export async function loadSweepSpec(specPath: string): Promise<SweepSpec> {

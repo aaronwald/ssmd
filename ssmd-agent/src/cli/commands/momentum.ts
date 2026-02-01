@@ -430,7 +430,11 @@ ${JSON.stringify(spec, null, 2).split("\n").map(l => "    " + l).join("\n")}
   const writer = child.stdin.getWriter();
   await writer.write(new TextEncoder().encode(manifestCmYaml));
   await writer.close();
-  await child.output();
+  const manifestOutput = await child.output();
+  if (!manifestOutput.success) {
+    console.error(`Failed to create sweep manifest ConfigMap: ${new TextDecoder().decode(manifestOutput.stderr)}`);
+    Deno.exit(1);
+  }
 
   await runSweep({
     sweepRunId,
