@@ -18,6 +18,7 @@ const COMPONENTS = [
   { label: "connectors", selector: "app.kubernetes.io/name=ssmd-connector" },
   { label: "lifecycle-consumer", deployment: "ssmd-lifecycle-consumer" },
   { label: "signals", selector: "app.kubernetes.io/name=ssmd-signal" },
+  { label: "momentum", deployment: "ssmd-momentum" },
   { label: "notifier", deployment: "ssmd-notifier" },
   { label: "archiver", selector: "app.kubernetes.io/name=ssmd-archiver" },
   { label: "data-api", deployment: "ssmd-data-ts" },

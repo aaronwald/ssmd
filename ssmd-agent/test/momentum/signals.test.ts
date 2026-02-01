@@ -228,6 +228,35 @@ Deno.test("Composer: enters NO when signals converge negative above threshold", 
   assertEquals(decision.price, 48);
 });
 
+Deno.test("Composer: enters with single signal when minSignals=1", () => {
+  const composer = new Composer(
+    [new StubSignal("a", 0.5, 0.8), new StubSignal("b", 0, 0)],
+    [1.0, 1.0],
+    { entryThreshold: 0.15, minSignals: 1 },
+  );
+  const state = new MarketState("T1");
+  state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 52 } as MarketRecord);
+  const decision = composer.evaluate(state);
+  // Weighted sum = 0.5 * 0.8 * 1.0 = 0.4, above 0.15
+  assertEquals(decision.enter, true);
+  assertEquals(decision.side, "yes");
+  assertEquals(decision.signals.length, 1);
+});
+
+Deno.test("Composer: no-entry decision includes non-zero signals for diagnostics", () => {
+  const composer = new Composer(
+    [new StubSignal("a", 0.1, 0.1), new StubSignal("b", 0, 0)],
+    [1.0, 1.0],
+    { entryThreshold: 0.5, minSignals: 1 },
+  );
+  const state = new MarketState("T1");
+  state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 52 } as MarketRecord);
+  const decision = composer.evaluate(state);
+  // Weighted sum = 0.1 * 0.1 * 1.0 = 0.01, below 0.5
+  assertEquals(decision.enter, false);
+  assertEquals(decision.signals.length, 1); // non-zero signal included for diagnostics
+});
+
 Deno.test("Composer: respects signal weights", () => {
   const composer = new Composer(
     [new StubSignal("a", 0.8, 1.0), new StubSignal("b", 0.2, 1.0)],

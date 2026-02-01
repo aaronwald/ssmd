@@ -30,6 +30,8 @@ export interface MomentumState {
   activationThreshold: number;
   activationWindowSec: number;
   recordCount: number;
+  debug: boolean;
+  debugLogCount: number;
 }
 
 export function createMomentumState(config: MomentumConfig): MomentumState {
@@ -67,6 +69,8 @@ export function createMomentumState(config: MomentumConfig): MomentumState {
   const pm = new PositionManager({
     startingBalance: config.portfolio.startingBalance,
     tradeSize: config.portfolio.tradeSize,
+    minContracts: config.portfolio.minContracts,
+    maxContracts: config.portfolio.maxContracts,
     drawdownHaltPercent: config.portfolio.drawdownHaltPercent,
     takeProfitCents: config.positions.takeProfitCents,
     stopLossCents: config.positions.stopLossCents,
@@ -89,6 +93,8 @@ export function createMomentumState(config: MomentumConfig): MomentumState {
     activationThreshold: config.activation.dollarVolume,
     activationWindowSec: config.activation.windowMinutes * 60,
     recordCount: 0,
+    debug: config.reporting.debug,
+    debugLogCount: 0,
   };
 }
 
@@ -143,6 +149,16 @@ export function processRecord(record: MarketRecord, state: MomentumState): boole
 
     if (state.pm.canEnter(closeTs, state.config.marketClose.noEntryBufferMinutes, record.ts)) {
       const decision = state.composer.evaluate(ms);
+
+      // Diagnostic logging: show signal evaluations for activated tickers
+      if (state.debug && decision.signals.length > 0) {
+        state.debugLogCount++;
+        if (state.debugLogCount <= 500) {
+          const time = new Date(record.ts * 1000).toISOString();
+          const sigs = decision.signals.map(s => `${s.name}(score=${s.score.toFixed(3)},conf=${s.confidence.toFixed(3)})`).join(" ");
+          console.log(`[DEBUG] ${time} ticker=${record.ticker} enter=${decision.enter} score=${decision.score.toFixed(3)} side=${decision.side} price=${decision.price} | ${sigs}`);
+        }
+      }
 
       if (decision.enter) {
         const { takeProfitCents, minPriceCents, maxPriceCents } = state.config.positions;
@@ -223,7 +239,7 @@ export async function runMomentum(config: MomentumConfig): Promise<void> {
   console.log(`[momentum] Stream: ${config.nats.stream}, Filter: ${config.nats.filter ?? "all"}`);
   console.log(`[momentum] Signals: ${state.signals.map(s => s.name).join(", ")}`);
   console.log(`[momentum] Composer: threshold=${config.composer.entryThreshold}, minSignals=${config.composer.minSignals}`);
-  console.log(`[momentum] Portfolio: $${config.portfolio.startingBalance} balance, $${config.portfolio.tradeSize}/trade, ${config.portfolio.drawdownHaltPercent}% drawdown halt`);
+  console.log(`[momentum] Portfolio: $${config.portfolio.startingBalance} balance, ${config.portfolio.minContracts}-${config.portfolio.maxContracts} contracts/trade, ${config.portfolio.drawdownHaltPercent}% drawdown halt`);
   console.log(`[momentum] Activation: $${state.activationThreshold} in ${config.activation.windowMinutes}min`);
   console.log(``);
 

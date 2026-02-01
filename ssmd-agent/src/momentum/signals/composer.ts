@@ -6,8 +6,6 @@ export interface ComposerConfig {
   minSignals: number;
 }
 
-const NO_ENTRY: ComposerDecision = { enter: false, side: "yes", price: 0, score: 0, signals: [] };
-
 export class Composer {
   private readonly signals: Signal[];
   private readonly weights: number[];
@@ -20,6 +18,9 @@ export class Composer {
   }
 
   evaluate(state: MarketState): ComposerDecision {
+    const noEntry = (signals: SignalResult[] = []): ComposerDecision =>
+      ({ enter: false, side: "yes", price: 0, score: 0, signals });
+
     // 1. Run all signals, collect results
     const results: SignalResult[] = this.signals.map((s) => s.evaluate(state));
 
@@ -34,14 +35,14 @@ export class Composer {
     const posCount = positive.length;
     const negCount = negative.length;
 
-    if (posCount === 0 && negCount === 0) return NO_ENTRY;
+    if (posCount === 0 && negCount === 0) return noEntry();
 
     const side: "yes" | "no" = posCount >= negCount ? "yes" : "no";
     const agreeing = side === "yes" ? positive : negative;
     const agreeingCount = agreeing.length;
 
     // 5. Check that agreeing count >= minSignals
-    if (agreeingCount < this.config.minSignals) return NO_ENTRY;
+    if (agreeingCount < this.config.minSignals) return noEntry(nonZero);
 
     // 6. Compute weighted sum from agreeing signals: sum(|score| * confidence * weight)
     let weightedSum = 0;
@@ -51,14 +52,14 @@ export class Composer {
       weightedSum += Math.abs(r.score) * r.confidence * weight;
     }
 
-    // 7. If weightedSum < entryThreshold, no entry
-    if (weightedSum < this.config.entryThreshold) return NO_ENTRY;
+    // 7. If weightedSum < entryThreshold, no entry (include signals for diagnostics)
+    if (weightedSum < this.config.entryThreshold) return noEntry(nonZero);
 
     // 8. Entry price: yesAsk for YES, noBid for NO
     const price = side === "yes" ? state.yesAsk : state.noBid;
 
     // 9. If price <= 0, no entry
-    if (price <= 0) return NO_ENTRY;
+    if (price <= 0) return noEntry(agreeing);
 
     return {
       enter: true,
