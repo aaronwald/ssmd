@@ -9,30 +9,60 @@ import type { MomentumConfig } from "./config.ts";
 import { MarketState } from "./market-state.ts";
 import { PositionManager } from "./position-manager.ts";
 import { Reporter } from "./reporter.ts";
-import { VolumeSpikeMomentum } from "./models/volume-spike.ts";
-import { TradeFlowImbalance } from "./models/trade-flow.ts";
-import { PriceAcceleration } from "./models/price-acceleration.ts";
-import type { MomentumModel } from "./models/types.ts";
+import { SpreadTightening } from "./signals/spread-tightening.ts";
+import { VolumeOnset } from "./signals/volume-onset.ts";
+import { Composer } from "./signals/composer.ts";
+import type { Signal } from "./signals/types.ts";
 import { parseMomentumRecord } from "./parse.ts";
+import type { MarketRecord } from "../state/types.ts";
 
 const sc = StringCodec();
 
-export async function runMomentum(config: MomentumConfig): Promise<void> {
-  const models: MomentumModel[] = [];
-  if (config.models.volumeSpike.enabled) {
-    models.push(new VolumeSpikeMomentum(config.models.volumeSpike));
+export interface MomentumState {
+  signals: Signal[];
+  composer: Composer;
+  pm: PositionManager;
+  reporter: Reporter;
+  marketStates: Map<string, MarketState>;
+  activatedTickers: Set<string>;
+  tickerCooldowns: Map<string, number>;
+  config: MomentumConfig;
+  activationThreshold: number;
+  activationWindowSec: number;
+  recordCount: number;
+}
+
+export function createMomentumState(config: MomentumConfig): MomentumState {
+  const signals: Signal[] = [];
+  const weights: number[] = [];
+
+  if (config.signals.spreadTightening.enabled) {
+    signals.push(new SpreadTightening({
+      spreadWindowMinutes: config.signals.spreadTightening.spreadWindowMinutes,
+      narrowingThreshold: config.signals.spreadTightening.narrowingThreshold,
+      weight: config.signals.spreadTightening.weight,
+    }));
+    weights.push(config.signals.spreadTightening.weight);
   }
-  if (config.models.tradeFlow.enabled) {
-    models.push(new TradeFlowImbalance(config.models.tradeFlow));
-  }
-  if (config.models.priceAcceleration.enabled) {
-    models.push(new PriceAcceleration(config.models.priceAcceleration));
+  if (config.signals.volumeOnset.enabled) {
+    signals.push(new VolumeOnset({
+      recentWindowSec: config.signals.volumeOnset.recentWindowSec,
+      baselineWindowMinutes: config.signals.volumeOnset.baselineWindowMinutes,
+      onsetMultiplier: config.signals.volumeOnset.onsetMultiplier,
+      weight: config.signals.volumeOnset.weight,
+    }));
+    weights.push(config.signals.volumeOnset.weight);
   }
 
-  if (models.length === 0) {
-    console.error("No models enabled");
+  if (signals.length === 0) {
+    console.error("No signals enabled");
     Deno.exit(1);
   }
+
+  const composer = new Composer(signals, weights, {
+    entryThreshold: config.composer.entryThreshold,
+    minSignals: config.composer.minSignals,
+  });
 
   const pm = new PositionManager({
     startingBalance: config.portfolio.startingBalance,
@@ -46,11 +76,103 @@ export async function runMomentum(config: MomentumConfig): Promise<void> {
   });
 
   const reporter = new Reporter(config.reporting.summaryIntervalMinutes);
-  const marketStates = new Map<string, MarketState>();
-  const activatedTickers = new Set<string>();
 
-  const activationThreshold = config.activation.dollarVolume;
-  const activationWindowSec = config.activation.windowMinutes * 60;
+  return {
+    signals,
+    composer,
+    pm,
+    reporter,
+    marketStates: new Map<string, MarketState>(),
+    activatedTickers: new Set<string>(),
+    tickerCooldowns: new Map<string, number>(),
+    config,
+    activationThreshold: config.activation.dollarVolume,
+    activationWindowSec: config.activation.windowMinutes * 60,
+    recordCount: 0,
+  };
+}
+
+export function processRecord(record: MarketRecord, state: MomentumState): boolean {
+  if (!record || !record.ticker) return false;
+
+  state.recordCount++;
+
+  let ms = state.marketStates.get(record.ticker);
+  if (!ms) {
+    ms = new MarketState(record.ticker);
+    state.marketStates.set(record.ticker, ms);
+  }
+
+  ms.update(record);
+
+  // Check activation
+  if (!state.activatedTickers.has(record.ticker)) {
+    if (ms.isActivated(state.activationThreshold, state.activationWindowSec)) {
+      state.activatedTickers.add(record.ticker);
+      state.reporter.logActivation(record.ticker, record.ts);
+    } else {
+      return true;
+    }
+  }
+
+  // Check exits for this ticker
+  const closeTs = ms.closeTs ?? 0;
+  const exits = state.pm.checkExits(
+    ms.lastPrice,
+    closeTs,
+    state.config.marketClose.forceExitBufferMinutes,
+    record.ticker,
+    record.ts,
+  );
+  for (const exit of exits) {
+    state.reporter.logExit(exit);
+    const cooldownSec = state.config.positions.cooldownMinutes * 60;
+    state.tickerCooldowns.set(record.ticker, record.ts + cooldownSec);
+  }
+
+  // Check if halted
+  if (state.pm.isHalted) {
+    if (exits.length > 0) state.reporter.logHalt(state.pm);
+    return true;
+  }
+
+  // Evaluate signals for entry (only if ticker is still active)
+  if (ms.isActivated(state.activationThreshold, state.activationWindowSec)) {
+    const cooldownUntil = state.tickerCooldowns.get(record.ticker) ?? 0;
+    if (record.ts < cooldownUntil) return true;
+
+    if (state.pm.canEnter(closeTs, state.config.marketClose.noEntryBufferMinutes, record.ts)) {
+      const decision = state.composer.evaluate(ms);
+
+      if (decision.enter) {
+        const { takeProfitCents, minPriceCents, maxPriceCents } = state.config.positions;
+
+        // Skip entries outside the price band
+        if (decision.price < minPriceCents || decision.price > maxPriceCents) return true;
+
+        // Skip entries where max possible gain < take-profit target
+        const maxGain = decision.side === "yes"
+          ? 100 - decision.price
+          : decision.price;
+        if (maxGain < takeProfitCents) return true;
+
+        const modelName = decision.signals.map(s => s.name).join("+");
+        const pos = state.pm.openPosition(modelName, record.ticker, decision.side, decision.price, record.ts);
+        if (pos) {
+          state.reporter.logEntry(decision.signals, pos);
+        }
+      }
+    }
+  }
+
+  // Periodic summary
+  state.reporter.maybePrintSummary(state.pm, record.ts);
+
+  return true;
+}
+
+export async function runMomentum(config: MomentumConfig): Promise<void> {
+  const state = createMomentumState(config);
 
   const nc = await connect({
     servers: config.nats.url,
@@ -80,7 +202,6 @@ export async function runMomentum(config: MomentumConfig): Promise<void> {
   const js = nc.jetstream();
   const jsm = await nc.jetstreamManager();
 
-  // Create ephemeral consumer that starts from new messages only
   const consumerName = "ssmd-momentum";
   try {
     await jsm.consumers.add(config.nats.stream, {
@@ -100,83 +221,21 @@ export async function runMomentum(config: MomentumConfig): Promise<void> {
 
   console.log(`[momentum] Connected to NATS: ${config.nats.url}`);
   console.log(`[momentum] Stream: ${config.nats.stream}, Filter: ${config.nats.filter ?? "all"}`);
-  console.log(`[momentum] Models: ${models.map(m => m.name).join(", ")}`);
+  console.log(`[momentum] Signals: ${state.signals.map(s => s.name).join(", ")}`);
+  console.log(`[momentum] Composer: threshold=${config.composer.entryThreshold}, minSignals=${config.composer.minSignals}`);
   console.log(`[momentum] Portfolio: $${config.portfolio.startingBalance} balance, $${config.portfolio.tradeSize}/trade, ${config.portfolio.drawdownHaltPercent}% drawdown halt`);
-  console.log(`[momentum] Activation: $${activationThreshold} in ${config.activation.windowMinutes}min`);
+  console.log(`[momentum] Activation: $${state.activationThreshold} in ${config.activation.windowMinutes}min`);
   console.log(``);
-
-  let recordCount = 0;
 
   for await (const msg of messages) {
     try {
       const raw = JSON.parse(sc.decode(msg.data));
       const record = parseMomentumRecord(raw);
-      if (!record || !record.ticker) {
-        msg.ack();
-        continue;
+      if (record) {
+        processRecord(record, state);
       }
-
-      recordCount++;
-
-      let state = marketStates.get(record.ticker);
-      if (!state) {
-        state = new MarketState(record.ticker);
-        marketStates.set(record.ticker, state);
-      }
-
-      state.update(record);
-
-      // Check activation
-      if (!activatedTickers.has(record.ticker)) {
-        if (state.isActivated(activationThreshold, activationWindowSec)) {
-          activatedTickers.add(record.ticker);
-          reporter.logActivation(record.ticker, record.ts);
-        } else {
-          msg.ack();
-          continue;
-        }
-      }
-
-      // Check exits for this ticker
-      const closeTs = state.closeTs ?? 0;
-      const exits = pm.checkExits(
-        state.lastPrice,
-        closeTs,
-        config.marketClose.forceExitBufferMinutes,
-        record.ticker,
-        record.ts,
-      );
-      for (const exit of exits) {
-        reporter.logExit(exit);
-      }
-
-      // Check if halted
-      if (pm.isHalted) {
-        if (exits.length > 0) reporter.logHalt(pm);
-        msg.ack();
-        continue;
-      }
-
-      // Evaluate models for entry signals (only if ticker is still active)
-      if (state.isActivated(activationThreshold, activationWindowSec)) {
-        if (pm.canEnter(closeTs, config.marketClose.noEntryBufferMinutes, record.ts)) {
-          for (const model of models) {
-            const signal = model.evaluate(state);
-            if (signal) {
-              const pos = pm.openPosition(signal.model, signal.ticker, signal.side, signal.price, record.ts);
-              if (pos) {
-                reporter.logEntry(signal, pos);
-              }
-            }
-          }
-        }
-      }
-
-      // Periodic summary
-      reporter.maybePrintSummary(pm, record.ts);
-
     } catch (e) {
-      if (recordCount <= 10) {
+      if (state.recordCount <= 10) {
         console.error(`[momentum] Parse error: ${e}`);
       }
     }
@@ -184,8 +243,8 @@ export async function runMomentum(config: MomentumConfig): Promise<void> {
     msg.ack();
   }
 
-  console.log(`\n[momentum] Shutting down. ${recordCount.toLocaleString()} records processed.`);
-  reporter.printSummary(pm);
+  console.log(`\n[momentum] Shutting down. ${state.recordCount.toLocaleString()} records processed.`);
+  state.reporter.printSummary(state.pm);
 
   await nc.drain();
   await nc.close();
