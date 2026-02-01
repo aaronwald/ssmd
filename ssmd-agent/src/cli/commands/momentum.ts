@@ -246,7 +246,7 @@ metadata:
     backtest-run-id: "${runId}"
 spec:
   backoffLimit: 0
-  ttlSecondsAfterFinished: 86400
+  ttlSecondsAfterFinished: 120
   template:
     metadata:
       labels:
