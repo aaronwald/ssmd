@@ -31,14 +31,22 @@ Deno.test("generateConfigId: produces readable short id from params", () => {
     "composer.minSignals": 2,
   };
   const id = generateConfigId(params);
-  assertEquals(typeof id, "string");
-  assertEquals(id.length > 0, true);
+  assertEquals(id, "traImb0.8-traWin120-comMin2");
   assertEquals(id, generateConfigId(params));
 });
 
 Deno.test("generateConfigId: different params produce different ids", () => {
   const a = generateConfigId({ "composer.minSignals": 1 });
   const b = generateConfigId({ "composer.minSignals": 2 });
+  assertEquals(a, "comMin1");
+  assertEquals(b, "comMin2");
+});
+
+Deno.test("generateConfigId: disambiguates params with same leaf key under different parents", () => {
+  const a = generateConfigId({ "signals.spreadTightening.windowSec": 60 });
+  const b = generateConfigId({ "signals.volumeOnset.windowSec": 60 });
+  assertEquals(a, "sprWin60");
+  assertEquals(b, "volWin60");
   assertEquals(a !== b, true);
 });
 

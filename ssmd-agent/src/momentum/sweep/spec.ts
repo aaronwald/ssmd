@@ -38,9 +38,12 @@ export function applyOverride(obj: Record<string, unknown>, path: string, value:
 export function generateConfigId(params: Record<string, unknown>): string {
   const parts: string[] = [];
   for (const [key, val] of Object.entries(params)) {
-    const shortKey = key.split(".").pop() ?? key;
-    const abbr = shortKey.slice(0, 3).toLowerCase();
-    parts.push(`${abbr}${val}`);
+    const segments = key.split(".");
+    const last = segments[segments.length - 1] ?? key;
+    const secondToLast = segments.length >= 2 ? segments[segments.length - 2] : "";
+    const prefix = secondToLast.slice(0, 3).toLowerCase();
+    const suffix = last.charAt(0).toUpperCase() + last.slice(1, 3);
+    parts.push(`${prefix}${suffix}${val}`);
   }
   return parts.join("-");
 }
@@ -85,6 +88,6 @@ export async function loadAndGenerateConfigs(spec: SweepSpec, specDir: string): 
   const basePath = spec.base.startsWith("/") ? spec.base : `${specDir}/${spec.base}`;
   const baseContent = await Deno.readTextFile(basePath);
   const baseRaw = parseYaml(baseContent) as Record<string, unknown>;
-  MomentumConfigSchema.parse(baseRaw);
-  return generateConfigs(baseRaw, spec.parameters);
+  const parsed = MomentumConfigSchema.parse(baseRaw);
+  return generateConfigs(parsed as unknown as Record<string, unknown>, spec.parameters);
 }
