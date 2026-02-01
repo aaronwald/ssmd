@@ -1,0 +1,16 @@
+name: combo-timing
+base: ../combo-base.yaml
+
+# Phase B tuning: cooldown and time-stop around best combo (minSignals=5)
+parameters:
+  composer.minSignals: [4, 5]
+  positions.cooldownSeconds: [50, 120, 300]
+  positions.timeStopMinutes: [10, 15, 30]
+  composer.entryThreshold: [0.1, 0.15, 0.2]
+
+dateRange:
+  from: "2026-01-16"
+  to: "2026-01-26"
+
+maxParallel: 5
+image: "0.3.0"
