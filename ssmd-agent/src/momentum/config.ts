@@ -117,6 +117,15 @@ export const MomentumConfigSchema = z.object({
       minSnapshots: z.number().default(5),
       velocityThreshold: z.number().default(0.1),
     }).default({}),
+    volumePriceDivergence: z.object({
+      enabled: z.boolean().default(false),
+      weight: z.number().default(0.8),
+      windowSec: z.number().default(60),
+      baselineWindowSec: z.number().default(300),
+      volumeMultiplier: z.number().default(2.0),
+      maxPriceMoveCents: z.number().default(2),
+      minTrades: z.number().default(5),
+    }).default({}),
   }).default({}),
 
   composer: z.object({
