@@ -69,8 +69,9 @@ export class PositionManager {
     const contracts = min + Math.floor(Math.random() * (max - min + 1));
     if (contracts <= 0) return null;
 
-    // Entry cost = price * contracts (in cents) + maker fee
-    const entryCostCents = price * contracts + this.config.makerFeePerContract * contracts;
+    // Entry cost: YES costs price, NO costs (100 - price) per contract + maker fee
+    const pricePerContract = side === "yes" ? price : 100 - price;
+    const entryCostCents = pricePerContract * contracts + this.config.makerFeePerContract * contracts;
     const entryCostDollars = entryCostCents / 100;
 
     if (entryCostDollars > this.cash) return null;
@@ -118,7 +119,9 @@ export class PositionManager {
 
     // Credit cash for closed positions
     for (const c of closed) {
-      const exitRevenueCents = c.exitPrice * c.position.contracts;
+      // Exit revenue: YES receives exitPrice, NO receives (100 - exitPrice) per contract
+      const pricePerContract = c.position.side === "yes" ? c.exitPrice : 100 - c.exitPrice;
+      const exitRevenueCents = pricePerContract * c.position.contracts;
       const exitFeeCents = c.fees * 100;
       const exitRevenueDollars = (exitRevenueCents - exitFeeCents) / 100;
       this.cash += exitRevenueDollars;
@@ -210,8 +213,9 @@ export class PositionManager {
   private portfolioValue(currentPrice: number, ticker: string): number {
     let openValue = 0;
     for (const pos of this.openPositions) {
-      const price = pos.ticker === ticker ? currentPrice : pos.entryPrice;
-      openValue += (price * pos.contracts) / 100;
+      const yesPrice = pos.ticker === ticker ? currentPrice : pos.entryPrice;
+      const pricePerContract = pos.side === "yes" ? yesPrice : 100 - yesPrice;
+      openValue += (pricePerContract * pos.contracts) / 100;
     }
     return this.cash + openValue;
   }

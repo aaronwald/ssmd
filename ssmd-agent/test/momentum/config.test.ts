@@ -23,7 +23,7 @@ Deno.test("MomentumConfigSchema applies defaults for minimal config", () => {
   assertEquals(result.activation.windowMinutes, 10);
   assertEquals(result.positions.minPriceCents, 20);
   assertEquals(result.positions.maxPriceCents, 80);
-  assertEquals(result.positions.cooldownMinutes, 5);
+  assertEquals(result.positions.cooldownSeconds, 300);
   // Signal defaults
   assertEquals(result.signals.spreadTightening.enabled, true);
   assertEquals(result.signals.spreadTightening.weight, 1.0);
