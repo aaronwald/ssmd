@@ -1,0 +1,15 @@
+name: imbalance-tuning
+base: ../deployed.yaml
+
+parameters:
+  signals.tradeImbalance.imbalanceThreshold: [0.70, 0.75, 0.80, 0.85]
+  signals.tradeImbalance.windowSec: [60, 120, 300]
+  signals.tradeImbalance.minTrades: [5, 10, 15]
+  composer.minSignals: [1, 2]
+
+dateRange:
+  from: "2026-01-16"
+  to: "2026-01-26"
+
+maxParallel: 5
+image: "0.2.0"
