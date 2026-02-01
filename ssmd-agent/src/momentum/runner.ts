@@ -14,6 +14,7 @@ import { VolumeOnset } from "./signals/volume-onset.ts";
 import { MeanReversion } from "./signals/mean-reversion.ts";
 import { VolatilitySqueeze } from "./signals/volatility-squeeze.ts";
 import { PriceMomentum } from "./signals/price-momentum.ts";
+import { TradeImbalance } from "./signals/trade-imbalance.ts";
 import { Composer } from "./signals/composer.ts";
 import type { Signal } from "./signals/types.ts";
 import { parseMomentumRecord } from "./parse.ts";
@@ -96,6 +97,17 @@ export function createMomentumState(config: MomentumConfig): MomentumState {
       weight: config.signals.priceMomentum.weight,
     }));
     weights.push(config.signals.priceMomentum.weight);
+  }
+  if (config.signals.tradeImbalance.enabled) {
+    signals.push(new TradeImbalance({
+      windowSec: config.signals.tradeImbalance.windowSec,
+      minTrades: config.signals.tradeImbalance.minTrades,
+      imbalanceThreshold: config.signals.tradeImbalance.imbalanceThreshold,
+      sustainedWindowSec: config.signals.tradeImbalance.sustainedWindowSec,
+      sustainedThreshold: config.signals.tradeImbalance.sustainedThreshold,
+      weight: config.signals.tradeImbalance.weight,
+    }));
+    weights.push(config.signals.tradeImbalance.weight);
   }
 
   if (signals.length === 0) {
