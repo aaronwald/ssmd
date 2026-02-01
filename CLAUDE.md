@@ -204,6 +204,77 @@ gh workflow run build-connector.yaml -f tag=0.4.4
 | `build-cli-ts.yaml` | `ghcr.io/aaronwald/ssmd-cli-ts` | `cli-ts-v*` | `ssmd-agent/Dockerfile.cli` |
 | `build-data-ts.yaml` | `ghcr.io/aaronwald/ssmd-data-ts` | `data-ts-v*` | `ssmd-agent/Dockerfile.data` |
 | `build-agent.yaml` | `ghcr.io/aaronwald/ssmd-agent` | `agent-v*` | `ssmd-agent/Dockerfile` |
+| `build-momentum.yaml` | `ghcr.io/aaronwald/ssmd-momentum` | `momentum-v*` | `ssmd-agent/Dockerfile.momentum` |
+| `build-backtest.yaml` | `ghcr.io/aaronwald/ssmd-backtest` | `backtest-v*` | `ssmd-agent/Dockerfile.backtest` |
+
+## Momentum Backtesting
+
+Backtests replay archived GCS data through the momentum trading engine. All trading logic uses message timestamps (not wall clock). Results are persisted on Longhorn PVCs.
+
+### Infrastructure (in varlab)
+
+| Resource | Path | Notes |
+|----------|------|-------|
+| Cache PVC | `clusters/homelab/apps/ssmd/backtest/pvc-cache.yaml` | 50Gi, caches GCS archive files |
+| Results PVC | `clusters/homelab/apps/ssmd/backtest/pvc-results.yaml` | 5Gi, persists run results |
+| Job template | `clusters/homelab/apps/ssmd/backtest/job-template.yaml` | Reference only, not Flux-managed |
+| ConfigMap | Created per-run via kubectl | Holds momentum.yaml config |
+
+### Running a Backtest on K8s
+
+```bash
+# 1. Create/update the backtest ConfigMap from a config file
+kubectl create configmap ssmd-backtest-config -n ssmd \
+  --from-file=momentum.yaml=path/to/config.yaml \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 2. Generate a run ID and submit the Job
+RUN_ID=$(cat /proc/sys/kernel/random/uuid)
+# Apply job-template.yaml with envsubst, or inline:
+#   image: ghcr.io/aaronwald/ssmd-backtest:<tag>
+#   args: --config /config/momentum.yaml --from YYYY-MM-DD --to YYYY-MM-DD
+#         --cache-dir /cache --results-dir /results --run-id $RUN_ID
+
+# 3. Watch logs
+kubectl logs -n ssmd job/backtest-${RUN_ID:0:8} -f
+
+# 4. Read results (via debug pod that mounts the results PVC)
+kubectl exec -n ssmd deploy/ssmd-debug -- cat /results/$RUN_ID/summary.json
+
+# 5. List all backtest runs
+kubectl get jobs -n ssmd -l app=ssmd-backtest -o wide
+```
+
+### Running a Backtest Locally
+
+```bash
+# Requires gcloud CLI authenticated with GCS access
+cd ssmd-agent
+deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
+  src/cli/main.ts momentum backtest \
+  --config experiments/deployed.yaml \
+  --from 2026-01-16 --to 2026-01-31
+```
+
+### Backtest Output
+
+Each run writes to `{resultsDir}/{runId}/`:
+- `summary.json` — run metadata, per-model stats, portfolio state
+- `trades.jsonl` — per-trade detail (model, ticker, side, entry/exit price, P&L, fees)
+
+### Key Design Details
+
+- **Time**: Uses archived message `ts` field (Unix seconds). No wall clock dependency.
+- **Cache**: GCS files downloaded once to `/cache` PVC, reused across runs.
+- **NO-side positions**: Entry cost = `(100 - yesPrice) * contracts`, exit revenue = `(100 - exitYesPrice) * contracts`. P&L uses price delta which is equivalent.
+- **Cooldown**: `cooldownSeconds` (not minutes) — per-ticker cooldown after exit before re-entry.
+- **Image**: `ghcr.io/aaronwald/ssmd-backtest` — Deno + gcloud CLI. Tag: `backtest-v*`.
+
+### Build Trigger
+
+```bash
+git tag backtest-v0.1.0 && git push origin backtest-v0.1.0
+```
 
 ## Kubernetes Operator
 
