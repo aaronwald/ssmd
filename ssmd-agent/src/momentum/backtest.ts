@@ -10,6 +10,7 @@ interface BacktestOptions {
   dates: string[];
   bucket: string;
   prefix: string;
+  tradesOut?: string;
 }
 
 function cacheDir(bucket: string, prefix: string, date: string): string {
@@ -188,4 +189,26 @@ export async function runMomentumBacktest(options: BacktestOptions): Promise<voi
     console.log(`[backtest] Parse errors: ${parseErrors}`);
   }
   state.reporter.printSummary(state.pm);
+
+  // Write per-trade JSONL if requested
+  if (options.tradesOut && state.pm.closedPositions.length > 0) {
+    const lines = state.pm.closedPositions.map((c) =>
+      JSON.stringify({
+        model: c.position.model,
+        ticker: c.position.ticker,
+        side: c.position.side,
+        entryPrice: c.position.entryPrice,
+        exitPrice: c.exitPrice,
+        contracts: c.position.contracts,
+        entryTime: c.position.entryTime,
+        exitTime: c.exitTime,
+        reason: c.reason,
+        pnl: c.pnl,
+        fees: c.fees,
+        entryCost: c.position.entryCost,
+      })
+    );
+    await Deno.writeTextFile(options.tradesOut, lines.join("\n") + "\n");
+    console.log(`[backtest] Wrote ${lines.length} trades to ${options.tradesOut}`);
+  }
 }
