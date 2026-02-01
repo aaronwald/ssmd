@@ -1,6 +1,9 @@
-import { loadMomentumConfig, MomentumConfigSchema } from "../../momentum/config.ts";
+import { loadMomentumConfig, MomentumConfigSchema, type MomentumConfig } from "../../momentum/config.ts";
 import { runMomentum } from "../../momentum/runner.ts";
 import { runMomentumBacktest } from "../../momentum/backtest.ts";
+import { loadSweepSpec, loadAndGenerateConfigs } from "../../momentum/sweep/spec.ts";
+import { runSweep, collectResults, cleanupSweep } from "../../momentum/sweep/runner.ts";
+import { rankResults, formatResultsTable } from "../../momentum/sweep/results.ts";
 
 export async function handleMomentum(
   subcommand: string,
@@ -22,6 +25,39 @@ export async function handleMomentum(
       }
       break;
     }
+    case "sweep": {
+      const sweepSub = (flags as { _: string[] })._[2] as string | undefined;
+      if (sweepSub === "run") {
+        await handleSweepRun(flags);
+      } else if (sweepSub === "results") {
+        await handleSweepResults(flags);
+      } else if (sweepSub === "cleanup") {
+        await handleSweepCleanup(flags);
+      } else {
+        console.log("ssmd momentum sweep - Parameter sweep backtesting");
+        console.log("");
+        console.log("USAGE:");
+        console.log("  ssmd momentum sweep run --spec <path>");
+        console.log("  ssmd momentum sweep results --name <sweep-run-id>");
+        console.log("  ssmd momentum sweep cleanup --name <sweep-run-id>");
+        console.log("");
+        console.log("SWEEP RUN OPTIONS:");
+        console.log("  --spec <path>    Sweep specification YAML file");
+        console.log("  --from <date>    Override date range start (YYYY-MM-DD)");
+        console.log("  --to <date>      Override date range end (YYYY-MM-DD)");
+        console.log("  --image <tag>    Backtest image tag (default: from spec)");
+        console.log("");
+        console.log("SWEEP RESULTS OPTIONS:");
+        console.log("  --name <id>          Sweep run ID");
+        console.log("  --sort <field>       Sort by: pnl, winrate, drawdown, trades (default: pnl)");
+        console.log("  --min-trades <n>     Exclude configs with fewer than N trades");
+        console.log("  --exclude-halted     Exclude configs that hit drawdown halt");
+        console.log("  --json               Output as JSON");
+        console.log("  --csv                Output as CSV");
+        Deno.exit(1);
+      }
+      break;
+    }
     default:
       console.log("ssmd momentum - Paper trading momentum models");
       console.log("");
@@ -30,6 +66,9 @@ export async function handleMomentum(
       console.log("  ssmd momentum backtest [options]");
       console.log("  ssmd momentum backtest submit [options]");
       console.log("  ssmd momentum backtest results [run-id]");
+      console.log("  ssmd momentum sweep run [options]");
+      console.log("  ssmd momentum sweep results [options]");
+      console.log("  ssmd momentum sweep cleanup [options]");
       console.log("");
       console.log("RUN OPTIONS:");
       console.log("  --config <path>     Config file (YAML)");
@@ -339,4 +378,121 @@ async function handleBacktestResults(flags: Record<string, unknown>): Promise<vo
     }
     console.log(new TextDecoder().decode(output.stdout));
   }
+}
+
+async function handleSweepRun(flags: Record<string, unknown>): Promise<void> {
+  const specPath = flags.spec as string | undefined;
+  if (!specPath) {
+    console.error("Error: --spec is required for sweep run");
+    Deno.exit(1);
+  }
+
+  const spec = await loadSweepSpec(specPath);
+  const specDir = specPath.includes("/") ? specPath.substring(0, specPath.lastIndexOf("/")) : ".";
+  const configs = await loadAndGenerateConfigs(spec, specDir);
+
+  const from = (flags.from as string) ?? spec.dateRange.from;
+  const to = (flags.to as string) ?? spec.dateRange.to;
+  const imageTag = (flags.image as string) ?? spec.image;
+
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const sweepRunId = `${spec.name}-${today}`;
+
+  console.log(`[sweep] Loaded spec: ${spec.name}`);
+  console.log(`[sweep] Generated ${configs.length} configs from ${Object.keys(spec.parameters).length} parameters`);
+
+  // Store manifest as ConfigMap for results collection
+  const manifest = configs.map(c => ({ configId: c.configId, params: c.params }));
+  const manifestJson = JSON.stringify(manifest, null, 2);
+  const manifestCmYaml = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sweep-manifest-${sweepRunId}
+  namespace: ssmd
+  labels:
+    app: ssmd-backtest
+    sweep-run: "${sweepRunId}"
+    sweep-manifest: "true"
+data:
+  manifest.json: |
+${manifestJson.split("\n").map(l => "    " + l).join("\n")}
+  spec.json: |
+${JSON.stringify(spec, null, 2).split("\n").map(l => "    " + l).join("\n")}
+`;
+
+  const cmResult = new Deno.Command("kubectl", {
+    args: ["apply", "-f", "-"],
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+  });
+  const child = cmResult.spawn();
+  const writer = child.stdin.getWriter();
+  await writer.write(new TextEncoder().encode(manifestCmYaml));
+  await writer.close();
+  await child.output();
+
+  await runSweep({
+    sweepRunId,
+    configs,
+    dateRange: { from, to },
+    maxParallel: spec.maxParallel,
+    image: imageTag,
+  });
+}
+
+async function handleSweepResults(flags: Record<string, unknown>): Promise<void> {
+  const sweepRunId = (flags.name as string) ?? (flags as { _: string[] })._[3] as string | undefined;
+  if (!sweepRunId) {
+    console.error("Error: --name is required for sweep results");
+    Deno.exit(1);
+  }
+
+  const manifestResult = new Deno.Command("kubectl", {
+    args: [
+      "get", "configmap", `sweep-manifest-${sweepRunId}`,
+      "-n", "ssmd",
+      "-o", "jsonpath={.data.manifest\\.json}",
+    ],
+    stdout: "piped",
+    stderr: "piped",
+  });
+  const manifestOutput = await manifestResult.output();
+  if (!manifestOutput.success) {
+    console.error(`Failed to load sweep manifest for ${sweepRunId}. Is the sweep run ID correct?`);
+    Deno.exit(1);
+  }
+
+  const manifest = JSON.parse(new TextDecoder().decode(manifestOutput.stdout)) as Array<{ configId: string; params: Record<string, unknown> }>;
+  const configs = manifest.map(m => ({ configId: m.configId, params: m.params, config: {} as MomentumConfig }));
+
+  const results = await collectResults(sweepRunId, configs);
+
+  const sortBy = (flags.sort as string ?? "pnl") as "pnl" | "winrate" | "drawdown" | "trades";
+  const minTrades = flags["min-trades"] ? Number(flags["min-trades"]) : undefined;
+  const excludeHalted = flags["exclude-halted"] as boolean | undefined;
+
+  const ranked = rankResults(results, { sortBy, minTrades, excludeHalted: !!excludeHalted });
+
+  if (flags.json) {
+    console.log(JSON.stringify(ranked, null, 2));
+  } else if (flags.csv) {
+    console.log("rank,config_id,trades,win_rate,pnl,max_drawdown,halted,status");
+    ranked.forEach((r, i) => {
+      console.log(`${i + 1},${r.configId},${r.trades},${(r.winRate * 100).toFixed(1)},${r.netPnl.toFixed(2)},${r.maxDrawdown.toFixed(1)},${r.halted},${r.status}`);
+    });
+  } else {
+    console.log(`\nSweep: ${sweepRunId}`);
+    console.log(`Configs: ${results.length} total, ${results.filter(r => r.status === "completed").length} completed, ${results.filter(r => r.status === "failed").length} failed\n`);
+    console.log(formatResultsTable(ranked));
+  }
+}
+
+async function handleSweepCleanup(flags: Record<string, unknown>): Promise<void> {
+  const sweepRunId = (flags.name as string) ?? (flags as { _: string[] })._[3] as string | undefined;
+  if (!sweepRunId) {
+    console.error("Error: --name is required for sweep cleanup");
+    Deno.exit(1);
+  }
+  await cleanupSweep(sweepRunId);
 }
