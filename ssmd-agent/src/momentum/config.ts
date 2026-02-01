@@ -96,6 +96,13 @@ export const MomentumConfigSchema = z.object({
       sustainedWindowSec: z.number().default(60),
       sustainedThreshold: z.number().default(0.60),
     }).default({}),
+    tradeConcentration: z.object({
+      enabled: z.boolean().default(false),
+      weight: z.number().default(1.0),
+      windowSec: z.number().default(120),
+      minTrades: z.number().default(5),
+      concentrationThreshold: z.number().default(0.15),
+    }).default({}),
   }).default({}),
 
   composer: z.object({
