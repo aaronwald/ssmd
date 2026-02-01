@@ -14,11 +14,11 @@ portfolio:
   drawdownHaltPercent: 10
 
 positions:
-  takeProfitCents: 8
-  stopLossCents: 4
+  takeProfitCents: 5
+  stopLossCents: 5
   timeStopMinutes: 15
-  minPriceCents: 20
-  maxPriceCents: 80
+  minPriceCents: 30
+  maxPriceCents: 65
   cooldownSeconds: 300
 
 fees:
@@ -34,17 +34,29 @@ signals:
     enabled: true
     weight: 1.0
     spreadWindowMinutes: 5
-    narrowingThreshold: 0.5
+    narrowingThreshold: 0.65
   volumeOnset:
+    enabled: false
+  meanReversion:
     enabled: true
     weight: 1.0
-    recentWindowSec: 30
-    baselineWindowMinutes: 5
-    onsetMultiplier: 1.5
+    anchorWindowMinutes: 5
+    deviationThresholdCents: 8
+    maxDeviationCents: 15
+    recentWindowSec: 60
+    stallWindowSec: 15
+    minRecentChangeCents: 2
+    minTrades: 5
+  volatilitySqueeze:
+    enabled: true
+    weight: 1.0
+    squeezeWindowMinutes: 5
+    expansionRatio: 1.5
 
 composer:
   entryThreshold: 0.15
-  minSignals: 1
+  minSignals: 2
+  maxSlippageCents: 10
 
 reporting:
   summaryIntervalMinutes: 5

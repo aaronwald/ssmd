@@ -27,7 +27,7 @@ export const MomentumConfigSchema = z.object({
     timeStopMinutes: z.number().default(15),
     minPriceCents: z.number().default(20),
     maxPriceCents: z.number().default(80),
-    cooldownMinutes: z.number().default(5),
+    cooldownSeconds: z.number().default(300),
   }).default({}),
 
   fees: z.object({

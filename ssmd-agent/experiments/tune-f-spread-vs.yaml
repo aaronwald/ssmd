@@ -18,7 +18,7 @@ positions:
   timeStopMinutes: 15
   minPriceCents: 30
   maxPriceCents: 65
-  cooldownMinutes: 5
+  cooldownSeconds: 300
 
 fees:
   defaultMakerPerContract: 0

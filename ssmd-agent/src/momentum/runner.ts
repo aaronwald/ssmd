@@ -175,7 +175,7 @@ export function processRecord(record: MarketRecord, state: MomentumState): boole
   );
   for (const exit of exits) {
     state.reporter.logExit(exit);
-    const cooldownSec = state.config.positions.cooldownMinutes * 60;
+    const cooldownSec = state.config.positions.cooldownSeconds;
     state.tickerCooldowns.set(record.ticker, record.ts + cooldownSec);
   }
 
