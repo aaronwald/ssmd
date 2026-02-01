@@ -17,6 +17,33 @@ interface BacktestOptions {
   runId?: string;
 }
 
+/**
+ * Activate gcloud service account if GOOGLE_APPLICATION_CREDENTIALS is set.
+ * Required for gcloud CLI commands (storage ls/cp) in containerized environments.
+ */
+async function activateGcloudAuth(): Promise<void> {
+  const keyFile = Deno.env.get("GOOGLE_APPLICATION_CREDENTIALS");
+  if (!keyFile) return;
+
+  try {
+    await Deno.stat(keyFile);
+  } catch {
+    return; // key file doesn't exist, skip
+  }
+
+  const cmd = new Deno.Command("gcloud", {
+    args: ["auth", "activate-service-account", "--key-file", keyFile],
+    stdout: "piped",
+    stderr: "piped",
+  });
+
+  const output = await cmd.output();
+  if (!output.success) {
+    const err = new TextDecoder().decode(output.stderr);
+    console.error(`[backtest] Warning: gcloud auth failed: ${err}`);
+  }
+}
+
 function defaultCacheDir(bucket: string, prefix: string): string {
   const home = Deno.env.get("HOME") ?? "/tmp";
   return join(home, ".cache", "ssmd-backtest", bucket, prefix);
@@ -125,6 +152,8 @@ export async function runMomentumBacktest(options: BacktestOptions): Promise<voi
   const runId = options.runId ?? crypto.randomUUID();
   const baseCache = options.cacheDir ?? defaultCacheDir(bucket, prefix);
   const resultsDir = options.resultsDir ?? "./results";
+
+  await activateGcloudAuth();
 
   const state = createMomentumState(config);
   state.reporter.quiet = true;
