@@ -11,6 +11,12 @@ interface VolumeSnapshot {
   ts: number;
 }
 
+export interface SpreadSnapshot {
+  spread: number;
+  midpoint: number;
+  ts: number;
+}
+
 interface TradeRecord {
   side: string;
   count: number;
@@ -45,6 +51,7 @@ export class MarketState {
 
   private priceSnapshots: PriceSnapshot[] = [];
   private volumeSnapshots: VolumeSnapshot[] = [];
+  private spreadSnapshots: SpreadSnapshot[] = [];
   private trades: TradeRecord[] = [];
   private prevVolume = 0;
   private prevDollarVolume = 0;
@@ -75,6 +82,14 @@ export class MarketState {
     if (record.yes_ask !== undefined) this.yesAsk = record.yes_ask;
     if (record.no_bid !== undefined) this.noBid = record.no_bid;
     if (record.no_ask !== undefined) this.noAsk = record.no_ask;
+
+    if (this.yesBid > 0 && this.yesAsk > 0) {
+      this.spreadSnapshots.push({
+        spread: this.yesAsk - this.yesBid,
+        midpoint: (this.yesAsk + this.yesBid) / 2,
+        ts: record.ts,
+      });
+    }
 
     if (price > 0) {
       this.priceSnapshots.push({ price, ts: record.ts });
@@ -118,6 +133,7 @@ export class MarketState {
     const cutoff = this.lastTs - this.maxRetentionSec;
     this.priceSnapshots = this.priceSnapshots.filter(s => s.ts >= cutoff);
     this.volumeSnapshots = this.volumeSnapshots.filter(s => s.ts >= cutoff);
+    this.spreadSnapshots = this.spreadSnapshots.filter(s => s.ts >= cutoff);
     this.trades = this.trades.filter(t => t.ts >= cutoff);
   }
 
@@ -187,5 +203,15 @@ export class MarketState {
       dominance,
       dominantSide,
     };
+  }
+
+  getSpreadHistory(windowSec: number): SpreadSnapshot[] {
+    const cutoff = this.lastTs - windowSec;
+    return this.spreadSnapshots.filter(s => s.ts >= cutoff);
+  }
+
+  getRecentTrades(windowSec: number): TradeRecord[] {
+    const cutoff = this.lastTs - windowSec;
+    return this.trades.filter(t => t.ts >= cutoff);
   }
 }
