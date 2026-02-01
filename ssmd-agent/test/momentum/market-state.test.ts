@@ -71,6 +71,29 @@ Deno.test("MarketState sliding window trims old data", () => {
   assertEquals(change, 0);
 });
 
+Deno.test("MarketState tracks spread snapshots", () => {
+  const state = new MarketState("T1");
+  state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 52 } as MarketRecord);
+  state.update({ type: "ticker", ticker: "T1", ts: 1060, price: 51, yes_bid: 50, yes_ask: 52 } as MarketRecord);
+
+  const history = state.getSpreadHistory(120);
+  assertEquals(history.length, 2);
+  assertEquals(history[0].spread, 4);
+  assertEquals(history[0].midpoint, 50);
+  assertEquals(history[1].spread, 2);
+  assertEquals(history[1].midpoint, 51);
+});
+
+Deno.test("MarketState getSpreadHistory filters by window", () => {
+  const state = new MarketState("T1");
+  state.update({ type: "ticker", ticker: "T1", ts: 1000, price: 50, yes_bid: 48, yes_ask: 52 } as MarketRecord);
+  state.update({ type: "ticker", ticker: "T1", ts: 1300, price: 51, yes_bid: 50, yes_ask: 52 } as MarketRecord);
+
+  const history = state.getSpreadHistory(60);
+  assertEquals(history.length, 1);
+  assertEquals(history[0].spread, 2);
+});
+
 Deno.test("MarketState price rate of change detects acceleration", () => {
   const state = new MarketState("TEST-1");
   // 5 snapshots 60s apart
