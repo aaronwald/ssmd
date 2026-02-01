@@ -20,12 +20,12 @@ export function parseMomentumRecord(raw: RawRecord): MarketRecord | null {
     ts: (msg.ts as number) ?? 0,
     volume: msg.volume as number | undefined,
     dollar_volume: msg.dollar_volume as number | undefined,
-    price: (msg.price ?? msg.last_price) as number | undefined,
+    price: (msg.price ?? msg.yes_price ?? msg.last_price) as number | undefined,
     yes_bid: msg.yes_bid as number | undefined,
     yes_ask: msg.yes_ask as number | undefined,
     no_bid: msg.no_bid as number | undefined,
     no_ask: msg.no_ask as number | undefined,
     count: msg.count as number | undefined,
-    side: msg.side as string | undefined,
+    side: (msg.taker_side ?? msg.side) as string | undefined,
   };
 }
