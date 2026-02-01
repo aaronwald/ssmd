@@ -92,6 +92,7 @@ export const MomentumConfigSchema = z.object({
   composer: z.object({
     entryThreshold: z.number().default(0.15),
     minSignals: z.number().default(1),
+    maxSlippageCents: z.number().default(10),
   }).default({}),
 
   reporting: z.object({

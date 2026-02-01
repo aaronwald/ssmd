@@ -106,6 +106,7 @@ export function createMomentumState(config: MomentumConfig): MomentumState {
   const composer = new Composer(signals, weights, {
     entryThreshold: config.composer.entryThreshold,
     minSignals: config.composer.minSignals,
+    maxSlippageCents: config.composer.maxSlippageCents,
   });
 
   const pm = new PositionManager({
