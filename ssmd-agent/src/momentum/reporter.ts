@@ -1,18 +1,21 @@
 import type { Position, ClosedPosition, PositionManager } from "./position-manager.ts";
-import type { EntrySignal } from "./models/types.ts";
+import type { SignalResult } from "./signals/types.ts";
 
 export class Reporter {
   private summaryIntervalSec: number;
   private lastSummaryTs = 0;
+  quiet = false;
 
   constructor(summaryIntervalMinutes: number) {
     this.summaryIntervalSec = summaryIntervalMinutes * 60;
   }
 
-  logEntry(signal: EntrySignal, pos: Position): void {
+  logEntry(signals: SignalResult[], pos: Position): void {
     const time = new Date(pos.entryTime * 1000).toISOString();
+    const signalNames = signals.map(s => `${s.name}(${s.score.toFixed(2)})`).join("+");
+    const reasons = signals.map(s => s.reason).join("; ");
     console.log(
-      `[ENTRY] ${time} model=${pos.model} ticker=${pos.ticker} side=${pos.side} price=${pos.entryPrice} contracts=${pos.contracts} cost=$${pos.entryCost.toFixed(2)} | ${signal.reason}`
+      `[ENTRY] ${time} signals=${signalNames} ticker=${pos.ticker} side=${pos.side} price=${pos.entryPrice} contracts=${pos.contracts} cost=$${pos.entryCost.toFixed(2)} | ${reasons}`
     );
   }
 
@@ -25,6 +28,7 @@ export class Reporter {
   }
 
   logActivation(ticker: string, ts: number): void {
+    if (this.quiet) return;
     const time = new Date(ts * 1000).toISOString();
     console.log(`[ACTIVATED] ${time} ticker=${ticker}`);
   }
@@ -42,6 +46,7 @@ export class Reporter {
       return;
     }
 
+    if (this.quiet) return;
     if (currentTs - this.lastSummaryTs < this.summaryIntervalSec) return;
 
     this.lastSummaryTs = currentTs;
