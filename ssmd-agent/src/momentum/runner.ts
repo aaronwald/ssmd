@@ -15,6 +15,11 @@ import { MeanReversion } from "./signals/mean-reversion.ts";
 import { VolatilitySqueeze } from "./signals/volatility-squeeze.ts";
 import { PriceMomentum } from "./signals/price-momentum.ts";
 import { TradeImbalance } from "./signals/trade-imbalance.ts";
+import { TradeConcentration } from "./signals/trade-concentration.ts";
+import { FlowAsymmetry } from "./signals/flow-asymmetry.ts";
+import { SpreadVelocity } from "./signals/spread-velocity.ts";
+import { VolumePriceDivergence } from "./signals/volume-price-divergence.ts";
+import { TradeClustering } from "./signals/trade-clustering.ts";
 import { Composer } from "./signals/composer.ts";
 import type { Signal } from "./signals/types.ts";
 import { parseMomentumRecord } from "./parse.ts";
@@ -108,6 +113,54 @@ export function createMomentumState(config: MomentumConfig): MomentumState {
       weight: config.signals.tradeImbalance.weight,
     }));
     weights.push(config.signals.tradeImbalance.weight);
+  }
+  if (config.signals.tradeConcentration.enabled) {
+    signals.push(new TradeConcentration({
+      windowSec: config.signals.tradeConcentration.windowSec,
+      minTrades: config.signals.tradeConcentration.minTrades,
+      concentrationThreshold: config.signals.tradeConcentration.concentrationThreshold,
+      weight: config.signals.tradeConcentration.weight,
+    }));
+    weights.push(config.signals.tradeConcentration.weight);
+  }
+  if (config.signals.flowAsymmetry.enabled) {
+    signals.push(new FlowAsymmetry({
+      windowSec: config.signals.flowAsymmetry.windowSec,
+      minTrades: config.signals.flowAsymmetry.minTrades,
+      asymmetryThreshold: config.signals.flowAsymmetry.asymmetryThreshold,
+      weight: config.signals.flowAsymmetry.weight,
+    }));
+    weights.push(config.signals.flowAsymmetry.weight);
+  }
+  if (config.signals.spreadVelocity.enabled) {
+    signals.push(new SpreadVelocity({
+      windowSec: config.signals.spreadVelocity.windowSec,
+      minSnapshots: config.signals.spreadVelocity.minSnapshots,
+      velocityThreshold: config.signals.spreadVelocity.velocityThreshold,
+      weight: config.signals.spreadVelocity.weight,
+    }));
+    weights.push(config.signals.spreadVelocity.weight);
+  }
+  if (config.signals.volumePriceDivergence.enabled) {
+    signals.push(new VolumePriceDivergence({
+      windowSec: config.signals.volumePriceDivergence.windowSec,
+      baselineWindowSec: config.signals.volumePriceDivergence.baselineWindowSec,
+      volumeMultiplier: config.signals.volumePriceDivergence.volumeMultiplier,
+      maxPriceMoveCents: config.signals.volumePriceDivergence.maxPriceMoveCents,
+      minTrades: config.signals.volumePriceDivergence.minTrades,
+      weight: config.signals.volumePriceDivergence.weight,
+    }));
+    weights.push(config.signals.volumePriceDivergence.weight);
+  }
+  if (config.signals.tradeClustering.enabled) {
+    signals.push(new TradeClustering({
+      windowSec: config.signals.tradeClustering.windowSec,
+      quietThresholdSec: config.signals.tradeClustering.quietThresholdSec,
+      burstGapSec: config.signals.tradeClustering.burstGapSec,
+      minBurstTrades: config.signals.tradeClustering.minBurstTrades,
+      weight: config.signals.tradeClustering.weight,
+    }));
+    weights.push(config.signals.tradeClustering.weight);
   }
 
   if (signals.length === 0) {
