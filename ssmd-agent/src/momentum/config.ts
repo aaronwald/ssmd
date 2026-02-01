@@ -9,8 +9,8 @@ export const MomentumConfigSchema = z.object({
   }),
 
   activation: z.object({
-    dollarVolume: z.number().default(250000),
-    windowMinutes: z.number().default(30),
+    dollarVolume: z.number().default(100000),
+    windowMinutes: z.number().default(10),
   }).default({}),
 
   portfolio: z.object({
@@ -23,6 +23,9 @@ export const MomentumConfigSchema = z.object({
     takeProfitCents: z.number().default(5),
     stopLossCents: z.number().default(5),
     timeStopMinutes: z.number().default(15),
+    minPriceCents: z.number().default(20),
+    maxPriceCents: z.number().default(80),
+    cooldownMinutes: z.number().default(5),
   }).default({}),
 
   fees: z.object({
@@ -35,29 +38,25 @@ export const MomentumConfigSchema = z.object({
     forceExitBufferMinutes: z.number().default(2),
   }).default({}),
 
-  models: z.object({
-    volumeSpike: z.object({
+  signals: z.object({
+    spreadTightening: z.object({
       enabled: z.boolean().default(true),
-      spikeMultiplier: z.number().default(3.0),
-      spikeWindowMinutes: z.number().default(1),
-      baselineWindowMinutes: z.number().default(10),
-      minPriceMoveCents: z.number().default(3),
+      weight: z.number().default(1.0),
+      spreadWindowMinutes: z.number().default(5),
+      narrowingThreshold: z.number().default(0.5),
     }).default({}),
-    tradeFlow: z.object({
+    volumeOnset: z.object({
       enabled: z.boolean().default(true),
-      dominanceThreshold: z.number().default(0.70),
-      windowMinutes: z.number().default(2),
-      minTrades: z.number().default(5),
-      minPriceMoveCents: z.number().default(2),
+      weight: z.number().default(1.0),
+      recentWindowSec: z.number().default(30),
+      baselineWindowMinutes: z.number().default(5),
+      onsetMultiplier: z.number().default(1.5),
     }).default({}),
-    priceAcceleration: z.object({
-      enabled: z.boolean().default(true),
-      accelerationMultiplier: z.number().default(2.0),
-      shortWindowMinutes: z.number().default(1),
-      longWindowMinutes: z.number().default(5),
-      minShortRateCentsPerMin: z.number().default(2),
-      minLongMoveCents: z.number().default(3),
-    }).default({}),
+  }).default({}),
+
+  composer: z.object({
+    entryThreshold: z.number().default(0.5),
+    minSignals: z.number().default(2),
   }).default({}),
 
   reporting: z.object({
