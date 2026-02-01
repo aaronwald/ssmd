@@ -110,6 +110,13 @@ export const MomentumConfigSchema = z.object({
       minTrades: z.number().default(6),
       asymmetryThreshold: z.number().default(2),
     }).default({}),
+    spreadVelocity: z.object({
+      enabled: z.boolean().default(false),
+      weight: z.number().default(0.8),
+      windowSec: z.number().default(30),
+      minSnapshots: z.number().default(5),
+      velocityThreshold: z.number().default(0.1),
+    }).default({}),
   }).default({}),
 
   composer: z.object({
