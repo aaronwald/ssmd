@@ -9,8 +9,8 @@ activation:
 
 portfolio:
   startingBalance: 500
-  minContracts: 100
-  maxContracts: 100
+  minContracts: 1
+  maxContracts: 200
   drawdownHaltPercent: 10
 
 positions:
@@ -19,7 +19,7 @@ positions:
   timeStopMinutes: 15
   minPriceCents: 30
   maxPriceCents: 65
-  cooldownSeconds: 300
+  cooldownSeconds: 50
 
 fees:
   defaultMakerPerContract: 0
@@ -31,20 +31,33 @@ marketClose:
 
 signals:
   spreadTightening:
-    enabled: true
-    weight: 1.0
-    spreadWindowMinutes: 5
-    narrowingThreshold: 0.65
-  volumeOnset:
     enabled: false
+  volumeOnset:
+    enabled: true
     weight: 1.0
     recentWindowSec: 30
     baselineWindowMinutes: 5
     onsetMultiplier: 1.5
+  meanReversion:
+    enabled: false
+  volatilitySqueeze:
+    enabled: false
+  priceMomentum:
+    enabled: true
+    weight: 0.6
+    shortWindowSec: 60
+    midWindowSec: 180
+    longWindowSec: 300
+    minTotalMoveCents: 4
+    maxAccelRatio: 3.0
+    minEntryPrice: 40
+    maxEntryPrice: 60
+    minTrades: 5
 
 composer:
   entryThreshold: 0.15
   minSignals: 1
+  maxSlippageCents: 10
 
 reporting:
   summaryIntervalMinutes: 5
