@@ -17,6 +17,7 @@ import { PriceMomentum } from "./signals/price-momentum.ts";
 import { TradeImbalance } from "./signals/trade-imbalance.ts";
 import { TradeConcentration } from "./signals/trade-concentration.ts";
 import { FlowAsymmetry } from "./signals/flow-asymmetry.ts";
+import { SpreadVelocity } from "./signals/spread-velocity.ts";
 import { Composer } from "./signals/composer.ts";
 import type { Signal } from "./signals/types.ts";
 import { parseMomentumRecord } from "./parse.ts";
@@ -128,6 +129,15 @@ export function createMomentumState(config: MomentumConfig): MomentumState {
       weight: config.signals.flowAsymmetry.weight,
     }));
     weights.push(config.signals.flowAsymmetry.weight);
+  }
+  if (config.signals.spreadVelocity.enabled) {
+    signals.push(new SpreadVelocity({
+      windowSec: config.signals.spreadVelocity.windowSec,
+      minSnapshots: config.signals.spreadVelocity.minSnapshots,
+      velocityThreshold: config.signals.spreadVelocity.velocityThreshold,
+      weight: config.signals.spreadVelocity.weight,
+    }));
+    weights.push(config.signals.spreadVelocity.weight);
   }
 
   if (signals.length === 0) {
