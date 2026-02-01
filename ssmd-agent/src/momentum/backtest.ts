@@ -201,6 +201,8 @@ export async function runMomentumBacktest(options: BacktestOptions): Promise<voi
     }
 
     for (const gsUrl of files) {
+      if (state.pm.isHalted) break;
+
       const localPath = await ensureCached(gsUrl, baseCache, date);
       if (!localPath) continue;
 
@@ -208,6 +210,7 @@ export async function runMomentumBacktest(options: BacktestOptions): Promise<voi
 
       try {
         for await (const line of readLocalJsonlGz(localPath)) {
+          if (state.pm.isHalted) break;
           try {
             const raw = JSON.parse(line);
             const record = parseMomentumRecord(raw);
