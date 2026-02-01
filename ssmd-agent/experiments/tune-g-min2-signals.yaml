@@ -1,0 +1,63 @@
+nats:
+  url: nats://localhost:4222
+  stream: PROD_KALSHI_SPORTS
+
+activation:
+  dollarVolume: 100000
+  windowMinutes: 10
+
+portfolio:
+  startingBalance: 500
+  minContracts: 100
+  maxContracts: 100
+  drawdownHaltPercent: 10
+
+positions:
+  takeProfitCents: 5
+  stopLossCents: 5
+  timeStopMinutes: 15
+  minPriceCents: 30
+  maxPriceCents: 65
+  cooldownMinutes: 5
+
+fees:
+  defaultMakerPerContract: 0
+  defaultTakerPerContract: 2
+
+marketClose:
+  noEntryBufferMinutes: 5
+  forceExitBufferMinutes: 2
+
+signals:
+  spreadTightening:
+    enabled: true
+    weight: 1.0
+    spreadWindowMinutes: 5
+    narrowingThreshold: 0.65
+  volumeOnset:
+    enabled: false
+  meanReversion:
+    enabled: true
+    weight: 1.0
+    anchorWindowMinutes: 5
+    deviationThresholdCents: 8
+    maxDeviationCents: 15
+    recentWindowSec: 60
+    stallWindowSec: 15
+    minRecentChangeCents: 2
+    minTrades: 5
+  volatilitySqueeze:
+    enabled: true
+    weight: 1.0
+    squeezeWindowMinutes: 5
+    expansionRatio: 1.5
+  priceMomentum:
+    enabled: false
+
+composer:
+  entryThreshold: 0.15
+  minSignals: 2
+
+reporting:
+  summaryIntervalMinutes: 5
+  debug: false
