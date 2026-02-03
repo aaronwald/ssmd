@@ -107,66 +107,78 @@ async function fetchNatsTrades(
   ticker: string,
   windowStart: Date,
   windowEnd: Date,
-  cluster: string
+  _cluster: string  // Not used - use current kubectl context
 ): Promise<NatsTrade[]> {
-  // Determine the stream and subject based on ticker
-  // KXBTCD -> Crypto, KXNBA -> Sports, etc.
+  // Determine the stream based on ticker category
   const category = inferCategory(ticker);
   const stream = `PROD_KALSHI_${category.toUpperCase()}`;
-  const subject = `prod.kalshi.${category.toLowerCase()}.json.trade.${ticker}`;
+  const filterSubject = `prod.kalshi.${category.toLowerCase()}.json.trade.${ticker}`;
 
-  console.log(`  NATS: stream=${stream}, subject=${subject}`);
+  // Calculate window duration for consumer delivery policy
+  const windowMs = windowEnd.getTime() - windowStart.getTime();
+  const windowSec = Math.ceil(windowMs / 1000);
+  const sinceDuration = `${windowSec}s`;
 
-  // Use nats-box to query messages
-  // Get last N messages and filter by timestamp
+  // Generate unique consumer name
+  const consumerName = `dq-${Date.now()}`;
+
+  console.log(`  NATS: stream=${stream}, filter=${filterSubject}, since=${sinceDuration}`);
+
+  // Create ephemeral pull consumer and fetch messages in one shell command
+  // This ensures we fetch before the consumer is deleted due to inactivity
+  // Uses current kubectl context
   const cmd = new Deno.Command("kubectl", {
     args: [
-      "--context", cluster,
       "exec", "-n", "nats", "deploy/nats-box", "--",
-      "nats", "stream", "get", stream,
-      "--last-for", subject,
-      "-s", "nats://nats:4222",
+      "sh", "-c",
+      `nats consumer add ${stream} ${consumerName} \
+        --ephemeral \
+        --deliver "${sinceDuration}" \
+        --filter "${filterSubject}" \
+        --ack none \
+        --pull \
+        --inactive-threshold 30s \
+        --defaults \
+        -s nats://nats:4222 >/dev/null && \
+      nats consumer next ${stream} ${consumerName} --count 10000 --raw -s nats://nats:4222`,
     ],
     stdout: "piped",
     stderr: "piped",
   });
 
-  const { stdout, code } = await cmd.output();
-
-  if (code !== 0) {
-    console.log("  NATS: No messages found or error querying");
-    return [];
-  }
+  const { stdout } = await cmd.output();
 
   const output = new TextDecoder().decode(stdout);
   const trades: NatsTrade[] = [];
+  const windowStartSec = Math.floor(windowStart.getTime() / 1000);
+  const windowEndSec = Math.floor(windowEnd.getTime() / 1000);
 
-  // Parse NATS output - each message is JSON on its own line after the header
+  // Parse output - each trade is on its own line, may have blank lines between
   const lines = output.split("\n");
-  for (const line of lines) {
-    if (line.startsWith("{")) {
-      try {
-        const msg = JSON.parse(line);
-        if (msg.type === "trade" && msg.msg) {
-          const trade: NatsTrade = {
-            trade_id: msg.msg.trade_id,
-            market_ticker: msg.msg.market_ticker,
-            yes_price: msg.msg.yes_price,
-            count: msg.msg.count,
-            taker_side: msg.msg.taker_side,
-            ts: msg.msg.ts,
-          };
 
-          // Filter to window
-          const windowStartSec = Math.floor(windowStart.getTime() / 1000);
-          const windowEndSec = Math.floor(windowEnd.getTime() / 1000);
-          if (trade.ts >= windowStartSec && trade.ts < windowEndSec) {
-            trades.push(trade);
-          }
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith("{")) continue;
+
+    try {
+      const msg = JSON.parse(trimmed);
+      if (msg.type === "trade" && msg.msg) {
+        const trade: NatsTrade = {
+          trade_id: msg.msg.trade_id,
+          market_ticker: msg.msg.market_ticker,
+          yes_price: msg.msg.yes_price,
+          count: msg.msg.count,
+          taker_side: msg.msg.taker_side,
+          ts: msg.msg.ts,
+        };
+
+        // Filter to exact window (consumer --deliver may include slightly more)
+        if (trade.ts >= windowStartSec && trade.ts < windowEndSec) {
+          trades.push(trade);
         }
-      } catch {
-        // Skip non-JSON lines
       }
+    } catch {
+      // Skip non-JSON lines
     }
   }
 
