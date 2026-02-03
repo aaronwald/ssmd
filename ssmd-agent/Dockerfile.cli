@@ -2,7 +2,7 @@
 # Uses cross-compilation to avoid QEMU emulation issues on ARM64
 
 # Build stage - always runs on native platform (amd64)
-FROM --platform=$BUILDPLATFORM denoland/deno:2.6.5 AS builder
+FROM --platform=$BUILDPLATFORM denoland/deno:2.6.8 AS builder
 
 ARG TARGETPLATFORM
 

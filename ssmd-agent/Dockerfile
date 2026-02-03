@@ -1,5 +1,5 @@
 # ssmd-agent container
-FROM denoland/deno:2.6.5
+FROM denoland/deno:2.6.8
 
 # Create non-root user
 RUN useradd -r -s /bin/false ssmd
