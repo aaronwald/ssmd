@@ -410,6 +410,70 @@ export class KalshiClient {
     }
     return allMarkets;
   }
+
+  /**
+   * Fetch trades for a specific market ticker with time range filtering
+   * @param ticker - Market ticker (e.g., 'KXBTCD-26FEB0317-T76999.99')
+   * @param minTs - Minimum timestamp (Unix seconds)
+   * @param maxTs - Maximum timestamp (Unix seconds)
+   * @param limit - Max trades per page (default 1000)
+   */
+  async *fetchTrades(
+    ticker: string,
+    minTs?: number,
+    maxTs?: number,
+    limit = 1000
+  ): AsyncGenerator<KalshiTrade[]> {
+    let cursor: string | undefined;
+
+    const params: string[] = [`ticker=${encodeURIComponent(ticker)}`, `limit=${limit}`];
+    if (minTs) params.push(`min_ts=${minTs}`);
+    if (maxTs) params.push(`max_ts=${maxTs}`);
+    const queryParams = params.join("&");
+
+    do {
+      const path = cursor
+        ? `/markets/trades?cursor=${cursor}&${queryParams}`
+        : `/markets/trades?${queryParams}`;
+
+      const data = await this.fetch<{ cursor: string; trades: KalshiTrade[] }>(path);
+      const trades = data.trades || [];
+
+      if (trades.length > 0) {
+        yield trades;
+      }
+
+      cursor = data.cursor || undefined;
+    } while (cursor);
+  }
+
+  /**
+   * Fetch all trades for a ticker (convenience method)
+   */
+  async fetchAllTrades(
+    ticker: string,
+    minTs?: number,
+    maxTs?: number
+  ): Promise<KalshiTrade[]> {
+    const allTrades: KalshiTrade[] = [];
+    for await (const batch of this.fetchTrades(ticker, minTs, maxTs)) {
+      allTrades.push(...batch);
+    }
+    return allTrades;
+  }
+}
+
+/**
+ * Trade from Kalshi API
+ */
+export interface KalshiTrade {
+  trade_id: string;
+  ticker: string;
+  yes_price: number;
+  no_price: number;
+  count: number;
+  taker_side: string;
+  created_time: string;
 }
 
 /**
