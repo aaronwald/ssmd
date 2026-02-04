@@ -731,6 +731,7 @@ export async function handleSecmaster(
         category: flags.category ? String(flags.category) : undefined,
         tags: tags.length > 0 ? tags : undefined,
         minVolume: flags["min-volume"] ? Number(flags["min-volume"]) : undefined,
+        minCloseDaysAgo: flags["min-close-days-ago"] ? Number(flags["min-close-days-ago"]) : undefined,
       };
 
       if (options.eventsOnly && options.marketsOnly) {
@@ -811,6 +812,7 @@ export async function handleSecmaster(
       console.log("  --category=X     Filter by category (with --by-series)");
       console.log("  --tag=X          Filter to specific tags (with --by-series)");
       console.log("  --min-volume=N   Only sync series with volume >= N");
+      console.log("  --min-close-days-ago=N  Only sync markets closing within N days");
       console.log("  --active-only    Only sync active/open records (legacy mode)");
       console.log("  --events-only    Only sync events");
       console.log("  --markets-only   Only sync markets");
