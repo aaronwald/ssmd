@@ -179,10 +179,12 @@ export class KalshiClient {
    * Uses series_ticker filter and with_nested_markets=true.
    * @param seriesTicker - Series ticker to filter by
    * @param status - Optional status filter (e.g., 'open')
+   * @param filters - Optional additional filters (minCloseTs, maxCloseTs)
    */
   async *fetchEventsBySeries(
     seriesTicker: string,
-    status?: string
+    status?: string,
+    filters?: { minCloseTs?: number; maxCloseTs?: number }
   ): AsyncGenerator<{ events: Event[]; markets: Market[] }> {
     let cursor: string | undefined;
     let page = 0;
@@ -192,6 +194,8 @@ export class KalshiClient {
       "with_nested_markets=true",
     ];
     if (status) params.push(`status=${status}`);
+    if (filters?.minCloseTs) params.push(`min_close_ts=${filters.minCloseTs}`);
+    if (filters?.maxCloseTs) params.push(`max_close_ts=${filters.maxCloseTs}`);
     const queryParams = params.join("&");
 
     do {

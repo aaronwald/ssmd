@@ -51,6 +51,10 @@ export interface SyncOptions {
   tags?: string[];
   /** Minimum volume threshold for series (filters low-activity series) */
   minVolume?: number;
+  /** Minimum close timestamp - only sync markets closing after this (Unix seconds) */
+  minCloseTs?: number;
+  /** Relative filter: only sync markets closing within N days ago (converted to minCloseTs at runtime) */
+  minCloseDaysAgo?: number;
 }
 
 /**
@@ -278,6 +282,13 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
   const errors: Array<{ ticker: string; error: string }> = [];
   const FAIL_FAST_THRESHOLD = 3;
 
+  // Convert minCloseDaysAgo to minCloseTs if provided
+  if (options.minCloseDaysAgo && !options.minCloseTs) {
+    const now = Math.floor(Date.now() / 1000);
+    options.minCloseTs = now - options.minCloseDaysAgo * 24 * 60 * 60;
+    console.log(`[Filter] minCloseDaysAgo=${options.minCloseDaysAgo} → minCloseTs=${options.minCloseTs} (${new Date(options.minCloseTs * 1000).toISOString()})`);
+  }
+
   try {
     // Get series from database (filtered by category, tags, and/or minVolume)
     let seriesList: Array<{ ticker: string }>;
@@ -317,7 +328,9 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
 
       try {
         for (const status of statuses) {
-          for await (const batch of client.fetchEventsBySeries(s.ticker, status)) {
+          // Build filters - only include minCloseTs if provided (e.g., for crypto to skip historical)
+          const filters = options.minCloseTs ? { minCloseTs: options.minCloseTs } : undefined;
+          for await (const batch of client.fetchEventsBySeries(s.ticker, status, filters)) {
             result.events.fetched += batch.events.length;
             result.markets.fetched += batch.markets.length;
 
