@@ -76,6 +76,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "kraken" => {
             run_kraken_connector(&feed, &env_config, health_addr, shutdown_rx).await
         }
+        "polymarket" => {
+            run_polymarket_connector(&feed, &env_config, health_addr, shutdown_rx).await
+        }
         _ => {
             run_generic_connector(&feed, &env_config, health_addr, shutdown_rx).await
         }
@@ -278,6 +281,93 @@ async fn run_kraken_connector(
             error!("Only NATS transport is supported for Kraken connector");
             Err("Only NATS transport is supported".into())
         }
+    }
+}
+
+/// Run Polymarket connector for prediction market data
+async fn run_polymarket_connector(
+    feed: &Feed,
+    env_config: &Environment,
+    health_addr: SocketAddr,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Check for static token IDs from environment (for testing/manual override)
+    let static_tokens: Option<Vec<String>> = std::env::var("POLYMARKET_TOKEN_IDS")
+        .ok()
+        .map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
+
+    let connector = if let Some(tokens) = static_tokens {
+        info!(tokens = tokens.len(), "Creating Polymarket connector with static token IDs");
+        ssmd_connector_lib::polymarket::PolymarketConnector::new(tokens)
+    } else {
+        // Use market discovery via Gamma REST API
+        let min_volume = std::env::var("POLYMARKET_MIN_VOLUME")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(10000.0);
+
+        let min_liquidity = std::env::var("POLYMARKET_MIN_LIQUIDITY")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(5000.0);
+
+        info!(
+            min_volume = min_volume,
+            min_liquidity = min_liquidity,
+            "Creating Polymarket connector with market discovery"
+        );
+
+        let discovery = ssmd_connector_lib::polymarket::MarketDiscovery::new()
+            .with_min_volume(min_volume)
+            .with_min_liquidity(min_liquidity);
+
+        ssmd_connector_lib::polymarket::PolymarketConnector::with_discovery(discovery)
+    };
+
+    match env_config.transport.transport_type {
+        TransportType::Nats => {
+            info!(transport = "nats", "Using Polymarket NATS writer");
+            let transport = MiddlewareFactory::create_nats_transport_validated(env_config).await?;
+            let writer = create_polymarket_nats_writer(transport, env_config, feed);
+            run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
+        }
+        _ => {
+            error!("Only NATS transport is supported for Polymarket connector");
+            Err("Only NATS transport is supported".into())
+        }
+    }
+}
+
+/// Create PolymarketNatsWriter with optional custom subject prefix
+fn create_polymarket_nats_writer(
+    transport: Arc<dyn ssmd_middleware::Transport>,
+    env_config: &Environment,
+    feed: &Feed,
+) -> ssmd_connector_lib::polymarket::PolymarketNatsWriter {
+    if let (Some(ref prefix), Some(ref stream)) = (
+        &env_config.transport.subject_prefix,
+        &env_config.transport.stream,
+    ) {
+        info!(
+            subject_prefix = %prefix,
+            stream = %stream,
+            "Using custom subject prefix"
+        );
+        ssmd_connector_lib::polymarket::PolymarketNatsWriter::with_prefix(
+            transport,
+            prefix.clone(),
+            stream.clone(),
+        )
+    } else {
+        info!(
+            subject_prefix = format!("{}.{}", env_config.name, feed.name),
+            "Using default subject prefix"
+        );
+        ssmd_connector_lib::polymarket::PolymarketNatsWriter::new(
+            transport,
+            &env_config.name,
+            &feed.name,
+        )
     }
 }
 

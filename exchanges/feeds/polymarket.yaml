@@ -1,0 +1,12 @@
+name: polymarket
+display_name: Polymarket CLOB
+type: websocket
+status: active
+versions:
+  - version: v1
+    effective_from: "2026-02-06"
+    protocol:
+      transport: wss
+      message: json
+    endpoint: wss://ws-subscriptions-clob.polymarket.com/ws/
+    auth_method: none

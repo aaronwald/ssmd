@@ -8,6 +8,7 @@ pub mod flusher;
 pub mod kalshi;
 pub mod kraken;
 pub mod message;
+pub mod polymarket;
 pub mod metrics;
 pub mod nats_writer;
 pub mod publisher;
