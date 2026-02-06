@@ -34,11 +34,11 @@ pub enum KrakenWsMessage {
         time_in: Option<String>,
         time_out: Option<String>,
     },
-    /// Heartbeat (channel=heartbeat, type=update, no data field)
+    /// Heartbeat (channel=heartbeat, may or may not include "type" field)
     Heartbeat {
         channel: String,
         #[serde(rename = "type")]
-        msg_type: String,
+        msg_type: Option<String>,
     },
 }
 
@@ -152,7 +152,24 @@ mod tests {
                 channel, msg_type, ..
             } => {
                 assert_eq!(channel, "heartbeat");
-                assert_eq!(msg_type, "update");
+                assert_eq!(msg_type, Some("update".to_string()));
+            }
+            _ => panic!("Expected Heartbeat variant, got {:?}", msg),
+        }
+    }
+
+    #[test]
+    fn test_parse_heartbeat_minimal() {
+        // Real Kraken v2 heartbeat: no "type" field
+        let msg: KrakenWsMessage =
+            serde_json::from_str(r#"{"channel":"heartbeat"}"#).expect("Failed to parse minimal heartbeat");
+
+        match msg {
+            KrakenWsMessage::Heartbeat {
+                channel, msg_type, ..
+            } => {
+                assert_eq!(channel, "heartbeat");
+                assert!(msg_type.is_none());
             }
             _ => panic!("Expected Heartbeat variant, got {:?}", msg),
         }
