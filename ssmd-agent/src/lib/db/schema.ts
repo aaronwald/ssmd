@@ -118,6 +118,24 @@ export const marketLifecycleEvents = pgTable("market_lifecycle_events", {
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Pairs table for spot price tracking (Kraken BTC/USD, ETH/USD)
+export const pairs = pgTable("pairs", {
+  pairId: varchar("pair_id", { length: 32 }).primaryKey(),
+  exchange: varchar("exchange", { length: 32 }).notNull(),
+  base: varchar("base", { length: 16 }).notNull(),
+  quote: varchar("quote", { length: 16 }).notNull(),
+  wsName: varchar("ws_name", { length: 32 }).notNull(),
+  bid: numeric("bid", { precision: 18, scale: 8 }),
+  ask: numeric("ask", { precision: 18, scale: 8 }),
+  lastPrice: numeric("last_price", { precision: 18, scale: 8 }),
+  volume24h: numeric("volume_24h", { precision: 24, scale: 8 }),
+  status: varchar("status", { length: 16 }).default("active"),
+  lotDecimals: integer("lot_decimals").default(8),
+  pairDecimals: integer("pair_decimals").default(1),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
 // Inferred types for select/insert
 export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
@@ -133,3 +151,5 @@ export type Series = typeof series.$inferSelect;
 export type NewSeries = typeof series.$inferInsert;
 export type MarketLifecycleEvent = typeof marketLifecycleEvents.$inferSelect;
 export type NewMarketLifecycleEvent = typeof marketLifecycleEvents.$inferInsert;
+export type Pair = typeof pairs.$inferSelect;
+export type NewPair = typeof pairs.$inferInsert;

@@ -1,0 +1,12 @@
+name: kraken
+display_name: Kraken Exchange
+type: websocket
+status: active
+versions:
+  - version: v2
+    effective_from: "2026-02-06"
+    protocol:
+      transport: wss
+      message: json
+    endpoint: wss://ws.kraken.com/v2
+    auth_method: none
