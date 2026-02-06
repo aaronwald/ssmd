@@ -1,8 +1,0 @@
-{
-  "name": "ssmd",
-  "description": "ssmd market data system domain experts for secmaster, data feeds, trading APIs, data quality, and CLI operations",
-  "version": "1.0.0",
-  "author": {
-    "name": "aaronwald"
-  }
-}
