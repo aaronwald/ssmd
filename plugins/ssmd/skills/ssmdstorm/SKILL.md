@@ -71,19 +71,27 @@ Same as waldstorm - gather task description, constraints, context.
 
 **Always include at least one ssmd expert.** Use the selection guide above.
 
-For ssmd-specific tasks, read the relevant expert files from `./experts/`:
-- `secmaster.md` - Market metadata, sync, CDC
-- `data-feed.md` - Connectors, NATS, archiving
-- `access-feed.md` - Trading APIs, orderbook, fills
-- `kalshi.md` - Kalshi exchange domain knowledge, API, fees
-- `data-quality.md` - NATS vs API reconciliation, trade verification
-- `cli.md` - ssmd CLI commands (Deno ops + Go GitOps), env management
+**Agent definitions** in `agents/` provide each ssmd expert as a spawnable agent with `memory: local` for persistent learnings across sessions.
 
-Combine with waldstorm's general experts (Security, DevOps, etc.) as needed.
+Available ssmd agents (in `./agents/`):
+- `ssmd-secmaster` - Market metadata, sync, CDC
+- `ssmd-data-feed` - Connectors, NATS, archiving
+- `ssmd-access-feed` - Trading APIs, orderbook, fills
+- `ssmd-kalshi` - Kalshi exchange domain knowledge, API, fees
+- `ssmd-data-quality` - NATS vs API reconciliation, trade verification
+- `ssmd-cli` - ssmd CLI commands (Deno ops + Go GitOps), env management
+
+Combine with waldstorm's general agents (Security, DevOps, etc.) as needed.
 
 ### Step 3-7: Follow waldstorm
 
 Use team primitives (TeamCreate, TaskCreate, Task tool for teammates, SendMessage) to run expert analysis, then synthesize, plan, and execute per waldstorm workflow. Clean up with shutdown_request + TeamDelete.
+
+### Step 8: Track Records (automated via agent memory)
+
+Agents with `memory: local` automatically read/write their own MEMORY.md in `.claude/agent-memory-local/<name>/MEMORY.md`. Manual track record updates are no longer needed when using agents.
+
+The **Expert Track Record** table below serves as historical reference. Agents now self-update their learnings via `memory: local`.
 
 ## Expert Track Record
 
