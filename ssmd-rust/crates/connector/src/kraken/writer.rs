@@ -9,23 +9,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tracing::trace;
 
-use ssmd_middleware::{SubjectBuilder, Transport};
+use ssmd_middleware::{sanitize_subject_token, SubjectBuilder, Transport};
 
 use crate::error::WriterError;
 use crate::kraken::messages::KrakenWsMessage;
 use crate::message::Message;
 use crate::traits::Writer;
-
-/// Sanitize Kraken symbol for use in NATS subjects.
-/// Replaces '/' with '-' and strips any characters that are unsafe in NATS subjects.
-/// Only allows alphanumeric characters and '-' (e.g., "BTC/USD" -> "BTC-USD").
-fn sanitize_symbol(symbol: &str) -> String {
-    symbol
-        .replace('/', "-")
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-        .collect()
-}
 
 /// Writer that publishes raw Kraken JSON messages to NATS
 pub struct KrakenNatsWriter {
@@ -95,7 +84,7 @@ impl Writer for KrakenNatsWriter {
                     .and_then(|s| s.as_str())
                     .unwrap_or("unknown");
 
-                let sanitized = sanitize_symbol(symbol);
+                let sanitized = sanitize_subject_token(symbol);
 
                 match channel.as_str() {
                     "trade" => self.subjects.json_trade(&sanitized),
@@ -137,20 +126,21 @@ mod tests {
 
     #[test]
     fn test_sanitize_symbol() {
-        assert_eq!(sanitize_symbol("BTC/USD"), "BTC-USD");
-        assert_eq!(sanitize_symbol("ETH/USD"), "ETH-USD");
-        assert_eq!(sanitize_symbol("XRP/EUR"), "XRP-EUR");
-        assert_eq!(sanitize_symbol("NODASH"), "NODASH");
+        // Now using shared sanitize_subject_token which also allows '_'
+        assert_eq!(sanitize_subject_token("BTC/USD"), "BTC-USD");
+        assert_eq!(sanitize_subject_token("ETH/USD"), "ETH-USD");
+        assert_eq!(sanitize_subject_token("XRP/EUR"), "XRP-EUR");
+        assert_eq!(sanitize_subject_token("NODASH"), "NODASH");
     }
 
     #[test]
     fn test_sanitize_symbol_strips_nats_wildcards() {
         // NATS wildcards and delimiters must be stripped
-        assert_eq!(sanitize_symbol("BTC.USD"), "BTCUSD");
-        assert_eq!(sanitize_symbol("BTC>USD"), "BTCUSD");
-        assert_eq!(sanitize_symbol("BTC*USD"), "BTCUSD");
-        assert_eq!(sanitize_symbol("BTC/USD.>"), "BTC-USD");
-        assert_eq!(sanitize_symbol("BTC/USD *"), "BTC-USD");
+        assert_eq!(sanitize_subject_token("BTC.USD"), "BTCUSD");
+        assert_eq!(sanitize_subject_token("BTC>USD"), "BTCUSD");
+        assert_eq!(sanitize_subject_token("BTC*USD"), "BTCUSD");
+        assert_eq!(sanitize_subject_token("BTC/USD.>"), "BTC-USD");
+        assert_eq!(sanitize_subject_token("BTC/USD *"), "BTC-USD");
     }
 
     #[tokio::test]

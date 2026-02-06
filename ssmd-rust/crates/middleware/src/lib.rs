@@ -21,6 +21,6 @@ pub use journal::{Journal, JournalEntry, JournalPosition, JournalReader, TopicCo
 pub use latency::{intern, now_tsc, resolve, CLOCK, INTERNER};
 pub use lsn::lsn_gte;
 pub use memory::{InMemoryCache, InMemoryJournal, InMemoryStorage, InMemoryTransport};
-pub use nats::{NatsTransport, SubjectBuilder};
+pub use nats::{sanitize_subject_token, NatsTransport, SubjectBuilder};
 pub use storage::{ObjectMeta, Storage};
 pub use transport::{Subscription, Transport, TransportMessage};

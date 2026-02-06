@@ -1,6 +1,47 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use tracing::warn;
+
+/// Sanitize an input string for safe use as a NATS subject token.
+///
+/// NATS subjects use `.` as a level separator and `*`/`>` as wildcards.
+/// Spaces are also invalid in subject tokens. This function:
+/// - Replaces `/` with `-` (common in exchange symbols like "BTC/USD")
+/// - Strips any character not in the allowlist: alphanumeric, `-`, `_`
+/// - Truncates to `max_len` characters (default 128)
+/// - Logs a warning if the input was modified
+///
+/// # Examples
+/// ```
+/// use ssmd_middleware::nats::subjects::sanitize_subject_token;
+/// assert_eq!(sanitize_subject_token("BTC/USD"), "BTC-USD");
+/// assert_eq!(sanitize_subject_token("safe-token_123"), "safe-token_123");
+/// assert_eq!(sanitize_subject_token("inject.*.>"), "inject");
+/// ```
+pub fn sanitize_subject_token(input: &str) -> String {
+    sanitize_subject_token_with_max_len(input, 128)
+}
+
+/// Sanitize with a custom max length (for testing or special cases).
+pub fn sanitize_subject_token_with_max_len(input: &str, max_len: usize) -> String {
+    let sanitized: String = input
+        .replace('/', "-")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(max_len)
+        .collect();
+
+    if sanitized != input && !input.is_empty() {
+        warn!(
+            original = %input,
+            sanitized = %sanitized,
+            "NATS subject token was sanitized"
+        );
+    }
+
+    sanitized
+}
 
 /// Helper for NATS subject formatting with environment prefix.
 /// Caches formatted subjects to avoid repeated allocations in hot path.
@@ -230,5 +271,61 @@ mod tests {
             builder.json_event_lifecycle("KXBTCD-26JAN2310"),
             "prod.kalshi.json.event_lifecycle.KXBTCD-26JAN2310"
         );
+    }
+
+    // --- sanitize_subject_token tests ---
+
+    #[test]
+    fn test_sanitize_passthrough() {
+        assert_eq!(sanitize_subject_token("safe-token_123"), "safe-token_123");
+        assert_eq!(sanitize_subject_token("KXBTC-25001"), "KXBTC-25001");
+    }
+
+    #[test]
+    fn test_sanitize_slash_replacement() {
+        assert_eq!(sanitize_subject_token("BTC/USD"), "BTC-USD");
+        assert_eq!(sanitize_subject_token("ETH/USD"), "ETH-USD");
+    }
+
+    #[test]
+    fn test_sanitize_strips_nats_specials() {
+        assert_eq!(sanitize_subject_token("inject.*.>"), "inject");
+        assert_eq!(sanitize_subject_token("foo.bar"), "foobar");
+        assert_eq!(sanitize_subject_token("test > wildcard"), "testwildcard");
+        assert_eq!(sanitize_subject_token("a*b"), "ab");
+    }
+
+    #[test]
+    fn test_sanitize_strips_spaces() {
+        assert_eq!(sanitize_subject_token("hello world"), "helloworld");
+    }
+
+    #[test]
+    fn test_sanitize_empty() {
+        assert_eq!(sanitize_subject_token(""), "");
+    }
+
+    #[test]
+    fn test_sanitize_polymarket_condition_id() {
+        // Polymarket condition IDs are hex strings like 0x1234abcd...
+        assert_eq!(
+            sanitize_subject_token("0x1234abcdef5678"),
+            "0x1234abcdef5678"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_long_token_id() {
+        // Polymarket token IDs are very long numeric strings
+        let long_id = "7".repeat(200);
+        let result = sanitize_subject_token(&long_id);
+        assert_eq!(result.len(), 128);
+        assert!(result.chars().all(|c| c == '7'));
+    }
+
+    #[test]
+    fn test_sanitize_with_custom_max_len() {
+        let result = sanitize_subject_token_with_max_len("abcdefghij", 5);
+        assert_eq!(result, "abcde");
     }
 }
