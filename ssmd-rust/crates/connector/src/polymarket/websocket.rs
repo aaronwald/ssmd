@@ -112,26 +112,6 @@ impl PolymarketWebSocket {
         Ok(())
     }
 
-    /// Dynamically subscribe to additional asset IDs on an existing connection.
-    pub async fn subscribe_additional(
-        &mut self,
-        asset_ids: &[String],
-    ) -> Result<(), PolymarketWebSocketError> {
-        if asset_ids.is_empty() {
-            return Ok(());
-        }
-
-        let msg = serde_json::json!({
-            "assets_ids": asset_ids,
-            "operation": "subscribe"
-        });
-
-        let text = serde_json::to_string(&msg)?;
-        debug!(count = asset_ids.len(), "Sending dynamic subscribe");
-        self.ws.send(Message::Text(text)).await?;
-        Ok(())
-    }
-
     /// Receive the next raw text message from the WebSocket.
     /// Returns the raw JSON string for pass-through to NATS.
     /// Handles WS-level ping/pong frames automatically.

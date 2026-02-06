@@ -6,6 +6,7 @@
 //! Returns `(condition_id, Vec<clob_token_id>)` tuples for subscription management.
 
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -176,10 +177,13 @@ impl MarketDiscovery {
 
     /// Extract all unique token IDs from discovered markets.
     /// These are the asset_ids needed for WebSocket subscription.
+    /// Uses BTreeSet for deduplication and deterministic ordering (consistent sharding).
     pub fn extract_token_ids(markets: &[DiscoveredMarket]) -> Vec<String> {
         markets
             .iter()
             .flat_map(|m| m.clob_token_ids.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect()
     }
 }
@@ -210,6 +214,30 @@ mod tests {
         assert!(token_ids.contains(&"token_yes_1".to_string()));
         assert!(token_ids.contains(&"token_no_1".to_string()));
         assert!(token_ids.contains(&"token_yes_2".to_string()));
+        assert!(token_ids.contains(&"token_no_2".to_string()));
+    }
+
+    #[test]
+    fn test_extract_token_ids_deduplicates() {
+        let markets = vec![
+            DiscoveredMarket {
+                condition_id: "0xabc".to_string(),
+                clob_token_ids: vec!["shared_token".to_string(), "token_no_1".to_string()],
+                question: "Will X?".to_string(),
+                active: true,
+            },
+            DiscoveredMarket {
+                condition_id: "0xdef".to_string(),
+                clob_token_ids: vec!["shared_token".to_string(), "token_no_2".to_string()],
+                question: "Will Y?".to_string(),
+                active: true,
+            },
+        ];
+
+        let token_ids = MarketDiscovery::extract_token_ids(&markets);
+        assert_eq!(token_ids.len(), 3); // shared_token appears once, not twice
+        assert!(token_ids.contains(&"shared_token".to_string()));
+        assert!(token_ids.contains(&"token_no_1".to_string()));
         assert!(token_ids.contains(&"token_no_2".to_string()));
     }
 

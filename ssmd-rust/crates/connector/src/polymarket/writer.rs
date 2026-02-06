@@ -254,6 +254,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_publish_best_bid_ask_routes_to_ticker() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = PolymarketNatsWriter::new(transport.clone(), "dev", "polymarket");
+
+        let mut sub = transport
+            .subscribe("dev.polymarket.json.ticker.0x1234abcd")
+            .await
+            .unwrap();
+
+        let bba_json = br#"{"event_type":"best_bid_ask","market":"0x1234abcd","asset_id":"token123","best_bid":"0.54","best_ask":"0.56"}"#;
+        let msg = Message::new("polymarket", bba_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+
+        let received = sub.next().await.unwrap();
+        assert_eq!(received.subject, "dev.polymarket.json.ticker.0x1234abcd");
+        assert_eq!(writer.message_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_publish_new_market_routes_to_lifecycle() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = PolymarketNatsWriter::new(transport.clone(), "dev", "polymarket");
+
+        let mut sub = transport
+            .subscribe("dev.polymarket.json.lifecycle.0x1234abcd")
+            .await
+            .unwrap();
+
+        let new_market_json = br#"{"event_type":"new_market","market":"0x1234abcd","assets_ids":["token_yes","token_no"],"question":"Will X happen?","outcomes":["Yes","No"]}"#;
+        let msg = Message::new("polymarket", new_market_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+
+        let received = sub.next().await.unwrap();
+        assert_eq!(
+            received.subject,
+            "dev.polymarket.json.lifecycle.0x1234abcd"
+        );
+        assert_eq!(writer.message_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_json_returns_error() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = PolymarketNatsWriter::new(transport.clone(), "dev", "polymarket");
+
+        let garbage = Message::new("polymarket", b"not valid json at all".to_vec());
+        let result = writer.write(&garbage).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to parse Polymarket message"),
+            "Expected parse error, got: {}",
+            err
+        );
+        assert_eq!(writer.message_count(), 0);
+    }
+
+    #[tokio::test]
     async fn test_with_prefix() {
         let transport = Arc::new(InMemoryTransport::new());
         let mut writer = PolymarketNatsWriter::with_prefix(
