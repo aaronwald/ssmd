@@ -1,0 +1,270 @@
+//! Kraken NATS Writer - publishes raw JSON messages to NATS
+//!
+//! Routes Kraken ticker and trade messages to appropriate NATS subjects.
+//! Passes through raw bytes - no transformation.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use tracing::trace;
+
+use ssmd_middleware::{SubjectBuilder, Transport};
+
+use crate::error::WriterError;
+use crate::kraken::messages::KrakenWsMessage;
+use crate::message::Message;
+use crate::traits::Writer;
+
+/// Sanitize Kraken symbol for use in NATS subjects.
+/// Replaces '/' with '-' and strips any characters that are unsafe in NATS subjects.
+/// Only allows alphanumeric characters and '-' (e.g., "BTC/USD" -> "BTC-USD").
+fn sanitize_symbol(symbol: &str) -> String {
+    symbol
+        .replace('/', "-")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect()
+}
+
+/// Writer that publishes raw Kraken JSON messages to NATS
+pub struct KrakenNatsWriter {
+    transport: Arc<dyn Transport>,
+    subjects: SubjectBuilder,
+    message_count: u64,
+}
+
+impl KrakenNatsWriter {
+    /// Create a new KrakenNatsWriter with default subject prefix: {env_name}.{feed_name}
+    pub fn new(
+        transport: Arc<dyn Transport>,
+        env_name: impl Into<String>,
+        feed_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            transport,
+            subjects: SubjectBuilder::new(env_name, feed_name),
+            message_count: 0,
+        }
+    }
+
+    /// Create a new KrakenNatsWriter with a custom subject prefix and stream name.
+    pub fn with_prefix(
+        transport: Arc<dyn Transport>,
+        subject_prefix: impl Into<String>,
+        stream_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            transport,
+            subjects: SubjectBuilder::with_prefix(subject_prefix, stream_name),
+            message_count: 0,
+        }
+    }
+
+    /// Get count of published messages
+    pub fn message_count(&self) -> u64 {
+        self.message_count
+    }
+}
+
+#[async_trait]
+impl Writer for KrakenNatsWriter {
+    async fn write(&mut self, msg: &Message) -> Result<(), WriterError> {
+        let ws_msg: KrakenWsMessage = match serde_json::from_slice(&msg.data) {
+            Ok(m) => m,
+            Err(e) => {
+                let preview: String = String::from_utf8_lossy(&msg.data)
+                    .chars()
+                    .take(500)
+                    .collect();
+                return Err(WriterError::WriteFailed(format!(
+                    "Failed to parse Kraken message: {}. Preview: {}",
+                    e, preview
+                )));
+            }
+        };
+
+        let subject = match &ws_msg {
+            KrakenWsMessage::ChannelMessage {
+                channel, data, ..
+            } => {
+                // Extract symbol from data[0]
+                let symbol = data
+                    .first()
+                    .and_then(|d| d.get("symbol"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown");
+
+                let sanitized = sanitize_symbol(symbol);
+
+                match channel.as_str() {
+                    "trade" => self.subjects.json_trade(&sanitized),
+                    "ticker" => self.subjects.json_ticker(&sanitized),
+                    other => {
+                        trace!(channel = %other, "Skipping unknown Kraken channel");
+                        return Ok(());
+                    }
+                }
+            }
+            // Skip non-data messages
+            KrakenWsMessage::Heartbeat { .. }
+            | KrakenWsMessage::Pong { .. }
+            | KrakenWsMessage::SubscriptionResult { .. } => {
+                return Ok(());
+            }
+        };
+
+        // Publish raw bytes - no transformation
+        self.transport
+            .publish(&subject, Bytes::from(msg.data.clone()))
+            .await
+            .map_err(|e| WriterError::WriteFailed(format!("NATS publish failed: {}", e)))?;
+
+        self.message_count += 1;
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), WriterError> {
+        trace!(messages = self.message_count, "KrakenNatsWriter closing");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ssmd_middleware::InMemoryTransport;
+
+    #[test]
+    fn test_sanitize_symbol() {
+        assert_eq!(sanitize_symbol("BTC/USD"), "BTC-USD");
+        assert_eq!(sanitize_symbol("ETH/USD"), "ETH-USD");
+        assert_eq!(sanitize_symbol("XRP/EUR"), "XRP-EUR");
+        assert_eq!(sanitize_symbol("NODASH"), "NODASH");
+    }
+
+    #[test]
+    fn test_sanitize_symbol_strips_nats_wildcards() {
+        // NATS wildcards and delimiters must be stripped
+        assert_eq!(sanitize_symbol("BTC.USD"), "BTCUSD");
+        assert_eq!(sanitize_symbol("BTC>USD"), "BTCUSD");
+        assert_eq!(sanitize_symbol("BTC*USD"), "BTCUSD");
+        assert_eq!(sanitize_symbol("BTC/USD.>"), "BTC-USD");
+        assert_eq!(sanitize_symbol("BTC/USD *"), "BTC-USD");
+    }
+
+    #[tokio::test]
+    async fn test_publish_trade_json() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
+
+        let mut sub = transport
+            .subscribe("dev.kraken.json.trade.BTC-USD")
+            .await
+            .unwrap();
+
+        let trade_json = br#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"buy","price":97000.0,"qty":0.001,"ord_type":"market","trade_id":"12345","timestamp":"2026-02-06T12:00:00.000000Z"}]}"#;
+        let msg = Message::new("kraken", trade_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+
+        let received = sub.next().await.unwrap();
+        assert_eq!(received.subject, "dev.kraken.json.trade.BTC-USD");
+        assert_eq!(received.payload.as_ref(), trade_json);
+    }
+
+    #[tokio::test]
+    async fn test_publish_ticker_json() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
+
+        let mut sub = transport
+            .subscribe("dev.kraken.json.ticker.BTC-USD")
+            .await
+            .unwrap();
+
+        let ticker_json = br#"{"channel":"ticker","type":"update","data":[{"symbol":"BTC/USD","bid":97000.0,"bid_qty":0.50000000,"ask":97000.1,"ask_qty":1.00000000,"last":97000.0,"volume":1234.56789012,"vwap":96500.0,"low":95000.0,"high":98000.0,"change":500.0,"change_pct":0.52}]}"#;
+        let msg = Message::new("kraken", ticker_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+
+        let received = sub.next().await.unwrap();
+        assert_eq!(received.subject, "dev.kraken.json.ticker.BTC-USD");
+        assert_eq!(received.payload.as_ref(), ticker_json);
+    }
+
+    #[tokio::test]
+    async fn test_skip_heartbeat() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
+
+        let heartbeat_json = br#"{"channel":"heartbeat","type":"update"}"#;
+        let msg = Message::new("kraken", heartbeat_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+        assert_eq!(writer.message_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_skip_pong() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
+
+        let pong_json = br#"{"method":"pong","time_in":"2026-02-06T12:00:00.000000Z","time_out":"2026-02-06T12:00:00.000001Z"}"#;
+        let msg = Message::new("kraken", pong_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+        assert_eq!(writer.message_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_skip_subscription_result() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
+
+        let sub_json = br#"{"method":"subscribe","result":{"channel":"ticker","symbol":"BTC/USD"},"success":true,"time_in":"2026-02-06T12:00:00.000000Z","time_out":"2026-02-06T12:00:00.000001Z"}"#;
+        let msg = Message::new("kraken", sub_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+        assert_eq!(writer.message_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_message_count() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
+
+        let _sub = transport
+            .subscribe("dev.kraken.json.trade.BTC-USD")
+            .await
+            .unwrap();
+
+        let trade_json = br#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"buy","price":97000.0,"qty":0.001,"ord_type":"market","trade_id":"12345","timestamp":"2026-02-06T12:00:00.000000Z"}]}"#;
+        let msg = Message::new("kraken", trade_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+        writer.write(&msg).await.unwrap();
+
+        assert_eq!(writer.message_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_with_prefix() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer =
+            KrakenNatsWriter::with_prefix(transport.clone(), "prod.kraken.main", "PROD_KRAKEN");
+
+        let mut sub = transport
+            .subscribe("prod.kraken.main.json.ticker.ETH-USD")
+            .await
+            .unwrap();
+
+        let ticker_json = br#"{"channel":"ticker","type":"update","data":[{"symbol":"ETH/USD","bid":3200.0,"bid_qty":10.0,"ask":3201.0,"ask_qty":5.0,"last":3200.5,"volume":50000.0,"vwap":3180.0,"low":3100.0,"high":3300.0,"change":50.0,"change_pct":1.5}]}"#;
+        let msg = Message::new("kraken", ticker_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+
+        let received = sub.next().await.unwrap();
+        assert_eq!(received.subject, "prod.kraken.main.json.ticker.ETH-USD");
+    }
+}

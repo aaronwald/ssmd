@@ -6,6 +6,7 @@
 pub mod error;
 pub mod flusher;
 pub mod kalshi;
+pub mod kraken;
 pub mod message;
 pub mod metrics;
 pub mod nats_writer;
