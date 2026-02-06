@@ -19,11 +19,19 @@ CREATE TABLE pairs (
 CREATE INDEX idx_pairs_exchange ON pairs(exchange);
 CREATE INDEX idx_pairs_base_quote ON pairs(base, quote);
 
--- Reuse existing trigger function from migration 0004
+-- Trigger function for pairs table
+CREATE OR REPLACE FUNCTION pairs_update_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE TRIGGER update_pairs_updated_at
     BEFORE UPDATE ON pairs
     FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
+    EXECUTE FUNCTION pairs_update_timestamp();
 
 -- Seed initial pairs
 INSERT INTO pairs (pair_id, exchange, base, quote, ws_name) VALUES
@@ -31,4 +39,6 @@ INSERT INTO pairs (pair_id, exchange, base, quote, ws_name) VALUES
     ('ETHUSD', 'kraken', 'ETH', 'USD', 'ETH/USD');
 
 -- migrate:down
+DROP TRIGGER IF EXISTS update_pairs_updated_at ON pairs;
+DROP FUNCTION IF EXISTS pairs_update_timestamp();
 DROP TABLE IF EXISTS pairs;
