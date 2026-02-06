@@ -186,20 +186,33 @@ deno task cli connector deploy --feed kalshi --output ./generated/connector.yaml
 ~/.ssmd/config.yaml
 ```
 
+**Scale Down Behavior:**
+- `scale down` suspends Flux first, then scales COMPONENTS list to 0
+- COMPONENTS includes: operator, connectors (all with label `ssmd-connector`), lifecycle-consumer, signals, momentum, notifier, archivers (all with label `ssmd-archiver`), data-api
+- Does NOT scale: postgres, redis, cache, cdc, worker, debug — these must be scaled manually if needed
+- `scale up` resumes Flux which reconciles everything back to git-defined replicas
+- After selective scale-down (keeping some components), use `kubectl scale` directly rather than `scale up` which restores everything
+
 **Environment Config Example:**
 ```yaml
 # ~/.ssmd/config.yaml
-currentEnv: prod
+current-env: prod
 environments:
   prod:
-    kubeContext: k3s-homelab
+    cluster: homelab
     namespace: ssmd
-    natsUrl: nats://nats.nats.svc:4222
+    nats:
+      url: nats://nats.nats.svc.cluster.local:4222
+      stream_prefix: PROD
   dev:
-    kubeContext: gke_project_region_cluster
+    cluster: gke-ssmd-dev
     namespace: ssmd-dev
-    natsUrl: nats://nats.nats.svc:4222
+    nats:
+      url: nats://nats.nats.svc.cluster.local:4222
+      stream_prefix: DEV
 ```
+
+**Important:** The `cluster` value must match a kubectl context name. If your context is named `default`, rename it: `kubectl config rename-context default homelab`
 
 ---
 
