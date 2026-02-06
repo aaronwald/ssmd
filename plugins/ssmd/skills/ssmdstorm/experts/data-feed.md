@@ -96,3 +96,9 @@ Any clarifications needed before proceeding
 - Sharding strategy
 - Category-based filtering
 - WebSocket channel subscriptions (non-trading)
+
+## Track Record
+
+| Session | Task | Priority Findings |
+|---------|------|--------------------|
+| 2026-02-06 | Kraken BTC/ETH feed | [HIGH] NATS subject injection via unsanitized symbols — hardened to allowlist. [HIGH] serde untagged heartbeat parse failure in prod — real API differs from docs. [MEDIUM] Archiver should be per-exchange, not shared. |

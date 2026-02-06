@@ -318,3 +318,9 @@ Any clarifications needed before proceeding
 - Data quality checks
 - Backtest and sweep execution
 - Feed/schema/environment GitOps metadata management
+
+## Track Record
+
+| Session | Task | Priority Findings |
+|---------|------|--------------------|
+| 2026-02-06 | Kraken deploy + scale down | [HIGH] kubectl context must match config `cluster` field — `scale down` fails silently otherwise. [MEDIUM] `scale down` scales ALL connectors/archivers (no per-feed granularity) — use `kubectl scale` for selective control. |

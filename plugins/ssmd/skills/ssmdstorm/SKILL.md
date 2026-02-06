@@ -22,17 +22,44 @@ ssmdstorm adds 6 ssmd-specific experts to waldstorm's general panel:
 
 ## Expert Selection Guide
 
-| Task Domain | ssmd Experts | + General Experts |
-|-------------|--------------|-------------------|
-| Market metadata work | Secmaster, CLI | Database, Senior Dev |
-| Adding new exchange | Data Feed | DevOps, Security |
-| Trading API integration | Access Feed, Secmaster | Security, API Designer |
-| Pipeline deployment | Data Feed, CLI | DevOps, Platform/Infra |
-| Signal development | Data Feed, Secmaster, CLI | Performance, QA |
-| CDC/cache work | Secmaster | Database, Performance |
-| Orderbook integration | Access Feed, Data Feed | Performance, Security |
-| CLI operations | CLI | DevOps |
-| Data quality checks | Data Quality, CLI | QA |
+| Task Domain | ssmd Experts | + General Experts | + varlab-ops |
+|-------------|--------------|-------------------|--------------|
+| Market metadata work | Secmaster, CLI | Database, Senior Dev | - |
+| Adding new exchange | Data Feed | DevOps, Security | Operations |
+| Trading API integration | Access Feed, Secmaster | Security, API Designer | - |
+| Pipeline deployment | Data Feed, CLI | DevOps, Platform/Infra | Operations |
+| Signal development | Data Feed, Secmaster, CLI | Performance, QA | - |
+| CDC/cache work | Secmaster | Database, Performance | - |
+| Orderbook integration | Access Feed, Data Feed | Performance, Security | - |
+| CLI operations | CLI | DevOps | - |
+| Data quality checks | Data Quality, CLI | QA | - |
+| End-to-end deploy (code + K8s) | Data Feed, CLI | Security, Performance | Operations |
+
+### Cross-Skill Pairing
+
+Tasks that span code AND infrastructure need experts from **both** ssmdstorm and varlab-ops. The selection guide above includes the varlab-ops column for these cases. Common cross-skill patterns:
+
+| Pattern | Why Both Skills |
+|---------|----------------|
+| New exchange end-to-end | ssmd: connector code, NATS subjects, writer. varlab-ops: K8s deployment, NATS stream, archiver CR, network policy |
+| Image build + deploy | ssmd: Rust/Deno changes, tag format. varlab-ops: deployment YAML, Flux reconcile, image pull |
+| Scale operations | ssmd: CLI commands. varlab-ops: Flux suspend/resume, kubectl context |
+
+### Trigger Keywords
+
+When analyzing a task description, match these keywords to experts:
+
+| Keywords | Expert |
+|----------|--------|
+| websocket, connector, exchange, feed, subscribe, channel | Data Feed |
+| secmaster, market metadata, sync, CDC, Redis, lifecycle | Secmaster |
+| orderbook, fill, position, trading, order, balance | Access Feed |
+| kalshi, prediction market, contract, series, category | Kalshi |
+| nats count, match rate, reconciliation, missing trades | Data Quality |
+| cli, scale, deploy, env, schedule, deno task | CLI |
+| deployment, kustomization, flux, network policy, PVC | Operations (varlab-ops) |
+| securityContext, input validation, sanitization, auth | Security (waldstorm) |
+| max_message_size, buffer, latency, throughput, memory | Performance (waldstorm) |
 
 ## Instructions
 
@@ -58,18 +85,35 @@ Combine with waldstorm's general experts (Security, DevOps, etc.) as needed.
 
 Use team primitives (TeamCreate, TaskCreate, Task tool for teammates, SendMessage) to run expert analysis, then synthesize, plan, and execute per waldstorm workflow. Clean up with shutdown_request + TeamDelete.
 
+## Expert Track Record
+
+Track which experts produced actionable findings per task type. Use this to inform future selection.
+
+| Session | Task | Experts Used | Key Findings |
+|---------|------|-------------|--------------|
+| 2026-02-06 | Kraken exchange (end-to-end) | Data Feed, Operations, Security, Performance | Security: missing securityContext, NATS subject injection via unsanitized symbols. Performance: WebSocket max_message_size default too large. Data Feed: archiver-per-exchange, serde untagged pitfalls. Operations: static Deployment vs CR, Flux suspend lifecycle. All 4 experts produced HIGH-priority findings. |
+
+**Observations:**
+- End-to-end exchange tasks need 4+ experts across skills (cross-skill pairing essential)
+- Security and Performance generals caught infra/config issues the domain experts missed
+- Data Feed expert most valuable for exchange-specific protocol details
+- Operations expert essential whenever K8s manifests are involved
+
 ## Key ssmd Context
 
 **Architecture:**
 ```
-Kalshi WS -> Connector -> NATS JetStream -> Archiver/Signal/Notifier
+Kalshi WS  -> Connector -> NATS JetStream -> Archiver/Signal/Notifier
+Kraken WS  -> Connector ---^
                               |
 PostgreSQL <- secmaster sync <- CDC -> dynamic subscriptions
 ```
 
 **Current state (Feb 2026):**
-- Subscribed channels: `ticker`, `trade`, `market_lifecycle_v2`
-- Pending: `orderbook_delta`, `fill`, `market_positions`
+- Exchanges: Kalshi (prediction markets), Kraken (crypto spot)
+- Kalshi channels: `ticker`, `trade`, `market_lifecycle_v2`
+- Kraken channels: `ticker`, `trade`
+- Pending: `orderbook_delta`, `fill`, `market_positions` (Kalshi)
 - Environments: prod (homelab k3s), dev (GKE)
 
 **Key paths:**
