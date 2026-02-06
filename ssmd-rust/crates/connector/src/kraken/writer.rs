@@ -17,9 +17,14 @@ use crate::message::Message;
 use crate::traits::Writer;
 
 /// Sanitize Kraken symbol for use in NATS subjects.
-/// Replaces '/' with '-' (e.g., "BTC/USD" -> "BTC-USD").
+/// Replaces '/' with '-' and strips any characters that are unsafe in NATS subjects.
+/// Only allows alphanumeric characters and '-' (e.g., "BTC/USD" -> "BTC-USD").
 fn sanitize_symbol(symbol: &str) -> String {
-    symbol.replace('/', "-")
+    symbol
+        .replace('/', "-")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect()
 }
 
 /// Writer that publishes raw Kraken JSON messages to NATS
@@ -136,6 +141,16 @@ mod tests {
         assert_eq!(sanitize_symbol("ETH/USD"), "ETH-USD");
         assert_eq!(sanitize_symbol("XRP/EUR"), "XRP-EUR");
         assert_eq!(sanitize_symbol("NODASH"), "NODASH");
+    }
+
+    #[test]
+    fn test_sanitize_symbol_strips_nats_wildcards() {
+        // NATS wildcards and delimiters must be stripped
+        assert_eq!(sanitize_symbol("BTC.USD"), "BTCUSD");
+        assert_eq!(sanitize_symbol("BTC>USD"), "BTCUSD");
+        assert_eq!(sanitize_symbol("BTC*USD"), "BTCUSD");
+        assert_eq!(sanitize_symbol("BTC/USD.>"), "BTC-USD");
+        assert_eq!(sanitize_symbol("BTC/USD *"), "BTC-USD");
     }
 
     #[tokio::test]

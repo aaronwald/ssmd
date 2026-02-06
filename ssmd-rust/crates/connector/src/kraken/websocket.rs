@@ -9,8 +9,8 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
-    connect_async,
-    tungstenite::Message,
+    connect_async_with_config,
+    tungstenite::{protocol::WebSocketConfig, Message},
     MaybeTlsStream, WebSocketStream,
 };
 use tracing::{debug, info, trace, warn};
@@ -42,11 +42,21 @@ pub struct KrakenWebSocket {
 }
 
 impl KrakenWebSocket {
+    /// Max WebSocket message size: 1 MiB (ticker/trade messages are typically <2 KB)
+    const MAX_MESSAGE_SIZE: usize = 1_048_576;
+
     /// Connect to Kraken v2 WebSocket (no authentication needed for public channels)
     pub async fn connect() -> Result<Self, KrakenWebSocketError> {
         info!(url = %KRAKEN_WS_URL, "Connecting to Kraken WebSocket v2");
 
-        let (ws, response) = connect_async(KRAKEN_WS_URL).await?;
+        let config = WebSocketConfig {
+            max_message_size: Some(Self::MAX_MESSAGE_SIZE),
+            max_frame_size: Some(Self::MAX_MESSAGE_SIZE),
+            ..Default::default()
+        };
+
+        let (ws, response) =
+            connect_async_with_config(KRAKEN_WS_URL, Some(config), false).await?;
 
         info!(status = ?response.status(), "Kraken WebSocket connected");
 
