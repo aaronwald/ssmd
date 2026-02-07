@@ -74,6 +74,17 @@ type ConnectorSpec struct {
 	// Cdc configures CDC-driven dynamic market subscriptions
 	// +optional
 	Cdc *CdcConfig `json:"cdc,omitempty"`
+
+	// EnvVars specifies additional environment variables to set on the connector pod
+	// Use for exchange-specific config like KRAKEN_SYMBOLS
+	// +optional
+	EnvVars []corev1.EnvVar `json:"envVars,omitempty"`
+
+	// SecretEnvVars maps Kubernetes secrets to environment variables
+	// Replaces the hardcoded KALSHI_API_KEY/KALSHI_PRIVATE_KEY injection
+	// When specified, these are used INSTEAD of the legacy secretRef env var mapping
+	// +optional
+	SecretEnvVars []SecretEnvMapping `json:"secretEnvVars,omitempty"`
 }
 
 // TransportConfig defines NATS transport settings
@@ -111,6 +122,21 @@ type SecretReference struct {
 	// +kubebuilder:default="private-key"
 	// +optional
 	PrivateKeyField string `json:"privateKeyField,omitempty"`
+}
+
+// SecretEnvMapping maps a Kubernetes secret key to an environment variable
+type SecretEnvMapping struct {
+	// EnvName is the environment variable name to set in the pod
+	// +kubebuilder:validation:Required
+	EnvName string `json:"envName"`
+
+	// SecretName is the Kubernetes secret to read from
+	// +kubebuilder:validation:Required
+	SecretName string `json:"secretName"`
+
+	// SecretKey is the key within the secret
+	// +kubebuilder:validation:Required
+	SecretKey string `json:"secretKey"`
 }
 
 // CdcConfig configures CDC-driven dynamic market subscriptions
