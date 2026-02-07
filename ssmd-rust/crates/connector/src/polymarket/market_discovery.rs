@@ -40,6 +40,7 @@ pub struct DiscoveredMarket {
 
 /// Response from the Gamma /markets endpoint
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GammaMarketResponse {
     #[serde(default)]
     condition_id: Option<String>,
@@ -255,15 +256,15 @@ mod tests {
     fn test_parse_gamma_response() {
         let json = r#"[
             {
-                "condition_id": "0x1234",
-                "clob_token_ids": ["token_yes", "token_no"],
+                "conditionId": "0x1234",
+                "clobTokenIds": ["token_yes", "token_no"],
                 "question": "Will BTC hit 100k?",
                 "active": true,
                 "closed": false
             },
             {
-                "condition_id": "0x5678",
-                "clob_token_ids": [],
+                "conditionId": "0x5678",
+                "clobTokenIds": [],
                 "question": "Empty market",
                 "active": true,
                 "closed": false
