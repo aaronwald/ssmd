@@ -101,7 +101,7 @@ func (r *ConnectorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Reconcile the Deployment
-	result, err := r.reconcileDeployment(ctx, connector)
+	result, err := r.reconcileDeployment(ctx, connector, feedConfig)
 	if err != nil {
 		return result, err
 	}
@@ -381,7 +381,7 @@ storage:
 }
 
 // reconcileDeployment ensures the Deployment exists and matches the desired state
-func (r *ConnectorReconciler) reconcileDeployment(ctx context.Context, connector *ssmdv1alpha1.Connector) (ctrl.Result, error) {
+func (r *ConnectorReconciler) reconcileDeployment(ctx context.Context, connector *ssmdv1alpha1.Connector, feedConfig *FeedConfig) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	deploymentName := r.deploymentName(connector)
@@ -390,7 +390,7 @@ func (r *ConnectorReconciler) reconcileDeployment(ctx context.Context, connector
 
 	if errors.IsNotFound(err) {
 		// Create new Deployment
-		deployment = r.constructDeployment(ctx, connector)
+		deployment = r.constructDeployment(ctx, connector, feedConfig)
 		if err := controllerutil.SetControllerReference(connector, deployment, r.Scheme); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -404,7 +404,7 @@ func (r *ConnectorReconciler) reconcileDeployment(ctx context.Context, connector
 	}
 
 	// Update existing Deployment if needed
-	desired := r.constructDeployment(ctx, connector)
+	desired := r.constructDeployment(ctx, connector, feedConfig)
 	if r.deploymentNeedsUpdate(deployment, desired) {
 		deployment.Spec = desired.Spec
 		log.Info("Updating Deployment", "name", deploymentName)
@@ -417,7 +417,7 @@ func (r *ConnectorReconciler) reconcileDeployment(ctx context.Context, connector
 }
 
 // constructDeployment builds the Deployment spec for a Connector
-func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector *ssmdv1alpha1.Connector) *appsv1.Deployment {
+func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector *ssmdv1alpha1.Connector, feedConfig *FeedConfig) *appsv1.Deployment {
 	log := logf.FromContext(ctx)
 
 	labels := map[string]string{
@@ -436,12 +436,11 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 	image := connector.Spec.Image
 	if image == "" {
 		// Try to get defaults from feed ConfigMap
-		if defaults, err := r.getFeedDefaults(ctx, connector.Namespace, connector.Spec.Feed); err == nil && defaults != nil {
-			if img, ok := defaults["image"].(string); ok {
-				if ver, ok := defaults["version"].(string); ok {
-					image = fmt.Sprintf("%s:%s", img, ver)
-					log.Info("Using image from feed defaults", "image", image)
-				}
+		if feedConfig != nil && feedConfig.Defaults != nil && feedConfig.Defaults.Connector != nil {
+			fc := feedConfig.Defaults.Connector
+			if fc.Image != "" && fc.Version != "" {
+				image = fmt.Sprintf("%s:%s", fc.Image, fc.Version)
+				log.Info("Using image from feed defaults", "image", image)
 			}
 		}
 		// Fall back to hardcoded default
@@ -455,15 +454,29 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 		{Name: "RUST_LOG", Value: "info,ssmd_connector=debug"},
 	}
 
-	// Add NATS URL as env var (connector reads it from env)
+	// Add NATS URL
 	natsURL := "nats://nats.nats.svc.cluster.local:4222"
 	if connector.Spec.Transport != nil && connector.Spec.Transport.URL != "" {
 		natsURL = connector.Spec.Transport.URL
 	}
 	env = append(env, corev1.EnvVar{Name: "NATS_URL", Value: natsURL})
 
-	// Add secret env vars if secretRef specified
-	if connector.Spec.SecretRef != nil {
+	// Add secret env vars (new generic field)
+	if len(connector.Spec.SecretEnvVars) > 0 {
+		for _, sev := range connector.Spec.SecretEnvVars {
+			env = append(env, corev1.EnvVar{
+				Name: sev.EnvName,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: sev.SecretName},
+						Key:                  sev.SecretKey,
+					},
+				},
+			})
+		}
+	} else if connector.Spec.SecretRef != nil {
+		// Legacy secretRef handling: derive env var names from feed name
+		feedUpper := strings.ToUpper(connector.Spec.Feed)
 		apiKeyField := "api-key"
 		if connector.Spec.SecretRef.APIKeyField != "" {
 			apiKeyField = connector.Spec.SecretRef.APIKeyField
@@ -475,7 +488,7 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 
 		env = append(env,
 			corev1.EnvVar{
-				Name: "KALSHI_API_KEY",
+				Name: feedUpper + "_API_KEY",
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: connector.Spec.SecretRef.Name},
@@ -484,7 +497,7 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 				},
 			},
 			corev1.EnvVar{
-				Name: "KALSHI_PRIVATE_KEY",
+				Name: feedUpper + "_PRIVATE_KEY",
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: connector.Spec.SecretRef.Name},
@@ -494,6 +507,9 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 			},
 		)
 	}
+
+	// Add additional env vars from CR spec
+	env = append(env, connector.Spec.EnvVars...)
 
 	// Add ssmd-data API key for secmaster queries when categories are specified
 	if len(connector.Spec.Categories) > 0 {
@@ -527,6 +543,13 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 				Name:      "config",
 				MountPath: "/config",
 				ReadOnly:  true,
+			},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			ReadOnlyRootFilesystem:   boolPtr(true),
+			AllowPrivilegeEscalation: boolPtr(false),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
 			},
 		},
 		LivenessProbe: &corev1.Probe{
@@ -575,6 +598,12 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: boolPtr(true),
+						RunAsUser:    int64Ptr(1000),
+						RunAsGroup:   int64Ptr(1000),
+						FSGroup:      int64Ptr(1000),
+					},
 					ImagePullSecrets: []corev1.LocalObjectReference{
 						{Name: "ghcr-secret"},
 					},
@@ -638,6 +667,14 @@ func (r *ConnectorReconciler) deploymentNeedsUpdate(current, desired *appsv1.Dep
 
 	// Check volumes
 	if !reflect.DeepEqual(current.Spec.Template.Spec.Volumes, desired.Spec.Template.Spec.Volumes) {
+		return true
+	}
+
+	// Check security context
+	if !reflect.DeepEqual(current.Spec.Template.Spec.SecurityContext, desired.Spec.Template.Spec.SecurityContext) {
+		return true
+	}
+	if !reflect.DeepEqual(currentContainer.SecurityContext, desiredContainer.SecurityContext) {
 		return true
 	}
 
@@ -777,19 +814,5 @@ func (r *ConnectorReconciler) getFeedConfig(ctx context.Context, namespace, feed
 	return &feed, nil
 }
 
-// getFeedDefaults reads the feed ConfigMap and returns connector defaults (legacy compatibility)
-func (r *ConnectorReconciler) getFeedDefaults(ctx context.Context, namespace, feedName string) (map[string]interface{}, error) {
-	feed, err := r.getFeedConfig(ctx, namespace, feedName)
-	if err != nil || feed == nil {
-		return nil, err
-	}
-	if feed.Defaults == nil || feed.Defaults.Connector == nil {
-		return nil, nil
-	}
-	// Convert to map for backward compatibility with existing callers
-	result := map[string]interface{}{
-		"image":   feed.Defaults.Connector.Image,
-		"version": feed.Defaults.Connector.Version,
-	}
-	return result, nil
-}
+func boolPtr(b bool) *bool    { return &b }
+func int64Ptr(i int64) *int64 { return &i }
