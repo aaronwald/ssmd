@@ -32,7 +32,7 @@ import (
 
 var _ = Describe("Signal Controller", func() {
 	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+		const resourceName = "test-signal"
 
 		ctx := context.Background()
 
@@ -51,7 +51,13 @@ var _ = Describe("Signal Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: ssmdv1alpha1.SignalSpec{
+						Signals: []string{"test-signal-1"},
+						Source: ssmdv1alpha1.SignalSourceConfig{
+							Stream: "TEST_STREAM",
+						},
+						Image: "ghcr.io/aaronwald/ssmd-signal-runner:latest",
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

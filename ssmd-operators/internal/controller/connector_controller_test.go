@@ -32,7 +32,7 @@ import (
 
 var _ = Describe("Connector Controller", func() {
 	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+		const resourceName = "test-connector"
 
 		ctx := context.Background()
 

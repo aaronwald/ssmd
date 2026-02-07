@@ -32,7 +32,7 @@ import (
 
 var _ = Describe("Notifier Controller", func() {
 	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+		const resourceName = "test-notifier"
 
 		ctx := context.Background()
 
@@ -51,7 +51,18 @@ var _ = Describe("Notifier Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: ssmdv1alpha1.NotifierSpec{
+						Source: ssmdv1alpha1.NotifierSourceConfig{
+							Subjects: []string{"signals.>"},
+						},
+						Destinations: []ssmdv1alpha1.NotifierDestination{
+							{
+								Name: "test-dest",
+								Type: "ntfy",
+							},
+						},
+						Image: "ghcr.io/aaronwald/ssmd-notifier:latest",
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

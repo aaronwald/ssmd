@@ -48,6 +48,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  operator:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ssmd-operators/go.mod
+          cache-dependency-path: ssmd-operators/go.sum
+
+      - name: Operator test
+        working-directory: ssmd-operators
+        run: make test
+
+      - name: Operator build
+        working-directory: ssmd-operators
+        run: make build
+
   agent:
     runs-on: ubuntu-latest
     steps:

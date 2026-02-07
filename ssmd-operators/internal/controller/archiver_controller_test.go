@@ -32,7 +32,7 @@ import (
 
 var _ = Describe("Archiver Controller", func() {
 	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+		const resourceName = "test-archiver"
 
 		ctx := context.Background()
 
@@ -51,7 +51,9 @@ var _ = Describe("Archiver Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: ssmdv1alpha1.ArchiverSpec{
+						Date: "2026-01-01",
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
