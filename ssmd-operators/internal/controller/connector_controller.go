@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -84,8 +85,18 @@ func (r *ConnectorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
+	// Validate feed ConfigMap exists
+	feedConfig, err := r.getFeedConfig(ctx, connector.Namespace, connector.Spec.Feed)
+	if err != nil {
+		log.Error(err, "Failed to read feed ConfigMap")
+		return ctrl.Result{}, err
+	}
+	if feedConfig == nil {
+		log.Info("Feed ConfigMap not found, using legacy inline config", "feed", connector.Spec.Feed)
+	}
+
 	// Reconcile the ConfigMap (feed and env configs)
-	if _, err := r.reconcileConfigMap(ctx, connector); err != nil {
+	if _, err := r.reconcileConfigMap(ctx, connector, feedConfig); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -142,14 +153,14 @@ func (r *ConnectorReconciler) reconcileDelete(ctx context.Context, connector *ss
 }
 
 // reconcileConfigMap ensures the ConfigMap with feed and env configs exists
-func (r *ConnectorReconciler) reconcileConfigMap(ctx context.Context, connector *ssmdv1alpha1.Connector) (ctrl.Result, error) {
+func (r *ConnectorReconciler) reconcileConfigMap(ctx context.Context, connector *ssmdv1alpha1.Connector, feedConfig *FeedConfig) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	configMapName := r.configMapName(connector)
 	configMap := &corev1.ConfigMap{}
 	err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: connector.Namespace}, configMap)
 
-	desiredConfigMap := r.constructConfigMap(connector)
+	desiredConfigMap := r.constructConfigMap(connector, feedConfig)
 
 	if errors.IsNotFound(err) {
 		if err := controllerutil.SetControllerReference(connector, desiredConfigMap, r.Scheme); err != nil {
@@ -177,10 +188,51 @@ func (r *ConnectorReconciler) reconcileConfigMap(ctx context.Context, connector 
 }
 
 // constructConfigMap builds the ConfigMap with feed and env configuration
-func (r *ConnectorReconciler) constructConfigMap(connector *ssmdv1alpha1.Connector) *corev1.ConfigMap {
-	// Build feed config YAML
-	feedConfig := fmt.Sprintf(`name: %s
-display_name: %s Exchange
+func (r *ConnectorReconciler) constructConfigMap(connector *ssmdv1alpha1.Connector, feedConfig *FeedConfig) *corev1.ConfigMap {
+	feedYAML := r.buildFeedYAML(connector, feedConfig)
+	envYAML := r.buildEnvYAML(connector, feedConfig)
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      r.configMapName(connector),
+			Namespace: connector.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "ssmd-connector",
+				"app.kubernetes.io/instance":   connector.Name,
+				"app.kubernetes.io/managed-by": "ssmd-operator",
+				"app.kubernetes.io/component":  "connector",
+			},
+		},
+		Data: map[string]string{
+			"feed.yaml": feedYAML,
+			"env.yaml":  envYAML,
+		},
+	}
+}
+
+// buildFeedYAML generates the feed.yaml content.
+// If a feed ConfigMap exists, uses its endpoint/auth/display_name.
+// Falls back to legacy Kalshi defaults for backward compatibility.
+func (r *ConnectorReconciler) buildFeedYAML(connector *ssmdv1alpha1.Connector, feedConfig *FeedConfig) string {
+	displayName := connector.Spec.Feed
+	endpoint := ""
+	authMethod := "none"
+
+	if feedConfig != nil {
+		displayName = feedConfig.DisplayName
+		if len(feedConfig.Versions) > 0 {
+			endpoint = feedConfig.Versions[0].Endpoint
+			authMethod = feedConfig.Versions[0].AuthMethod
+		}
+	}
+
+	// If no feed ConfigMap, fall back to empty endpoint (connector binary will error clearly)
+	if endpoint == "" {
+		endpoint = fmt.Sprintf("wss://%s.example.com/MISSING_FEED_CONFIGMAP", connector.Spec.Feed)
+	}
+
+	return fmt.Sprintf(`name: %s
+display_name: %s
 type: websocket
 status: active
 versions:
@@ -189,14 +241,31 @@ versions:
     protocol:
       transport: wss
       message: json
-    endpoint: wss://api.elections.kalshi.com/trade-api/ws/v2
-    auth_method: api_key
-`, connector.Spec.Feed, connector.Spec.Feed)
+    endpoint: %s
+    auth_method: %s
+`, connector.Spec.Feed, displayName, endpoint, authMethod)
+}
 
-	// Build env config YAML
+// buildEnvYAML generates the env.yaml content.
+// Reads NATS defaults from feed ConfigMap, with CR spec overrides.
+func (r *ConnectorReconciler) buildEnvYAML(connector *ssmdv1alpha1.Connector, feedConfig *FeedConfig) string {
 	natsURL := "nats://nats.nats.svc.cluster.local:4222"
-	stream := "PROD_KALSHI"
-	subjectPrefix := "prod.kalshi"
+	stream := ""
+	subjectPrefix := ""
+
+	// Start with feed ConfigMap defaults
+	if feedConfig != nil && feedConfig.Defaults != nil && feedConfig.Defaults.Connector != nil {
+		if t := feedConfig.Defaults.Connector.Transport; t != nil {
+			if t.Stream != "" {
+				stream = t.Stream
+			}
+			if t.SubjectPrefix != "" {
+				subjectPrefix = t.SubjectPrefix
+			}
+		}
+	}
+
+	// CR spec overrides feed defaults
 	if connector.Spec.Transport != nil {
 		if connector.Spec.Transport.URL != "" {
 			natsURL = connector.Spec.Transport.URL
@@ -209,41 +278,72 @@ versions:
 		}
 	}
 
+	// Determine auth method from feed ConfigMap
+	authMethod := "none"
+	if feedConfig != nil && len(feedConfig.Versions) > 0 {
+		authMethod = feedConfig.Versions[0].AuthMethod
+	}
+
 	envConfig := fmt.Sprintf(`name: prod
 feed: %s
 schema: trade:v1
-keys:
+`, connector.Spec.Feed)
+
+	// Only add keys section if feed requires authentication
+	if authMethod == "api_key" {
+		// Determine env var names from secretEnvVars or legacy secretRef
+		apiKeyEnvVar := ""
+		privateKeyEnvVar := ""
+
+		if len(connector.Spec.SecretEnvVars) > 0 {
+			// Use new secretEnvVars field
+			for _, sev := range connector.Spec.SecretEnvVars {
+				if apiKeyEnvVar == "" {
+					apiKeyEnvVar = sev.EnvName
+				} else if privateKeyEnvVar == "" {
+					privateKeyEnvVar = sev.EnvName
+				}
+			}
+		} else if connector.Spec.SecretRef != nil {
+			// Legacy: derive env var names from feed name
+			feedUpper := strings.ToUpper(connector.Spec.Feed)
+			apiKeyEnvVar = feedUpper + "_API_KEY"
+			privateKeyEnvVar = feedUpper + "_PRIVATE_KEY"
+		}
+
+		if apiKeyEnvVar != "" && privateKeyEnvVar != "" {
+			envConfig += fmt.Sprintf(`keys:
   %s:
     type: api_key
     fields:
       - api_key
       - private_key
-    source: "env:KALSHI_API_KEY,KALSHI_PRIVATE_KEY"
-transport:
+    source: "env:%s,%s"
+`, connector.Spec.Feed, apiKeyEnvVar, privateKeyEnvVar)
+		}
+	}
+
+	envConfig += fmt.Sprintf(`transport:
   type: nats
   url: %s
   stream: %s
   subject_prefix: %s
 storage:
   type: local
-`, connector.Spec.Feed, connector.Spec.Feed, natsURL, stream, subjectPrefix)
+`, natsURL, stream, subjectPrefix)
 
 	// Add secmaster config if categories specified
-	// TODO: Make secmaster URL configurable via Connector CR spec.secmaster.url
-	// Currently hardcoded to cluster-internal service address
 	if len(connector.Spec.Categories) > 0 {
 		categoriesYAML := ""
 		for _, cat := range connector.Spec.Categories {
 			categoriesYAML += fmt.Sprintf("    - %s\n", cat)
 		}
 
-		// Add close_within_hours if specified (for high-volume categories like Sports)
 		closeWithinHoursYAML := ""
 		if connector.Spec.CloseWithinHours != nil {
 			closeWithinHoursYAML = fmt.Sprintf("  close_within_hours: %d\n", *connector.Spec.CloseWithinHours)
 		}
 
-		// Add games_only if specified (for Sports to filter to actual games)
 		gamesOnlyYAML := ""
 		if connector.Spec.GamesOnly {
 			gamesOnlyYAML = "  games_only: true\n"
@@ -277,21 +377,7 @@ storage:
 `, streamName, consumerName)
 	}
 
-	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      r.configMapName(connector),
-			Namespace: connector.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":       "ssmd-connector",
-				"app.kubernetes.io/instance":   connector.Name,
-				"app.kubernetes.io/managed-by": "ssmd-operator",
-			},
-		},
-		Data: map[string]string{
-			"feed.yaml": feedConfig,
-			"env.yaml":  envConfig,
-		},
-	}
+	return envConfig
 }
 
 // reconcileDeployment ensures the Deployment exists and matches the desired state
