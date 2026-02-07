@@ -198,7 +198,11 @@ export async function runPolymarketSync(
     result.tokensUpserted = await upsertTokens(db, allTokens);
     console.log(`[Polymarket] Upserted ${result.tokensUpserted} tokens`);
 
-    // Soft-delete missing conditions
+    // Soft-delete conditions not in the active set. Since we only fetch
+    // active=true&closed=false, resolved/inactive conditions will be marked
+    // deleted_at on every sync. This is intentional: the active universe is
+    // what matters for connector subscriptions and arb signal evaluation.
+    // Historical conditions remain queryable via deleted_at IS NOT NULL.
     if (!noDelete) {
       const currentIds = conditions.map((c) => c.conditionId);
       result.deleted = await softDeleteMissingConditions(currentIds);

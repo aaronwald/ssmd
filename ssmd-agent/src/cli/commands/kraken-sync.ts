@@ -84,8 +84,24 @@ interface KrakenFuturesTicker {
 // --- Normalization ---
 
 /**
- * Normalize Kraken base asset name.
- * Strip leading X if 4+ chars (XXBT→XBT), then XBT→BTC.
+ * Extract base/quote from Kraken's wsname field (e.g., "XBT/USD" → ["BTC", "USD"]).
+ * Returns null if wsname is missing or unparseable, caller falls back to raw fields.
+ */
+function parseWsName(wsname: string | undefined): { base: string; quote: string } | null {
+  if (!wsname || !wsname.includes("/")) return null;
+  const [rawBase, rawQuote] = wsname.split("/");
+  if (!rawBase || !rawQuote) return null;
+  return {
+    base: rawBase === "XBT" ? "BTC" : rawBase,
+    quote: rawQuote === "XBT" ? "BTC" : rawQuote,
+  };
+}
+
+/**
+ * Normalize Kraken base asset name from raw API field.
+ * Fallback when wsname is unavailable. Uses heuristic: strip leading X if 4+ chars,
+ * then map XBT→BTC. Note: this can mishandle legitimate assets starting with X
+ * (e.g., XAUT), so prefer parseWsName() when possible.
  */
 function normalizeBase(raw: string): string {
   let base = raw;
@@ -97,8 +113,8 @@ function normalizeBase(raw: string): string {
 }
 
 /**
- * Normalize Kraken quote asset name.
- * Strip leading Z if 4+ chars (ZUSD→USD).
+ * Normalize Kraken quote asset name from raw API field.
+ * Fallback when wsname is unavailable. Same X/Z stripping heuristic.
  */
 function normalizeQuote(raw: string): string {
   let quote = raw;
@@ -175,6 +191,7 @@ export interface KrakenSyncResult {
  * Sync Kraken spot pairs from the AssetPairs API.
  */
 async function syncSpot(
+  db: ReturnType<typeof getDb>,
   dryRun: boolean,
   noDelete: boolean,
 ): Promise<KrakenSyncResult["spot"]> {
@@ -198,8 +215,10 @@ async function syncSpot(
   for (const [pairId, pair] of allPairs) {
     if (pair.status !== "online") continue;
 
-    const base = normalizeBase(pair.base);
-    const quote = normalizeQuote(pair.quote);
+    // Prefer wsname for base/quote (clean format: "XBT/USD"), fall back to raw fields
+    const parsed = parseWsName(pair.wsname);
+    const base = parsed?.base ?? normalizeBase(pair.base);
+    const quote = parsed?.quote ?? normalizeQuote(pair.quote);
     const wsName = pair.wsname ?? pair.altname ?? pairId;
 
     pairRows.push({
@@ -228,7 +247,6 @@ async function syncSpot(
     return result;
   }
 
-  const db = getDb();
   result.upserted = await upsertSpotPairs(db, pairRows);
   console.log(`[Kraken Spot] Upserted ${result.upserted} spot pairs`);
 
@@ -248,6 +266,7 @@ async function syncSpot(
  * Merges instrument metadata with live ticker data.
  */
 async function syncPerps(
+  db: ReturnType<typeof getDb>,
   dryRun: boolean,
   noDelete: boolean,
 ): Promise<KrakenSyncResult["perps"]> {
@@ -260,10 +279,10 @@ async function syncPerps(
   ]);
 
   if (!instrumentsRes.ok) {
-    throw new Error(`Kraken Futures instruments API error: ${instrumentsRes.status}`);
+    throw new Error(`Kraken Futures instruments API error: ${instrumentsRes.status} ${await instrumentsRes.text()}`);
   }
   if (!tickersRes.ok) {
-    throw new Error(`Kraken Futures tickers API error: ${tickersRes.status}`);
+    throw new Error(`Kraken Futures tickers API error: ${tickersRes.status} ${await tickersRes.text()}`);
   }
 
   const instrumentsData: KrakenFuturesInstrumentsResponse = await instrumentsRes.json();
@@ -325,7 +344,6 @@ async function syncPerps(
     return result;
   }
 
-  const db = getDb();
   result.upserted = await upsertPerpPairs(db, pairRows);
   console.log(`[Kraken Perps] Upserted ${result.upserted} perpetual contracts`);
 
@@ -356,12 +374,13 @@ export async function runKrakenSync(
     perps: { fetched: 0, tradeable: 0, upserted: 0, deleted: 0 },
   };
 
+  const db = getDb();
   try {
     if (syncSpotFlag) {
-      result.spot = await syncSpot(dryRun, noDelete);
+      result.spot = await syncSpot(db, dryRun, noDelete);
     }
     if (syncPerpsFlag) {
-      result.perps = await syncPerps(dryRun, noDelete);
+      result.perps = await syncPerps(db, dryRun, noDelete);
     }
 
     console.log("\n=== Kraken Sync Summary ===");
