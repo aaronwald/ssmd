@@ -2,7 +2,7 @@
  * Kraken secmaster sync command - sync spot pairs and perpetual contracts to PostgreSQL
  */
 import { getDb, closeDb } from "../../lib/db/client.ts";
-import { upsertSpotPairs, upsertPerpPairs, softDeleteMissingPairs } from "../../lib/db/pairs.ts";
+import { upsertSpotPairs, upsertPerpPairs, softDeleteMissingPairs, insertPerpSnapshots, cleanupOldSnapshots } from "../../lib/db/pairs.ts";
 import type { NewPair } from "../../lib/db/schema.ts";
 
 const KRAKEN_SPOT_URL = "https://api.kraken.com/0/public/AssetPairs";
@@ -225,7 +225,7 @@ async function syncSpot(
     const wsName = pair.wsname ?? pair.altname ?? pairId;
 
     pairRows.push({
-      pairId,
+      pairId: `kraken:${pairId}`,
       exchange: "kraken",
       base,
       quote,
@@ -310,7 +310,7 @@ async function syncPerps(
     const quote = parsePerpQuote(inst.symbol);
 
     pairRows.push({
-      pairId: inst.symbol,
+      pairId: `kraken:${inst.symbol}`,
       exchange: "kraken",
       base,
       quote,
@@ -350,6 +350,12 @@ async function syncPerps(
   result.upserted = await upsertPerpPairs(db, pairRows);
   console.log(`[Kraken Perps] Upserted ${result.upserted} perpetual contracts`);
 
+  // Record time-series snapshots for perpetual data (funding rates, mark prices, etc.)
+  const snapshotCount = await insertPerpSnapshots(db, pairRows);
+  if (snapshotCount > 0) {
+    console.log(`[Kraken Perps] Recorded ${snapshotCount} pair snapshots`);
+  }
+
   if (!noDelete) {
     const currentIds = pairRows.map((p) => p.pairId);
     result.deleted = await softDeleteMissingPairs("kraken", "perpetual", currentIds);
@@ -384,6 +390,14 @@ export async function runKrakenSync(
     }
     if (syncPerpsFlag) {
       result.perps = await syncPerps(db, dryRun, noDelete);
+    }
+
+    // Cleanup old snapshots (7-day retention)
+    if (syncPerpsFlag && !dryRun) {
+      const cleaned = await cleanupOldSnapshots(7);
+      if (cleaned > 0) {
+        console.log(`[Kraken Perps] Cleaned up ${cleaned} snapshots older than 7 days`);
+      }
     }
 
     console.log("\n=== Kraken Sync Summary ===");

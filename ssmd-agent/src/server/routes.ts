@@ -25,6 +25,13 @@ import {
   upsertSetting,
   listSeries,
   getSeriesStats,
+  listPairs,
+  getPair,
+  getPairStats,
+  getPairSnapshots,
+  listConditions,
+  getCondition,
+  getConditionStats,
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
@@ -181,15 +188,19 @@ route("GET", "/v1/markets/:ticker", async (req, ctx) => {
   return json(market);
 }, true, "secmaster:read");
 
-// Secmaster stats endpoint (combined events + markets)
+// Secmaster stats endpoint (combined events + markets + pairs + conditions)
 route("GET", "/v1/secmaster/stats", async (_req, ctx) => {
-  const [eventStats, marketStats] = await Promise.all([
+  const [eventStats, marketStats, pairStats, conditionStats] = await Promise.all([
     getEventStats(ctx.db),
     getMarketStats(ctx.db),
+    getPairStats(ctx.db),
+    getConditionStats(ctx.db),
   ]);
   return json({
     events: eventStats,
     markets: marketStats,
+    pairs: pairStats,
+    conditions: conditionStats,
   });
 }, true, "secmaster:read");
 
@@ -228,6 +239,65 @@ route("GET", "/v1/series", async (req, ctx) => {
 route("GET", "/v1/series/stats", async (_req, _ctx) => {
   const stats = await getSeriesStats();
   return json({ stats });
+}, true, "secmaster:read");
+
+// Pairs endpoints
+route("GET", "/v1/pairs", async (req, ctx) => {
+  const url = new URL(req.url);
+  const pairs = await listPairs(ctx.db, {
+    exchange: url.searchParams.get("exchange") ?? undefined,
+    marketType: url.searchParams.get("market_type") ?? undefined,
+    base: url.searchParams.get("base") ?? undefined,
+    quote: url.searchParams.get("quote") ?? undefined,
+    status: url.searchParams.get("status") ?? undefined,
+    limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
+  });
+  return json({ pairs });
+}, true, "secmaster:read");
+
+route("GET", "/v1/pairs/stats", async (_req, ctx) => {
+  const stats = await getPairStats(ctx.db);
+  return json({ stats });
+}, true, "secmaster:read");
+
+route("GET", "/v1/pairs/:pairId/snapshots", async (req, ctx) => {
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const url = new URL(req.url);
+  const snapshots = await getPairSnapshots(ctx.db, params.pairId, {
+    from: url.searchParams.get("from") ?? undefined,
+    to: url.searchParams.get("to") ?? undefined,
+    limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
+  });
+  return json({ snapshots });
+}, true, "secmaster:read");
+
+route("GET", "/v1/pairs/:pairId", async (req, ctx) => {
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const pair = await getPair(ctx.db, params.pairId);
+  if (!pair) {
+    return json({ error: "Pair not found" }, 404);
+  }
+  return json(pair);
+}, true, "secmaster:read");
+
+// Conditions endpoints (Polymarket)
+route("GET", "/v1/conditions", async (req, ctx) => {
+  const url = new URL(req.url);
+  const conditions = await listConditions(ctx.db, {
+    category: url.searchParams.get("category") ?? undefined,
+    status: url.searchParams.get("status") ?? undefined,
+    limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
+  });
+  return json({ conditions });
+}, true, "secmaster:read");
+
+route("GET", "/v1/conditions/:conditionId", async (req, ctx) => {
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const result = await getCondition(ctx.db, params.conditionId);
+  if (!result) {
+    return json({ error: "Condition not found" }, 404);
+  }
+  return json(result);
 }, true, "secmaster:read");
 
 // Fees endpoints

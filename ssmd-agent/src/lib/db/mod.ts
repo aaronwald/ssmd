@@ -12,6 +12,10 @@ export {
   settings,
   series,
   marketLifecycleEvents,
+  pairs,
+  pairSnapshots,
+  polymarketConditions,
+  polymarketTokens,
   feeTypeEnum,
   type Event,
   type NewEvent,
@@ -27,6 +31,14 @@ export {
   type NewSeries,
   type MarketLifecycleEvent,
   type NewMarketLifecycleEvent,
+  type Pair,
+  type NewPair,
+  type PairSnapshot,
+  type NewPairSnapshot,
+  type PolymarketCondition,
+  type NewPolymarketCondition,
+  type PolymarketToken,
+  type NewPolymarketToken,
 } from "./schema.ts";
 
 // Event operations
@@ -107,3 +119,26 @@ export {
   getRecentLifecycleEvents,
   getLifecycleStats,
 } from "./lifecycle.ts";
+
+// Pair operations
+export {
+  upsertSpotPairs,
+  upsertPerpPairs,
+  softDeleteMissingPairs,
+  listPairs,
+  getPair,
+  getPairStats,
+  insertPerpSnapshots,
+  getPairSnapshots,
+  cleanupOldSnapshots,
+} from "./pairs.ts";
+
+// Polymarket operations
+export {
+  upsertConditions,
+  upsertTokens,
+  softDeleteMissingConditions,
+  listConditions,
+  getCondition,
+  getConditionStats,
+} from "./polymarket.ts";

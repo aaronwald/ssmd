@@ -1,9 +1,9 @@
 /**
  * Pairs database operations for Kraken spot + perpetual upserts (Drizzle ORM)
  */
-import { sql } from "drizzle-orm";
+import { eq, isNull, desc, sql, count } from "drizzle-orm";
 import { type Database, getRawSql } from "./client.ts";
-import { pairs, type NewPair } from "./schema.ts";
+import { pairs, pairSnapshots, type NewPair, type NewPairSnapshot, type Pair, type PairSnapshot } from "./schema.ts";
 
 // PostgreSQL has a 65534 parameter limit. Pairs have many fields, so keep batches conservative.
 const PAIRS_BATCH_SIZE = 500;
@@ -130,5 +130,196 @@ export async function softDeleteMissingPairs(
     RETURNING pair_id
   `;
 
+  return result.length;
+}
+
+/**
+ * List pairs with optional filters.
+ */
+export async function listPairs(
+  db: Database,
+  options: {
+    exchange?: string;
+    marketType?: string;
+    base?: string;
+    quote?: string;
+    status?: string;
+    limit?: number;
+  } = {},
+): Promise<Pair[]> {
+  const limit = options.limit ?? 100;
+
+  const conditions: ReturnType<typeof sql>[] = [
+    isNull(pairs.deletedAt),
+  ];
+
+  if (options.exchange) {
+    conditions.push(eq(pairs.exchange, options.exchange));
+  }
+  if (options.marketType) {
+    conditions.push(eq(pairs.marketType, options.marketType));
+  }
+  if (options.base) {
+    conditions.push(sql`UPPER(${pairs.base}) = UPPER(${options.base})`);
+  }
+  if (options.quote) {
+    conditions.push(sql`UPPER(${pairs.quote}) = UPPER(${options.quote})`);
+  }
+  if (options.status) {
+    conditions.push(eq(pairs.status, options.status));
+  }
+
+  return await db
+    .select()
+    .from(pairs)
+    .where(sql.join(conditions, sql` AND `))
+    .orderBy(desc(pairs.updatedAt))
+    .limit(limit);
+}
+
+/**
+ * Get a single pair by namespaced ID.
+ */
+export async function getPair(
+  db: Database,
+  pairId: string,
+): Promise<Pair | null> {
+  const rows = await db
+    .select()
+    .from(pairs)
+    .where(
+      sql`${eq(pairs.pairId, pairId)} AND ${isNull(pairs.deletedAt)}`,
+    );
+
+  return rows.length > 0 ? rows[0] : null;
+}
+
+/**
+ * Get pair statistics (counts by exchange and market_type).
+ */
+export async function getPairStats(
+  db: Database,
+): Promise<{
+  total: number;
+  by_exchange: Record<string, number>;
+  by_market_type: Record<string, number>;
+}> {
+  const exchangeRows = await db
+    .select({
+      exchange: pairs.exchange,
+      count: count(),
+    })
+    .from(pairs)
+    .where(isNull(pairs.deletedAt))
+    .groupBy(pairs.exchange);
+
+  const marketTypeRows = await db
+    .select({
+      marketType: pairs.marketType,
+      count: count(),
+    })
+    .from(pairs)
+    .where(isNull(pairs.deletedAt))
+    .groupBy(pairs.marketType);
+
+  const by_exchange: Record<string, number> = {};
+  let total = 0;
+  for (const row of exchangeRows) {
+    by_exchange[row.exchange] = row.count;
+    total += row.count;
+  }
+
+  const by_market_type: Record<string, number> = {};
+  for (const row of marketTypeRows) {
+    by_market_type[row.marketType] = row.count;
+  }
+
+  return { total, by_exchange, by_market_type };
+}
+
+const SNAPSHOTS_BATCH_SIZE = 500;
+
+/**
+ * Batch insert pair snapshot rows from perpetual sync.
+ * Records a point-in-time snapshot of mark price, funding rate, etc.
+ */
+export async function insertPerpSnapshots(
+  db: Database,
+  perpPairs: NewPair[],
+): Promise<number> {
+  if (perpPairs.length === 0) return 0;
+
+  const snapshots: NewPairSnapshot[] = perpPairs
+    .filter((p) => p.markPrice != null || p.fundingRate != null || p.lastPrice != null)
+    .map((p) => ({
+      pairId: p.pairId,
+      markPrice: p.markPrice ?? null,
+      indexPrice: p.indexPrice ?? null,
+      fundingRate: p.fundingRate ?? null,
+      fundingRatePrediction: p.fundingRatePrediction ?? null,
+      openInterest: p.openInterest ?? null,
+      lastPrice: p.lastPrice ?? null,
+      bid: p.bid ?? null,
+      ask: p.ask ?? null,
+      volume24h: p.volume24h ?? null,
+      suspended: p.suspended ?? false,
+    }));
+
+  if (snapshots.length === 0) return 0;
+
+  for (let i = 0; i < snapshots.length; i += SNAPSHOTS_BATCH_SIZE) {
+    const chunk = snapshots.slice(i, i + SNAPSHOTS_BATCH_SIZE);
+    await db.insert(pairSnapshots).values(chunk);
+  }
+
+  return snapshots.length;
+}
+
+/**
+ * Get time-series snapshots for a pair.
+ */
+export async function getPairSnapshots(
+  db: Database,
+  pairId: string,
+  options: {
+    from?: string;
+    to?: string;
+    limit?: number;
+  } = {},
+): Promise<PairSnapshot[]> {
+  const limit = options.limit ?? 100;
+
+  const conditions: ReturnType<typeof sql>[] = [
+    eq(pairSnapshots.pairId, pairId),
+  ];
+
+  if (options.from) {
+    conditions.push(sql`${pairSnapshots.snapshotAt} >= ${options.from}`);
+  }
+  if (options.to) {
+    conditions.push(sql`${pairSnapshots.snapshotAt} <= ${options.to}`);
+  }
+
+  return await db
+    .select()
+    .from(pairSnapshots)
+    .where(sql.join(conditions, sql` AND `))
+    .orderBy(desc(pairSnapshots.snapshotAt))
+    .limit(limit);
+}
+
+/**
+ * Delete pair snapshots older than the retention period.
+ * Called after each sync to keep the table bounded.
+ */
+export async function cleanupOldSnapshots(
+  retentionDays = 7,
+): Promise<number> {
+  const rawSql = getRawSql();
+  const result = await rawSql`
+    DELETE FROM pair_snapshots
+    WHERE snapshot_at < NOW() - make_interval(days => ${retentionDays})
+    RETURNING id
+  `;
   return result.length;
 }

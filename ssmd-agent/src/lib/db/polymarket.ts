@@ -1,13 +1,15 @@
 /**
  * Polymarket database operations for conditions and tokens (Drizzle ORM)
  */
-import { sql } from "drizzle-orm";
+import { eq, isNull, desc, sql, count } from "drizzle-orm";
 import { type Database, getRawSql } from "./client.ts";
 import {
   polymarketConditions,
   polymarketTokens,
   type NewPolymarketCondition,
   type NewPolymarketToken,
+  type PolymarketCondition,
+  type PolymarketToken,
 } from "./schema.ts";
 
 const CONDITIONS_BATCH_SIZE = 500;
@@ -109,4 +111,131 @@ export async function softDeleteMissingConditions(
   `;
 
   return result.length;
+}
+
+/**
+ * List Polymarket conditions with optional filters.
+ */
+export async function listConditions(
+  db: Database,
+  options: {
+    category?: string;
+    status?: string;
+    limit?: number;
+  } = {},
+): Promise<(PolymarketCondition & { tokenCount: number })[]> {
+  const limit = options.limit ?? 100;
+
+  const conditions: ReturnType<typeof sql>[] = [
+    isNull(polymarketConditions.deletedAt),
+  ];
+
+  if (options.category) {
+    conditions.push(eq(polymarketConditions.category, options.category));
+  }
+  if (options.status) {
+    conditions.push(eq(polymarketConditions.status, options.status));
+  }
+
+  return await db
+    .select({
+      conditionId: polymarketConditions.conditionId,
+      question: polymarketConditions.question,
+      slug: polymarketConditions.slug,
+      category: polymarketConditions.category,
+      outcomes: polymarketConditions.outcomes,
+      status: polymarketConditions.status,
+      active: polymarketConditions.active,
+      endDate: polymarketConditions.endDate,
+      resolutionDate: polymarketConditions.resolutionDate,
+      winningOutcome: polymarketConditions.winningOutcome,
+      volume: polymarketConditions.volume,
+      liquidity: polymarketConditions.liquidity,
+      createdAt: polymarketConditions.createdAt,
+      updatedAt: polymarketConditions.updatedAt,
+      deletedAt: polymarketConditions.deletedAt,
+      tokenCount: count(polymarketTokens.tokenId),
+    })
+    .from(polymarketConditions)
+    .leftJoin(
+      polymarketTokens,
+      eq(polymarketTokens.conditionId, polymarketConditions.conditionId),
+    )
+    .where(sql.join(conditions, sql` AND `))
+    .groupBy(polymarketConditions.conditionId)
+    .orderBy(desc(polymarketConditions.updatedAt))
+    .limit(limit);
+}
+
+/**
+ * Get a single Polymarket condition with its tokens.
+ */
+export async function getCondition(
+  db: Database,
+  conditionId: string,
+): Promise<{ condition: PolymarketCondition; tokens: PolymarketToken[] } | null> {
+  const rows = await db
+    .select()
+    .from(polymarketConditions)
+    .where(
+      sql`${eq(polymarketConditions.conditionId, conditionId)} AND ${isNull(polymarketConditions.deletedAt)}`,
+    );
+
+  if (rows.length === 0) return null;
+
+  const tokens = await db
+    .select()
+    .from(polymarketTokens)
+    .where(eq(polymarketTokens.conditionId, conditionId));
+
+  return { condition: rows[0], tokens };
+}
+
+/**
+ * Get Polymarket condition statistics.
+ */
+export async function getConditionStats(
+  db: Database,
+): Promise<{
+  total: number;
+  by_status: Record<string, number>;
+  by_category: Record<string, number>;
+}> {
+  const statusRows = await db
+    .select({
+      status: polymarketConditions.status,
+      count: count(),
+    })
+    .from(polymarketConditions)
+    .where(isNull(polymarketConditions.deletedAt))
+    .groupBy(polymarketConditions.status);
+
+  const categoryRows = await db
+    .select({
+      category: polymarketConditions.category,
+      count: count(),
+    })
+    .from(polymarketConditions)
+    .where(
+      sql`${isNull(polymarketConditions.deletedAt)} AND ${polymarketConditions.category} IS NOT NULL`,
+    )
+    .groupBy(polymarketConditions.category)
+    .orderBy(desc(count()))
+    .limit(10);
+
+  const by_status: Record<string, number> = {};
+  let total = 0;
+  for (const row of statusRows) {
+    by_status[row.status] = row.count;
+    total += row.count;
+  }
+
+  const by_category: Record<string, number> = {};
+  for (const row of categoryRows) {
+    if (row.category) {
+      by_category[row.category] = row.count;
+    }
+  }
+
+  return { total, by_status, by_category };
 }

@@ -160,6 +160,23 @@ export const pairs = pgTable("pairs", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Pair snapshots for time-series perpetual data (funding rates, mark prices, etc.)
+export const pairSnapshots = pgTable("pair_snapshots", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  pairId: varchar("pair_id", { length: 128 }).notNull().references(() => pairs.pairId),
+  markPrice: numeric("mark_price", { precision: 18, scale: 8 }),
+  indexPrice: numeric("index_price", { precision: 18, scale: 8 }),
+  fundingRate: numeric("funding_rate", { precision: 18, scale: 12 }),
+  fundingRatePrediction: numeric("funding_rate_prediction", { precision: 18, scale: 12 }),
+  openInterest: numeric("open_interest", { precision: 24, scale: 8 }),
+  lastPrice: numeric("last_price", { precision: 18, scale: 8 }),
+  bid: numeric("bid", { precision: 18, scale: 8 }),
+  ask: numeric("ask", { precision: 18, scale: 8 }),
+  volume24h: numeric("volume_24h", { precision: 24, scale: 8 }),
+  suspended: boolean("suspended").default(false),
+  snapshotAt: timestamp("snapshot_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Polymarket conditions (prediction markets)
 export const polymarketConditions = pgTable("polymarket_conditions", {
   conditionId: varchar("condition_id", { length: 128 }).primaryKey(),
@@ -210,6 +227,8 @@ export type MarketLifecycleEvent = typeof marketLifecycleEvents.$inferSelect;
 export type NewMarketLifecycleEvent = typeof marketLifecycleEvents.$inferInsert;
 export type Pair = typeof pairs.$inferSelect;
 export type NewPair = typeof pairs.$inferInsert;
+export type PairSnapshot = typeof pairSnapshots.$inferSelect;
+export type NewPairSnapshot = typeof pairSnapshots.$inferInsert;
 export type PolymarketCondition = typeof polymarketConditions.$inferSelect;
 export type NewPolymarketCondition = typeof polymarketConditions.$inferInsert;
 export type PolymarketToken = typeof polymarketTokens.$inferSelect;

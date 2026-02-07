@@ -459,7 +459,160 @@ export const getSeries = tool(
   }
 );
 
+// --- Pair tools (Kraken spot + perpetual) ---
+
+export const listPairs = tool(
+  async ({ exchange, market_type, base, quote, status, limit }) => {
+    const params = new URLSearchParams();
+    if (exchange) params.set("exchange", exchange);
+    if (market_type) params.set("market_type", market_type);
+    if (base) params.set("base", base);
+    if (quote) params.set("quote", quote);
+    if (status) params.set("status", status);
+    if (limit) params.set("limit", String(limit));
+
+    const path = `/v1/pairs${params.toString() ? "?" + params : ""}`;
+    const data = await apiRequest<Record<string, unknown>[]>(path);
+    // deno-lint-ignore no-explicit-any
+    const projected = data.map((p: any) => ({
+      pairId: p.pairId,
+      exchange: p.exchange,
+      base: p.base,
+      quote: p.quote,
+      marketType: p.marketType,
+      status: p.status,
+      lastPrice: p.lastPrice,
+      bid: p.bid,
+      ask: p.ask,
+      volume24h: p.volume24h,
+      ...(p.marketType === "perpetual" ? {
+        fundingRate: p.fundingRate,
+        markPrice: p.markPrice,
+        openInterest: p.openInterest,
+      } : {}),
+    }));
+    return JSON.stringify(projected);
+  },
+  {
+    name: "list_pairs",
+    description: "List trading pairs from Kraken (spot and perpetual). Filter by exchange, market type (spot/perpetual), base/quote currency, status.",
+    schema: z.object({
+      exchange: z.string().optional().nullable().describe("Filter by exchange (e.g., 'kraken')"),
+      market_type: z.string().optional().nullable().describe("Filter by market type: spot, perpetual"),
+      base: z.string().optional().nullable().describe("Filter by base currency (e.g., 'XBT')"),
+      quote: z.string().optional().nullable().describe("Filter by quote currency (e.g., 'USD')"),
+      status: z.string().optional().nullable().describe("Filter by status: online, offline"),
+      limit: z.number().optional().nullable().describe("Max results"),
+    }),
+  }
+);
+
+export const getPair = tool(
+  async ({ pair_id }) => {
+    const path = `/v1/pairs/${encodeURIComponent(pair_id)}`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "get_pair",
+    description: "Get details for a specific trading pair by namespaced ID (e.g., 'kraken:XXBTZUSD' for spot, 'kraken:PF_XBTUSD' for perpetual).",
+    schema: z.object({
+      pair_id: z.string().describe("Namespaced pair ID (e.g., 'kraken:XXBTZUSD')"),
+    }),
+  }
+);
+
+export const getPairSnapshots = tool(
+  async ({ pair_id, from, to, limit }) => {
+    const params = new URLSearchParams();
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    if (limit) params.set("limit", String(limit));
+
+    const path = `/v1/pairs/${encodeURIComponent(pair_id)}/snapshots${params.toString() ? "?" + params : ""}`;
+    const data = await apiRequest<Record<string, unknown>[]>(path);
+    // deno-lint-ignore no-explicit-any
+    const projected = data.map((s: any) => ({
+      snapshotAt: s.snapshotAt,
+      fundingRate: s.fundingRate,
+      fundingRatePrediction: s.fundingRatePrediction,
+      markPrice: s.markPrice,
+      indexPrice: s.indexPrice,
+      openInterest: s.openInterest,
+      lastPrice: s.lastPrice,
+      bid: s.bid,
+      ask: s.ask,
+      volume24h: s.volume24h,
+    }));
+    return JSON.stringify(projected);
+  },
+  {
+    name: "get_pair_snapshots",
+    description: "Get time-series snapshots for a trading pair (funding rate, mark price, open interest history). Useful for analyzing perpetual contract trends.",
+    schema: z.object({
+      pair_id: z.string().describe("Namespaced pair ID (e.g., 'kraken:PF_XBTUSD')"),
+      from: z.string().optional().nullable().describe("Start timestamp ISO 8601"),
+      to: z.string().optional().nullable().describe("End timestamp ISO 8601"),
+      limit: z.number().optional().nullable().describe("Max snapshots to return"),
+    }),
+  }
+);
+
+// --- Condition tools (Polymarket) ---
+
+export const listConditions = tool(
+  async ({ category, status, limit }) => {
+    const params = new URLSearchParams();
+    if (category) params.set("category", category);
+    if (status) params.set("status", status);
+    if (limit) params.set("limit", String(limit));
+
+    const path = `/v1/conditions${params.toString() ? "?" + params : ""}`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "list_conditions",
+    description: "List prediction market conditions from Polymarket. Filter by category and status.",
+    schema: z.object({
+      category: z.string().optional().nullable().describe("Filter by category"),
+      status: z.string().optional().nullable().describe("Filter by status"),
+      limit: z.number().optional().nullable().describe("Max results"),
+    }),
+  }
+);
+
+export const getCondition = tool(
+  async ({ condition_id }) => {
+    const path = `/v1/conditions/${encodeURIComponent(condition_id)}`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "get_condition",
+    description: "Get a Polymarket prediction market condition with its Yes/No tokens and current prices.",
+    schema: z.object({
+      condition_id: z.string().describe("Condition ID"),
+    }),
+  }
+);
+
+// --- Secmaster stats ---
+
+export const getSecmasterStats = tool(
+  async () => {
+    const path = `/v1/secmaster/stats`;
+    return JSON.stringify(await apiRequest(path));
+  },
+  {
+    name: "get_secmaster_stats",
+    description: "Get unified secmaster statistics across all exchanges — event/market/pair/condition counts by status, category, exchange, and market type.",
+    schema: z.object({}),
+  }
+);
+
+// --- Tool groups ---
+
 export const calendarTools = [getToday];
 export const dataTools = [listDatasets, listTickers, sampleData, getSchema, listBuilders, orderbookBuilder, priceHistoryBuilder, volumeProfileBuilder];
-export const secmasterTools = [listMarkets, getMarket, getFees, listEvents, getEvent, getFeeSchedule, listSeries, getSeries];
-export const allTools = [...calendarTools, ...dataTools, ...secmasterTools, runBacktest, deploySignal];
+export const pairTools = [listPairs, getPair, getPairSnapshots];
+export const conditionTools = [listConditions, getCondition];
+export const secmasterTools = [listMarkets, getMarket, getFees, listEvents, getEvent, getFeeSchedule, listSeries, getSeries, getSecmasterStats];
+export const allTools = [...calendarTools, ...dataTools, ...secmasterTools, ...pairTools, ...conditionTools, runBacktest, deploySignal];
