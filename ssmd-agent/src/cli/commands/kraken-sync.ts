@@ -217,6 +217,9 @@ async function syncSpot(
 
     // Prefer wsname for base/quote (clean format: "XBT/USD"), fall back to raw fields
     const parsed = parseWsName(pair.wsname);
+    if (!parsed) {
+      console.warn(`[Kraken Spot] wsname missing for ${pairId}, using heuristic normalization (base=${pair.base}, quote=${pair.quote})`);
+    }
     const base = parsed?.base ?? normalizeBase(pair.base);
     const quote = parsed?.quote ?? normalizeQuote(pair.quote);
     const wsName = pair.wsname ?? pair.altname ?? pairId;
