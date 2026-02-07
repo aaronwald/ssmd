@@ -5,6 +5,7 @@
 //!
 //! Returns `(condition_id, Vec<clob_token_id>)` tuples for subscription management.
 
+use serde::de::{self, Deserializer};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -38,13 +39,39 @@ pub struct DiscoveredMarket {
     pub active: bool,
 }
 
+/// Deserialize a field that may be a JSON array or a stringified JSON array.
+/// The Gamma API returns `clobTokenIds` as `"[\"id1\", \"id2\"]"` (a string),
+/// not as a native JSON array.
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        Vec(Vec<String>),
+        Str(String),
+    }
+
+    match Option::<StringOrVec>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(StringOrVec::Vec(v)) => Ok(Some(v)),
+        Some(StringOrVec::Str(s)) => {
+            if s.is_empty() || s == "[]" {
+                return Ok(Some(Vec::new()));
+            }
+            serde_json::from_str(&s).map(Some).map_err(de::Error::custom)
+        }
+    }
+}
+
 /// Response from the Gamma /markets endpoint
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GammaMarketResponse {
     #[serde(default)]
     condition_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     clob_token_ids: Option<Vec<String>>,
     #[serde(default)]
     question: Option<String>,
@@ -253,18 +280,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_gamma_response() {
+    fn test_parse_gamma_response_stringified_array() {
+        // Gamma API returns clobTokenIds as a stringified JSON array
         let json = r#"[
             {
                 "conditionId": "0x1234",
-                "clobTokenIds": ["token_yes", "token_no"],
+                "clobTokenIds": "[\"token_yes\", \"token_no\"]",
                 "question": "Will BTC hit 100k?",
                 "active": true,
                 "closed": false
             },
             {
                 "conditionId": "0x5678",
-                "clobTokenIds": [],
+                "clobTokenIds": "[]",
                 "question": "Empty market",
                 "active": true,
                 "closed": false
@@ -284,6 +312,27 @@ mod tests {
         assert_eq!(
             markets[1].clob_token_ids.as_ref().unwrap().len(),
             0
+        );
+    }
+
+    #[test]
+    fn test_parse_gamma_response_native_array() {
+        // Also support native JSON arrays (for forward-compatibility)
+        let json = r#"[
+            {
+                "conditionId": "0xabc",
+                "clobTokenIds": ["native_yes", "native_no"],
+                "question": "Native array test",
+                "active": true,
+                "closed": false
+            }
+        ]"#;
+
+        let markets: Vec<GammaMarketResponse> = serde_json::from_str(json).unwrap();
+        assert_eq!(markets.len(), 1);
+        assert_eq!(
+            markets[0].clob_token_ids.as_ref().unwrap(),
+            &vec!["native_yes".to_string(), "native_no".to_string()]
         );
     }
 
