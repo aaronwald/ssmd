@@ -10,18 +10,36 @@ interface ScaleFlags {
   "dry-run"?: boolean;
 }
 
-// Components in scale-down order (operator first to stop reconciliation, then upstream)
-// Note: ssmd-lifecycle-connector has label app.kubernetes.io/name=ssmd-connector so it's
-// included in the connectors selector. ssmd-lifecycle-consumer is separate (no operator label).
-const COMPONENTS = [
+// Components in scale-down order:
+// 1. Operator first (stop CRD reconciliation of connector/archiver/signal deployments)
+// 2. Worker (stop Temporal activities that orchestrate other components)
+// 3. Data producers (connectors, lifecycle)
+// 4. Data consumers (signals, momentum, notifier)
+// 5. Pipeline (cdc, cache — passive consumers, safe to stop late)
+// 6. Read-only services last (data-api, agent)
+//
+// NOT included (infrastructure — always running):
+//   ssmd-postgres (StatefulSet), ssmd-redis, ssmd-debug (utility pod)
+interface Component {
+  label: string;
+  deployment?: string;
+  selector?: string;
+  podLabel?: string; // explicit pod label for waitForPodsTerminated
+}
+
+const COMPONENTS: Component[] = [
   { label: "operator", deployment: "ssmd-operator" },
+  { label: "worker", deployment: "ssmd-worker", podLabel: "app=ssmd-worker" },
   { label: "connectors", selector: "app.kubernetes.io/name=ssmd-connector" },
   { label: "lifecycle-consumer", deployment: "ssmd-lifecycle-consumer" },
   { label: "signals", selector: "app.kubernetes.io/name=ssmd-signal" },
-  { label: "momentum", deployment: "ssmd-momentum" },
-  { label: "notifier", deployment: "ssmd-notifier" },
+  { label: "momentum", deployment: "ssmd-momentum", podLabel: "app=ssmd-momentum" },
+  { label: "notifier", deployment: "ssmd-notifier", podLabel: "app=ssmd-notifier" },
+  { label: "cdc", deployment: "ssmd-cdc", podLabel: "app=ssmd-cdc" },
+  { label: "cache", deployment: "ssmd-cache", podLabel: "app=ssmd-cache" },
   { label: "archiver", selector: "app.kubernetes.io/name=ssmd-archiver" },
-  { label: "data-api", deployment: "ssmd-data-ts" },
+  { label: "data-api", deployment: "ssmd-data-ts", podLabel: "app=ssmd-data-ts" },
+  { label: "agent", deployment: "ssmd-agent", podLabel: "app=ssmd-agent" },
 ];
 
 
@@ -200,7 +218,7 @@ async function waitForPodsTerminated(opts: KubectlOptions, timeoutSec: number): 
   const start = Date.now();
   const selectors = COMPONENTS
     .filter(c => c.selector || c.deployment)
-    .map(c => c.selector || `app.kubernetes.io/name=${c.deployment}`);
+    .map(c => c.selector || c.podLabel || `app.kubernetes.io/name=${c.deployment}`);
 
   while (Date.now() - start < timeoutSec * 1000) {
     let allTerminated = true;

@@ -1,0 +1,12 @@
+name: kraken-futures
+display_name: Kraken Futures Exchange
+type: websocket
+status: active
+versions:
+  - version: v1
+    effective_from: "2026-02-07"
+    protocol:
+      transport: wss
+      message: json
+    endpoint: wss://futures.kraken.com/ws/v1
+    auth_method: none

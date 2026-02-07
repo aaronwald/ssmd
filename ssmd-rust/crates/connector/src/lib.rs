@@ -7,6 +7,7 @@ pub mod error;
 pub mod flusher;
 pub mod kalshi;
 pub mod kraken;
+pub mod kraken_futures;
 pub mod message;
 pub mod polymarket;
 pub mod metrics;

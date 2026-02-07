@@ -76,6 +76,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "kraken" => {
             run_kraken_connector(&feed, &env_config, health_addr, shutdown_rx).await
         }
+        "kraken-futures" => {
+            run_kraken_futures_connector(&feed, &env_config, health_addr, shutdown_rx).await
+        }
         "polymarket" => {
             run_polymarket_connector(&feed, &env_config, health_addr, shutdown_rx).await
         }
@@ -281,6 +284,68 @@ async fn run_kraken_connector(
             error!("Only NATS transport is supported for Kraken connector");
             Err("Only NATS transport is supported".into())
         }
+    }
+}
+
+/// Run Kraken Futures connector for perpetual contract data
+async fn run_kraken_futures_connector(
+    feed: &Feed,
+    env_config: &Environment,
+    health_addr: SocketAddr,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Parse product IDs from environment or use defaults
+    let product_ids = std::env::var("KRAKEN_FUTURES_SYMBOLS")
+        .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_else(|_| vec![
+            "PF_XBTUSD".to_string(),
+            "PF_ETHUSD".to_string(),
+        ]);
+
+    info!(product_ids = ?product_ids, "Creating Kraken Futures connector");
+
+    let connector = ssmd_connector_lib::kraken_futures::KrakenFuturesConnector::new(product_ids);
+
+    match env_config.transport.transport_type {
+        TransportType::Nats => {
+            info!(transport = "nats", "Using Kraken Futures NATS writer");
+            let transport = MiddlewareFactory::create_nats_transport_validated(env_config).await?;
+            let writer = create_kraken_futures_nats_writer(transport, env_config, feed);
+            run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
+        }
+        _ => {
+            error!("Only NATS transport is supported for Kraken Futures connector");
+            Err("Only NATS transport is supported".into())
+        }
+    }
+}
+
+/// Create KrakenFuturesNatsWriter with optional custom subject prefix
+fn create_kraken_futures_nats_writer(
+    transport: Arc<dyn ssmd_middleware::Transport>,
+    env_config: &Environment,
+    feed: &Feed,
+) -> ssmd_connector_lib::kraken_futures::KrakenFuturesNatsWriter {
+    if let (Some(ref prefix), Some(ref stream)) = (
+        &env_config.transport.subject_prefix,
+        &env_config.transport.stream,
+    ) {
+        info!(
+            subject_prefix = %prefix,
+            stream = %stream,
+            "Using custom subject prefix"
+        );
+        ssmd_connector_lib::kraken_futures::KrakenFuturesNatsWriter::with_prefix(
+            transport, prefix.clone(), stream.clone(),
+        )
+    } else {
+        info!(
+            subject_prefix = format!("{}.{}", env_config.name, feed.name),
+            "Using default subject prefix"
+        );
+        ssmd_connector_lib::kraken_futures::KrakenFuturesNatsWriter::new(
+            transport, &env_config.name, &feed.name,
+        )
     }
 }
 
