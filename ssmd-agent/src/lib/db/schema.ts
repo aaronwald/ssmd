@@ -118,9 +118,9 @@ export const marketLifecycleEvents = pgTable("market_lifecycle_events", {
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-// Pairs table for spot price tracking (Kraken BTC/USD, ETH/USD)
+// Pairs table for spot + perpetual price tracking
 export const pairs = pgTable("pairs", {
-  pairId: varchar("pair_id", { length: 32 }).primaryKey(),
+  pairId: varchar("pair_id", { length: 128 }).primaryKey(),
   exchange: varchar("exchange", { length: 32 }).notNull(),
   base: varchar("base", { length: 16 }).notNull(),
   quote: varchar("quote", { length: 16 }).notNull(),
@@ -132,8 +132,65 @@ export const pairs = pgTable("pairs", {
   status: varchar("status", { length: 16 }).default("active"),
   lotDecimals: integer("lot_decimals").default(8),
   pairDecimals: integer("pair_decimals").default(1),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  // New fields (migration 0009)
+  marketType: varchar("market_type", { length: 16 }).notNull().default("spot"),
+  altname: varchar("altname", { length: 32 }),
+  tickSize: numeric("tick_size", { precision: 18, scale: 10 }),
+  orderMin: numeric("order_min", { precision: 18, scale: 8 }),
+  costMin: numeric("cost_min", { precision: 18, scale: 8 }),
+  feeSchedule: jsonb("fee_schedule"),
+  // Perpetual-specific
+  underlying: varchar("underlying", { length: 32 }),
+  contractSize: numeric("contract_size", { precision: 18, scale: 8 }),
+  contractType: varchar("contract_type", { length: 32 }),
+  markPrice: numeric("mark_price", { precision: 18, scale: 8 }),
+  indexPrice: numeric("index_price", { precision: 18, scale: 8 }),
+  fundingRate: numeric("funding_rate", { precision: 18, scale: 12 }),
+  fundingRatePrediction: numeric("funding_rate_prediction", { precision: 18, scale: 12 }),
+  openInterest: numeric("open_interest", { precision: 24, scale: 8 }),
+  maxPositionSize: numeric("max_position_size", { precision: 24, scale: 8 }),
+  marginLevels: jsonb("margin_levels"),
+  tradeable: boolean("tradeable").default(true),
+  suspended: boolean("suspended").default(false),
+  openingDate: timestamp("opening_date", { withTimezone: true }),
+  feeScheduleUid: varchar("fee_schedule_uid", { length: 64 }),
+  tags: text("tags").array(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Polymarket conditions (prediction markets)
+export const polymarketConditions = pgTable("polymarket_conditions", {
+  conditionId: varchar("condition_id", { length: 128 }).primaryKey(),
+  question: text("question").notNull(),
+  slug: varchar("slug", { length: 256 }),
+  category: varchar("category", { length: 128 }),
+  outcomes: text("outcomes").array().notNull().default([]),
+  status: varchar("status", { length: 16 }).notNull().default("active"),
+  active: boolean("active").notNull().default(true),
+  endDate: timestamp("end_date", { withTimezone: true }),
+  resolutionDate: timestamp("resolution_date", { withTimezone: true }),
+  winningOutcome: varchar("winning_outcome", { length: 128 }),
+  volume: numeric("volume", { precision: 24, scale: 2 }),
+  liquidity: numeric("liquidity", { precision: 24, scale: 2 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+});
+
+// Polymarket CLOB tokens (Yes/No per condition)
+export const polymarketTokens = pgTable("polymarket_tokens", {
+  tokenId: varchar("token_id", { length: 128 }).primaryKey(),
+  conditionId: varchar("condition_id", { length: 128 }).notNull().references(() => polymarketConditions.conditionId),
+  outcome: varchar("outcome", { length: 128 }).notNull(),
+  outcomeIndex: integer("outcome_index").notNull().default(0),
+  price: numeric("price", { precision: 8, scale: 4 }),
+  bid: numeric("bid", { precision: 8, scale: 4 }),
+  ask: numeric("ask", { precision: 8, scale: 4 }),
+  volume: numeric("volume", { precision: 24, scale: 2 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 // Inferred types for select/insert
@@ -153,3 +210,7 @@ export type MarketLifecycleEvent = typeof marketLifecycleEvents.$inferSelect;
 export type NewMarketLifecycleEvent = typeof marketLifecycleEvents.$inferInsert;
 export type Pair = typeof pairs.$inferSelect;
 export type NewPair = typeof pairs.$inferInsert;
+export type PolymarketCondition = typeof polymarketConditions.$inferSelect;
+export type NewPolymarketCondition = typeof polymarketConditions.$inferInsert;
+export type PolymarketToken = typeof polymarketTokens.$inferSelect;
+export type NewPolymarketToken = typeof polymarketTokens.$inferInsert;

@@ -25,11 +25,13 @@ import { handleStatus } from "./status.ts";
 import { handleEnv } from "./env.ts";
 import { handleMomentum } from "./momentum.ts";
 import { handleDq } from "./dq.ts";
+import { handleKraken } from "./kraken-sync.ts";
+import { handlePolymarket } from "./polymarket-sync.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
     string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag", "env", "config", "balance", "filter", "cache-dir", "results-dir", "run-id", "image", "bucket", "prefix", "trades-out", "spec", "name", "sort", "min-trades", "ticker", "window"],
-    boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait", "follow", "games-only", "by-series", "json", "csv", "exclude-halted", "detailed"],
+    boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait", "follow", "games-only", "by-series", "json", "csv", "exclude-halted", "detailed", "spot", "perps"],
     alias: { h: "help", v: "version", t: "type", e: "endpoint", f: "follow" },
     default: { wait: true },
     collect: ["tag"], // Allow multiple --tag flags
@@ -127,6 +129,14 @@ export async function run(args: string[]): Promise<void> {
       await handleDq(subcommand, flags);
       break;
 
+    case "kraken":
+      await handleKraken(subcommand, flags);
+      break;
+
+    case "polymarket":
+      await handlePolymarket(subcommand, flags);
+      break;
+
     case "agent":
       // Launch the existing agent REPL
       await import("../../cli.ts");
@@ -216,6 +226,8 @@ function printHelp(): void {
   console.log("  scale             Scale SSMD components up/down for maintenance");
   console.log("  schedule          List and describe Temporal schedules");
   console.log("  momentum          Paper trading momentum models on live data");
+  console.log("  kraken            Kraken spot + perpetuals sync");
+  console.log("  polymarket        Polymarket conditions sync");
   console.log("  dq                Data quality checks (compare NATS vs Kalshi API)");
   console.log("  agent             Start interactive agent REPL");
   console.log("");
