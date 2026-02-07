@@ -342,6 +342,7 @@ func (r *SignalReconciler) constructDeployment(signal *ssmdv1alpha1.Signal) *app
 									LocalObjectReference: corev1.LocalObjectReference{
 										Name: r.configMapName(signal),
 									},
+									DefaultMode: int32Ptr(420),
 								},
 							},
 						},

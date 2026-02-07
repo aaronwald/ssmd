@@ -262,6 +262,7 @@ func (r *NotifierReconciler) constructDeployment(notifier *ssmdv1alpha1.Notifier
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: r.configMapName(notifier),
 					},
+					DefaultMode: int32Ptr(420),
 				},
 			},
 		},

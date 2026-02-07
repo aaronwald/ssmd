@@ -616,6 +616,7 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 									LocalObjectReference: corev1.LocalObjectReference{
 										Name: r.configMapName(connector),
 									},
+									DefaultMode: int32Ptr(420),
 								},
 							},
 						},
@@ -816,3 +817,4 @@ func (r *ConnectorReconciler) getFeedConfig(ctx context.Context, namespace, feed
 
 func boolPtr(b bool) *bool    { return &b }
 func int64Ptr(i int64) *int64 { return &i }
+func int32Ptr(i int32) *int32 { return &i }

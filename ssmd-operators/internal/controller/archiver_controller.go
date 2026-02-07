@@ -449,6 +449,7 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: r.configMapName(archiver),
 					},
+					DefaultMode: int32Ptr(420),
 				},
 			},
 		},
