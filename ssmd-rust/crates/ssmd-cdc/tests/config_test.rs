@@ -15,7 +15,7 @@ fn test_config_from_env() {
     assert_eq!(config.slot_name, "ssmd_cdc"); // default
 
     // Test 2: Tables default (reusing DATABASE_URL)
-    assert_eq!(config.tables, vec!["events", "markets", "series_fees"]);
+    assert_eq!(config.tables, vec!["events", "markets", "series_fees", "pairs", "polymarket_conditions", "polymarket_tokens"]);
 
     // Cleanup
     std::env::remove_var("DATABASE_URL");

@@ -50,9 +50,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(lsn = %lsn, "Starting from LSN");
 
     // Tables to publish CDC events for (others are ignored)
-    // Only markets table is needed for connector dynamic subscriptions
-    // Stream is configured for cdc.markets.> subjects only
-    let publish_tables: std::collections::HashSet<&str> = ["markets"].into_iter().collect();
+    let publish_tables: std::collections::HashSet<&str> = config.tables.iter().map(|s| s.as_str()).collect();
 
     // Main polling loop
     let poll_interval = Duration::from_millis(args.poll_interval_ms);

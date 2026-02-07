@@ -31,6 +31,9 @@ impl Config {
                 "events".into(),
                 "markets".into(),
                 "series_fees".into(),
+                "pairs".into(),
+                "polymarket_conditions".into(),
+                "polymarket_tokens".into(),
             ]);
 
         Ok(Self {
