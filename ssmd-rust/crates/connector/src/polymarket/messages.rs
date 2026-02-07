@@ -21,8 +21,10 @@ pub enum PolymarketWsMessage {
         market: String,
         timestamp: Option<String>,
         hash: Option<String>,
-        buys: Vec<OrderbookLevel>,
-        sells: Vec<OrderbookLevel>,
+        #[serde(alias = "buys")]
+        bids: Vec<OrderbookLevel>,
+        #[serde(alias = "sells")]
+        asks: Vec<OrderbookLevel>,
     },
 
     /// Incremental orderbook price level update
@@ -136,7 +138,7 @@ pub struct PriceChangeItem {
 mod tests {
     use super::*;
 
-    const BOOK_MESSAGE: &str = r#"{"event_type":"book","asset_id":"21742633143463906290569050155826241533067272736897614950488156847949938836455","market":"0x1234abcd","timestamp":"1706000000000","hash":"abc123","buys":[{"price":"0.55","size":"1000"},{"price":"0.54","size":"500"}],"sells":[{"price":"0.56","size":"750"}]}"#;
+    const BOOK_MESSAGE: &str = r#"{"event_type":"book","asset_id":"21742633143463906290569050155826241533067272736897614950488156847949938836455","market":"0x1234abcd","timestamp":"1706000000000","hash":"abc123","bids":[{"price":"0.55","size":"1000"},{"price":"0.54","size":"500"}],"asks":[{"price":"0.56","size":"750"}]}"#;
 
     const LAST_TRADE_PRICE_MESSAGE: &str = r#"{"event_type":"last_trade_price","asset_id":"21742633143463906290569050155826241533067272736897614950488156847949938836455","market":"0x1234abcd","price":"0.55","side":"BUY","size":"100","fee_rate_bps":"0","timestamp":"1706000000000"}"#;
 
@@ -159,17 +161,17 @@ mod tests {
             PolymarketWsMessage::Book {
                 asset_id,
                 market,
-                buys,
-                sells,
+                bids,
+                asks,
                 ..
             } => {
                 assert!(asset_id.starts_with("21742"));
                 assert_eq!(market, "0x1234abcd");
-                assert_eq!(buys.len(), 2);
-                assert_eq!(buys[0].price, "0.55");
-                assert_eq!(buys[0].size, "1000");
-                assert_eq!(sells.len(), 1);
-                assert_eq!(sells[0].price, "0.56");
+                assert_eq!(bids.len(), 2);
+                assert_eq!(bids[0].price, "0.55");
+                assert_eq!(bids[0].size, "1000");
+                assert_eq!(asks.len(), 1);
+                assert_eq!(asks[0].price, "0.56");
             }
             _ => panic!("Expected Book variant, got {:?}", msg),
         }

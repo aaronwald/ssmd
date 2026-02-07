@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use tracing::trace;
+use tracing::{trace, warn};
 
 use ssmd_middleware::{sanitize_subject_token, SubjectBuilder, Transport};
 
@@ -61,59 +61,98 @@ impl PolymarketNatsWriter {
 #[async_trait]
 impl Writer for PolymarketNatsWriter {
     async fn write(&mut self, msg: &Message) -> Result<(), WriterError> {
-        let ws_msg: PolymarketWsMessage = match serde_json::from_slice(&msg.data) {
-            Ok(m) => m,
+        let preview_fn = || -> String {
+            String::from_utf8_lossy(&msg.data)
+                .chars()
+                .take(500)
+                .collect()
+        };
+
+        // Skip PONG responses
+        if msg.data == b"PONG" {
+            return Ok(());
+        }
+
+        // Polymarket sends all messages as JSON arrays: [{...}, {...}]
+        // Parse as array of raw values, then process each element individually.
+        let elements: Vec<serde_json::Value> = match serde_json::from_slice(&msg.data) {
+            Ok(serde_json::Value::Array(arr)) => arr,
+            Ok(obj @ serde_json::Value::Object(_)) => vec![obj],
+            Ok(_) => {
+                warn!(preview = %preview_fn(), "Unexpected JSON type from Polymarket");
+                return Ok(());
+            }
             Err(e) => {
-                let preview: String = String::from_utf8_lossy(&msg.data)
-                    .chars()
-                    .take(500)
-                    .collect();
-
-                // Skip PONG responses and other non-JSON messages silently
-                if preview == "PONG" || preview.starts_with("PONG") {
-                    return Ok(());
-                }
-
                 return Err(WriterError::WriteFailed(format!(
                     "Failed to parse Polymarket message: {}. Preview: {}",
-                    e, preview
+                    e,
+                    preview_fn()
                 )));
             }
         };
 
-        let condition_id = sanitize_subject_token(ws_msg.condition_id());
+        for element in &elements {
+            // Try to parse as typed message. Book snapshots from the WS don't have
+            // event_type, so inject it if we detect bids/asks fields.
+            let ws_msg: PolymarketWsMessage = if element.get("event_type").is_some() {
+                serde_json::from_value(element.clone()).map_err(|e| {
+                    WriterError::WriteFailed(format!(
+                        "Failed to parse typed Polymarket message: {}",
+                        e
+                    ))
+                })?
+            } else if element.get("bids").is_some() || element.get("asks").is_some() {
+                // Book snapshot without event_type — inject it for serde dispatch
+                let mut obj = element.clone();
+                obj["event_type"] = serde_json::Value::String("book".to_string());
+                serde_json::from_value(obj).map_err(|e| {
+                    WriterError::WriteFailed(format!(
+                        "Failed to parse book snapshot: {}",
+                        e
+                    ))
+                })?
+            } else {
+                // Unknown message type without event_type — skip
+                trace!(preview = %element, "Skipping unknown Polymarket message without event_type");
+                continue;
+            };
 
-        let subject = match &ws_msg {
-            PolymarketWsMessage::LastTradePrice { .. } => {
-                self.subjects.json_trade(&condition_id)
-            }
-            PolymarketWsMessage::PriceChange { .. } => {
-                self.subjects.json_ticker(&condition_id)
-            }
-            PolymarketWsMessage::Book { .. } => {
-                self.subjects.json_orderbook(&condition_id)
-            }
-            PolymarketWsMessage::BestBidAsk { .. } => {
-                self.subjects.json_ticker(&condition_id)
-            }
-            PolymarketWsMessage::NewMarket { .. }
-            | PolymarketWsMessage::MarketResolved { .. } => {
-                self.subjects.json_lifecycle(&condition_id)
-            }
-            PolymarketWsMessage::TickSizeChange { .. } => {
-                // Tick size changes are operational - log and skip
-                trace!(market = %condition_id, "Tick size change event, skipping publish");
-                return Ok(());
-            }
-        };
+            let condition_id = sanitize_subject_token(ws_msg.condition_id());
 
-        // Publish raw bytes - no transformation
-        self.transport
-            .publish(&subject, Bytes::from(msg.data.clone()))
-            .await
-            .map_err(|e| WriterError::WriteFailed(format!("NATS publish failed: {}", e)))?;
+            let subject = match &ws_msg {
+                PolymarketWsMessage::LastTradePrice { .. } => {
+                    self.subjects.json_trade(&condition_id)
+                }
+                PolymarketWsMessage::PriceChange { .. } => {
+                    self.subjects.json_ticker(&condition_id)
+                }
+                PolymarketWsMessage::Book { .. } => {
+                    self.subjects.json_orderbook(&condition_id)
+                }
+                PolymarketWsMessage::BestBidAsk { .. } => {
+                    self.subjects.json_ticker(&condition_id)
+                }
+                PolymarketWsMessage::NewMarket { .. }
+                | PolymarketWsMessage::MarketResolved { .. } => {
+                    self.subjects.json_lifecycle(&condition_id)
+                }
+                PolymarketWsMessage::TickSizeChange { .. } => {
+                    trace!(market = %condition_id, "Tick size change event, skipping publish");
+                    continue;
+                }
+            };
 
-        self.message_count += 1;
+            // Publish individual element as raw JSON bytes
+            let element_bytes = serde_json::to_vec(element)
+                .map_err(|e| WriterError::WriteFailed(format!("JSON serialize failed: {}", e)))?;
+            self.transport
+                .publish(&subject, Bytes::from(element_bytes))
+                .await
+                .map_err(|e| WriterError::WriteFailed(format!("NATS publish failed: {}", e)))?;
+
+            self.message_count += 1;
+        }
+
         Ok(())
     }
 
@@ -145,7 +184,10 @@ mod tests {
 
         let received = sub.next().await.unwrap();
         assert_eq!(received.subject, "dev.polymarket.json.trade.0x1234abcd");
-        assert_eq!(received.payload.as_ref(), trade_json);
+        // Compare parsed JSON (key order may differ after re-serialization)
+        let expected: serde_json::Value = serde_json::from_slice(trade_json).unwrap();
+        let actual: serde_json::Value = serde_json::from_slice(&received.payload).unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[tokio::test]
@@ -177,7 +219,7 @@ mod tests {
             .await
             .unwrap();
 
-        let book_json = br#"{"event_type":"book","asset_id":"token123","market":"0x1234abcd","buys":[{"price":"0.55","size":"1000"}],"sells":[{"price":"0.56","size":"500"}]}"#;
+        let book_json = br#"{"event_type":"book","asset_id":"token123","market":"0x1234abcd","bids":[{"price":"0.55","size":"1000"}],"asks":[{"price":"0.56","size":"500"}]}"#;
         let msg = Message::new("polymarket", book_json.to_vec());
 
         writer.write(&msg).await.unwrap();
@@ -312,6 +354,51 @@ mod tests {
             err
         );
         assert_eq!(writer.message_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_array_wrapped_message() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = PolymarketNatsWriter::new(transport.clone(), "dev", "polymarket");
+
+        let mut sub = transport
+            .subscribe("dev.polymarket.json.trade.0x1234abcd")
+            .await
+            .unwrap();
+
+        // Polymarket sends messages wrapped in arrays
+        let array_json = br#"[{"event_type":"last_trade_price","asset_id":"token123","market":"0x1234abcd","price":"0.55"}]"#;
+        let msg = Message::new("polymarket", array_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+
+        let received = sub.next().await.unwrap();
+        assert_eq!(received.subject, "dev.polymarket.json.trade.0x1234abcd");
+        assert_eq!(writer.message_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_book_snapshot_without_event_type() {
+        let transport = Arc::new(InMemoryTransport::new());
+        let mut writer = PolymarketNatsWriter::new(transport.clone(), "dev", "polymarket");
+
+        let mut sub = transport
+            .subscribe("dev.polymarket.json.orderbook.0x1234abcd")
+            .await
+            .unwrap();
+
+        // Book snapshots from WS don't have event_type
+        let book_json = br#"[{"asset_id":"token123","market":"0x1234abcd","timestamp":"1706000000000","hash":"abc123","bids":[{"price":"0.55","size":"1000"}],"asks":[{"price":"0.56","size":"500"}]}]"#;
+        let msg = Message::new("polymarket", book_json.to_vec());
+
+        writer.write(&msg).await.unwrap();
+
+        let received = sub.next().await.unwrap();
+        assert_eq!(
+            received.subject,
+            "dev.polymarket.json.orderbook.0x1234abcd"
+        );
+        assert_eq!(writer.message_count(), 1);
     }
 
     #[tokio::test]
