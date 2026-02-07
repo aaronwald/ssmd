@@ -624,15 +624,56 @@ func (r *ConnectorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// getFeedDefaults reads the feed ConfigMap and returns connector defaults
-func (r *ConnectorReconciler) getFeedDefaults(ctx context.Context, namespace, feedName string) (map[string]interface{}, error) {
+// FeedVersion represents a feed protocol version
+type FeedVersion struct {
+	Version       string `yaml:"version"`
+	EffectiveFrom string `yaml:"effective_from"`
+	Protocol      struct {
+		Transport string `yaml:"transport"`
+		Message   string `yaml:"message"`
+	} `yaml:"protocol"`
+	Endpoint   string `yaml:"endpoint"`
+	AuthMethod string `yaml:"auth_method"`
+}
+
+// FeedTransportDefaults represents default transport config
+type FeedTransportDefaults struct {
+	Type          string `yaml:"type"`
+	Stream        string `yaml:"stream"`
+	SubjectPrefix string `yaml:"subjectPrefix"`
+}
+
+// FeedConnectorDefaults represents connector defaults from feed ConfigMap
+type FeedConnectorDefaults struct {
+	Image     string                 `yaml:"image"`
+	Version   string                 `yaml:"version"`
+	Transport *FeedTransportDefaults `yaml:"transport,omitempty"`
+}
+
+// FeedDefaults represents the defaults section
+type FeedDefaults struct {
+	Connector *FeedConnectorDefaults `yaml:"connector,omitempty"`
+}
+
+// FeedConfig represents a parsed feed.yaml from a feed ConfigMap
+type FeedConfig struct {
+	Name        string        `yaml:"name"`
+	DisplayName string        `yaml:"display_name"`
+	Type        string        `yaml:"type"`
+	Status      string        `yaml:"status"`
+	Versions    []FeedVersion `yaml:"versions"`
+	Defaults    *FeedDefaults `yaml:"defaults,omitempty"`
+}
+
+// getFeedConfig reads and parses the feed ConfigMap for a given feed name
+func (r *ConnectorReconciler) getFeedConfig(ctx context.Context, namespace, feedName string) (*FeedConfig, error) {
 	configMapName := fmt.Sprintf("feed-%s", feedName)
 	configMap := &corev1.ConfigMap{}
 
 	err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: namespace}, configMap)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return nil, nil // No defaults ConfigMap, that's ok
+			return nil, nil
 		}
 		return nil, err
 	}
@@ -642,20 +683,27 @@ func (r *ConnectorReconciler) getFeedDefaults(ctx context.Context, namespace, fe
 		return nil, nil
 	}
 
-	var feed map[string]interface{}
+	var feed FeedConfig
 	if err := yaml.Unmarshal([]byte(feedYAML), &feed); err != nil {
+		return nil, fmt.Errorf("failed to parse feed ConfigMap %s: %w", configMapName, err)
+	}
+
+	return &feed, nil
+}
+
+// getFeedDefaults reads the feed ConfigMap and returns connector defaults (legacy compatibility)
+func (r *ConnectorReconciler) getFeedDefaults(ctx context.Context, namespace, feedName string) (map[string]interface{}, error) {
+	feed, err := r.getFeedConfig(ctx, namespace, feedName)
+	if err != nil || feed == nil {
 		return nil, err
 	}
-
-	defaults, ok := feed["defaults"].(map[string]interface{})
-	if !ok {
+	if feed.Defaults == nil || feed.Defaults.Connector == nil {
 		return nil, nil
 	}
-
-	connectorDefaults, ok := defaults["connector"].(map[string]interface{})
-	if !ok {
-		return nil, nil
+	// Convert to map for backward compatibility with existing callers
+	result := map[string]interface{}{
+		"image":   feed.Defaults.Connector.Image,
+		"version": feed.Defaults.Connector.Version,
 	}
-
-	return connectorDefaults, nil
+	return result, nil
 }
