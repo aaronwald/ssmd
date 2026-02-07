@@ -21,7 +21,7 @@ use tokio_tungstenite::{
 use tracing::{debug, info, trace, warn};
 
 /// Polymarket CLOB WebSocket URL
-pub const POLYMARKET_WS_URL: &str = "wss://ws-subscriptions-clob.polymarket.com/ws/";
+pub const POLYMARKET_WS_URL: &str = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 
 /// Max instruments per WebSocket connection
 pub const MAX_INSTRUMENTS_PER_CONNECTION: usize = 500;
