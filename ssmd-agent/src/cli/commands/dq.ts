@@ -1,9 +1,12 @@
 // dq.ts - Data Quality checks: compare NATS trades with exchange APIs
 // Supports Kalshi, Kraken, and Polymarket exchanges
+// Also includes `daily` subcommand for composite Phase 1 scoring
 
 import { createKalshiClient, type KalshiTrade } from "../../lib/api/kalshi.ts";
 import { fetchKrakenTrades } from "../../lib/api/kraken-public.ts";
 import { getEnvContext } from "../utils/env-context.ts";
+import { getRawSql, closeDb } from "../../lib/db/mod.ts";
+import { connect as natsConnect, type NatsConnection } from "npm:nats";
 
 // --- Shared types ---
 
@@ -14,6 +17,7 @@ interface DqFlags {
   env?: string;
   exchange?: string; // "kalshi" | "kraken" | "polymarket"
   detailed?: boolean;
+  json?: boolean;
 }
 
 interface NatsTrade {
@@ -222,6 +226,10 @@ export async function handleDq(subcommand: string, flags: DqFlags): Promise<void
 
     case "secmaster":
       await runSecmasterDqCheck(flags);
+      break;
+
+    case "daily":
+      await runDailyDqCheck(flags);
       break;
 
     case "help":
@@ -624,6 +632,383 @@ async function runSecmasterDqCheck(flags: DqFlags): Promise<void> {
   console.log();
 }
 
+// --- Daily DQ check ---
+
+interface DailyReport {
+  date: string;
+  feeds: Record<string, FeedScore>;
+  composite: number;
+  grade: "GREEN" | "YELLOW" | "RED";
+  issues: string[];
+  prometheusDegraded: boolean;
+}
+
+interface FeedScore {
+  score: number;
+  [key: string]: unknown;
+}
+
+function getPrometheusUrl(): string {
+  return Deno.env.get("PROMETHEUS_URL") ??
+    "http://kube-prometheus-stack-prometheus.observability.svc:9090";
+}
+
+function getNatsUrlDq(): string {
+  return Deno.env.get("NATS_URL") ?? "nats://nats.nats.svc:4222";
+}
+
+async function promQuery(promUrl: string, query: string): Promise<number | null> {
+  try {
+    const url = `${promUrl}/api/v1/query?query=${encodeURIComponent(query)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const results = json?.data?.result;
+    if (!Array.isArray(results) || results.length === 0) return null;
+    return parseFloat(results[0].value[1]);
+  } catch {
+    return null;
+  }
+}
+
+function linearScale(value: number, max: number): number {
+  if (value <= 0) return 0;
+  if (value >= max) return 100;
+  return Math.round((value / max) * 100);
+}
+
+function idleScore(seconds: number | null, tiers: number[][]): number {
+  if (seconds == null) return 0;
+  for (const [threshold, score] of tiers) {
+    if (seconds < threshold) return score;
+  }
+  return 0;
+}
+
+async function scoreConnectorFeed(
+  feed: string,
+  category: string | undefined,
+  msgMax: number,
+  mktMax: number | null,
+  idleTiers: number[][],
+  streamName: string,
+  nc: NatsConnection,
+  promUrl: string,
+  promAvailable: boolean,
+): Promise<{ score: number; details: Record<string, unknown> }> {
+  const labelFilter = category
+    ? `feed="${feed}",category="${category}"`
+    : `feed="${feed}"`;
+
+  let wsConnected: number | null = null;
+  let messageCount: number | null = null;
+  let idleSec: number | null = null;
+  let marketsSubscribed: number | null = null;
+
+  if (promAvailable) {
+    [wsConnected, messageCount, idleSec, marketsSubscribed] = await Promise.all([
+      promQuery(promUrl, `ssmd_connector_websocket_connected{${labelFilter}}`),
+      promQuery(promUrl, `increase(ssmd_connector_messages_total{${labelFilter}}[24h])`),
+      promQuery(promUrl, `ssmd_connector_idle_seconds{${labelFilter}}`),
+      mktMax != null
+        ? promQuery(promUrl, `ssmd_connector_markets_subscribed{${labelFilter}}`)
+        : Promise.resolve(null),
+    ]);
+  }
+
+  // NATS stream check
+  let streamHasData = false;
+  try {
+    const jsm = await nc.jetstreamManager();
+    const info = await jsm.streams.info(streamName);
+    streamHasData = info.state.messages > 0;
+  } catch {
+    // stream may not exist
+  }
+
+  const checks: { name: string; weight: number; value: number }[] = [];
+  const cap = promAvailable ? 100 : 50;
+
+  checks.push({
+    name: "ws_connected",
+    weight: mktMax != null ? 0.30 : 0.35,
+    value: Math.min(wsConnected === 1 ? 100 : 0, cap),
+  });
+  checks.push({
+    name: "message_flow",
+    weight: mktMax != null ? 0.25 : 0.30,
+    value: Math.min(messageCount != null ? linearScale(messageCount, msgMax) : 0, cap),
+  });
+  checks.push({
+    name: "idle_time",
+    weight: 0.20,
+    value: Math.min(idleSec != null ? idleScore(idleSec, idleTiers) : 0, cap),
+  });
+  if (mktMax != null) {
+    checks.push({
+      name: "markets_subscribed",
+      weight: 0.15,
+      value: Math.min(marketsSubscribed != null ? linearScale(marketsSubscribed, mktMax) : 0, cap),
+    });
+  }
+  checks.push({
+    name: "stream_has_data",
+    weight: mktMax != null ? 0.10 : 0.15,
+    value: streamHasData ? 100 : 0,
+  });
+
+  const score = Math.round(checks.reduce((s, c) => s + c.value * c.weight, 0));
+
+  return {
+    score,
+    details: {
+      wsConnected,
+      messages: messageCount != null ? Math.round(messageCount) : null,
+      idleSec: idleSec != null ? Math.round(idleSec) : null,
+      markets: marketsSubscribed != null ? Math.round(marketsSubscribed) : null,
+      streamHasData,
+    },
+  };
+}
+
+async function scoreFundingRate(
+  sql: ReturnType<typeof getRawSql>,
+  promUrl: string,
+  promAvailable: boolean,
+): Promise<{ score: number; details: Record<string, unknown> }> {
+  const cap = promAvailable ? 100 : 50;
+
+  // Consumer connected (Prometheus)
+  let consumerConnected: number | null = null;
+  let flushCount: number | null = null;
+  if (promAvailable) {
+    [consumerConnected, flushCount] = await Promise.all([
+      promQuery(promUrl, "ssmd_funding_rate_connected"),
+      promQuery(promUrl, "increase(ssmd_funding_rate_flushes_total[24h])"),
+    ]);
+  }
+
+  // PostgreSQL queries
+  type Row = { value: string | number | null };
+  const [maxSnapshotRow, countRow, productsRow] = await Promise.all([
+    sql`SELECT MAX(snapshot_at) as value FROM pair_snapshots` as Promise<Row[]>,
+    sql`SELECT COUNT(*)::int as value FROM pair_snapshots WHERE snapshot_at > NOW() - INTERVAL '24 hours'` as Promise<Row[]>,
+    sql`SELECT COUNT(DISTINCT pair_id)::int as value FROM pair_snapshots WHERE snapshot_at > NOW() - INTERVAL '1 hour'` as Promise<Row[]>,
+  ]);
+
+  const maxSnapshot = maxSnapshotRow[0]?.value
+    ? new Date(String(maxSnapshotRow[0].value))
+    : null;
+  const snapshotCount = Number(countRow[0]?.value ?? 0);
+  const productCount = Number(productsRow[0]?.value ?? 0);
+
+  // Snapshot recency score
+  let recencyScore = 0;
+  if (maxSnapshot) {
+    const ageMins = (Date.now() - maxSnapshot.getTime()) / 60000;
+    if (ageMins < 10) recencyScore = 100;
+    else if (ageMins < 30) recencyScore = 75;
+    else if (ageMins < 60) recencyScore = 25;
+  }
+
+  // Daily snapshot count score (540 = 5min intervals * 24h * ~2 products with headroom)
+  let countScore = 0;
+  if (snapshotCount >= 540) countScore = 100;
+  else if (snapshotCount >= 200) countScore = 50;
+  else if (snapshotCount > 0) countScore = linearScale(snapshotCount, 200);
+
+  // Products score
+  const productsScore = productCount >= 2 ? 100 : productCount === 1 ? 50 : 0;
+
+  // Flush rate score
+  const flushScore = flushCount != null ? Math.min(linearScale(flushCount, 200), cap) : 0;
+
+  const checks = [
+    { name: "consumer_connected", weight: 0.25, value: Math.min(consumerConnected === 1 ? 100 : 0, cap) },
+    { name: "snapshot_recency", weight: 0.25, value: Math.min(recencyScore, cap) },
+    { name: "daily_snapshot_count", weight: 0.25, value: Math.min(countScore, cap) },
+    { name: "both_products", weight: 0.15, value: Math.min(productsScore, cap) },
+    { name: "flush_rate", weight: 0.10, value: Math.min(flushScore, cap) },
+  ];
+
+  const score = Math.round(checks.reduce((s, c) => s + c.value * c.weight, 0));
+  const lastFlushAge = maxSnapshot
+    ? Math.round((Date.now() - maxSnapshot.getTime()) / 1000)
+    : null;
+
+  return {
+    score,
+    details: {
+      snapshots: snapshotCount,
+      products: productCount,
+      lastFlushAge,
+      consumerConnected,
+      flushCount: flushCount != null ? Math.round(flushCount) : null,
+    },
+  };
+}
+
+async function runDailyDqCheck(flags: DqFlags): Promise<void> {
+  const jsonOutput = flags.json === true;
+  const today = new Date().toISOString().slice(0, 10);
+  const promUrl = getPrometheusUrl();
+  const natsUrl = getNatsUrlDq();
+
+  // Check Prometheus availability
+  let promAvailable = true;
+  try {
+    const res = await fetch(`${promUrl}/api/v1/status/config`, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) promAvailable = false;
+  } catch {
+    promAvailable = false;
+  }
+
+  if (!promAvailable && !jsonOutput) {
+    console.warn("WARN: Prometheus unreachable, scores capped at 50");
+  }
+
+  // Connect to NATS
+  let nc: NatsConnection;
+  try {
+    nc = await natsConnect({ servers: natsUrl });
+  } catch (e) {
+    console.error(`Failed to connect to NATS: ${e}`);
+    Deno.exit(1);
+  }
+
+  // Get raw SQL for funding rate queries
+  const sql = getRawSql();
+
+  try {
+    const standardIdleTiers = [[60, 100], [120, 75], [300, 25]];
+    const polymarketIdleTiers = [[120, 100], [300, 75], [600, 25]];
+
+    // Score all feeds in parallel
+    const [kalshi, kraken, polymarket, funding] = await Promise.all([
+      scoreConnectorFeed("kalshi", "crypto", 10000, 50, standardIdleTiers, "PROD_KALSHI_CRYPTO", nc, promUrl, promAvailable),
+      scoreConnectorFeed("kraken-futures", undefined, 1000, 2, standardIdleTiers, "PROD_KRAKEN_FUTURES", nc, promUrl, promAvailable),
+      scoreConnectorFeed("polymarket", undefined, 500, null, polymarketIdleTiers, "PROD_POLYMARKET", nc, promUrl, promAvailable),
+      scoreFundingRate(sql, promUrl, promAvailable),
+    ]);
+
+    // Composite score
+    const composite = Math.round(
+      kalshi.score * 0.35 +
+      kraken.score * 0.30 +
+      polymarket.score * 0.15 +
+      funding.score * 0.20
+    );
+
+    // Check hard RED overrides
+    // Use == null checks so both 0 and null trigger appropriately
+    const issues: string[] = [];
+    if (kalshi.details.wsConnected === 0) issues.push("Kalshi WS disconnected");
+    if (kraken.details.wsConnected === 0) issues.push("Kraken WS disconnected");
+    if (kalshi.details.messages === 0 || kalshi.details.messages === null) {
+      issues.push("Kalshi zero messages in 24h" + (kalshi.details.messages === null ? " (Prometheus down)" : ""));
+    }
+    if (kraken.details.messages === 0 || kraken.details.messages === null) {
+      issues.push("Kraken zero messages in 24h" + (kraken.details.messages === null ? " (Prometheus down)" : ""));
+    }
+    if (funding.details.lastFlushAge != null && (funding.details.lastFlushAge as number) > 3600) {
+      issues.push("Funding rate snapshot older than 1h");
+    }
+
+    let grade: "GREEN" | "YELLOW" | "RED";
+    if (issues.length > 0 || composite < 60) {
+      grade = "RED";
+    } else if (composite < 85) {
+      grade = "YELLOW";
+    } else {
+      grade = "GREEN";
+    }
+
+    const report: DailyReport = {
+      date: today,
+      feeds: {
+        "kalshi-crypto": { score: kalshi.score, ...kalshi.details },
+        "kraken-futures": { score: kraken.score, ...kraken.details },
+        "polymarket": { score: polymarket.score, ...polymarket.details },
+        "funding-rate": { score: funding.score, ...funding.details },
+      },
+      composite,
+      grade,
+      issues,
+      prometheusDegraded: !promAvailable,
+    };
+
+    // Persist scores
+    try {
+      const feedEntries = [
+        { feed: "kalshi-crypto", score: kalshi.score, details: kalshi.details },
+        { feed: "kraken-futures", score: kraken.score, details: kraken.details },
+        { feed: "polymarket", score: polymarket.score, details: polymarket.details },
+        { feed: "funding-rate", score: funding.score, details: funding.details },
+      ];
+
+      for (const entry of feedEntries) {
+        await sql`
+          INSERT INTO dq_daily_scores (check_date, feed, score, composite_score, details)
+          VALUES (${today}::date, ${entry.feed}, ${entry.score}, ${composite}, ${JSON.stringify(entry.details)}::jsonb)
+          ON CONFLICT (check_date, feed) DO UPDATE SET
+            score = EXCLUDED.score,
+            composite_score = EXCLUDED.composite_score,
+            details = EXCLUDED.details,
+            updated_at = NOW()
+        `;
+      }
+    } catch (e) {
+      // Log to stderr so JSON stdout is not corrupted
+      console.error(`WARN: Failed to persist scores: ${e}`);
+    }
+
+    if (jsonOutput) {
+      console.log(JSON.stringify(report));
+    } else {
+      console.log();
+      console.log(`Phase 1 DQ: ${grade} (${composite}/100) — ${today}`);
+      console.log("=".repeat(55));
+      const k = kalshi.details;
+      const kr = kraken.details;
+      const p = polymarket.details;
+      const f = funding.details;
+      console.log(`Kalshi Crypto:    ${String(kalshi.score).padStart(3)}/100 (${fmtNum(k.messages as number)} msgs, ${k.markets ?? "?"} mkts, ${k.idleSec ?? "?"}s idle)`);
+      console.log(`Kraken Futures:   ${String(kraken.score).padStart(3)}/100 (${fmtNum(kr.messages as number)} msgs, ${kr.markets ?? "?"} mkts, ${kr.idleSec ?? "?"}s idle)`);
+      console.log(`Polymarket:       ${String(polymarket.score).padStart(3)}/100 (${fmtNum(p.messages as number)} msgs, ${p.idleSec ?? "?"}s idle)`);
+      console.log(`Funding Rate:     ${String(funding.score).padStart(3)}/100 (${f.snapshots ?? 0} snaps, ${f.products ?? 0} products, ${fmtAge(f.lastFlushAge as number | null)})`);
+      console.log();
+      console.log(`Composite: ${composite}/100 ${grade}`);
+      if (issues.length > 0) {
+        console.log();
+        console.log("Issues:");
+        for (const issue of issues) {
+          console.log(`  - ${issue}`);
+        }
+      }
+      if (!promAvailable) {
+        console.log();
+        console.log("(Prometheus degraded — scores capped at 50)");
+      }
+    }
+  } finally {
+    await nc.close();
+    await closeDb();
+  }
+}
+
+function fmtNum(n: number | null): string {
+  if (n == null) return "?";
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return `${n}`;
+}
+
+function fmtAge(seconds: number | null): string {
+  if (seconds == null) return "?";
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+  return `${(seconds / 3600).toFixed(1)}h ago`;
+}
+
 // --- Utility functions (exported for testing) ---
 
 export function inferCategory(ticker: string): string {
@@ -676,8 +1061,12 @@ export function printDqHelp(): void {
   console.log("Data quality checks for market data pipeline");
   console.log();
   console.log("COMMANDS:");
+  console.log("  daily           Score all Phase 1 feeds (Kalshi, Kraken, Polymarket, Funding)");
   console.log("  trades          Compare NATS trades with exchange API");
   console.log("  secmaster       Run secmaster data quality checks");
+  console.log();
+  console.log("OPTIONS (daily):");
+  console.log("  --json              Output structured JSON to stdout");
   console.log();
   console.log("OPTIONS (trades):");
   console.log("  --ticker TICKER     Market ticker (required)");
@@ -689,11 +1078,16 @@ export function printDqHelp(): void {
   console.log("OPTIONS (secmaster):");
   console.log("  --env ENV           Override environment");
   console.log();
-  console.log("ENVIRONMENT VARIABLES (secmaster):");
-  console.log("  SSMD_API_URL        API base URL (default: http://localhost:3000)");
+  console.log("ENVIRONMENT VARIABLES:");
+  console.log("  PROMETHEUS_URL      Prometheus URL (default: http://kube-prometheus-stack-prometheus.observability.svc:9090)");
+  console.log("  NATS_URL            NATS server URL (default: nats://nats.nats.svc:4222)");
+  console.log("  DATABASE_URL        PostgreSQL connection string (required for daily)");
+  console.log("  SSMD_API_URL        API base URL for secmaster (default: http://localhost:3000)");
   console.log("  SSMD_API_KEY        API key for authentication");
   console.log();
   console.log("EXAMPLES:");
+  console.log("  ssmd dq daily");
+  console.log("  ssmd dq daily --json");
   console.log("  ssmd dq trades --ticker KXBTCD-26FEB0317-T76999.99");
   console.log("  ssmd dq trades --ticker KXBTCD-26FEB0317-T76999.99 --window 10m --detailed");
   console.log("  ssmd dq trades --ticker XBT/USD --exchange kraken --window 5m");
