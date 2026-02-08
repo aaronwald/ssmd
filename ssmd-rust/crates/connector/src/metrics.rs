@@ -13,7 +13,6 @@ const LABEL_FEED: &str = "feed";
 const LABEL_CATEGORY: &str = "category";
 const LABEL_SHARD: &str = "shard";
 const LABEL_MESSAGE_TYPE: &str = "message_type";
-const LABEL_REASON: &str = "reason";
 
 /// Total messages received per shard and message type
 static MESSAGES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
@@ -75,16 +74,6 @@ static IDLE_SECONDS: Lazy<GaugeVec> = Lazy::new(|| {
     .expect("Failed to register idle_seconds metric")
 });
 
-/// Total shard reconnects by reason
-static SHARD_RECONNECTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
-    register_int_counter_vec!(
-        "ssmd_connector_shard_reconnects_total",
-        "Total shard reconnections by reason",
-        &[LABEL_FEED, LABEL_CATEGORY, LABEL_SHARD, LABEL_REASON]
-    )
-    .expect("Failed to register shard_reconnects_total metric")
-});
-
 /// Handle for recording metrics for a specific connector instance
 #[derive(Clone)]
 pub struct ConnectorMetrics {
@@ -127,13 +116,6 @@ impl ConnectorMetrics {
         WEBSOCKET_CONNECTED
             .with_label_values(&[&self.feed, &self.category, &shard_id.to_string()])
             .set(0);
-    }
-
-    /// Increment shard reconnect counter
-    pub fn inc_shard_reconnect(&self, shard_id: usize, reason: &str) {
-        SHARD_RECONNECTS_TOTAL
-            .with_label_values(&[&self.feed, &self.category, &shard_id.to_string(), reason])
-            .inc();
     }
 
     /// Create a shard-specific metrics handle
