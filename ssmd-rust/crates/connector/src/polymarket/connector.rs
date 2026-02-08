@@ -65,12 +65,17 @@ impl PolymarketConnector {
         }
     }
 
-    /// Spawn a WebSocket receiver task for a shard (subset of token IDs)
+    /// Spawn a WebSocket receiver task for a shard (subset of token IDs).
+    ///
+    /// Each shard independently manages its own connection lifecycle with an outer
+    /// reconnect loop. On WS errors, connection closed, or proactive reconnect timer,
+    /// the shard reconnects without killing the process.
     fn spawn_shard_receiver(
         shard_id: usize,
-        mut ws: PolymarketWebSocket,
+        shard_token_ids: Vec<String>,
         tx: mpsc::Sender<Vec<u8>>,
         activity_tracker: Arc<AtomicU64>,
+        connector_metrics: ConnectorMetrics,
     ) {
         fn update_activity(tracker: &AtomicU64) {
             use std::time::{SystemTime, UNIX_EPOCH};
@@ -81,74 +86,131 @@ impl PolymarketConnector {
             tracker.store(now, Ordering::SeqCst);
         }
 
-        update_activity(&activity_tracker);
-
         tokio::spawn(async move {
             use std::time::Duration;
             use tokio::time::interval;
 
-            let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
-            ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut reconnect_count: u64 = 0;
 
-            let mut reconnect_timer = interval(Duration::from_secs(PROACTIVE_RECONNECT_SECS));
-            reconnect_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // Skip the immediate first tick
-            reconnect_timer.tick().await;
-
+            // Outer reconnect loop — each iteration establishes a fresh WS connection
             loop {
-                tokio::select! {
-                    // Ping timer - send app-level "PING" text every 10s
-                    _ = ping_interval.tick() => {
-                        if let Err(e) = ws.ping().await {
-                            error!(shard = shard_id, error = %e, "Failed to send Polymarket ping");
+                // 1. Connect with retry backoff
+                let mut ws = loop {
+                    if tx.is_closed() {
+                        info!(shard = shard_id, "Channel closed during connect, shutting down shard");
+                        return;
+                    }
+                    match PolymarketWebSocket::connect().await {
+                        Ok(ws) => break ws,
+                        Err(e) => {
+                            error!(shard = shard_id, error = %e, "Shard WS connect failed, retrying");
+                            let jitter_ms = rand::random::<u64>() % 3000;
+                            tokio::time::sleep(Duration::from_millis(5000 + jitter_ms)).await;
+                        }
+                    }
+                };
+
+                // 2. Subscribe
+                if let Err(e) = ws.subscribe(&shard_token_ids).await {
+                    error!(shard = shard_id, error = %e, "Shard subscribe failed, reconnecting");
+                    let _ = ws.close().await;
+                    let jitter_ms = rand::random::<u64>() % 3000;
+                    tokio::time::sleep(Duration::from_millis(5000 + jitter_ms)).await;
+                    continue;
+                }
+
+                // 3. Update metrics
+                connector_metrics.set_shard_connected(shard_id);
+                connector_metrics.set_markets_subscribed(shard_id, shard_token_ids.len());
+                update_activity(&activity_tracker);
+
+                info!(
+                    shard = shard_id,
+                    tokens = shard_token_ids.len(),
+                    reconnect_count = reconnect_count,
+                    "Shard connected and subscribed"
+                );
+
+                // 4. Setup timers
+                let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
+                ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+                // Stagger reconnect timer by shard_id * 30s to spread reconnects
+                let reconnect_secs = PROACTIVE_RECONNECT_SECS + (shard_id as u64 * 30);
+                let mut reconnect_timer = interval(Duration::from_secs(reconnect_secs));
+                reconnect_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                // Skip the immediate first tick
+                reconnect_timer.tick().await;
+
+                // Reason for breaking out of inner loop (set before every `break`)
+                #[allow(unused_assignments)]
+                let mut reconnect_reason = "unknown";
+
+                // 5. Inner receive loop
+                loop {
+                    tokio::select! {
+                        // Ping timer
+                        _ = ping_interval.tick() => {
+                            if let Err(e) = ws.ping().await {
+                                error!(shard = shard_id, error = %e, "Failed to send Polymarket ping");
+                                reconnect_reason = "ping_failed";
+                                break;
+                            }
+                            update_activity(&activity_tracker);
+                        }
+
+                        // Proactive reconnect timer
+                        _ = reconnect_timer.tick() => {
+                            info!(
+                                shard = shard_id,
+                                interval_secs = reconnect_secs,
+                                "Proactive reconnect triggered for shard"
+                            );
+                            reconnect_reason = "proactive";
                             break;
                         }
-                        update_activity(&activity_tracker);
-                    }
 
-                    // Proactive reconnect timer - exit to trigger pod restart
-                    _ = reconnect_timer.tick() => {
-                        info!(
-                            shard = shard_id,
-                            interval_secs = PROACTIVE_RECONNECT_SECS,
-                            "Proactive reconnect triggered, exiting for restart"
-                        );
-                        std::process::exit(1);
-                    }
+                        // Receive message from WebSocket
+                        result = ws.recv_raw() => {
+                            update_activity(&activity_tracker);
 
-                    // Receive message from WebSocket
-                    result = ws.recv_raw() => {
-                        update_activity(&activity_tracker);
-
-                        match result {
-                            Ok(raw_json) => {
-                                // Skip PONG responses
-                                if raw_json == "PONG" {
-                                    continue;
+                            match result {
+                                Ok(raw_json) => {
+                                    if raw_json == "PONG" {
+                                        continue;
+                                    }
+                                    if tx.send(raw_json.into_bytes()).await.is_err() {
+                                        info!(shard = shard_id, "Channel closed, shutting down shard");
+                                        let _ = ws.close().await;
+                                        return;
+                                    }
                                 }
-
-                                // Quick check: is this a market data message?
-                                // We forward raw bytes and let the writer parse for routing.
-                                if tx.send(raw_json.into_bytes()).await.is_err() {
-                                    info!(shard = shard_id, "Channel closed, stopping receiver");
+                                Err(PolymarketWebSocketError::ConnectionClosed) => {
+                                    error!(shard = shard_id, "Polymarket WebSocket closed, reconnecting");
+                                    reconnect_reason = "connection_closed";
                                     break;
                                 }
-                            }
-                            Err(PolymarketWebSocketError::ConnectionClosed) => {
-                                error!(shard = shard_id, "Polymarket WebSocket closed, exiting for restart");
-                                std::process::exit(1);
-                            }
-                            Err(e) => {
-                                error!(shard = shard_id, error = %e, "Polymarket WebSocket error, exiting for restart");
-                                std::process::exit(1);
+                                Err(e) => {
+                                    error!(shard = shard_id, error = %e, "Polymarket WebSocket error, reconnecting");
+                                    reconnect_reason = "ws_error";
+                                    break;
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            if let Err(e) = ws.close().await {
-                error!(shard = shard_id, error = %e, "Error closing Polymarket WebSocket");
+                // 6. Cleanup before reconnect
+                connector_metrics.set_shard_disconnected(shard_id);
+                connector_metrics.inc_shard_reconnect(shard_id, reconnect_reason);
+                if let Err(e) = ws.close().await {
+                    error!(shard = shard_id, error = %e, "Error closing Polymarket WebSocket");
+                }
+                reconnect_count += 1;
+
+                // Brief delay before reconnecting
+                let jitter_ms = rand::random::<u64>() % 2000;
+                tokio::time::sleep(Duration::from_millis(1000 + jitter_ms)).await;
             }
         });
     }
@@ -204,6 +266,13 @@ impl Connector for PolymarketConnector {
         let connector_metrics = ConnectorMetrics::new("polymarket", "clob");
         connector_metrics.set_shards_total(num_shards);
 
+        // Probe connection to fail-fast if Polymarket is completely unreachable
+        let mut probe = PolymarketWebSocket::connect()
+            .await
+            .map_err(|e| ConnectorError::ConnectionFailed(format!("probe connection: {}", e)))?;
+        let _ = probe.close().await;
+        info!("Polymarket probe connection successful");
+
         for (shard_id, shard_tokens) in shards.into_iter().enumerate() {
             // Stagger shard startup by 2 seconds + random jitter (0-3s)
             if shard_id > 0 {
@@ -214,37 +283,22 @@ impl Connector for PolymarketConnector {
             info!(
                 shard = shard_id,
                 tokens = shard_tokens.len(),
-                "Connecting shard"
+                "Spawning shard receiver"
             );
-
-            let mut ws = PolymarketWebSocket::connect()
-                .await
-                .map_err(|e| ConnectorError::ConnectionFailed(format!("shard {}: {}", shard_id, e)))?;
-
-            ws.subscribe(&shard_tokens)
-                .await
-                .map_err(|e| ConnectorError::ConnectionFailed(format!("shard {} subscribe: {}", shard_id, e)))?;
-
-            connector_metrics.set_markets_subscribed(shard_id, shard_tokens.len());
 
             Self::spawn_shard_receiver(
                 shard_id,
-                ws,
+                shard_tokens,
                 tx.clone(),
                 Arc::clone(&activity_tracker),
-            );
-
-            info!(
-                shard = shard_id,
-                tokens = shard_tokens.len(),
-                "Shard connected and subscribed"
+                connector_metrics.clone(),
             );
         }
 
         info!(
             num_shards = num_shards,
             total_tokens = self.token_ids.len(),
-            "All Polymarket shards connected"
+            "All Polymarket shard receivers spawned"
         );
 
         Ok(())
