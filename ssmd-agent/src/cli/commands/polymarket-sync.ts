@@ -123,9 +123,9 @@ export async function runPolymarketSync(
 
   console.log(`[Polymarket] Fetched ${result.fetched} active conditions`);
 
-  // Convert to DB rows, dedup by conditionId
+  // Convert to DB rows, dedup by conditionId and tokenId
   const conditionMap = new Map<string, NewPolymarketCondition>();
-  const allTokens: NewPolymarketToken[] = [];
+  const tokenMap = new Map<string, NewPolymarketToken>();
   let skipped = 0;
 
   for (const market of gammaMarkets) {
@@ -161,12 +161,12 @@ export async function runPolymarketSync(
       liquidity: market.liquidity ?? null,
     });
 
-    // Map outcomes 1:1 to token IDs
+    // Map outcomes 1:1 to token IDs (dedup: last occurrence wins)
     for (let i = 0; i < tokenIds.length; i++) {
       const outcome = outcomes[i] ?? (i === 0 ? "Yes" : "No");
       const price = outcomePrices[i] ?? null;
 
-      allTokens.push({
+      tokenMap.set(tokenIds[i], {
         tokenId: tokenIds[i],
         conditionId,
         outcome,
@@ -181,6 +181,7 @@ export async function runPolymarketSync(
   }
 
   const conditions = Array.from(conditionMap.values());
+  const allTokens = Array.from(tokenMap.values());
 
   if (dryRun) {
     console.log(`[Polymarket] Dry run — would upsert ${conditions.length} conditions, ${allTokens.length} tokens`);
