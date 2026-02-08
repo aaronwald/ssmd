@@ -10,7 +10,7 @@ import { getDb, closeDb, upsertSeries, getSeriesStats, type NewSeries } from "..
 import { createKalshiClient, type KalshiSeries } from "../../lib/api/kalshi.ts";
 
 // Categories we sync
-const CATEGORIES = ["Economics", "Elections", "Entertainment", "Financials", "Politics", "Sports"];
+const CATEGORIES = ["Crypto", "Economics", "Elections", "Entertainment", "Financials", "Politics", "Sports"];
 
 /**
  * Series sync options
