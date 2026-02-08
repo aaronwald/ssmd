@@ -16,6 +16,7 @@ use tracing::{debug, error, info, trace, warn};
 use super::messages::KrakenFuturesWsMessage;
 use super::websocket::{KrakenFuturesWebSocket, KrakenFuturesWsError, PING_INTERVAL_SECS};
 use crate::error::ConnectorError;
+use crate::metrics::{ConnectorMetrics, ShardMetrics};
 use crate::traits::Connector;
 
 pub struct KrakenFuturesConnector {
@@ -41,49 +42,68 @@ impl KrakenFuturesConnector {
         _product_ids: Vec<String>,
         tx: mpsc::Sender<Vec<u8>>,
         last_activity: Arc<AtomicU64>,
+        shard_metrics: ShardMetrics,
     ) {
-        fn update_activity(tracker: &AtomicU64) {
+        fn update_activity(tracker: &AtomicU64, metrics: &ShardMetrics, idle_secs: f64) {
             use std::time::{SystemTime, UNIX_EPOCH};
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             tracker.store(now, Ordering::SeqCst);
+            metrics.set_last_activity(now as f64);
+            metrics.set_idle_seconds(idle_secs);
         }
 
+        // Mark shard as connected
+        shard_metrics.set_connected();
+
         // Initialize activity tracker
-        update_activity(&last_activity);
+        update_activity(&last_activity, &shard_metrics, 0.0);
 
         tokio::spawn(async move {
             use std::time::Duration;
-            use tokio::time::interval;
+            use tokio::time::{interval, Instant};
 
             let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            let mut last_activity_instant = Instant::now();
 
             loop {
                 tokio::select! {
                     // Ping timer
                     _ = ping_interval.tick() => {
-                        trace!("Sending Kraken Futures ping");
+                        let idle_secs = last_activity_instant.elapsed().as_secs();
+                        trace!(idle_secs, "Sending Kraken Futures ping");
+                        shard_metrics.set_idle_seconds(idle_secs as f64);
                         if let Err(e) = ws.ping().await {
                             error!(error = %e, "Failed to send Kraken Futures ping");
+                            shard_metrics.set_disconnected();
                             break;
                         }
-                        update_activity(&last_activity);
+                        update_activity(&last_activity, &shard_metrics, idle_secs as f64);
                     }
 
                     // Receive message from WebSocket
                     result = ws.recv_raw() => {
-                        update_activity(&last_activity);
+                        last_activity_instant = Instant::now();
+                        update_activity(&last_activity, &shard_metrics, 0.0);
 
                         match result {
                             Ok((raw, msg)) => {
                                 match &msg {
                                     KrakenFuturesWsMessage::DataMessage { feed, product_id, .. } => {
                                         debug!(feed = %feed, product_id = %product_id, "Kraken Futures data message");
+                                        match feed.as_str() {
+                                            "ticker" | "ticker_lite" => shard_metrics.inc_ticker(),
+                                            "trade" | "trade_snapshot" => shard_metrics.inc_trade(),
+                                            "book" | "book_snapshot" => shard_metrics.inc_orderbook(),
+                                            other => shard_metrics.inc_message(other),
+                                        }
                                         if tx.send(raw.into_bytes()).await.is_err() {
                                             warn!("Channel closed, exiting receiver");
+                                            shard_metrics.set_disconnected();
                                             return;
                                         }
                                     }
@@ -100,6 +120,7 @@ impl KrakenFuturesConnector {
                             }
                             Err(e) => {
                                 error!(error = %e, "Kraken Futures WS error, exiting");
+                                shard_metrics.set_disconnected();
                                 std::process::exit(1);
                             }
                         }
@@ -122,6 +143,12 @@ impl Connector for KrakenFuturesConnector {
             ConnectorError::ConnectionFailed("Already connected".to_string())
         })?;
 
+        // Initialize Prometheus metrics
+        let connector_metrics = ConnectorMetrics::new("kraken-futures", "perpetuals");
+        connector_metrics.set_shards_total(1);
+        connector_metrics.set_markets_subscribed(0, self.product_ids.len());
+        let shard_metrics = connector_metrics.for_shard(0);
+
         // Connect to Kraken Futures WS
         let mut ws = KrakenFuturesWebSocket::connect()
             .await
@@ -140,6 +167,7 @@ impl Connector for KrakenFuturesConnector {
             self.product_ids.clone(),
             tx,
             Arc::clone(&self.last_ws_activity_epoch_secs),
+            shard_metrics,
         );
 
         Ok(())

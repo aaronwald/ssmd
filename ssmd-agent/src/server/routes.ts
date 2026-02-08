@@ -313,7 +313,18 @@ route("GET", "/v1/polymarket/tokens", async (req, ctx) => {
     return json({ error: "at least one category is required" }, 400);
   }
   const status = url.searchParams.get("status") ?? "active";
-  const tokens = await listTokensByCategories(ctx.db, { categories, status });
+  const minVolumeParam = url.searchParams.get("minVolume");
+  const minVolume = minVolumeParam ? Number(minVolumeParam) : undefined;
+  const qParam = url.searchParams.get("q");
+  const questionKeywords = qParam
+    ? qParam.split(",").map((s) => s.trim()).filter(Boolean)
+    : undefined;
+  const tokens = await listTokensByCategories(ctx.db, {
+    categories,
+    status,
+    minVolume,
+    questionKeywords,
+  });
   return json({ tokens });
 }, true, "secmaster:read");
 

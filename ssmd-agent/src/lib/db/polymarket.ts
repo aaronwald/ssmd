@@ -205,6 +205,8 @@ export async function listTokensByCategories(
   options: {
     categories: string[];
     status?: string;
+    minVolume?: number;
+    questionKeywords?: string[];
   },
 ): Promise<string[]> {
   if (options.categories.length === 0) return [];
@@ -223,6 +225,22 @@ export async function listTokensByCategories(
 
   if (options.status) {
     conditions.push(eq(polymarketConditions.status, options.status));
+  }
+
+  // Volume backstop: filter out low-volume conditions
+  if (options.minVolume !== undefined) {
+    conditions.push(
+      sql`COALESCE(${polymarketConditions.volume}, '0')::numeric >= ${options.minVolume}`,
+    );
+  }
+
+  // Question keyword filter (OR across keywords, case-insensitive)
+  if (options.questionKeywords && options.questionKeywords.length > 0) {
+    const keywordConditions = options.questionKeywords.map(
+      (kw) =>
+        sql`lower(${polymarketConditions.question}) LIKE ${`%${kw.toLowerCase()}%`}`,
+    );
+    conditions.push(sql`(${sql.join(keywordConditions, sql` OR `)})`);
   }
 
   const rows = await db

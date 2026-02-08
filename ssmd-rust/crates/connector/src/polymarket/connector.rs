@@ -90,8 +90,18 @@ impl PolymarketConnector {
             1000,
         );
 
+        // Read optional volume and question filters from env vars
+        let min_volume = std::env::var("POLYMARKET_MIN_VOLUME")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok());
+        let question_filter = std::env::var("POLYMARKET_QUESTION_FILTER").ok();
+
         client
-            .get_polymarket_tokens_by_categories(&secmaster_config.categories)
+            .get_polymarket_tokens_by_categories(
+                &secmaster_config.categories,
+                min_volume,
+                question_filter.as_deref(),
+            )
             .await
             .map_err(|e| {
                 ConnectorError::ConnectionFailed(format!("Secmaster token fetch: {}", e))

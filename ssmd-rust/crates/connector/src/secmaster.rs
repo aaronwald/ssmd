@@ -519,14 +519,22 @@ impl SecmasterClient {
         &self,
         category: &str,
         status: Option<&str>,
+        min_volume: Option<u64>,
+        question_filter: Option<&str>,
     ) -> Result<Vec<String>, SecmasterError> {
         let status_param = status.unwrap_or("active");
-        let url = format!(
+        let mut url = format!(
             "{}/v1/polymarket/tokens?category={}&status={}",
             self.base_url,
             urlencoding::encode(category),
             urlencoding::encode(status_param)
         );
+        if let Some(vol) = min_volume {
+            url.push_str(&format!("&minVolume={}", vol));
+        }
+        if let Some(q) = question_filter {
+            url.push_str(&format!("&q={}", urlencoding::encode(q)));
+        }
 
         let mut last_error = None;
 
@@ -583,17 +591,19 @@ impl SecmasterClient {
     pub async fn get_polymarket_tokens_by_categories(
         &self,
         categories: &[String],
+        min_volume: Option<u64>,
+        question_filter: Option<&str>,
     ) -> Result<Vec<String>, SecmasterError> {
         if categories.is_empty() {
             return Ok(Vec::new());
         }
 
-        info!(categories = ?categories, "Loading polymarket tokens from secmaster");
+        info!(categories = ?categories, min_volume = ?min_volume, question_filter = ?question_filter, "Loading polymarket tokens from secmaster");
 
         let mut all_tokens = HashSet::new();
 
         for category in categories {
-            match self.get_polymarket_tokens_by_category(category, None).await {
+            match self.get_polymarket_tokens_by_category(category, None, min_volume, question_filter).await {
                 Ok(tokens) => {
                     all_tokens.extend(tokens);
                 }
