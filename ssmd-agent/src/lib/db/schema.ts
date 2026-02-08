@@ -183,6 +183,7 @@ export const polymarketConditions = pgTable("polymarket_conditions", {
   question: text("question").notNull(),
   slug: varchar("slug", { length: 256 }),
   category: varchar("category", { length: 128 }),
+  tags: text("tags").array().notNull().default([]),
   outcomes: text("outcomes").array().notNull().default([]),
   status: varchar("status", { length: 16 }).notNull().default("active"),
   active: boolean("active").notNull().default(true),

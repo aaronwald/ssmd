@@ -35,6 +35,7 @@ export async function upsertConditions(
           question: sql`excluded.question`,
           slug: sql`excluded.slug`,
           category: sql`excluded.category`,
+          tags: sql`excluded.tags`,
           outcomes: sql`excluded.outcomes`,
           status: sql`excluded.status`,
           active: sql`excluded.active`,
@@ -131,7 +132,9 @@ export async function listConditions(
   ];
 
   if (options.category) {
-    conditions.push(eq(polymarketConditions.category, options.category));
+    conditions.push(
+      sql`${polymarketConditions.tags} && ARRAY[${sql`${options.category.toLowerCase()}`}]::text[]`,
+    );
   }
   if (options.status) {
     conditions.push(eq(polymarketConditions.status, options.status));
@@ -143,6 +146,7 @@ export async function listConditions(
       question: polymarketConditions.question,
       slug: polymarketConditions.slug,
       category: polymarketConditions.category,
+      tags: polymarketConditions.tags,
       outcomes: polymarketConditions.outcomes,
       status: polymarketConditions.status,
       active: polymarketConditions.active,
@@ -209,9 +213,12 @@ export async function listTokensByCategories(
     isNull(polymarketConditions.deletedAt),
   ];
 
-  // Filter by categories using IN clause
+  // Filter by tags array overlap (categories normalized to lowercase slugs)
   conditions.push(
-    sql`${polymarketConditions.category} IN ${options.categories}`,
+    sql`${polymarketConditions.tags} && ARRAY[${sql.join(
+      options.categories.map((c) => sql`${c.toLowerCase()}`),
+      sql`,`,
+    )}]::text[]`,
   );
 
   if (options.status) {
@@ -241,6 +248,7 @@ export async function getConditionStats(
   total: number;
   by_status: Record<string, number>;
   by_category: Record<string, number>;
+  by_tag: Record<string, number>;
 }> {
   const statusRows = await db
     .select({
@@ -278,5 +286,18 @@ export async function getConditionStats(
     }
   }
 
-  return { total, by_status, by_category };
+  // Count conditions by tag (unnested)
+  const tagRows = await db.execute(
+    sql`SELECT unnest(tags) as tag, COUNT(DISTINCT condition_id) as cnt
+        FROM polymarket_conditions
+        WHERE deleted_at IS NULL AND array_length(tags, 1) > 0
+        GROUP BY tag ORDER BY cnt DESC LIMIT 20`,
+  );
+
+  const by_tag: Record<string, number> = {};
+  for (const row of tagRows.rows) {
+    by_tag[row.tag as string] = Number(row.cnt);
+  }
+
+  return { total, by_status, by_category, by_tag };
 }

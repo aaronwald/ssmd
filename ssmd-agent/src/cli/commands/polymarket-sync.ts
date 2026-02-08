@@ -13,9 +13,16 @@ const GAMMA_API_URL = "https://gamma-api.polymarket.com";
 const PAGE_SIZE = 100;
 const API_TIMEOUT_MS = 30000;
 
-// --- Gamma API response type ---
+// --- Gamma API response types ---
 
-interface GammaMarket {
+interface GammaTag {
+  id: string;
+  label: string;
+  slug: string;
+}
+
+interface GammaEventMarket {
+  id?: string;
   conditionId?: string;
   questionID?: string;
   question?: string;
@@ -26,12 +33,22 @@ interface GammaMarket {
   clobTokenIds?: string;
   active?: boolean;
   closed?: boolean;
-  acceptingOrders?: boolean;
   endDate?: string;
   resolutionDate?: string;
   winningOutcome?: string;
   volume?: string;
   liquidity?: string;
+}
+
+interface GammaEvent {
+  id: string;
+  title?: string;
+  slug?: string;
+  category?: string;
+  tags?: GammaTag[];
+  active?: boolean;
+  closed?: boolean;
+  markets?: GammaEventMarket[];
 }
 
 // --- Parsing helpers ---
@@ -75,30 +92,31 @@ export interface PolymarketSyncResult {
 }
 
 /**
- * Fetch all active markets from the Gamma API with pagination.
+ * Fetch all active events from the Gamma API with pagination.
+ * Events include tags and nested markets arrays.
  */
-async function fetchAllGammaMarkets(): Promise<GammaMarket[]> {
-  const allMarkets: GammaMarket[] = [];
+async function fetchAllGammaEvents(): Promise<GammaEvent[]> {
+  const allEvents: GammaEvent[] = [];
   let offset = 0;
 
   while (true) {
-    const url = `${GAMMA_API_URL}/markets?active=true&closed=false&limit=${PAGE_SIZE}&offset=${offset}`;
+    const url = `${GAMMA_API_URL}/events?active=true&closed=false&limit=${PAGE_SIZE}&offset=${offset}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(API_TIMEOUT_MS) });
 
     if (!res.ok) {
       throw new Error(`Gamma API error: ${res.status} ${await res.text()}`);
     }
 
-    const markets: GammaMarket[] = await res.json();
-    if (markets.length === 0) break;
+    const events: GammaEvent[] = await res.json();
+    if (events.length === 0) break;
 
-    allMarkets.push(...markets);
+    allEvents.push(...events);
 
-    if (markets.length < PAGE_SIZE) break;
+    if (events.length < PAGE_SIZE) break;
     offset += PAGE_SIZE;
   }
 
-  return allMarkets;
+  return allEvents;
 }
 
 /**
@@ -110,71 +128,100 @@ export async function runPolymarketSync(
   const noDelete = options.noDelete ?? false;
   const dryRun = options.dryRun ?? false;
 
-  console.log("\n[Polymarket] Fetching active conditions...");
+  console.log("\n[Polymarket] Fetching active events...");
 
-  const gammaMarkets = await fetchAllGammaMarkets();
+  const gammaEvents = await fetchAllGammaEvents();
 
   const result: PolymarketSyncResult = {
-    fetched: gammaMarkets.length,
+    fetched: 0,
     conditionsUpserted: 0,
     tokensUpserted: 0,
     deleted: 0,
   };
 
-  console.log(`[Polymarket] Fetched ${result.fetched} active conditions`);
+  console.log(`[Polymarket] Fetched ${gammaEvents.length} active events`);
+
+  // Well-known tag labels for category assignment (priority order)
+  const WELL_KNOWN_TAGS = [
+    "Crypto", "Sports", "Politics", "Science & Tech",
+    "Finance", "Business", "Pop Culture", "Entertainment",
+  ];
 
   // Convert to DB rows, dedup by conditionId and tokenId
   const conditionMap = new Map<string, NewPolymarketCondition>();
   const tokenMap = new Map<string, NewPolymarketToken>();
   let skipped = 0;
 
-  for (const market of gammaMarkets) {
-    const conditionId = market.conditionId ?? market.questionID;
-    if (!conditionId) {
-      skipped++;
-      continue;
+  for (const event of gammaEvents) {
+    const tags = event.tags ?? [];
+    const tagSlugs = tags.map((t) => t.slug);
+
+    // Pick category from well-known tags (first match wins)
+    let category: string | null = null;
+    for (const wk of WELL_KNOWN_TAGS) {
+      if (tags.some((t) => t.label === wk)) {
+        category = wk;
+        break;
+      }
+    }
+    // Fallback: use first tag label if no well-known match
+    if (!category && tags.length > 0) {
+      category = tags[0].label;
     }
 
-    const tokenIds = parseStringifiedArray(market.clobTokenIds);
-    if (tokenIds.length === 0) {
-      skipped++;
-      continue;
-    }
+    for (const market of event.markets ?? []) {
+      result.fetched++;
 
-    const outcomes = parseStringifiedArray(market.outcomes);
-    const outcomePrices = parseStringifiedArray(market.outcomePrices);
-    const status = mapStatus(market.active, market.closed);
+      const conditionId = market.conditionId ?? market.questionID;
+      if (!conditionId) {
+        skipped++;
+        continue;
+      }
 
-    // Upsert condition (dedup: last occurrence wins)
-    conditionMap.set(conditionId, {
-      conditionId,
-      question: market.question ?? "",
-      slug: market.slug ?? null,
-      category: market.category ?? null,
-      outcomes,
-      status,
-      active: market.active ?? true,
-      endDate: market.endDate ? new Date(market.endDate) : null,
-      resolutionDate: market.resolutionDate ? new Date(market.resolutionDate) : null,
-      winningOutcome: market.winningOutcome ?? null,
-      volume: market.volume ?? null,
-      liquidity: market.liquidity ?? null,
-    });
+      const tokenIds = parseStringifiedArray(market.clobTokenIds);
+      if (tokenIds.length === 0) {
+        skipped++;
+        continue;
+      }
 
-    // Map outcomes 1:1 to token IDs (dedup: last occurrence wins)
-    for (let i = 0; i < tokenIds.length; i++) {
-      const outcome = outcomes[i] ?? (i === 0 ? "Yes" : "No");
-      const price = outcomePrices[i] ?? null;
+      const outcomes = parseStringifiedArray(market.outcomes);
+      const outcomePrices = parseStringifiedArray(market.outcomePrices);
+      const status = mapStatus(market.active, market.closed);
 
-      tokenMap.set(tokenIds[i], {
-        tokenId: tokenIds[i],
+      // Upsert condition (dedup: last occurrence wins)
+      conditionMap.set(conditionId, {
         conditionId,
-        outcome,
-        outcomeIndex: i,
-        price,
+        question: market.question ?? "",
+        slug: market.slug ?? null,
+        category,
+        tags: tagSlugs,
+        outcomes,
+        status,
+        active: market.active ?? true,
+        endDate: market.endDate ? new Date(market.endDate) : null,
+        resolutionDate: market.resolutionDate ? new Date(market.resolutionDate) : null,
+        winningOutcome: market.winningOutcome ?? null,
+        volume: market.volume ?? null,
+        liquidity: market.liquidity ?? null,
       });
+
+      // Map outcomes 1:1 to token IDs (dedup: last occurrence wins)
+      for (let i = 0; i < tokenIds.length; i++) {
+        const outcome = outcomes[i] ?? (i === 0 ? "Yes" : "No");
+        const price = outcomePrices[i] ?? null;
+
+        tokenMap.set(tokenIds[i], {
+          tokenId: tokenIds[i],
+          conditionId,
+          outcome,
+          outcomeIndex: i,
+          price,
+        });
+      }
     }
   }
+
+  console.log(`[Polymarket] Fetched ${result.fetched} markets from ${gammaEvents.length} events`);
 
   if (skipped > 0) {
     console.log(`[Polymarket] Skipped ${skipped} markets (missing conditionId or tokenIds)`);
@@ -185,25 +232,27 @@ export async function runPolymarketSync(
 
   if (dryRun) {
     console.log(`[Polymarket] Dry run — would upsert ${conditions.length} conditions, ${allTokens.length} tokens`);
+    // Show tag distribution
+    const tagCounts = new Map<string, number>();
+    for (const c of conditions) {
+      const cat = c.category ?? "uncategorized";
+      tagCounts.set(cat, (tagCounts.get(cat) ?? 0) + 1);
+    }
+    for (const [tag, count] of [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)) {
+      console.log(`  ${tag}: ${count} conditions`);
+    }
     return result;
   }
 
   const db = getDb();
 
   try {
-    // Upsert conditions first (FK constraint for tokens)
     result.conditionsUpserted = await upsertConditions(db, conditions);
     console.log(`[Polymarket] Upserted ${result.conditionsUpserted} conditions`);
 
-    // Then upsert tokens
     result.tokensUpserted = await upsertTokens(db, allTokens);
     console.log(`[Polymarket] Upserted ${result.tokensUpserted} tokens`);
 
-    // Soft-delete conditions not in the active set. Since we only fetch
-    // active=true&closed=false, resolved/inactive conditions will be marked
-    // deleted_at on every sync. This is intentional: the active universe is
-    // what matters for connector subscriptions and arb signal evaluation.
-    // Historical conditions remain queryable via deleted_at IS NOT NULL.
     if (!noDelete) {
       const currentIds = conditions.map((c) => c.conditionId);
       result.deleted = await softDeleteMissingConditions(currentIds);
@@ -213,6 +262,7 @@ export async function runPolymarketSync(
     }
 
     console.log(`\n=== Polymarket Sync Summary ===`);
+    console.log(`Events:     ${gammaEvents.length} fetched`);
     console.log(`Conditions: ${result.conditionsUpserted} upserted, ${result.deleted} deleted`);
     console.log(`Tokens:     ${result.tokensUpserted} upserted`);
 
