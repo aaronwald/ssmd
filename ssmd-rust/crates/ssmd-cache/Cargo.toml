@@ -24,6 +24,7 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 futures-util = { workspace = true }
 anyhow = { workspace = true }
+lru = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]

@@ -76,6 +76,12 @@ struct SeriesResponse {
     series: Vec<SeriesItem>,
 }
 
+/// Wrapper for Polymarket tokens API response
+#[derive(Debug, Deserialize)]
+struct PolymarketTokensResponse {
+    tokens: Vec<String>,
+}
+
 /// Client for querying secmaster API
 pub struct SecmasterClient {
     client: Client,
@@ -506,6 +512,110 @@ impl SecmasterClient {
         );
 
         Ok(tickers)
+    }
+
+    /// Fetch Polymarket token IDs for a single category with retry logic
+    pub async fn get_polymarket_tokens_by_category(
+        &self,
+        category: &str,
+        status: Option<&str>,
+    ) -> Result<Vec<String>, SecmasterError> {
+        let status_param = status.unwrap_or("active");
+        let url = format!(
+            "{}/v1/polymarket/tokens?category={}&status={}",
+            self.base_url,
+            urlencoding::encode(category),
+            urlencoding::encode(status_param)
+        );
+
+        let mut last_error = None;
+
+        for attempt in 0..=self.retry_attempts {
+            if attempt > 0 {
+                let delay = self.retry_delay_ms * 2u64.pow(attempt - 1);
+                warn!(
+                    attempt = attempt,
+                    delay_ms = delay,
+                    category = %category,
+                    "Retrying secmaster polymarket tokens request"
+                );
+                sleep(Duration::from_millis(delay)).await;
+            }
+
+            debug!(url = %url, category = %category, attempt = attempt, "Fetching polymarket tokens from secmaster");
+
+            let mut request = self.client.get(&url);
+            if let Some(ref api_key) = self.api_key {
+                request = request.header("X-Api-Key", api_key);
+            }
+
+            match request.send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        let response_body: PolymarketTokensResponse = response.json().await?;
+
+                        info!(
+                            category = %category,
+                            token_count = response_body.tokens.len(),
+                            "Fetched polymarket tokens for category"
+                        );
+                        return Ok(response_body.tokens);
+                    } else {
+                        let status = response.status().as_u16();
+                        let message = response.text().await.unwrap_or_default();
+                        last_error = Some(SecmasterError::ApiError { status, message });
+                        // Retry on 5xx errors, fail fast on 4xx
+                        if status < 500 {
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(SecmasterError::Request(e));
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| SecmasterError::NoMarketsFound(vec![category.to_string()])))
+    }
+
+    /// Fetch Polymarket token IDs for multiple categories, merged and deduped
+    pub async fn get_polymarket_tokens_by_categories(
+        &self,
+        categories: &[String],
+    ) -> Result<Vec<String>, SecmasterError> {
+        if categories.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        info!(categories = ?categories, "Loading polymarket tokens from secmaster");
+
+        let mut all_tokens = HashSet::new();
+
+        for category in categories {
+            match self.get_polymarket_tokens_by_category(category, None).await {
+                Ok(tokens) => {
+                    all_tokens.extend(tokens);
+                }
+                Err(e) => {
+                    warn!(category = %category, error = %e, "Failed to fetch polymarket tokens for category, continuing");
+                }
+            }
+        }
+
+        if all_tokens.is_empty() {
+            return Err(SecmasterError::NoMarketsFound(categories.to_vec()));
+        }
+
+        let mut tokens: Vec<String> = all_tokens.into_iter().collect();
+        tokens.sort();
+
+        info!(
+            total_tokens = tokens.len(),
+            "Combined unique polymarket tokens for subscription"
+        );
+
+        Ok(tokens)
     }
 
     /// Fetch a single event by ticker (for CDC category lookup)

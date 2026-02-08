@@ -13,8 +13,10 @@ use crate::polymarket::market_discovery::MarketDiscovery;
 use crate::polymarket::websocket::{
     PolymarketWebSocket, PolymarketWebSocketError, MAX_INSTRUMENTS_PER_CONNECTION,
 };
+use crate::secmaster::SecmasterClient;
 use crate::traits::Connector;
 use async_trait::async_trait;
+use ssmd_metadata::SecmasterConfig;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -29,6 +31,8 @@ pub struct PolymarketConnector {
     token_ids: Vec<String>,
     /// Optional market discovery client for dynamic subscription
     discovery: Option<MarketDiscovery>,
+    /// Optional secmaster config for category-based token filtering
+    secmaster_config: Option<SecmasterConfig>,
     tx: Option<mpsc::Sender<Vec<u8>>>,
     rx: Option<mpsc::Receiver<Vec<u8>>>,
     /// Last WebSocket activity timestamp (epoch seconds)
@@ -42,6 +46,7 @@ impl PolymarketConnector {
         Self {
             token_ids,
             discovery: None,
+            secmaster_config: None,
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
@@ -54,10 +59,43 @@ impl PolymarketConnector {
         Self {
             token_ids: Vec::new(),
             discovery: Some(discovery),
+            secmaster_config: None,
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Create a new Polymarket connector with secmaster category-based filtering
+    pub fn with_secmaster(secmaster_config: SecmasterConfig) -> Self {
+        let (tx, rx) = mpsc::channel(2000);
+        Self {
+            token_ids: Vec::new(),
+            discovery: None,
+            secmaster_config: Some(secmaster_config),
+            tx: Some(tx),
+            rx: Some(rx),
+            last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Fetch token IDs from secmaster by categories
+    async fn fetch_filtered_tokens(
+        secmaster_config: &SecmasterConfig,
+    ) -> Result<Vec<String>, ConnectorError> {
+        let client = SecmasterClient::with_config(
+            &secmaster_config.url,
+            secmaster_config.api_key.clone(),
+            3,
+            1000,
+        );
+
+        client
+            .get_polymarket_tokens_by_categories(&secmaster_config.categories)
+            .await
+            .map_err(|e| {
+                ConnectorError::ConnectionFailed(format!("Secmaster token fetch: {}", e))
+            })
     }
 
     /// Spawn a WebSocket receiver task for a shard (subset of token IDs)
@@ -144,8 +182,21 @@ impl Connector for PolymarketConnector {
 
         let activity_tracker = Arc::clone(&self.last_ws_activity_epoch_secs);
 
-        // If we have a discovery client, fetch markets first
-        if let Some(ref discovery) = self.discovery {
+        // If secmaster is configured with categories, fetch tokens from secmaster
+        if let Some(ref secmaster_config) = self.secmaster_config {
+            if !secmaster_config.categories.is_empty() {
+                info!(
+                    categories = ?secmaster_config.categories,
+                    "Fetching token IDs from secmaster"
+                );
+                self.token_ids = Self::fetch_filtered_tokens(secmaster_config).await?;
+                info!(
+                    token_ids = self.token_ids.len(),
+                    "Loaded tokens from secmaster"
+                );
+            }
+        } else if let Some(ref discovery) = self.discovery {
+            // Fallback: discover via Gamma REST API
             info!("Discovering active markets via Gamma API");
             let markets = discovery
                 .fetch_active_markets()

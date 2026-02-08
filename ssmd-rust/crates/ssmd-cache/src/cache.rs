@@ -226,10 +226,6 @@ impl RedisCache {
     /// Get count of series
     pub async fn count_series(&self) -> Result<u64> {
         // Match series but not their markets
-        self.count("secmaster:series:*").await.map(|n| {
-            // This counts both series and markets, we need to subtract markets
-            // For now, just return the pattern match - we'll refine if needed
-            n
-        })
+        self.count("secmaster:series:*").await
     }
 }

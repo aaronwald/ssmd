@@ -362,10 +362,51 @@ async fn run_polymarket_connector(
         .map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
 
     let connector = if let Some(tokens) = static_tokens {
+        // Priority 1: Static token IDs from environment variable
         info!(tokens = tokens.len(), "Creating Polymarket connector with static token IDs");
         ssmd_connector_lib::polymarket::PolymarketConnector::new(tokens)
+    } else if let Some(ref secmaster) = env_config.secmaster {
+        if !secmaster.categories.is_empty() {
+            // Priority 2: Secmaster-driven filtering by category
+            let mut secmaster_config = secmaster.clone();
+            if secmaster_config.api_key.is_none() {
+                if let Ok(api_key) = std::env::var("SSMD_DATA_API_KEY") {
+                    secmaster_config.api_key = Some(api_key);
+                }
+            }
+
+            info!(
+                categories = ?secmaster_config.categories,
+                "Creating Polymarket connector with secmaster category filtering"
+            );
+
+            ssmd_connector_lib::polymarket::PolymarketConnector::with_secmaster(secmaster_config)
+        } else {
+            // Secmaster configured but no categories — fall through to Gamma discovery
+            let min_volume = std::env::var("POLYMARKET_MIN_VOLUME")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(10000.0);
+
+            let min_liquidity = std::env::var("POLYMARKET_MIN_LIQUIDITY")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(5000.0);
+
+            info!(
+                min_volume = min_volume,
+                min_liquidity = min_liquidity,
+                "Creating Polymarket connector with market discovery"
+            );
+
+            let discovery = ssmd_connector_lib::polymarket::MarketDiscovery::new()
+                .with_min_volume(min_volume)
+                .with_min_liquidity(min_liquidity);
+
+            ssmd_connector_lib::polymarket::PolymarketConnector::with_discovery(discovery)
+        }
     } else {
-        // Use market discovery via Gamma REST API
+        // Priority 3: Fallback to Gamma REST API discovery
         let min_volume = std::env::var("POLYMARKET_MIN_VOLUME")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())

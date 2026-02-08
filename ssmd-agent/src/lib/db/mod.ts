@@ -139,6 +139,7 @@ export {
   upsertTokens,
   softDeleteMissingConditions,
   listConditions,
+  listTokensByCategories,
   getCondition,
   getConditionStats,
 } from "./polymarket.ts";

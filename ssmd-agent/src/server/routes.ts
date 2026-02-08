@@ -30,6 +30,7 @@ import {
   getPairStats,
   getPairSnapshots,
   listConditions,
+  listTokensByCategories,
   getCondition,
   getConditionStats,
   type Database,
@@ -298,6 +299,22 @@ route("GET", "/v1/conditions/:conditionId", async (req, ctx) => {
     return json({ error: "Condition not found" }, 404);
   }
   return json(result);
+}, true, "secmaster:read");
+
+// Polymarket token listing (for connector subscription filtering)
+route("GET", "/v1/polymarket/tokens", async (req, ctx) => {
+  const url = new URL(req.url);
+  const categoryParam = url.searchParams.get("category");
+  if (!categoryParam) {
+    return json({ error: "category query parameter is required" }, 400);
+  }
+  const categories = categoryParam.split(",").map((c) => c.trim()).filter(Boolean);
+  if (categories.length === 0) {
+    return json({ error: "at least one category is required" }, 400);
+  }
+  const status = url.searchParams.get("status") ?? "active";
+  const tokens = await listTokensByCategories(ctx.db, { categories, status });
+  return json({ tokens });
 }, true, "secmaster:read");
 
 // Fees endpoints

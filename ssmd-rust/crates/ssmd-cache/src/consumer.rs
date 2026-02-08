@@ -1,7 +1,8 @@
 use async_nats::jetstream::{self, consumer::pull::Stream, Context};
 use futures_util::StreamExt;
 use ssmd_middleware::{lsn_gte, lsn::Lsn};
-use std::collections::HashMap;
+use lru::LruCache;
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 use tokio_postgres::{Client, NoTls};
 use crate::{Result, Error, cache::RedisCache};
@@ -16,10 +17,14 @@ pub struct CdcEvent {
     pub data: Option<serde_json::Value>,
 }
 
+/// Max entries in the event→series L1 cache.
+/// PostgreSQL L2 fallback handles evicted entries.
+const EVENT_SERIES_CACHE_CAP: usize = 10_000;
+
 /// Lookup cache for event_ticker -> series_ticker mapping
-/// Uses in-memory HashMap as L1 cache, PostgreSQL as L2 fallback
+/// Uses LRU cache as L1 (bounded), PostgreSQL as L2 fallback
 pub struct EventSeriesLookup {
-    cache: HashMap<String, String>,
+    cache: LruCache<String, String>,
     db_client: Client,
 }
 
@@ -36,7 +41,7 @@ impl EventSeriesLookup {
         });
 
         Ok(Self {
-            cache: HashMap::new(),
+            cache: LruCache::new(NonZeroUsize::new(EVENT_SERIES_CACHE_CAP).unwrap()),
             db_client: client,
         })
     }
@@ -59,7 +64,7 @@ impl EventSeriesLookup {
             Ok(Some(row)) => {
                 let series_ticker: String = row.get(0);
                 // Cache for future lookups
-                self.cache.insert(event_ticker.to_string(), series_ticker.clone());
+                self.cache.put(event_ticker.to_string(), series_ticker.clone());
                 Some(series_ticker)
             }
             Ok(None) => {
@@ -76,7 +81,7 @@ impl EventSeriesLookup {
     /// Update cache from event CDC data (no DB query needed)
     pub fn update_from_event(&mut self, event_ticker: &str, data: &serde_json::Value) {
         if let Some(series) = data.get("series_ticker").and_then(|v| v.as_str()) {
-            self.cache.insert(event_ticker.to_string(), series.to_string());
+            self.cache.put(event_ticker.to_string(), series.to_string());
         }
     }
 }
@@ -222,7 +227,7 @@ impl CdcConsumer {
                     }
 
                     processed += 1;
-                    if processed % 100 == 0 {
+                    if processed.is_multiple_of(100) {
                         tracing::info!(
                             processed,
                             skipped_lsn,

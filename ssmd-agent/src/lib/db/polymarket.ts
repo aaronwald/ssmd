@@ -192,6 +192,47 @@ export async function getCondition(
 }
 
 /**
+ * List token IDs for conditions matching the given categories and status.
+ * JOINs polymarket_tokens → polymarket_conditions filtered by category.
+ * Used by connectors to get secmaster-driven subscription lists.
+ */
+export async function listTokensByCategories(
+  db: Database,
+  options: {
+    categories: string[];
+    status?: string;
+  },
+): Promise<string[]> {
+  if (options.categories.length === 0) return [];
+
+  const conditions: ReturnType<typeof sql>[] = [
+    isNull(polymarketConditions.deletedAt),
+  ];
+
+  // Filter by categories using IN clause
+  conditions.push(
+    sql`${polymarketConditions.category} IN ${options.categories}`,
+  );
+
+  if (options.status) {
+    conditions.push(eq(polymarketConditions.status, options.status));
+  }
+
+  const rows = await db
+    .select({
+      tokenId: polymarketTokens.tokenId,
+    })
+    .from(polymarketTokens)
+    .innerJoin(
+      polymarketConditions,
+      eq(polymarketTokens.conditionId, polymarketConditions.conditionId),
+    )
+    .where(sql.join(conditions, sql` AND `));
+
+  return rows.map((r) => r.tokenId);
+}
+
+/**
  * Get Polymarket condition statistics.
  */
 export async function getConditionStats(
