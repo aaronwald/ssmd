@@ -295,7 +295,7 @@ export async function getConditionStats(
   );
 
   const by_tag: Record<string, number> = {};
-  for (const row of tagRows.rows) {
+  for (const row of tagRows) {
     by_tag[row.tag as string] = Number(row.cnt);
   }
 
