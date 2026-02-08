@@ -118,6 +118,80 @@ exchanges/
     └── ...
 ```
 
+## Agent Integration
+
+Agents interact with ssmd through three interfaces: the HTTP API, LangGraph tools, and the CLI.
+
+### HTTP API (`ssmd-data-ts`)
+
+REST API with API key auth (`X-API-Key` header). Scopes: `secmaster:read`, `datasets:read`, `signals:read`, `llm:chat`, `admin:*`.
+
+**Secmaster (all exchanges):**
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1/events` | Kalshi events (filter: `category`, `status`, `series`, `as_of`) |
+| `GET /v1/events/:ticker` | Event detail with markets |
+| `GET /v1/markets` | Kalshi markets (filter: `category`, `status`, `series`, `close_within_hours`) |
+| `GET /v1/markets/:ticker` | Market detail (prices, volume, open interest) |
+| `GET /v1/series` | Kalshi series (filter: `category`, `tag`, `games_only`) |
+| `GET /v1/pairs` | Kraken pairs (filter: `exchange`, `market_type`, `base`, `quote`) |
+| `GET /v1/pairs/:pairId` | Pair detail (funding rate, mark price for perps) |
+| `GET /v1/pairs/:pairId/snapshots` | Funding rate / price time series |
+| `GET /v1/conditions` | Polymarket conditions (filter: `category`, `status`) |
+| `GET /v1/conditions/:conditionId` | Condition with Yes/No tokens and prices |
+| `GET /v1/polymarket/tokens` | Token IDs for connector subscriptions (filter: `category`, `minVolume`, `q`) |
+| `GET /v1/fees/:series` | Fee schedule for a Kalshi series |
+| `GET /v1/secmaster/stats` | Unified stats across all exchanges |
+
+**Data & operations:**
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /datasets` | Archived datasets by feed/date |
+| `GET /health` | Health check (no auth) |
+| `GET /metrics` | Prometheus metrics (no auth) |
+| `POST /v1/chat/completions` | OpenRouter LLM proxy with guardrails |
+
+### LangGraph Agent Tools
+
+The agent REPL (`ssmd-agent/src/agent/`) provides LangGraph tools that wrap the API:
+
+| Tool | Description |
+|------|-------------|
+| `list_markets` | Query Kalshi markets with point-in-time support |
+| `get_market` | Get market by ticker |
+| `list_events` / `get_event` | Kalshi events |
+| `list_series` / `get_series` | Kalshi series |
+| `list_pairs` / `get_pair` | Kraken trading pairs |
+| `get_pair_snapshots` | Funding rate time series |
+| `list_conditions` / `get_condition` | Polymarket conditions |
+| `get_secmaster_stats` | Cross-exchange stats |
+| `get_fee_schedule` | Fee lookup by series |
+| `list_datasets` / `sample_data` | Browse archived data |
+| `orderbook_builder` / `price_history_builder` / `volume_profile_builder` | State builders for signal development |
+| `run_backtest` / `deploy_signal` | Signal evaluation and deployment |
+
+### CLI (`ssmd`)
+
+Key commands for agent/automation workflows:
+
+```bash
+# Secmaster
+ssmd secmaster sync --category=Crypto --by-series
+ssmd secmaster list --category=Crypto
+
+# Data quality
+ssmd dq daily --json          # JSON report for automation
+ssmd dq trades --ticker KXBTCD-26FEB0317-T76999.99
+
+# Scaling
+ssmd scale down/up/status
+
+# Archiver sync
+ssmd archiver sync kalshi-archiver --wait
+```
+
 ## Documentation
 
 | Doc | Purpose |
