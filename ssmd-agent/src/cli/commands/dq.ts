@@ -848,6 +848,45 @@ async function scoreFundingRate(
   };
 }
 
+const ARCHIVERS = ["kalshi-archiver", "kraken-futures-archiver", "polymarket-archiver"];
+
+async function scoreArchiveSync(
+  sql: ReturnType<typeof getRawSql>,
+): Promise<{ score: number; details: Record<string, unknown> }> {
+  const archiverScores: Record<string, { score: number; lastSyncAge: number | null }> = {};
+
+  for (const name of ARCHIVERS) {
+    const rows = await sql`
+      SELECT synced_at FROM archiver_sync_log
+      WHERE archiver_name = ${name} AND success = true
+      ORDER BY synced_at DESC LIMIT 1
+    `;
+
+    if (rows.length === 0) {
+      archiverScores[name] = { score: 0, lastSyncAge: null };
+      continue;
+    }
+
+    const ageHours = (Date.now() - new Date(rows[0].synced_at).getTime()) / (1000 * 60 * 60);
+    let score: number;
+    if (ageHours < 5) score = 100;
+    else if (ageHours < 9) score = 75;
+    else if (ageHours < 13) score = 50;
+    else if (ageHours < 24) score = 25;
+    else score = 0;
+
+    archiverScores[name] = { score, lastSyncAge: Math.round(ageHours * 10) / 10 };
+  }
+
+  const scores = Object.values(archiverScores);
+  const avgScore = Math.round(scores.reduce((sum, s) => sum + s.score, 0) / scores.length);
+
+  return {
+    score: avgScore,
+    details: archiverScores,
+  };
+}
+
 async function runDailyDqCheck(flags: DqFlags): Promise<void> {
   const jsonOutput = flags.json === true;
   const today = new Date().toISOString().slice(0, 10);
@@ -884,19 +923,21 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
     const polymarketIdleTiers = [[120, 100], [300, 75], [600, 25]];
 
     // Score all feeds in parallel
-    const [kalshi, kraken, polymarket, funding] = await Promise.all([
+    const [kalshi, kraken, polymarket, funding, archive] = await Promise.all([
       scoreConnectorFeed("kalshi", "crypto", 10000, 50, standardIdleTiers, "PROD_KALSHI_CRYPTO", nc, promUrl, promAvailable),
       scoreConnectorFeed("kraken-futures", undefined, 1000, 2, standardIdleTiers, "PROD_KRAKEN_FUTURES", nc, promUrl, promAvailable),
       scoreConnectorFeed("polymarket", undefined, 500, null, polymarketIdleTiers, "PROD_POLYMARKET", nc, promUrl, promAvailable),
       scoreFundingRate(sql, promUrl, promAvailable),
+      scoreArchiveSync(sql),
     ]);
 
     // Composite score
     const composite = Math.round(
-      kalshi.score * 0.35 +
-      kraken.score * 0.30 +
+      kalshi.score * 0.30 +
+      kraken.score * 0.25 +
       polymarket.score * 0.15 +
-      funding.score * 0.20
+      funding.score * 0.20 +
+      archive.score * 0.10
     );
 
     // Check hard RED overrides
@@ -913,6 +954,7 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
     if (funding.details.lastFlushAge != null && (funding.details.lastFlushAge as number) > 3600) {
       issues.push("Funding rate snapshot older than 1h");
     }
+    if (archive.score === 0) issues.push("No archiver has synced to GCS in 24+ hours");
 
     let grade: "GREEN" | "YELLOW" | "RED";
     if (issues.length > 0 || composite < 60) {
@@ -930,6 +972,7 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
         "kraken-futures": { score: kraken.score, ...kraken.details },
         "polymarket": { score: polymarket.score, ...polymarket.details },
         "funding-rate": { score: funding.score, ...funding.details },
+        "archive-sync": { score: archive.score, ...archive.details },
       },
       composite,
       grade,
@@ -944,6 +987,7 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
         { feed: "kraken-futures", score: kraken.score, details: kraken.details },
         { feed: "polymarket", score: polymarket.score, details: polymarket.details },
         { feed: "funding-rate", score: funding.score, details: funding.details },
+        { feed: "archive-sync", score: archive.score, details: archive.details },
       ];
 
       for (const entry of feedEntries) {
@@ -976,6 +1020,11 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
       console.log(`Kraken Futures:   ${String(kraken.score).padStart(3)}/100 (${fmtNum(kr.messages as number)} msgs, ${kr.markets ?? "?"} mkts, ${kr.idleSec ?? "?"}s idle)`);
       console.log(`Polymarket:       ${String(polymarket.score).padStart(3)}/100 (${fmtNum(p.messages as number)} msgs, ${p.idleSec ?? "?"}s idle)`);
       console.log(`Funding Rate:     ${String(funding.score).padStart(3)}/100 (${f.snapshots ?? 0} snaps, ${f.products ?? 0} products, ${fmtAge(f.lastFlushAge as number | null)})`);
+      const archDetails = archive.details as Record<string, { score: number; lastSyncAge: number | null }>;
+      const archParts = Object.entries(archDetails)
+        .map(([n, d]) => `${n.replace("-archiver", "")}: ${d.lastSyncAge != null ? d.lastSyncAge + "h" : "never"}`)
+        .join(", ");
+      console.log(`GCS Archive:      ${String(archive.score).padStart(3)}/100 (${archParts})`);
       console.log();
       console.log(`Composite: ${composite}/100 ${grade}`);
       if (issues.length > 0) {
@@ -1061,7 +1110,7 @@ export function printDqHelp(): void {
   console.log("Data quality checks for market data pipeline");
   console.log();
   console.log("COMMANDS:");
-  console.log("  daily           Score all Phase 1 feeds (Kalshi, Kraken, Polymarket, Funding)");
+  console.log("  daily           Score all Phase 1 feeds (Kalshi, Kraken, Polymarket, Funding, GCS Archive)");
   console.log("  trades          Compare NATS trades with exchange API");
   console.log("  secmaster       Run secmaster data quality checks");
   console.log();

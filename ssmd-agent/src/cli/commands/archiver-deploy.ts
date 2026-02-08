@@ -3,6 +3,7 @@
 
 import { kubectl, kubectlStream, getCurrentEnvDisplay, type KubectlOptions } from "../utils/kubectl.ts";
 import { getEnvContext } from "../utils/env-context.ts";
+import { getRawSql, closeDb } from "../../lib/db/mod.ts";
 
 interface ArchiverDeployFlags {
   _: (string | number)[];
@@ -557,7 +558,20 @@ spec:
     // Wait for job if requested
     if (flags.wait) {
       console.log("\nWaiting for sync job to complete...");
+      const syncStartTime = Date.now();
       await waitForJob(jobName, opts, 600); // 10 minute timeout
+
+      // Log successful sync to DB
+      try {
+        const db = getRawSql();
+        await db`
+          INSERT INTO archiver_sync_log (archiver_name, success, duration_ms)
+          VALUES (${name}, true, ${Date.now() - syncStartTime})
+        `;
+        await closeDb();
+      } catch (e) {
+        console.error(`WARN: Failed to log sync: ${e}`);
+      }
     } else {
       console.log(`\nMonitor with: kubectl logs -n ${ns} job/${jobName} -f`);
     }
