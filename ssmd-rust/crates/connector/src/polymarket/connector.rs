@@ -5,7 +5,7 @@
 //! - Sharding: multiple WS connections needed (500 instrument limit)
 //! - Market discovery: Gamma REST API polling (no CDC, no static config)
 //! - Keepalive: 10-second PING interval (vs Kraken's 30s)
-//! - Proactive reconnect: 15-minute timer due to known WS instability
+//! - Relies on 120s read timeout to detect stale connections (WS may go silent)
 
 use crate::error::ConnectorError;
 use crate::metrics::ConnectorMetrics;
@@ -22,11 +22,6 @@ use tracing::{error, info};
 
 /// Polymarket PING interval: 10 seconds (required by Polymarket, vs 30s for Kraken)
 const PING_INTERVAL_SECS: u64 = 10;
-
-/// Proactive reconnect interval: 15 minutes
-/// Polymarket WS is known to stop delivering data after ~20 minutes.
-/// Reconnect proactively before that happens.
-const PROACTIVE_RECONNECT_SECS: u64 = 900;
 
 /// Polymarket connector implementing the ssmd Connector trait
 pub struct PolymarketConnector {
@@ -90,11 +85,6 @@ impl PolymarketConnector {
             let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-            let mut reconnect_timer = interval(Duration::from_secs(PROACTIVE_RECONNECT_SECS));
-            reconnect_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // Skip the immediate first tick
-            reconnect_timer.tick().await;
-
             loop {
                 tokio::select! {
                     // Ping timer - send app-level "PING" text every 10s
@@ -106,17 +96,8 @@ impl PolymarketConnector {
                         update_activity(&activity_tracker);
                     }
 
-                    // Proactive reconnect timer - exit to trigger pod restart
-                    _ = reconnect_timer.tick() => {
-                        info!(
-                            shard = shard_id,
-                            interval_secs = PROACTIVE_RECONNECT_SECS,
-                            "Proactive reconnect triggered, exiting for restart"
-                        );
-                        std::process::exit(1);
-                    }
-
                     // Receive message from WebSocket
+                    // Stale connections detected by 120s read timeout in websocket.rs
                     result = ws.recv_raw() => {
                         update_activity(&activity_tracker);
 
@@ -320,8 +301,4 @@ mod tests {
         assert_eq!(PING_INTERVAL_SECS, 10);
     }
 
-    #[test]
-    fn test_proactive_reconnect_constant() {
-        assert_eq!(PROACTIVE_RECONNECT_SECS, 900); // 15 minutes
-    }
 }
