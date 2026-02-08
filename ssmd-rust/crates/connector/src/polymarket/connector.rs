@@ -8,7 +8,7 @@
 //! - Relies on 120s read timeout to detect stale connections (WS may go silent)
 
 use crate::error::ConnectorError;
-use crate::metrics::ConnectorMetrics;
+use crate::metrics::{ConnectorMetrics, ShardMetrics};
 use crate::polymarket::market_discovery::MarketDiscovery;
 use crate::polymarket::websocket::{
     PolymarketWebSocket, PolymarketWebSocketError, MAX_INSTRUMENTS_PER_CONNECTION,
@@ -20,7 +20,7 @@ use ssmd_metadata::SecmasterConfig;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Polymarket PING interval: 10 seconds (required by Polymarket, vs 30s for Kraken)
 const PING_INTERVAL_SECS: u64 = 10;
@@ -108,46 +108,71 @@ impl PolymarketConnector {
             })
     }
 
+    /// Extract event_type from raw JSON without full deserialization.
+    /// Looks for `"event_type":"<value>"` pattern near the start of the message.
+    fn extract_event_type(raw: &str) -> &str {
+        // Polymarket messages have "event_type":"<type>" near the start.
+        // Array-wrapped messages: [{"event_type":"..."}]
+        const NEEDLE: &str = "\"event_type\":\"";
+        if let Some(start) = raw.find(NEEDLE) {
+            let value_start = start + NEEDLE.len();
+            if let Some(end) = raw[value_start..].find('"') {
+                return &raw[value_start..value_start + end];
+            }
+        }
+        "unknown"
+    }
+
     /// Spawn a WebSocket receiver task for a shard (subset of token IDs)
     fn spawn_shard_receiver(
         shard_id: usize,
         mut ws: PolymarketWebSocket,
         tx: mpsc::Sender<Vec<u8>>,
         activity_tracker: Arc<AtomicU64>,
+        shard_metrics: ShardMetrics,
     ) {
-        fn update_activity(tracker: &AtomicU64) {
+        fn update_activity(tracker: &AtomicU64, metrics: &ShardMetrics, idle_secs: f64) {
             use std::time::{SystemTime, UNIX_EPOCH};
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             tracker.store(now, Ordering::SeqCst);
+            metrics.set_last_activity(now as f64);
+            metrics.set_idle_seconds(idle_secs);
         }
 
-        update_activity(&activity_tracker);
+        shard_metrics.set_connected();
+        update_activity(&activity_tracker, &shard_metrics, 0.0);
 
         tokio::spawn(async move {
             use std::time::Duration;
-            use tokio::time::interval;
+            use tokio::time::{interval, Instant};
 
             let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            let mut last_activity_instant = Instant::now();
 
             loop {
                 tokio::select! {
                     // Ping timer - send app-level "PING" text every 10s
                     _ = ping_interval.tick() => {
+                        let idle_secs = last_activity_instant.elapsed().as_secs();
+                        shard_metrics.set_idle_seconds(idle_secs as f64);
                         if let Err(e) = ws.ping().await {
                             error!(shard = shard_id, error = %e, "Failed to send Polymarket ping");
+                            shard_metrics.set_disconnected();
                             break;
                         }
-                        update_activity(&activity_tracker);
+                        update_activity(&activity_tracker, &shard_metrics, idle_secs as f64);
                     }
 
                     // Receive message from WebSocket
                     // Stale connections detected by 120s read timeout in websocket.rs
                     result = ws.recv_raw() => {
-                        update_activity(&activity_tracker);
+                        last_activity_instant = Instant::now();
+                        update_activity(&activity_tracker, &shard_metrics, 0.0);
 
                         match result {
                             Ok(raw_json) => {
@@ -156,19 +181,29 @@ impl PolymarketConnector {
                                     continue;
                                 }
 
-                                // Quick check: is this a market data message?
-                                // We forward raw bytes and let the writer parse for routing.
+                                // Extract event_type for metrics without full deserialization
+                                let event_type = Self::extract_event_type(&raw_json);
+                                match event_type {
+                                    "last_trade_price" => shard_metrics.inc_trade(),
+                                    "book" => shard_metrics.inc_orderbook(),
+                                    "price_change" | "best_bid_ask" => shard_metrics.inc_ticker(),
+                                    other => shard_metrics.inc_message(other),
+                                }
+
                                 if tx.send(raw_json.into_bytes()).await.is_err() {
-                                    info!(shard = shard_id, "Channel closed, stopping receiver");
+                                    warn!(shard = shard_id, "Channel closed, stopping receiver");
+                                    shard_metrics.set_disconnected();
                                     break;
                                 }
                             }
                             Err(PolymarketWebSocketError::ConnectionClosed) => {
                                 error!(shard = shard_id, "Polymarket WebSocket closed, exiting for restart");
+                                shard_metrics.set_disconnected();
                                 std::process::exit(1);
                             }
                             Err(e) => {
                                 error!(shard = shard_id, error = %e, "Polymarket WebSocket error, exiting for restart");
+                                shard_metrics.set_disconnected();
                                 std::process::exit(1);
                             }
                         }
@@ -269,11 +304,15 @@ impl Connector for PolymarketConnector {
 
             connector_metrics.set_markets_subscribed(shard_id, shard_tokens.len());
 
+            let shard_metrics = connector_metrics.for_shard(shard_id);
+            shard_metrics.set_connected();
+
             Self::spawn_shard_receiver(
                 shard_id,
                 ws,
                 tx.clone(),
                 Arc::clone(&activity_tracker),
+                shard_metrics,
             );
 
             info!(
@@ -362,4 +401,35 @@ mod tests {
         assert_eq!(PING_INTERVAL_SECS, 10);
     }
 
+    #[test]
+    fn test_extract_event_type() {
+        assert_eq!(
+            PolymarketConnector::extract_event_type(
+                r#"{"event_type":"last_trade_price","asset_id":"abc"}"#
+            ),
+            "last_trade_price"
+        );
+        assert_eq!(
+            PolymarketConnector::extract_event_type(
+                r#"{"event_type":"book","asset_id":"abc","bids":[]}"#
+            ),
+            "book"
+        );
+        assert_eq!(
+            PolymarketConnector::extract_event_type(
+                r#"[{"event_type":"price_change","market":"0x1234"}]"#
+            ),
+            "price_change"
+        );
+        assert_eq!(
+            PolymarketConnector::extract_event_type(r#"{"no_type":"value"}"#),
+            "unknown"
+        );
+        assert_eq!(
+            PolymarketConnector::extract_event_type(
+                r#"{"event_type":"best_bid_ask","market":"0x1234"}"#
+            ),
+            "best_bid_ask"
+        );
+    }
 }
