@@ -18,6 +18,7 @@ import {
   type Database,
 } from "../../lib/db/mod.ts";
 import type { NewPair } from "../../lib/db/mod.ts";
+import { MetricsRegistry } from "../../server/metrics.ts";
 
 const sc = StringCodec();
 
@@ -97,6 +98,7 @@ interface ConsumerConfig {
   flushIntervalMs: number;
   cleanupIntervalMs: number;
   retentionDays: number;
+  metricsPort: number;
 }
 
 /**
@@ -111,8 +113,40 @@ function loadConfig(): ConsumerConfig {
     flushIntervalMs: parseInt(Deno.env.get("FLUSH_INTERVAL_MS") ?? "300000", 10), // 5 min
     cleanupIntervalMs: parseInt(Deno.env.get("CLEANUP_INTERVAL_MS") ?? "3600000", 10), // 1 hr
     retentionDays: parseInt(Deno.env.get("RETENTION_DAYS") ?? "7", 10),
+    metricsPort: parseInt(Deno.env.get("METRICS_PORT") ?? "9090", 10),
   };
 }
+
+// Prometheus metrics for this consumer
+const metrics = new MetricsRegistry();
+const messagesProcessedMetric = metrics.counter(
+  "ssmd_funding_rate_messages_total",
+  "Total ticker messages processed"
+);
+const flushesCompletedMetric = metrics.counter(
+  "ssmd_funding_rate_flushes_total",
+  "Total flush cycles completed"
+);
+const snapshotsWrittenMetric = metrics.counter(
+  "ssmd_funding_rate_snapshots_total",
+  "Total snapshots written to DB"
+);
+const productsTrackedMetric = metrics.gauge(
+  "ssmd_funding_rate_products_tracked",
+  "Number of products currently tracked"
+);
+const lastFlushTimestampMetric = metrics.gauge(
+  "ssmd_funding_rate_last_flush_timestamp",
+  "Unix timestamp of last successful flush"
+);
+const bufferSizeMetric = metrics.gauge(
+  "ssmd_funding_rate_buffer_size",
+  "Current buffered ticker entries"
+);
+const consumerConnectedMetric = metrics.gauge(
+  "ssmd_funding_rate_connected",
+  "NATS consumer connected (1=yes, 0=no)"
+);
 
 /**
  * Extract product_id from NATS subject
@@ -192,6 +226,7 @@ Environment variables:
   FLUSH_INTERVAL_MS  Snapshot flush interval in ms (default: 300000 = 5 min)
   CLEANUP_INTERVAL_MS  Old snapshot cleanup interval in ms (default: 3600000 = 1 hr)
   RETENTION_DAYS     Days of snapshot retention (default: 7)
+  METRICS_PORT       HTTP metrics/health port (default: 9090)
 `);
     return;
   }
@@ -221,6 +256,7 @@ Environment variables:
   try {
     nc = await connect({ servers: config.natsUrl });
     log("NATS connected");
+    consumerConnectedMetric.set({}, 1);
   } catch (e) {
     logError(`Failed to connect to NATS: ${e}`);
     await closeDb();
@@ -274,6 +310,11 @@ Environment variables:
       snapshotsFlushed += count;
       flushCount++;
       log(`[flush #${flushCount}] Wrote ${count} snapshots (total: ${snapshotsFlushed})`);
+      flushesCompletedMetric.inc();
+      snapshotsWrittenMetric.inc({}, count);
+      lastFlushTimestampMetric.set({}, Date.now() / 1000);
+      productsTrackedMetric.set({}, tickerBuffers.size);
+      bufferSizeMetric.set({}, tickerBuffers.size);
     } catch (e) {
       logError(`Failed to flush snapshots: ${e}`);
     }
@@ -306,6 +347,8 @@ Environment variables:
     log("Shutting down...");
     clearInterval(flushTimer);
     clearInterval(cleanupTimer);
+    consumerConnectedMetric.set({}, 0);
+    await metricsServer.shutdown();
 
     // Final flush
     await flushSnapshots();
@@ -325,6 +368,36 @@ Environment variables:
 
   Deno.addSignalListener("SIGINT", shutdown);
   Deno.addSignalListener("SIGTERM", shutdown);
+
+  // Start metrics/health HTTP server
+  const metricsServer = Deno.serve(
+    { port: config.metricsPort, hostname: "0.0.0.0" },
+    (req) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/health") {
+        return new Response(JSON.stringify({ status: "ok" }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.pathname === "/ready") {
+        const ready = !shuttingDown;
+        return new Response(
+          JSON.stringify({ status: ready ? "ok" : "not_ready" }),
+          {
+            status: ready ? 200 : 503,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      }
+      if (url.pathname === "/metrics") {
+        return new Response(metrics.format(), {
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+      return new Response("Not Found", { status: 404 });
+    }
+  );
+  log(`Metrics server listening on :${config.metricsPort}`);
 
   // Consume messages
   const messages = await consumer.consume();
@@ -351,6 +424,7 @@ Environment variables:
       tickerBuffers.set(productId, buffer);
 
       messagesProcessed++;
+      messagesProcessedMetric.inc();
 
       // Log progress every 1000 messages
       if (messagesProcessed % 1000 === 0) {

@@ -58,6 +58,40 @@ export class Counter implements Metric {
 }
 
 /**
+ * Prometheus Gauge metric
+ */
+export class Gauge implements Metric {
+  private values: Map<string, number> = new Map();
+
+  constructor(
+    private name: string,
+    private help: string,
+    private labelNames: string[] = []
+  ) {}
+
+  /**
+   * Set the gauge value
+   */
+  set(labels: Labels = {}, value: number): void {
+    const key = JSON.stringify(labels);
+    this.values.set(key, value);
+  }
+
+  format(): string {
+    const lines: string[] = [];
+    lines.push(`# HELP ${this.name} ${this.help}`);
+    lines.push(`# TYPE ${this.name} gauge`);
+
+    for (const [key, value] of this.values) {
+      const labels = JSON.parse(key) as Labels;
+      lines.push(`${this.name}${formatLabels(labels)} ${value}`);
+    }
+
+    return lines.join("\n");
+  }
+}
+
+/**
  * Prometheus Histogram metric
  */
 export class Histogram implements Metric {
@@ -144,6 +178,15 @@ export class MetricsRegistry {
     const counter = new Counter(name, help, labels);
     this.metrics.set(name, counter);
     return counter;
+  }
+
+  /**
+   * Create and register a gauge
+   */
+  gauge(name: string, help: string, labels: string[] = []): Gauge {
+    const gauge = new Gauge(name, help, labels);
+    this.metrics.set(name, gauge);
+    return gauge;
   }
 
   /**
