@@ -27,6 +27,7 @@ import { handleMomentum } from "./momentum.ts";
 import { handleDq } from "./dq.ts";
 import { handleKraken } from "./kraken-sync.ts";
 import { handlePolymarket } from "./polymarket-sync.ts";
+import { runFundingRateConsumer } from "./funding-rate-consumer.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
@@ -137,6 +138,10 @@ export async function run(args: string[]): Promise<void> {
       await handlePolymarket(subcommand, flags);
       break;
 
+    case "funding-rate-consumer":
+      await runFundingRateConsumer(args.slice(1));
+      break;
+
     case "agent":
       // Launch the existing agent REPL
       await import("../../cli.ts");
@@ -229,6 +234,7 @@ function printHelp(): void {
   console.log("  kraken            Kraken spot + perpetuals sync");
   console.log("  polymarket        Polymarket conditions sync");
   console.log("  dq                Data quality checks (compare NATS vs Kalshi API)");
+  console.log("  funding-rate-consumer  Consume Kraken Futures funding rates from NATS");
   console.log("  agent             Start interactive agent REPL");
   console.log("");
   console.log("OPTIONS:");
