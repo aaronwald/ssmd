@@ -55,7 +55,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: ssmd-operators/go.mod
           cache-dependency-path: ssmd-operators/go.sum
