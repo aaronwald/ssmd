@@ -9,6 +9,7 @@ import {
   StringCodec,
   AckPolicy,
   DeliverPolicy,
+  Events,
 } from "npm:nats";
 import {
   getDb,
@@ -147,6 +148,10 @@ const consumerConnectedMetric = metrics.gauge(
   "ssmd_funding_rate_connected",
   "NATS consumer connected (1=yes, 0=no)"
 );
+const flushErrorsMetric = metrics.counter(
+  "ssmd_funding_rate_flush_errors_total",
+  "Total flush errors"
+);
 
 /**
  * Extract product_id from NATS subject
@@ -254,7 +259,14 @@ Environment variables:
   // Connect to NATS
   let nc: NatsConnection;
   try {
-    nc = await connect({ servers: config.natsUrl });
+    nc = await connect({
+      servers: config.natsUrl,
+      reconnect: true,
+      maxReconnectAttempts: -1,
+      reconnectTimeWait: 2000,
+      pingInterval: 30000,
+      maxPingOut: 3,
+    });
     log("NATS connected");
     consumerConnectedMetric.set({}, 1);
   } catch (e) {
@@ -262,6 +274,33 @@ Environment variables:
     await closeDb();
     Deno.exit(1);
   }
+
+  // Track NATS connection state for health probe
+  let natsConnected = true;
+
+  // Monitor NATS connection status (fire and forget)
+  (async () => {
+    for await (const status of nc.status()) {
+      switch (status.type) {
+        case Events.Disconnect:
+          natsConnected = false;
+          consumerConnectedMetric.set({}, 0);
+          logWarn("NATS disconnected");
+          break;
+        case Events.Reconnect:
+          natsConnected = true;
+          consumerConnectedMetric.set({}, 1);
+          log(`NATS reconnected to ${status.data}`);
+          break;
+        case Events.Error:
+          logError(`NATS error: ${status.data}`);
+          break;
+        case Events.LDM:
+          logWarn("NATS entered lame duck mode");
+          break;
+      }
+    }
+  })().catch(() => {});
 
   const js = nc.jetstream();
   const jsm = await nc.jetstreamManager();
@@ -293,6 +332,7 @@ Environment variables:
   let flushCount = 0;
   let cleanupCount = 0;
   const startTime = Date.now();
+  let lastFlushTs = Date.now() / 1000; // Initialize to now (skip first health check interval)
 
   /**
    * Flush buffered ticker data to pair_snapshots
@@ -313,10 +353,12 @@ Environment variables:
       flushesCompletedMetric.inc();
       snapshotsWrittenMetric.inc({}, count);
       lastFlushTimestampMetric.set({}, Date.now() / 1000);
+      lastFlushTs = Date.now() / 1000;
       productsTrackedMetric.set({}, tickerBuffers.size);
       bufferSizeMetric.set({}, tickerBuffers.size);
     } catch (e) {
       logError(`Failed to flush snapshots: ${e}`);
+      flushErrorsMetric.inc();
     }
   }
 
@@ -375,9 +417,12 @@ Environment variables:
     (req) => {
       const url = new URL(req.url);
       if (url.pathname === "/health") {
-        return new Response(JSON.stringify({ status: "ok" }), {
-          headers: { "content-type": "application/json" },
-        });
+        const flushAge = (Date.now() / 1000) - lastFlushTs;
+        const healthy = natsConnected && (flushAge < config.flushIntervalMs / 1000 * 2);
+        return new Response(
+          JSON.stringify({ status: healthy ? "ok" : "unhealthy", natsConnected, flushAgeSec: Math.round(flushAge) }),
+          { status: healthy ? 200 : 503, headers: { "content-type": "application/json" } },
+        );
       }
       if (url.pathname === "/ready") {
         const ready = !shuttingDown;
