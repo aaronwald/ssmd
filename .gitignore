@@ -16,3 +16,7 @@ target/
 
 # Git worktrees
 .worktrees/
+
+# Agent memory (local session state, not for public repo)
+.claude/agent-memory-local/
+**/agent-memory-local/
