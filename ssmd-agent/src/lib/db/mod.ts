@@ -75,6 +75,7 @@ export {
 // Fee operations
 export {
   upsertFeeChanges,
+  seedMissingFees,
   getCurrentFee,
   getFeeAsOf,
   listCurrentFees,

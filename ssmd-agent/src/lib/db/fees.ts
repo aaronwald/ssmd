@@ -160,6 +160,47 @@ export async function listCurrentFees(
 }
 
 /**
+ * Seed fee records for series that have no fee_changes but do have
+ * fee_type/fee_multiplier on their series metadata from the Kalshi API.
+ * This fills the gap where series launched with an initial fee schedule
+ * and never had a fee change recorded.
+ */
+export async function seedMissingFees(
+  db: Database,
+  seriesList: Array<{ ticker: string; fee_type: string; fee_multiplier: number }>
+): Promise<{ seeded: number; skipped: number }> {
+  let seeded = 0;
+  let skipped = 0;
+
+  for (const s of seriesList) {
+    // Check if series already has any fee record
+    const existing = await db
+      .select({ id: seriesFees.id })
+      .from(seriesFees)
+      .where(eq(seriesFees.seriesTicker, s.ticker))
+      .limit(1);
+
+    if (existing.length > 0) {
+      skipped++;
+      continue;
+    }
+
+    // Insert initial fee record with a sentinel effective_from date
+    await db.insert(seriesFees).values({
+      seriesTicker: s.ticker,
+      feeType: s.fee_type,
+      feeMultiplier: s.fee_multiplier.toString(),
+      effectiveFrom: new Date("2020-01-01T00:00:00Z"),
+      sourceId: `seed:${s.ticker}`,
+    });
+
+    seeded++;
+  }
+
+  return { seeded, skipped };
+}
+
+/**
  * Get fee sync statistics.
  */
 export async function getFeeStats(

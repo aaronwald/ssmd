@@ -1,8 +1,9 @@
 /**
  * Fees sync command - sync Kalshi fee schedules to PostgreSQL
  */
-import { getDb, closeDb, upsertFeeChanges } from "../../lib/db/mod.ts";
+import { getDb, closeDb, upsertFeeChanges, seedMissingFees } from "../../lib/db/mod.ts";
 import { createKalshiClient } from "../../lib/api/kalshi.ts";
+import { FeeTypeSchema } from "../../lib/types/fee.ts";
 
 const API_TIMEOUT_MS = 10000;
 
@@ -40,6 +41,7 @@ export interface FeeSyncResult {
   fetched: number;
   inserted: number;
   skipped: number;
+  seeded: number;
   durationMs: number;
 }
 
@@ -55,6 +57,7 @@ export async function runFeesSync(options: FeeSyncOptions = {}): Promise<FeeSync
     fetched: 0,
     inserted: 0,
     skipped: 0,
+    seeded: 0,
     durationMs: 0,
   };
 
@@ -76,6 +79,30 @@ export async function runFeesSync(options: FeeSyncOptions = {}): Promise<FeeSync
       console.log("[Fees] Dry run - skipping database writes");
     }
 
+    // Seed missing fees from series metadata.
+    // The fee_changes endpoint only returns series that have had a fee change.
+    // Series launched with an initial fee schedule (e.g., crypto) never appear.
+    // Fetch all series and seed fee records for any missing from series_fees.
+    console.log("[Fees] Checking for series with missing fee records...");
+    const allSeries = await client.fetchAllSeries();
+    const seriesWithFees = allSeries
+      .filter((s) => s.fee_type && FeeTypeSchema.safeParse(s.fee_type).success)
+      .map((s) => ({
+        ticker: s.ticker,
+        fee_type: s.fee_type!,
+        fee_multiplier: s.fee_multiplier ?? 1.0,
+      }));
+
+    console.log(`[Fees] Found ${seriesWithFees.length} series with fee metadata`);
+
+    if (!options.dryRun && seriesWithFees.length > 0) {
+      const seedResult = await seedMissingFees(db, seriesWithFees);
+      result.seeded = seedResult.seeded;
+      if (seedResult.seeded > 0) {
+        console.log(`[Fees] Seeded ${seedResult.seeded} missing fee records`);
+      }
+    }
+
     result.durationMs = Date.now() - startTime;
     return result;
   } finally {
@@ -91,6 +118,7 @@ export function printSyncSummary(result: FeeSyncResult): void {
   console.log(`Fetched:  ${result.fetched}`);
   console.log(`Inserted: ${result.inserted}`);
   console.log(`Skipped:  ${result.skipped} (duplicates)`);
+  console.log(`Seeded:   ${result.seeded} (from series metadata)`);
   console.log(`Duration: ${(result.durationMs / 1000).toFixed(2)}s`);
 }
 

@@ -19,6 +19,8 @@ export interface KalshiSeries {
   category: string;
   tags?: string[];
   volume?: number;
+  fee_type?: string;
+  fee_multiplier?: number;
 }
 
 /**
