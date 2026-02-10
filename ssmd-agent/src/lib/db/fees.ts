@@ -5,7 +5,7 @@
 import { eq, isNull, desc, and, lte, or, gt, lt, sql, asc } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import { seriesFees, type SeriesFee } from "./schema.ts";
-import type { SeriesFeeChange } from "../types/fee.ts";
+import { type SeriesFeeChange, type FeeType, FeeTypeSchema } from "../types/fee.ts";
 
 /**
  * Result of fee sync operation
@@ -167,7 +167,7 @@ export async function listCurrentFees(
  */
 export async function seedMissingFees(
   db: Database,
-  seriesList: Array<{ ticker: string; fee_type: string; fee_multiplier: number }>
+  seriesList: Array<{ ticker: string; fee_type: FeeType; fee_multiplier: number }>
 ): Promise<{ seeded: number; skipped: number }> {
   let seeded = 0;
   let skipped = 0;

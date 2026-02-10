@@ -89,7 +89,7 @@ export async function runFeesSync(options: FeeSyncOptions = {}): Promise<FeeSync
       .filter((s) => s.fee_type && FeeTypeSchema.safeParse(s.fee_type).success)
       .map((s) => ({
         ticker: s.ticker,
-        fee_type: s.fee_type!,
+        fee_type: FeeTypeSchema.parse(s.fee_type),
         fee_multiplier: s.fee_multiplier ?? 1.0,
       }));
 
