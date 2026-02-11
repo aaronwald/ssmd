@@ -146,6 +146,9 @@ async fn run_kalshi_connector(
         .map(|v| v.to_lowercase() == "true" || v == "1")
         .unwrap_or(false);
 
+    // Extract WebSocket URL from feed config (overrides hardcoded constants)
+    let ws_url = feed.get_latest_version().map(|v| v.endpoint.clone());
+
     // Check if lifecycle mode is enabled (dedicated lifecycle collector)
     let lifecycle_enabled = env_config.lifecycle.as_ref().is_some_and(|c| c.enabled);
 
@@ -179,7 +182,7 @@ async fn run_kalshi_connector(
             series_count = series_filter.as_ref().map(|f| f.len()).unwrap_or(0),
             "Creating Kalshi connector (lifecycle mode)"
         );
-        KalshiConnector::with_lifecycle(credentials, use_demo, lifecycle_config)
+        KalshiConnector::with_lifecycle(credentials, use_demo, lifecycle_config, ws_url.clone())
     } else if let Some(ref secmaster) = env_config.secmaster {
         if !secmaster.categories.is_empty() {
             // Inject API key from environment variable if not set in config
@@ -210,6 +213,7 @@ async fn run_kalshi_connector(
                         env_config.subscription.clone(),
                         cdc_config,
                         nats_url,
+                        ws_url.clone(),
                     )
                 } else {
                     warn!("CDC enabled but NATS URL not configured, falling back to static subscriptions");
@@ -218,6 +222,7 @@ async fn run_kalshi_connector(
                         use_demo,
                         secmaster_config,
                         env_config.subscription.clone(),
+                        ws_url.clone(),
                     )
                 }
             } else {
@@ -226,15 +231,16 @@ async fn run_kalshi_connector(
                     use_demo,
                     secmaster_config,
                     env_config.subscription.clone(),
+                    ws_url.clone(),
                 )
             }
         } else {
             info!(use_demo = use_demo, "Creating Kalshi connector (global mode)");
-            KalshiConnector::new(credentials, use_demo)
+            KalshiConnector::new(credentials, use_demo, ws_url.clone())
         }
     } else {
         info!(use_demo = use_demo, "Creating Kalshi connector (global mode)");
-        KalshiConnector::new(credentials, use_demo)
+        KalshiConnector::new(credentials, use_demo, ws_url)
     };
 
     // NATS transport required
@@ -269,9 +275,12 @@ async fn run_kraken_connector(
         .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_else(|_| vec!["BTC/USD".to_string(), "ETH/USD".to_string()]);
 
+    // Extract WebSocket URL from feed config (overrides hardcoded constants)
+    let ws_url = feed.get_latest_version().map(|v| v.endpoint.clone());
+
     info!(symbols = ?symbols, "Creating Kraken connector");
 
-    let connector = ssmd_connector_lib::kraken::KrakenConnector::new(symbols);
+    let connector = ssmd_connector_lib::kraken::KrakenConnector::new(symbols, ws_url);
 
     match env_config.transport.transport_type {
         TransportType::Nats => {
@@ -302,9 +311,12 @@ async fn run_kraken_futures_connector(
             "PF_ETHUSD".to_string(),
         ]);
 
+    // Extract WebSocket URL from feed config (overrides hardcoded constants)
+    let ws_url = feed.get_latest_version().map(|v| v.endpoint.clone());
+
     info!(product_ids = ?product_ids, "Creating Kraken Futures connector");
 
-    let connector = ssmd_connector_lib::kraken_futures::KrakenFuturesConnector::new(product_ids);
+    let connector = ssmd_connector_lib::kraken_futures::KrakenFuturesConnector::new(product_ids, ws_url);
 
     match env_config.transport.transport_type {
         TransportType::Nats => {
@@ -361,10 +373,13 @@ async fn run_polymarket_connector(
         .ok()
         .map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
 
+    // Extract WebSocket URL from feed config (overrides hardcoded constants)
+    let ws_url = feed.get_latest_version().map(|v| v.endpoint.clone());
+
     let connector = if let Some(tokens) = static_tokens {
         // Priority 1: Static token IDs from environment variable
         info!(tokens = tokens.len(), "Creating Polymarket connector with static token IDs");
-        ssmd_connector_lib::polymarket::PolymarketConnector::new(tokens)
+        ssmd_connector_lib::polymarket::PolymarketConnector::new(tokens, ws_url)
     } else if let Some(ref secmaster) = env_config.secmaster {
         if !secmaster.categories.is_empty() {
             // Priority 2: Secmaster-driven filtering by category
@@ -380,7 +395,7 @@ async fn run_polymarket_connector(
                 "Creating Polymarket connector with secmaster category filtering"
             );
 
-            ssmd_connector_lib::polymarket::PolymarketConnector::with_secmaster(secmaster_config)
+            ssmd_connector_lib::polymarket::PolymarketConnector::with_secmaster(secmaster_config, ws_url)
         } else {
             // Secmaster configured but no categories — fall through to Gamma discovery
             let min_volume = std::env::var("POLYMARKET_MIN_VOLUME")
@@ -403,7 +418,7 @@ async fn run_polymarket_connector(
                 .with_min_volume(min_volume)
                 .with_min_liquidity(min_liquidity);
 
-            ssmd_connector_lib::polymarket::PolymarketConnector::with_discovery(discovery)
+            ssmd_connector_lib::polymarket::PolymarketConnector::with_discovery(discovery, ws_url)
         }
     } else {
         // Priority 3: Fallback to Gamma REST API discovery
@@ -427,7 +442,7 @@ async fn run_polymarket_connector(
             .with_min_volume(min_volume)
             .with_min_liquidity(min_liquidity);
 
-        ssmd_connector_lib::polymarket::PolymarketConnector::with_discovery(discovery)
+        ssmd_connector_lib::polymarket::PolymarketConnector::with_discovery(discovery, ws_url)
     };
 
     match env_config.transport.transport_type {

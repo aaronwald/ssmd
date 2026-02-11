@@ -50,6 +50,8 @@ pub enum ShardCommand {
 pub struct KalshiConnector {
     credentials: KalshiCredentials,
     use_demo: bool,
+    /// WebSocket URL override from feed config (None = use default constant)
+    ws_url: Option<String>,
     secmaster_config: Option<SecmasterConfig>,
     subscription_config: SubscriptionConfig,
     /// CDC configuration for dynamic subscriptions
@@ -66,11 +68,12 @@ pub struct KalshiConnector {
 
 impl KalshiConnector {
     /// Create a new Kalshi connector
-    pub fn new(credentials: KalshiCredentials, use_demo: bool) -> Self {
+    pub fn new(credentials: KalshiCredentials, use_demo: bool, ws_url: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel(1000);
         Self {
             credentials,
             use_demo,
+            ws_url,
             secmaster_config: None,
             subscription_config: SubscriptionConfig::default(),
             cdc_config: None,
@@ -88,6 +91,7 @@ impl KalshiConnector {
         use_demo: bool,
         secmaster_config: SecmasterConfig,
         subscription_config: Option<SubscriptionConfig>,
+        ws_url: Option<String>,
     ) -> Self {
         let (tx, rx) = mpsc::channel(1000);
         // Validate subscription config to clamp batch_size to valid range
@@ -101,6 +105,7 @@ impl KalshiConnector {
         Self {
             credentials,
             use_demo,
+            ws_url,
             secmaster_config: Some(secmaster_config),
             subscription_config: validated_config,
             cdc_config: None,
@@ -120,6 +125,7 @@ impl KalshiConnector {
         subscription_config: Option<SubscriptionConfig>,
         cdc_config: CdcConfig,
         nats_url: String,
+        ws_url: Option<String>,
     ) -> Self {
         let (tx, rx) = mpsc::channel(1000);
         let (validated_config, was_clamped) = subscription_config.unwrap_or_default().validated();
@@ -132,6 +138,7 @@ impl KalshiConnector {
         Self {
             credentials,
             use_demo,
+            ws_url,
             secmaster_config: Some(secmaster_config),
             subscription_config: validated_config,
             cdc_config: Some(cdc_config),
@@ -151,11 +158,13 @@ impl KalshiConnector {
         credentials: KalshiCredentials,
         use_demo: bool,
         lifecycle_config: LifecycleConfig,
+        ws_url: Option<String>,
     ) -> Self {
         let (tx, rx) = mpsc::channel(1000);
         Self {
             credentials,
             use_demo,
+            ws_url,
             secmaster_config: None,
             subscription_config: SubscriptionConfig::default(),
             cdc_config: None,
@@ -519,7 +528,7 @@ impl Connector for KalshiConnector {
                     // Record markets per shard
                     connector_metrics.set_markets_subscribed(shard_id, shard_tickers.len());
 
-                    let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
+                    let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo, self.ws_url.as_deref())
                         .await
                         .map_err(|e| ConnectorError::ConnectionFailed(format!(
                             "shard {} connection: {}", shard_id, e
@@ -630,7 +639,7 @@ impl Connector for KalshiConnector {
                 connector_metrics.set_shards_total(1);
                 connector_metrics.set_markets_subscribed(0, 0); // Unknown market count in global mode
 
-                let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
+                let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo, self.ws_url.as_deref())
                     .await
                     .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
@@ -645,7 +654,7 @@ impl Connector for KalshiConnector {
                 connector_metrics.set_shards_total(1);
                 connector_metrics.set_markets_subscribed(0, 0);
 
-                let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
+                let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo, self.ws_url.as_deref())
                     .await
                     .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
@@ -663,7 +672,7 @@ impl Connector for KalshiConnector {
             connector_metrics.set_shards_total(1);
             connector_metrics.set_markets_subscribed(0, 0);
 
-            let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo)
+            let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo, self.ws_url.as_deref())
                 .await
                 .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
@@ -708,7 +717,7 @@ mod tests {
     #[test]
     fn test_connector_creation() {
         let credentials = create_test_credentials().unwrap();
-        let connector = KalshiConnector::new(credentials, true);
+        let connector = KalshiConnector::new(credentials, true, None);
 
         assert!(connector.tx.is_some());
         assert!(connector.rx.is_some());
@@ -718,7 +727,7 @@ mod tests {
     #[test]
     fn test_connector_messages_takes_receiver() {
         let credentials = create_test_credentials().unwrap();
-        let mut connector = KalshiConnector::new(credentials, true);
+        let mut connector = KalshiConnector::new(credentials, true, None);
 
         let _rx = connector.messages();
         assert!(connector.rx.is_none());

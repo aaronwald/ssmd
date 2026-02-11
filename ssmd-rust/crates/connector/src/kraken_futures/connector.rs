@@ -21,16 +21,19 @@ use crate::traits::Connector;
 
 pub struct KrakenFuturesConnector {
     product_ids: Vec<String>,
+    /// WebSocket URL override from feed config (None = use default constant)
+    ws_url: Option<String>,
     tx: Option<mpsc::Sender<Vec<u8>>>,
     rx: Option<mpsc::Receiver<Vec<u8>>>,
     last_ws_activity_epoch_secs: Arc<AtomicU64>,
 }
 
 impl KrakenFuturesConnector {
-    pub fn new(product_ids: Vec<String>) -> Self {
+    pub fn new(product_ids: Vec<String>, ws_url: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel(4096);
         Self {
             product_ids,
+            ws_url,
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
@@ -150,7 +153,7 @@ impl Connector for KrakenFuturesConnector {
         let shard_metrics = connector_metrics.for_shard(0);
 
         // Connect to Kraken Futures WS
-        let mut ws = KrakenFuturesWebSocket::connect()
+        let mut ws = KrakenFuturesWebSocket::connect(self.ws_url.as_deref())
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
@@ -197,7 +200,7 @@ mod tests {
     #[test]
     fn test_connector_creation() {
         let connector =
-            KrakenFuturesConnector::new(vec!["PF_XBTUSD".to_string(), "PF_ETHUSD".to_string()]);
+            KrakenFuturesConnector::new(vec!["PF_XBTUSD".to_string(), "PF_ETHUSD".to_string()], None);
         assert!(connector.tx.is_some());
         assert!(connector.rx.is_some());
         assert_eq!(connector.product_ids.len(), 2);
@@ -205,14 +208,14 @@ mod tests {
 
     #[test]
     fn test_connector_messages_takes_receiver() {
-        let mut connector = KrakenFuturesConnector::new(vec!["PF_XBTUSD".to_string()]);
+        let mut connector = KrakenFuturesConnector::new(vec!["PF_XBTUSD".to_string()], None);
         let _rx = connector.messages();
         assert!(connector.rx.is_none());
     }
 
     #[test]
     fn test_connector_activity_handle() {
-        let connector = KrakenFuturesConnector::new(vec!["PF_XBTUSD".to_string()]);
+        let connector = KrakenFuturesConnector::new(vec!["PF_XBTUSD".to_string()], None);
         let handle = connector.activity_handle();
         assert!(handle.is_some());
     }

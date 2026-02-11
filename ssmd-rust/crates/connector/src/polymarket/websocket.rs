@@ -54,8 +54,11 @@ impl PolymarketWebSocket {
     const READ_TIMEOUT_SECS: u64 = 120;
 
     /// Connect to Polymarket CLOB WebSocket (no authentication needed for market channel)
-    pub async fn connect() -> Result<Self, PolymarketWebSocketError> {
-        info!(url = %POLYMARKET_WS_URL, "Connecting to Polymarket WebSocket");
+    ///
+    /// If `url` is provided, it overrides the default URL.
+    pub async fn connect(url: Option<&str>) -> Result<Self, PolymarketWebSocketError> {
+        let url = url.unwrap_or(POLYMARKET_WS_URL);
+        info!(url = %url, "Connecting to Polymarket WebSocket");
 
         let config = WebSocketConfig {
             max_message_size: Some(Self::MAX_MESSAGE_SIZE),
@@ -64,7 +67,7 @@ impl PolymarketWebSocket {
         };
 
         let (ws, response) =
-            connect_async_with_config(POLYMARKET_WS_URL, Some(config), false).await?;
+            connect_async_with_config(url, Some(config), false).await?;
 
         info!(status = ?response.status(), "Polymarket WebSocket connected");
 

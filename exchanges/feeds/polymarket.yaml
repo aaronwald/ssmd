@@ -8,5 +8,5 @@ versions:
     protocol:
       transport: wss
       message: json
-    endpoint: wss://ws-subscriptions-clob.polymarket.com/ws/
+    endpoint: wss://ws-subscriptions-clob.polymarket.com/ws/market
     auth_method: none

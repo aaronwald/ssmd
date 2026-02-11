@@ -17,6 +17,8 @@ use tracing::{debug, error, info, trace};
 /// Kraken connector implementing the ssmd Connector trait
 pub struct KrakenConnector {
     symbols: Vec<String>,
+    /// WebSocket URL override from feed config (None = use default constant)
+    ws_url: Option<String>,
     tx: Option<mpsc::Sender<Vec<u8>>>,
     rx: Option<mpsc::Receiver<Vec<u8>>>,
     /// Last WebSocket activity timestamp (epoch seconds)
@@ -25,10 +27,11 @@ pub struct KrakenConnector {
 
 impl KrakenConnector {
     /// Create a new Kraken connector with the given symbols
-    pub fn new(symbols: Vec<String>) -> Self {
+    pub fn new(symbols: Vec<String>, ws_url: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel(1000);
         Self {
             symbols,
+            ws_url,
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
@@ -144,7 +147,7 @@ impl Connector for KrakenConnector {
         connector_metrics.set_markets_subscribed(0, self.symbols.len());
 
         // Connect to Kraken WS
-        let mut ws = KrakenWebSocket::connect()
+        let mut ws = KrakenWebSocket::connect(self.ws_url.as_deref())
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
@@ -194,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_connector_creation() {
-        let connector = KrakenConnector::new(vec!["BTC/USD".to_string(), "ETH/USD".to_string()]);
+        let connector = KrakenConnector::new(vec!["BTC/USD".to_string(), "ETH/USD".to_string()], None);
         assert!(connector.tx.is_some());
         assert!(connector.rx.is_some());
         assert_eq!(connector.symbols.len(), 2);
@@ -203,14 +206,14 @@ mod tests {
     #[test]
     fn test_connector_messages_takes_receiver() {
         let mut connector =
-            KrakenConnector::new(vec!["BTC/USD".to_string()]);
+            KrakenConnector::new(vec!["BTC/USD".to_string()], None);
         let _rx = connector.messages();
         assert!(connector.rx.is_none());
     }
 
     #[test]
     fn test_connector_activity_handle() {
-        let connector = KrakenConnector::new(vec!["BTC/USD".to_string()]);
+        let connector = KrakenConnector::new(vec!["BTC/USD".to_string()], None);
         let handle = connector.activity_handle();
         assert!(handle.is_some());
     }

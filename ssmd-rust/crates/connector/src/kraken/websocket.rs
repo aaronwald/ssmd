@@ -46,8 +46,11 @@ impl KrakenWebSocket {
     const MAX_MESSAGE_SIZE: usize = 1_048_576;
 
     /// Connect to Kraken v2 WebSocket (no authentication needed for public channels)
-    pub async fn connect() -> Result<Self, KrakenWebSocketError> {
-        info!(url = %KRAKEN_WS_URL, "Connecting to Kraken WebSocket v2");
+    ///
+    /// If `url` is provided, it overrides the default URL.
+    pub async fn connect(url: Option<&str>) -> Result<Self, KrakenWebSocketError> {
+        let url = url.unwrap_or(KRAKEN_WS_URL);
+        info!(url = %url, "Connecting to Kraken WebSocket v2");
 
         let config = WebSocketConfig {
             max_message_size: Some(Self::MAX_MESSAGE_SIZE),
@@ -56,7 +59,7 @@ impl KrakenWebSocket {
         };
 
         let (ws, response) =
-            connect_async_with_config(KRAKEN_WS_URL, Some(config), false).await?;
+            connect_async_with_config(url, Some(config), false).await?;
 
         info!(status = ?response.status(), "Kraken WebSocket connected");
 

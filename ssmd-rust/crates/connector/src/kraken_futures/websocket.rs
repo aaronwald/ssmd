@@ -45,14 +45,17 @@ pub struct KrakenFuturesWebSocket {
 
 impl KrakenFuturesWebSocket {
     /// Connect to the Kraken Futures WebSocket endpoint.
-    pub async fn connect() -> Result<Self, KrakenFuturesWsError> {
+    ///
+    /// If `url` is provided, it overrides the default URL.
+    pub async fn connect(url: Option<&str>) -> Result<Self, KrakenFuturesWsError> {
+        let url = url.unwrap_or(KRAKEN_FUTURES_WS_URL);
         let config = tungstenite::protocol::WebSocketConfig {
             max_message_size: Some(MAX_MESSAGE_SIZE),
             ..Default::default()
         };
 
-        info!(url = KRAKEN_FUTURES_WS_URL, "Connecting to Kraken Futures WS");
-        let (ws, _) = connect_async_with_config(KRAKEN_FUTURES_WS_URL, Some(config), false).await?;
+        info!(url = %url, "Connecting to Kraken Futures WS");
+        let (ws, _) = connect_async_with_config(url, Some(config), false).await?;
         info!("Connected to Kraken Futures WS");
 
         Ok(Self { ws })

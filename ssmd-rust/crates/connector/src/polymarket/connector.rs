@@ -33,6 +33,8 @@ pub struct PolymarketConnector {
     discovery: Option<MarketDiscovery>,
     /// Optional secmaster config for category-based token filtering
     secmaster_config: Option<SecmasterConfig>,
+    /// WebSocket URL override from feed config (None = use default constant)
+    ws_url: Option<String>,
     tx: Option<mpsc::Sender<Vec<u8>>>,
     rx: Option<mpsc::Receiver<Vec<u8>>>,
     /// Last WebSocket activity timestamp (epoch seconds)
@@ -41,12 +43,13 @@ pub struct PolymarketConnector {
 
 impl PolymarketConnector {
     /// Create a new Polymarket connector with static token IDs
-    pub fn new(token_ids: Vec<String>) -> Self {
+    pub fn new(token_ids: Vec<String>, ws_url: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel(2000); // Larger buffer for multi-shard reconnect bursts
         Self {
             token_ids,
             discovery: None,
             secmaster_config: None,
+            ws_url,
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
@@ -54,12 +57,13 @@ impl PolymarketConnector {
     }
 
     /// Create a new Polymarket connector with market discovery
-    pub fn with_discovery(discovery: MarketDiscovery) -> Self {
+    pub fn with_discovery(discovery: MarketDiscovery, ws_url: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel(2000);
         Self {
             token_ids: Vec::new(),
             discovery: Some(discovery),
             secmaster_config: None,
+            ws_url,
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
@@ -67,12 +71,13 @@ impl PolymarketConnector {
     }
 
     /// Create a new Polymarket connector with secmaster category-based filtering
-    pub fn with_secmaster(secmaster_config: SecmasterConfig) -> Self {
+    pub fn with_secmaster(secmaster_config: SecmasterConfig, ws_url: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel(2000);
         Self {
             token_ids: Vec::new(),
             discovery: None,
             secmaster_config: Some(secmaster_config),
+            ws_url,
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
@@ -294,7 +299,7 @@ impl Connector for PolymarketConnector {
                 "Connecting shard"
             );
 
-            let mut ws = PolymarketWebSocket::connect()
+            let mut ws = PolymarketWebSocket::connect(self.ws_url.as_deref())
                 .await
                 .map_err(|e| ConnectorError::ConnectionFailed(format!("shard {}: {}", shard_id, e)))?;
 
@@ -354,7 +359,7 @@ mod tests {
     #[test]
     fn test_connector_creation() {
         let connector =
-            PolymarketConnector::new(vec!["token1".to_string(), "token2".to_string()]);
+            PolymarketConnector::new(vec!["token1".to_string(), "token2".to_string()], None);
         assert!(connector.tx.is_some());
         assert!(connector.rx.is_some());
         assert_eq!(connector.token_ids.len(), 2);
@@ -362,14 +367,14 @@ mod tests {
 
     #[test]
     fn test_connector_messages_takes_receiver() {
-        let mut connector = PolymarketConnector::new(vec!["token1".to_string()]);
+        let mut connector = PolymarketConnector::new(vec!["token1".to_string()], None);
         let _rx = connector.messages();
         assert!(connector.rx.is_none());
     }
 
     #[test]
     fn test_connector_activity_handle() {
-        let connector = PolymarketConnector::new(vec!["token1".to_string()]);
+        let connector = PolymarketConnector::new(vec!["token1".to_string()], None);
         let handle = connector.activity_handle();
         assert!(handle.is_some());
     }
@@ -377,7 +382,7 @@ mod tests {
     #[test]
     fn test_channel_buffer_size() {
         // Verify we use 2000 buffer (larger than default 1000)
-        let connector = PolymarketConnector::new(vec!["token1".to_string()]);
+        let connector = PolymarketConnector::new(vec!["token1".to_string()], None);
         assert!(connector.tx.is_some());
     }
 
