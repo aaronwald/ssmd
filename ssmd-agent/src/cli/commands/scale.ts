@@ -32,6 +32,7 @@ const COMPONENTS: Component[] = [
   { label: "worker", deployment: "ssmd-worker", podLabel: "app=ssmd-worker" },
   { label: "connectors", selector: "app.kubernetes.io/name=ssmd-connector" },
   { label: "lifecycle-consumer", deployment: "ssmd-lifecycle-consumer" },
+  { label: "funding-rate-consumer", deployment: "ssmd-funding-rate-consumer" },
   { label: "signals", selector: "app.kubernetes.io/name=ssmd-signal" },
   { label: "momentum", deployment: "ssmd-momentum", podLabel: "app=ssmd-momentum" },
   { label: "notifier", deployment: "ssmd-notifier", podLabel: "app=ssmd-notifier" },
