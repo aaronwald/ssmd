@@ -75,7 +75,7 @@ Each exchange has its own module in `ssmd-rust/crates/connector/src/`:
 
 | Module | Protocol | Endpoint |
 |--------|----------|----------|
-| `kalshi/` | Kalshi WS | `wss://api.elections.kalshi.com/trade-api/ws/v2` |
+| `kalshi/` | Kalshi WS | `wss://api.kalshi.com/trade-api/ws/v2` |
 | `kraken/` | Kraken WS v2 | `wss://ws.kraken.com/v2` |
 | `kraken_futures/` | Kraken Futures WS v1 | `wss://futures.kraken.com/ws/v1` |
 | `polymarket/` | Polymarket CLOB WS | `wss://ws-subscriptions-clob.polymarket.com/ws/market` |

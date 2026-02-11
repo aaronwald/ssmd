@@ -27,7 +27,7 @@ pub struct SubscriptionResult {
 pub const MAX_MARKETS_PER_SUBSCRIPTION: usize = 256;
 
 /// Production WebSocket URL
-pub const KALSHI_WS_URL: &str = "wss://api.elections.kalshi.com/trade-api/ws/v2";
+pub const KALSHI_WS_URL: &str = "wss://api.kalshi.com/trade-api/ws/v2";
 
 /// Demo WebSocket URL
 pub const KALSHI_WS_DEMO_URL: &str = "wss://demo-api.kalshi.co/trade-api/ws/v2";
@@ -81,7 +81,7 @@ impl KalshiWebSocket {
         let host = url_without_scheme
             .split('/')
             .next()
-            .unwrap_or("api.elections.kalshi.com");
+            .unwrap_or("api.kalshi.com");
 
         let request = Request::builder()
             .uri(url)
