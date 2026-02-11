@@ -8,7 +8,7 @@ versions:
     protocol:
       transport: wss
       message: json
-    endpoint: wss://api.kalshi.com/trade-api/ws/v2
+    endpoint: wss://api.elections.kalshi.com/trade-api/ws/v2
     auth_method: api_key
     rate_limit_per_second: 10
 
