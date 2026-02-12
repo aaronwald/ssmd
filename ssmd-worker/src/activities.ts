@@ -1,7 +1,6 @@
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
-import https from 'https';
-import http from 'http';
+import { createTransport } from 'nodemailer';
 import { Context } from '@temporalio/activity';
 
 export interface SyncResult {
@@ -704,31 +703,76 @@ export interface NotificationInput {
   message: string;
   priority?: 'min' | 'low' | 'default' | 'high' | 'urgent';
   tags?: string[];
-  /** Optional topic override. If not set, uses path from NTFY_URL (default: ssmd-secmaster) */
+  /** Optional topic override (ntfy only). */
   topic?: string;
 }
 
 /**
- * Send notification to ntfy.sh
- * NTFY_URL should be the base URL (e.g., http://ntfy.observability.svc.cluster.local)
- * Topic is appended as path. Default topic: ssmd-secmaster
+ * Send notification via configured backend.
+ *
+ * Feature flag: NOTIFY_BACKEND env var
+ *   - "email" — Gmail SMTP (requires SMTP_USER, SMTP_PASS, SMTP_TO)
+ *   - "ntfy"  — ntfy HTTP POST (requires NTFY_URL)
+ *   - unset   — skips silently
  */
 export async function sendNotification(input: NotificationInput): Promise<void> {
-  const ntfyUrl = process.env.NTFY_URL;
-  if (!ntfyUrl) {
-    console.log('NTFY_URL not set, skipping notification');
+  const backend = process.env.NOTIFY_BACKEND;
+
+  if (backend === 'email') {
+    return sendEmail(input);
+  } else if (backend === 'ntfy') {
+    return sendNtfy(input);
+  } else {
+    console.log('NOTIFY_BACKEND not set, skipping notification');
+  }
+}
+
+async function sendEmail(input: NotificationInput): Promise<void> {
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const to = process.env.SMTP_TO;
+
+  if (!user || !pass || !to) {
+    console.log('SMTP_USER/SMTP_PASS/SMTP_TO not set, skipping email');
     return;
   }
 
+  const transport = createTransport({
+    host: 'smtp.gmail.com',
+    port: 587,
+    secure: false,
+    auth: { user, pass },
+  });
+
+  const priorityTag = input.priority === 'urgent' || input.priority === 'high' ? 'HIGH' : '';
+  const subject = priorityTag
+    ? `[${priorityTag}] ${input.title}`
+    : input.title;
+
+  await transport.sendMail({
+    from: user,
+    to,
+    subject,
+    text: input.message,
+  });
+
+  console.log('Email sent: ' + input.title);
+}
+
+async function sendNtfy(input: NotificationInput): Promise<void> {
+  const ntfyUrl = process.env.NTFY_URL;
+  if (!ntfyUrl) {
+    console.log('NTFY_URL not set, skipping ntfy notification');
+    return;
+  }
+
+  const https = await import('https');
+  const http = await import('http');
   const url = new URL(ntfyUrl);
 
-  // If topic is provided, override the path. Otherwise use existing path from NTFY_URL.
-  // This ensures backwards compatibility: old NTFY_URL with topic in path still works,
-  // and new base URL + explicit topic also works.
   if (input.topic) {
     url.pathname = '/' + input.topic;
   } else if (url.pathname === '/') {
-    // Base URL with no topic and no topic param — use default
     url.pathname = '/ssmd-secmaster';
   }
 
@@ -754,10 +798,9 @@ export async function sendNotification(input: NotificationInput): Promise<void> 
         headers,
       },
       (res) => {
-        // Drain response body to prevent socket leak
         res.resume();
         if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-          console.log('Notification sent: ' + input.title);
+          console.log('Ntfy sent: ' + input.title);
           resolve();
         } else {
           reject(new Error('ntfy request failed with status ' + res.statusCode));
