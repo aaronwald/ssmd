@@ -150,6 +150,11 @@ spec:
                     pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                     x-kubernetes-int-or-string: true
                 type: object
+              serviceAccountName:
+                description: |-
+                  ServiceAccountName is the Kubernetes ServiceAccount for the archiver pod.
+                  Required for GKE Workload Identity (maps to a GCP service account).
+                type: string
               source:
                 description: Source configures what to archive from NATS
                 properties:

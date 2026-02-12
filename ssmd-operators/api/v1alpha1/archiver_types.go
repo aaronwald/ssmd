@@ -65,6 +65,11 @@ type ArchiverSpec struct {
 	// Resources configures CPU/memory for the archiver pod
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// ServiceAccountName is the Kubernetes ServiceAccount for the archiver pod.
+	// Required for GKE Workload Identity (maps to a GCP service account).
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 }
 
 // ArchiverSourceConfig defines the NATS source settings

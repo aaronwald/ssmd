@@ -530,9 +530,10 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					Containers:       []corev1.Container{container},
-					Volumes:          volumes,
-					ImagePullSecrets: []corev1.LocalObjectReference{{Name: "ghcr-secret"}},
+					ServiceAccountName: archiver.Spec.ServiceAccountName,
+					Containers:         []corev1.Container{container},
+					Volumes:            volumes,
+					ImagePullSecrets:   []corev1.LocalObjectReference{{Name: "ghcr-secret"}},
 				},
 			},
 		},
@@ -580,6 +581,11 @@ func (r *ArchiverReconciler) deploymentNeedsUpdate(current, desired *appsv1.Depl
 
 	// Check volumes
 	if !reflect.DeepEqual(current.Spec.Template.Spec.Volumes, desired.Spec.Template.Spec.Volumes) {
+		return true
+	}
+
+	// Check ServiceAccountName
+	if current.Spec.Template.Spec.ServiceAccountName != desired.Spec.Template.Spec.ServiceAccountName {
 		return true
 	}
 
@@ -655,7 +661,10 @@ func (r *ArchiverReconciler) deploymentName(archiver *ssmdv1alpha1.Archiver) str
 	return fmt.Sprintf("%s-archiver", archiver.Name)
 }
 
-// constructSyncJob builds a Job to sync local data to GCS on archiver deletion
+// constructSyncJob builds a Job to sync local data to GCS on archiver deletion.
+// Supports two auth modes:
+// - Workload Identity (GKE): set serviceAccountName on the Archiver CR, omit secretRef
+// - Key file (homelab/non-GKE): set secretRef on remote storage config
 func (r *ArchiverReconciler) constructSyncJob(archiver *ssmdv1alpha1.Archiver) *batchv1.Job {
 	labels := map[string]string{
 		"app.kubernetes.io/name":       "ssmd-archiver-sync",
@@ -681,6 +690,56 @@ func (r *ArchiverReconciler) constructSyncJob(archiver *ssmdv1alpha1.Archiver) *
 		remotePath = fmt.Sprintf("gs://%s/%s/", archiver.Spec.Storage.Remote.Bucket, archiver.Spec.Storage.Remote.Prefix)
 	}
 
+	// Build sync command and volumes based on auth mode
+	useKeyFile := archiver.Spec.Storage.Remote.SecretRef != ""
+
+	var syncCommand string
+	var syncVolumeMounts []corev1.VolumeMount
+	var syncEnv []corev1.EnvVar
+
+	syncVolumeMounts = []corev1.VolumeMount{
+		{Name: "data", MountPath: "/data"},
+	}
+
+	syncCmd := fmt.Sprintf(`if [ -d "%s" ] && [ "$(ls -A %s 2>/dev/null)" ]; then echo "Syncing %s to %s"; gsutil -m rsync -r %s %s; else echo "No data at %s, skipping"; fi`, localPath, localPath, localPath, remotePath, localPath, remotePath, localPath)
+
+	if useKeyFile {
+		// Key-file auth: activate service account before gsutil
+		syncCommand = fmt.Sprintf(`gcloud auth activate-service-account --key-file=/etc/gcs/key.json && %s`, syncCmd)
+		syncVolumeMounts = append(syncVolumeMounts, corev1.VolumeMount{
+			Name: "gcs-credentials", MountPath: "/etc/gcs", ReadOnly: true,
+		})
+		syncEnv = []corev1.EnvVar{{
+			Name:  "GOOGLE_APPLICATION_CREDENTIALS",
+			Value: "/etc/gcs/key.json",
+		}}
+	} else {
+		// Workload Identity: gsutil uses credentials from GKE metadata server
+		syncCommand = syncCmd
+	}
+
+	volumes := []corev1.Volume{
+		{
+			Name: "data",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: archiver.Spec.Storage.Local.PVCName,
+				},
+			},
+		},
+	}
+
+	if useKeyFile {
+		volumes = append(volumes, corev1.Volume{
+			Name: "gcs-credentials",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: archiver.Spec.Storage.Remote.SecretRef,
+				},
+			},
+		})
+	}
+
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-final-sync", archiver.Name),
@@ -693,7 +752,8 @@ func (r *ArchiverReconciler) constructSyncJob(archiver *ssmdv1alpha1.Archiver) *
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					ServiceAccountName: archiver.Spec.ServiceAccountName,
+					RestartPolicy:      corev1.RestartPolicyNever,
 					// Init container waits for archiver to write .sync-ready marker
 					InitContainers: []corev1.Container{{
 						Name:  "wait-for-flush",
@@ -726,35 +786,12 @@ fi`, markerPath, markerPath, markerPath, markerPath, markerPath),
 						Image: "gcr.io/google.com/cloudsdktool/google-cloud-cli:slim",
 						Command: []string{
 							"sh", "-c",
-							fmt.Sprintf(`gcloud auth activate-service-account --key-file=/etc/gcs/key.json && if [ -d "%s" ] && [ "$(ls -A %s 2>/dev/null)" ]; then echo "Syncing %s to %s"; gsutil -m rsync -r %s %s; else echo "No data at %s, skipping"; fi`, localPath, localPath, localPath, remotePath, localPath, remotePath, localPath),
+							syncCommand,
 						},
-						VolumeMounts: []corev1.VolumeMount{
-							{Name: "data", MountPath: "/data"},
-							{Name: "gcs-credentials", MountPath: "/etc/gcs", ReadOnly: true},
-						},
-						Env: []corev1.EnvVar{{
-							Name:  "GOOGLE_APPLICATION_CREDENTIALS",
-							Value: "/etc/gcs/key.json",
-						}},
+						VolumeMounts: syncVolumeMounts,
+						Env:          syncEnv,
 					}},
-					Volumes: []corev1.Volume{
-						{
-							Name: "data",
-							VolumeSource: corev1.VolumeSource{
-								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-									ClaimName: archiver.Spec.Storage.Local.PVCName,
-								},
-							},
-						},
-						{
-							Name: "gcs-credentials",
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{
-									SecretName: archiver.Spec.Storage.Remote.SecretRef,
-								},
-							},
-						},
-					},
+					Volumes: volumes,
 				},
 			},
 		},
