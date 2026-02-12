@@ -119,6 +119,12 @@ ssmd-rust/crates/
 └── ssmd-connector/ # Binary entrypoint
 ```
 
+### Temporal Worker (`ssmd-worker/`)
+
+```
+ssmd-worker/       # Temporal worker (Node.js, shells out to ssmd CLI)
+```
+
 ### TypeScript CLI/Agent (`ssmd-agent/`)
 
 ```
@@ -206,6 +212,7 @@ gh workflow run build-connector.yaml -f tag=0.4.4
 | `build-agent.yaml` | `ghcr.io/aaronwald/ssmd-agent` | `agent-v*` | `ssmd-agent/Dockerfile` |
 | `build-momentum.yaml` | `ghcr.io/aaronwald/ssmd-momentum` | `momentum-v*` | `ssmd-agent/Dockerfile.momentum` |
 | `build-backtest.yaml` | `ghcr.io/aaronwald/ssmd-backtest` | `backtest-v*` | `ssmd-agent/Dockerfile.backtest` |
+| `build-worker.yaml` | `ghcr.io/aaronwald/ssmd-worker` | `worker-v*` | `ssmd-worker/Dockerfile` |
 
 ## Momentum Backtesting
 

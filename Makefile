@@ -1,6 +1,7 @@
 .PHONY: rust-build rust-test rust-clippy rust-clean rust-all
 .PHONY: agent-check agent-test agent-run cli-check
 .PHONY: all test lint clean generate-k8s setup
+.PHONY: worker-check
 
 CARGO := . $$HOME/.cargo/env && cargo
 RUST_DIR := ssmd-rust
@@ -58,12 +59,16 @@ agent-test:
 agent-run:
 	cd ssmd-agent && deno task agent
 
+# Worker targets
+worker-check:
+	cd ssmd-worker && npx tsc --noEmit
+
 # Combined targets
 all: lint test rust-build
 
 test: rust-test agent-test
 
-lint: rust-clippy agent-check
+lint: rust-clippy agent-check worker-check
 
 clean: rust-clean
 
