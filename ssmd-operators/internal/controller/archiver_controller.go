@@ -522,6 +522,9 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RecreateDeploymentStrategyType,
+			},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -542,6 +545,11 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 
 // deploymentNeedsUpdate checks if the Deployment needs to be updated
 func (r *ArchiverReconciler) deploymentNeedsUpdate(current, desired *appsv1.Deployment) bool {
+	// Check strategy type (Recreate vs RollingUpdate)
+	if current.Spec.Strategy.Type != desired.Spec.Strategy.Type {
+		return true
+	}
+
 	// Check replicas
 	if *current.Spec.Replicas != *desired.Spec.Replicas {
 		return true
