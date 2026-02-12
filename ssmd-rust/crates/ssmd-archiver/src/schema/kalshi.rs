@@ -1,0 +1,621 @@
+use std::sync::Arc;
+
+use arrow::array::*;
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::error::ArrowError;
+use arrow::record_batch::RecordBatch;
+use tracing::warn;
+
+use super::{hash_dedup_key, MessageSchema};
+
+fn ts_type() -> DataType {
+    DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))
+}
+
+/// Helper to append an optional i64 from a JSON value.
+fn append_optional_i64(builder: &mut Int64Builder, value: Option<&serde_json::Value>) {
+    match value.and_then(|v| v.as_i64()) {
+        Some(v) => builder.append_value(v),
+        None => builder.append_null(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KalshiTickerSchema
+// ---------------------------------------------------------------------------
+
+pub struct KalshiTickerSchema;
+
+impl KalshiTickerSchema {
+    fn arrow_schema() -> Schema {
+        Schema::new(vec![
+            Field::new("market_ticker", DataType::Utf8, false),
+            Field::new("yes_bid", DataType::Int64, true),
+            Field::new("yes_ask", DataType::Int64, true),
+            Field::new("no_bid", DataType::Int64, true),
+            Field::new("no_ask", DataType::Int64, true),
+            Field::new("last_price", DataType::Int64, true),
+            Field::new("volume", DataType::Int64, true),
+            Field::new("open_interest", DataType::Int64, true),
+            Field::new("ts", ts_type(), false),
+            Field::new("_nats_seq", DataType::UInt64, false),
+            Field::new("_received_at", ts_type(), false),
+        ])
+    }
+}
+
+impl MessageSchema for KalshiTickerSchema {
+    fn schema(&self) -> Arc<Schema> {
+        Arc::new(Self::arrow_schema())
+    }
+
+    fn message_type(&self) -> &str {
+        "ticker"
+    }
+
+    fn parse_batch(&self, messages: &[(Vec<u8>, u64, i64)]) -> Result<RecordBatch, ArrowError> {
+        let mut market_ticker = StringBuilder::new();
+        let mut yes_bid = Int64Builder::new();
+        let mut yes_ask = Int64Builder::new();
+        let mut no_bid = Int64Builder::new();
+        let mut no_ask = Int64Builder::new();
+        let mut last_price = Int64Builder::new();
+        let mut volume = Int64Builder::new();
+        let mut open_interest = Int64Builder::new();
+        let mut ts = TimestampMicrosecondBuilder::new();
+        let mut nats_seq = UInt64Builder::new();
+        let mut received_at = TimestampMicrosecondBuilder::new();
+
+        for (data, seq, recv_at) in messages {
+            let json: serde_json::Value = serde_json::from_slice(data)
+                .map_err(|e| ArrowError::JsonError(e.to_string()))?;
+
+            let msg = match json.get("msg") {
+                Some(m) => m,
+                None => {
+                    warn!("Kalshi ticker missing 'msg' field, skipping");
+                    continue;
+                }
+            };
+
+            let ticker = match msg.get("market_ticker").and_then(|v| v.as_str()) {
+                Some(t) => t,
+                None => {
+                    warn!("Kalshi ticker missing 'market_ticker', skipping");
+                    continue;
+                }
+            };
+
+            let ts_secs = match msg.get("ts").and_then(|v| v.as_i64()) {
+                Some(t) => t,
+                None => {
+                    warn!("Kalshi ticker missing 'ts', skipping");
+                    continue;
+                }
+            };
+
+            market_ticker.append_value(ticker);
+            append_optional_i64(&mut yes_bid, msg.get("yes_bid"));
+            append_optional_i64(&mut yes_ask, msg.get("yes_ask"));
+            append_optional_i64(&mut no_bid, msg.get("no_bid"));
+            append_optional_i64(&mut no_ask, msg.get("no_ask"));
+            append_optional_i64(&mut last_price, msg.get("price"));
+            append_optional_i64(&mut volume, msg.get("volume"));
+            append_optional_i64(&mut open_interest, msg.get("open_interest"));
+            ts.append_value(ts_secs * 1_000_000);
+            nats_seq.append_value(*seq);
+            received_at.append_value(*recv_at);
+        }
+
+        RecordBatch::try_new(
+            Arc::new(Self::arrow_schema()),
+            vec![
+                Arc::new(market_ticker.finish()),
+                Arc::new(yes_bid.finish()),
+                Arc::new(yes_ask.finish()),
+                Arc::new(no_bid.finish()),
+                Arc::new(no_ask.finish()),
+                Arc::new(last_price.finish()),
+                Arc::new(volume.finish()),
+                Arc::new(open_interest.finish()),
+                Arc::new(ts.finish().with_timezone("UTC")),
+                Arc::new(nats_seq.finish()),
+                Arc::new(received_at.finish().with_timezone("UTC")),
+            ],
+        )
+    }
+
+    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
+        let msg = json.get("msg")?;
+        let ticker = msg.get("market_ticker")?.as_str()?;
+        let ts = msg.get("ts")?.as_i64()?.to_string();
+        Some(hash_dedup_key(&["ticker", ticker, &ts]))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KalshiTradeSchema
+// ---------------------------------------------------------------------------
+
+pub struct KalshiTradeSchema;
+
+impl KalshiTradeSchema {
+    fn arrow_schema() -> Schema {
+        Schema::new(vec![
+            Field::new("market_ticker", DataType::Utf8, false),
+            Field::new("price", DataType::Int64, false),
+            Field::new("count", DataType::Int64, false),
+            Field::new("side", DataType::Utf8, false),
+            Field::new("ts", ts_type(), false),
+            Field::new("_nats_seq", DataType::UInt64, false),
+            Field::new("_received_at", ts_type(), false),
+        ])
+    }
+}
+
+impl MessageSchema for KalshiTradeSchema {
+    fn schema(&self) -> Arc<Schema> {
+        Arc::new(Self::arrow_schema())
+    }
+
+    fn message_type(&self) -> &str {
+        "trade"
+    }
+
+    fn parse_batch(&self, messages: &[(Vec<u8>, u64, i64)]) -> Result<RecordBatch, ArrowError> {
+        let mut market_ticker = StringBuilder::new();
+        let mut price = Int64Builder::new();
+        let mut count = Int64Builder::new();
+        let mut side = StringBuilder::new();
+        let mut ts = TimestampMicrosecondBuilder::new();
+        let mut nats_seq = UInt64Builder::new();
+        let mut received_at = TimestampMicrosecondBuilder::new();
+
+        for (data, seq, recv_at) in messages {
+            let json: serde_json::Value = serde_json::from_slice(data)
+                .map_err(|e| ArrowError::JsonError(e.to_string()))?;
+
+            let msg = match json.get("msg") {
+                Some(m) => m,
+                None => {
+                    warn!("Kalshi trade missing 'msg' field, skipping");
+                    continue;
+                }
+            };
+
+            let ticker = match msg.get("market_ticker").and_then(|v| v.as_str()) {
+                Some(t) => t,
+                None => {
+                    warn!("Kalshi trade missing 'market_ticker', skipping");
+                    continue;
+                }
+            };
+            let p = match msg.get("price").and_then(|v| v.as_i64()) {
+                Some(v) => v,
+                None => {
+                    warn!("Kalshi trade missing 'price', skipping");
+                    continue;
+                }
+            };
+            let c = match msg.get("count").and_then(|v| v.as_i64()) {
+                Some(v) => v,
+                None => {
+                    warn!("Kalshi trade missing 'count', skipping");
+                    continue;
+                }
+            };
+            let s = match msg.get("side").and_then(|v| v.as_str()) {
+                Some(v) => v,
+                None => {
+                    warn!("Kalshi trade missing 'side', skipping");
+                    continue;
+                }
+            };
+            let t = match msg.get("ts").and_then(|v| v.as_i64()) {
+                Some(v) => v,
+                None => {
+                    warn!("Kalshi trade missing 'ts', skipping");
+                    continue;
+                }
+            };
+
+            market_ticker.append_value(ticker);
+            price.append_value(p);
+            count.append_value(c);
+            side.append_value(s);
+            ts.append_value(t * 1_000_000);
+            nats_seq.append_value(*seq);
+            received_at.append_value(*recv_at);
+        }
+
+        RecordBatch::try_new(
+            Arc::new(Self::arrow_schema()),
+            vec![
+                Arc::new(market_ticker.finish()),
+                Arc::new(price.finish()),
+                Arc::new(count.finish()),
+                Arc::new(side.finish()),
+                Arc::new(ts.finish().with_timezone("UTC")),
+                Arc::new(nats_seq.finish()),
+                Arc::new(received_at.finish().with_timezone("UTC")),
+            ],
+        )
+    }
+
+    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
+        let msg = json.get("msg")?;
+        let ticker = msg.get("market_ticker")?.as_str()?;
+        let ts = msg.get("ts")?.as_i64()?.to_string();
+        Some(hash_dedup_key(&["trade", ticker, &ts]))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KalshiLifecycleSchema
+// ---------------------------------------------------------------------------
+
+pub struct KalshiLifecycleSchema;
+
+impl KalshiLifecycleSchema {
+    fn arrow_schema() -> Schema {
+        Schema::new(vec![
+            Field::new("market_ticker", DataType::Utf8, false),
+            Field::new("event_type", DataType::Utf8, false),
+            Field::new("open_ts", ts_type(), true),
+            Field::new("close_ts", ts_type(), true),
+            Field::new("additional_metadata", DataType::Utf8, true),
+            Field::new("_nats_seq", DataType::UInt64, false),
+            Field::new("_received_at", ts_type(), false),
+        ])
+    }
+}
+
+impl MessageSchema for KalshiLifecycleSchema {
+    fn schema(&self) -> Arc<Schema> {
+        Arc::new(Self::arrow_schema())
+    }
+
+    fn message_type(&self) -> &str {
+        "market_lifecycle_v2"
+    }
+
+    fn parse_batch(&self, messages: &[(Vec<u8>, u64, i64)]) -> Result<RecordBatch, ArrowError> {
+        let mut market_ticker = StringBuilder::new();
+        let mut event_type = StringBuilder::new();
+        let mut open_ts = TimestampMicrosecondBuilder::new();
+        let mut close_ts = TimestampMicrosecondBuilder::new();
+        let mut additional_metadata = StringBuilder::new();
+        let mut nats_seq = UInt64Builder::new();
+        let mut received_at = TimestampMicrosecondBuilder::new();
+
+        for (data, seq, recv_at) in messages {
+            let json: serde_json::Value = serde_json::from_slice(data)
+                .map_err(|e| ArrowError::JsonError(e.to_string()))?;
+
+            let msg = match json.get("msg") {
+                Some(m) => m,
+                None => {
+                    warn!("Kalshi lifecycle missing 'msg' field, skipping");
+                    continue;
+                }
+            };
+
+            let ticker = match msg.get("market_ticker").and_then(|v| v.as_str()) {
+                Some(t) => t,
+                None => {
+                    warn!("Kalshi lifecycle missing 'market_ticker', skipping");
+                    continue;
+                }
+            };
+            let et = match msg.get("event_type").and_then(|v| v.as_str()) {
+                Some(t) => t,
+                None => {
+                    warn!("Kalshi lifecycle missing 'event_type', skipping");
+                    continue;
+                }
+            };
+
+            market_ticker.append_value(ticker);
+            event_type.append_value(et);
+
+            match msg.get("open_ts").and_then(|v| v.as_i64()) {
+                Some(v) => open_ts.append_value(v * 1_000_000),
+                None => open_ts.append_null(),
+            }
+            match msg.get("close_ts").and_then(|v| v.as_i64()) {
+                Some(v) => close_ts.append_value(v * 1_000_000),
+                None => close_ts.append_null(),
+            }
+            match msg.get("additional_metadata") {
+                Some(v) if !v.is_null() => {
+                    additional_metadata.append_value(v.to_string());
+                }
+                _ => additional_metadata.append_null(),
+            }
+
+            nats_seq.append_value(*seq);
+            received_at.append_value(*recv_at);
+        }
+
+        RecordBatch::try_new(
+            Arc::new(Self::arrow_schema()),
+            vec![
+                Arc::new(market_ticker.finish()),
+                Arc::new(event_type.finish()),
+                Arc::new(open_ts.finish().with_timezone("UTC")),
+                Arc::new(close_ts.finish().with_timezone("UTC")),
+                Arc::new(additional_metadata.finish()),
+                Arc::new(nats_seq.finish()),
+                Arc::new(received_at.finish().with_timezone("UTC")),
+            ],
+        )
+    }
+
+    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
+        let msg = json.get("msg")?;
+        let ticker = msg.get("market_ticker")?.as_str()?;
+        let et = msg.get("event_type")?.as_str()?;
+        Some(hash_dedup_key(&[ticker, et]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_kalshi_ticker() {
+        let schema = KalshiTickerSchema;
+        let json = br#"{"type":"ticker","sid":1,"msg":{"market_ticker":"KXBTCD-26FEB12-T50049.99","yes_bid":50,"yes_ask":52,"no_bid":48,"no_ask":50,"price":51,"volume":1000,"open_interest":500,"ts":1707667200}}"#;
+        let batch = schema
+            .parse_batch(&[(json.to_vec(), 1, 1707667200_000_000)])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.num_columns(), 11);
+
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "KXBTCD-26FEB12-T50049.99");
+
+        let col = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(col.value(0), 50); // yes_bid
+
+        let col = batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(col.value(0), 51); // last_price (from "price")
+
+        // ts: 1707667200 seconds → 1707667200_000_000 micros
+        let col = batch
+            .column(8)
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+        assert_eq!(col.value(0), 1707667200_000_000);
+
+        // _nats_seq
+        let col = batch
+            .column(9)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        assert_eq!(col.value(0), 1);
+    }
+
+    #[test]
+    fn test_parse_kalshi_ticker_nullable_fields() {
+        let schema = KalshiTickerSchema;
+        // Minimal ticker: only required fields (market_ticker, ts)
+        let json = br#"{"type":"ticker","msg":{"market_ticker":"KXTEST","ts":1707667200}}"#;
+        let batch = schema
+            .parse_batch(&[(json.to_vec(), 1, 1000)])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+
+        // yes_bid should be null
+        let col = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert!(col.is_null(0));
+
+        // volume should be null
+        let col = batch
+            .column(6)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert!(col.is_null(0));
+    }
+
+    #[test]
+    fn test_parse_kalshi_trade() {
+        let schema = KalshiTradeSchema;
+        let json = br#"{"type":"trade","sid":1,"msg":{"market_ticker":"KXBTC-123","price":55,"count":10,"side":"yes","ts":1707667200}}"#;
+        let batch = schema
+            .parse_batch(&[(json.to_vec(), 42, 1707667200_000_000)])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.num_columns(), 7);
+
+        let ticker = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(ticker.value(0), "KXBTC-123");
+
+        let price = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(price.value(0), 55);
+
+        let count = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(count.value(0), 10);
+
+        let side = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(side.value(0), "yes");
+    }
+
+    #[test]
+    fn test_parse_kalshi_lifecycle() {
+        let schema = KalshiLifecycleSchema;
+        let json = br#"{"type":"market_lifecycle_v2","sid":13,"msg":{"market_ticker":"KXBTCD-26JAN2310-T105000","event_type":"activated","open_ts":1737554400,"close_ts":1737558000,"additional_metadata":{"settlement_value":null}}}"#;
+        let batch = schema
+            .parse_batch(&[(json.to_vec(), 100, 1000)])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+
+        let ticker = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(ticker.value(0), "KXBTCD-26JAN2310-T105000");
+
+        let et = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(et.value(0), "activated");
+
+        // open_ts: 1737554400 → micros
+        let open = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+        assert_eq!(open.value(0), 1737554400_000_000);
+
+        // additional_metadata is a JSON string
+        let meta = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(!meta.is_null(0));
+        assert!(meta.value(0).contains("settlement_value"));
+    }
+
+    #[test]
+    fn test_parse_kalshi_lifecycle_no_timestamps() {
+        let schema = KalshiLifecycleSchema;
+        let json = br#"{"type":"market_lifecycle_v2","sid":1,"msg":{"market_ticker":"KXTEST","event_type":"created"}}"#;
+        let batch = schema
+            .parse_batch(&[(json.to_vec(), 1, 1000)])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+
+        // open_ts should be null
+        let open = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+        assert!(open.is_null(0));
+
+        // additional_metadata should be null
+        let meta = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(meta.is_null(0));
+    }
+
+    #[test]
+    fn test_skip_missing_msg_field() {
+        let schema = KalshiTickerSchema;
+        let json = br#"{"type":"ticker"}"#;
+        let batch = schema
+            .parse_batch(&[(json.to_vec(), 1, 1000)])
+            .unwrap();
+        assert_eq!(batch.num_rows(), 0);
+    }
+
+    #[test]
+    fn test_multi_message_batch() {
+        let schema = KalshiTradeSchema;
+        let msg1 = br#"{"type":"trade","msg":{"market_ticker":"A","price":10,"count":1,"side":"yes","ts":100}}"#;
+        let msg2 = br#"{"type":"trade","msg":{"market_ticker":"B","price":20,"count":2,"side":"no","ts":200}}"#;
+        let batch = schema
+            .parse_batch(&[
+                (msg1.to_vec(), 1, 100_000_000),
+                (msg2.to_vec(), 2, 200_000_000),
+            ])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 2);
+
+        let tickers = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(tickers.value(0), "A");
+        assert_eq!(tickers.value(1), "B");
+    }
+
+    #[test]
+    fn test_empty_batch() {
+        let schema = KalshiTickerSchema;
+        let batch = schema.parse_batch(&[]).unwrap();
+        assert_eq!(batch.num_rows(), 0);
+        assert_eq!(batch.num_columns(), 11);
+    }
+
+    #[test]
+    fn test_dedup_key_ticker() {
+        let schema = KalshiTickerSchema;
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"type":"ticker","msg":{"market_ticker":"KXBTC","ts":1707667200}}"#,
+        )
+        .unwrap();
+        let key = schema.dedup_key(&json);
+        assert!(key.is_some());
+
+        // Same input → same key
+        let key2 = schema.dedup_key(&json);
+        assert_eq!(key, key2);
+
+        // Different ts → different key
+        let json2: serde_json::Value = serde_json::from_str(
+            r#"{"type":"ticker","msg":{"market_ticker":"KXBTC","ts":1707667201}}"#,
+        )
+        .unwrap();
+        assert_ne!(schema.dedup_key(&json), schema.dedup_key(&json2));
+    }
+
+    #[test]
+    fn test_dedup_key_missing_fields() {
+        let schema = KalshiTickerSchema;
+        let json: serde_json::Value = serde_json::from_str(r#"{"type":"ticker"}"#).unwrap();
+        assert!(schema.dedup_key(&json).is_none());
+    }
+}

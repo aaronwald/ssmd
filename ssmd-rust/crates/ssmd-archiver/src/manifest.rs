@@ -21,6 +21,10 @@ pub struct FileEntry {
     pub end: DateTime<Utc>,
     pub records: u64,
     pub bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub raw_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub compression_ratio: Option<f64>,
     pub nats_start_seq: u64,
     pub nats_end_seq: u64,
 }
@@ -33,11 +37,11 @@ pub struct Gap {
 }
 
 impl Manifest {
-    pub fn new(feed: &str, date: &str, rotation_interval: &str) -> Self {
+    pub fn new(feed: &str, date: &str, rotation_interval: &str, format: &str) -> Self {
         Self {
             feed: feed.to_string(),
             date: date.to_string(),
-            format: "jsonl".to_string(),
+            format: format.to_string(),
             rotation_interval: rotation_interval.to_string(),
             files: Vec::new(),
             gaps: Vec::new(),

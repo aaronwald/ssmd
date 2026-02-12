@@ -13,4 +13,10 @@ pub enum ArchiverError {
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    #[error("Arrow error: {0}")]
+    Arrow(#[from] arrow::error::ArrowError),
+
+    #[error("Parquet error: {0}")]
+    Parquet(#[from] parquet::errors::ParquetError),
 }

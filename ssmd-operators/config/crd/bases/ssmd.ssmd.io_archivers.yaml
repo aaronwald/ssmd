@@ -66,6 +66,15 @@ spec:
                 description: Feed is the feed name for directory structure (e.g.,
                   "kalshi")
                 type: string
+              format:
+                default: jsonl
+                description: 'Format specifies the output format: "jsonl" (default),
+                  "parquet", or "both"'
+                enum:
+                - jsonl
+                - parquet
+                - both
+                type: string
               image:
                 description: Image is the container image to use (optional, defaults
                   from feed ConfigMap)
@@ -340,6 +349,11 @@ spec:
               deployment:
                 description: Deployment is the name of the created Deployment
                 type: string
+              duplicatesFiltered:
+                description: DuplicatesFiltered tracks duplicate messages filtered
+                  by dedup
+                format: int64
+                type: integer
               filesWritten:
                 description: FilesWritten is the number of files written
                 format: int32

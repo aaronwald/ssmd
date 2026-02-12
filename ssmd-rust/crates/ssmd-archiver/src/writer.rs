@@ -9,7 +9,16 @@ use flate2::Compression;
 use crate::error::ArchiverError;
 use crate::manifest::FileEntry;
 
-/// Writes JSONL.gz files with rotation
+/// Trait for archive output formats (JSONL.gz, Parquet, etc.).
+pub trait ArchiveOutput: Send {
+    /// Write a message to the archive. Returns file entries from any rotated files.
+    fn write(&mut self, data: &[u8], seq: u64, now: DateTime<Utc>) -> Result<Vec<FileEntry>, ArchiverError>;
+
+    /// Close the writer and flush all remaining data. Returns file entries.
+    fn close(&mut self) -> Result<Vec<FileEntry>, ArchiverError>;
+}
+
+/// Writes JSONL.gz files with rotation.
 pub struct ArchiveWriter {
     base_path: PathBuf,
     feed: String,
@@ -37,47 +46,6 @@ impl ArchiveWriter {
             current_file: None,
             rotation_minutes,
         }
-    }
-
-    /// Write a record to the current file, rotating if needed
-    /// Returns Some(FileEntry) if a rotation occurred (file was closed)
-    pub fn write(&mut self, data: &[u8], seq: u64, now: DateTime<Utc>) -> Result<Option<FileEntry>, ArchiverError> {
-        // Check if we need to rotate
-        let rotated = if self.should_rotate(now) {
-            self.rotate(now)?
-        } else {
-            None
-        };
-
-        // Ensure we have a file open
-        if self.current_file.is_none() {
-            self.open_new_file(now)?;
-        }
-
-        let file = self.current_file.as_mut().unwrap();
-
-        // Track sequence
-        if file.first_seq.is_none() {
-            file.first_seq = Some(seq);
-        }
-        file.last_seq = Some(seq);
-
-        // Write the line
-        file.encoder.write_all(data)?;
-        file.encoder.write_all(b"\n")?;
-        file.records += 1;
-        file.bytes_written += data.len() as u64 + 1;
-
-        Ok(rotated)
-    }
-
-    /// Flush and close current file, returning FileEntry for manifest
-    pub fn close(&mut self) -> Result<Option<FileEntry>, ArchiverError> {
-        if let Some(file) = self.current_file.take() {
-            let entry = self.finish_file(file)?;
-            return Ok(Some(entry));
-        }
-        Ok(None)
     }
 
     fn should_rotate(&self, now: DateTime<Utc>) -> bool {
@@ -136,9 +104,51 @@ impl ArchiveWriter {
             end: end_time,
             records: file.records,
             bytes: file.bytes_written,
+            raw_bytes: None,
+            compression_ratio: None,
             nats_start_seq: file.first_seq.unwrap_or(0),
             nats_end_seq: file.last_seq.unwrap_or(0),
         })
+    }
+}
+
+impl ArchiveOutput for ArchiveWriter {
+    fn write(&mut self, data: &[u8], seq: u64, now: DateTime<Utc>) -> Result<Vec<FileEntry>, ArchiverError> {
+        // Check if we need to rotate
+        let rotated = if self.should_rotate(now) {
+            self.rotate(now)?
+        } else {
+            None
+        };
+
+        // Ensure we have a file open
+        if self.current_file.is_none() {
+            self.open_new_file(now)?;
+        }
+
+        let file = self.current_file.as_mut().unwrap();
+
+        // Track sequence
+        if file.first_seq.is_none() {
+            file.first_seq = Some(seq);
+        }
+        file.last_seq = Some(seq);
+
+        // Write the line
+        file.encoder.write_all(data)?;
+        file.encoder.write_all(b"\n")?;
+        file.records += 1;
+        file.bytes_written += data.len() as u64 + 1;
+
+        Ok(rotated.into_iter().collect())
+    }
+
+    fn close(&mut self) -> Result<Vec<FileEntry>, ArchiverError> {
+        if let Some(file) = self.current_file.take() {
+            let entry = self.finish_file(file)?;
+            return Ok(vec![entry]);
+        }
+        Ok(Vec::new())
     }
 }
 
@@ -155,10 +165,12 @@ mod tests {
         let mut writer = ArchiveWriter::new(tmp.path().to_path_buf(), "kalshi".to_string(), "politics".to_string(), 15);
 
         let now = Utc::now();
-        assert!(writer.write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now).unwrap().is_none());
-        assert!(writer.write(br#"{"type":"trade","ticker":"KXBTC"}"#, 2, now).unwrap().is_none());
+        assert!(writer.write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now).unwrap().is_empty());
+        assert!(writer.write(br#"{"type":"trade","ticker":"KXBTC"}"#, 2, now).unwrap().is_empty());
 
-        let entry = writer.close().unwrap().unwrap();
+        let entries = writer.close().unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
         assert_eq!(entry.records, 2);
         assert_eq!(entry.nats_start_seq, 1);
         assert_eq!(entry.nats_end_seq, 2);

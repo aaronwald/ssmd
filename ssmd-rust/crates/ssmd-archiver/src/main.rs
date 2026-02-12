@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::task::JoinSet;
@@ -14,7 +14,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use ssmd_archiver::{Config, config::StreamConfig, manifest::{Gap, Manifest}, subscriber::Subscriber, writer::ArchiveWriter};
+use ssmd_archiver::config::{OutputFormat, StreamConfig};
+use ssmd_archiver::manifest::{FileEntry, Gap, Manifest};
+use ssmd_archiver::parquet_writer::ParquetWriter;
+use ssmd_archiver::subscriber::Subscriber;
+use ssmd_archiver::writer::{ArchiveOutput, ArchiveWriter};
+use ssmd_archiver::Config;
 
 #[derive(Parser, Debug)]
 #[command(name = "ssmd-archiver")]
@@ -23,6 +28,49 @@ struct Args {
     /// Path to archiver configuration file
     #[arg(short, long)]
     config: PathBuf,
+}
+
+/// Writes to both JSONL.gz and Parquet simultaneously.
+struct MultiWriter {
+    jsonl: ArchiveWriter,
+    parquet: ParquetWriter,
+}
+
+impl MultiWriter {
+    fn new(
+        base_path: PathBuf,
+        feed: String,
+        stream_name: String,
+        rotation_minutes: u32,
+    ) -> Self {
+        Self {
+            jsonl: ArchiveWriter::new(
+                base_path.clone(),
+                feed.clone(),
+                stream_name.clone(),
+                rotation_minutes,
+            ),
+            parquet: ParquetWriter::new(base_path, feed, stream_name),
+        }
+    }
+}
+
+impl ArchiveOutput for MultiWriter {
+    fn write(
+        &mut self,
+        data: &[u8],
+        seq: u64,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<FileEntry>, ssmd_archiver::ArchiverError> {
+        // Write to JSONL but discard its entries — parquet has richer metadata
+        self.jsonl.write(data, seq, now)?;
+        self.parquet.write(data, seq, now)
+    }
+
+    fn close(&mut self) -> Result<Vec<FileEntry>, ssmd_archiver::ArchiverError> {
+        self.jsonl.close()?;
+        self.parquet.close()
+    }
 }
 
 #[tokio::main]
@@ -42,12 +90,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     let rotation_duration = config.rotation.parse_interval()?;
+    let output_format = config.storage.format;
 
     info!(
         nats_url = %config.nats.url,
         streams = config.nats.streams.len(),
         rotation = %config.rotation.interval,
         storage = ?config.storage.path,
+        format = %output_format,
         "Starting archiver"
     );
 
@@ -67,11 +117,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let base_path = Arc::clone(&base_path);
         let feed = Arc::clone(&feed);
         let rotation_interval = Arc::clone(&rotation_interval);
+        let format = output_format;
 
         info!(
             stream = %stream_config.stream,
             name = %stream_config.name,
             filter = %stream_config.filter,
+            format = %format,
             "Spawning archive task"
         );
 
@@ -83,16 +135,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &feed,
                 &rotation_interval,
                 rotation_duration,
+                format,
                 shutdown,
-            ).await
+            )
+            .await
         });
     }
 
     // Set up signal handlers for graceful shutdown
-    let mut sigterm = signal(SignalKind::terminate())
-        .expect("Failed to create SIGTERM handler");
-    let mut sigint = signal(SignalKind::interrupt())
-        .expect("Failed to create SIGINT handler");
+    let mut sigterm =
+        signal(SignalKind::terminate()).expect("Failed to create SIGTERM handler");
+    let mut sigint =
+        signal(SignalKind::interrupt()).expect("Failed to create SIGINT handler");
 
     info!("Archiver running, waiting for SIGTERM/SIGINT to stop");
 
@@ -145,7 +199,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Create the appropriate writer based on output format.
+fn create_writer(
+    format: OutputFormat,
+    base_path: PathBuf,
+    feed: String,
+    stream_name: String,
+    rotation_minutes: u32,
+) -> Box<dyn ArchiveOutput> {
+    match format {
+        OutputFormat::Jsonl => Box::new(ArchiveWriter::new(
+            base_path,
+            feed,
+            stream_name,
+            rotation_minutes,
+        )),
+        OutputFormat::Parquet => Box::new(ParquetWriter::new(base_path, feed, stream_name)),
+        OutputFormat::Both => Box::new(MultiWriter::new(
+            base_path,
+            feed,
+            stream_name,
+            rotation_minutes,
+        )),
+    }
+}
+
 /// Archive messages from a single stream
+#[allow(clippy::too_many_arguments)]
 async fn archive_stream(
     nats_url: &str,
     stream_config: StreamConfig,
@@ -153,22 +233,26 @@ async fn archive_stream(
     feed: &str,
     rotation_interval: &str,
     rotation_duration: Duration,
+    format: OutputFormat,
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let stream_name = stream_config.name.clone();
     let rotation_minutes = (rotation_duration.as_secs() / 60) as u32;
+    let format_str = format.to_string();
 
     info!(
         stream = %stream_config.stream,
         stream_name = %stream_name,
+        format = %format_str,
         "Connecting to NATS"
     );
 
     // Connect to NATS
     let mut subscriber = Subscriber::connect(nats_url, &stream_config).await?;
 
-    // Create writer with stream-specific path
-    let mut writer = ArchiveWriter::new(
+    // Create writer based on configured format
+    let mut writer = create_writer(
+        format,
         base_path.to_path_buf(),
         feed.to_string(),
         stream_name.clone(),
@@ -179,7 +263,7 @@ async fn archive_stream(
     let mut tickers: HashSet<String> = HashSet::new();
     let mut message_types: HashSet<String> = HashSet::new();
     let mut gaps: Vec<Gap> = Vec::new();
-    let mut completed_files: Vec<ssmd_archiver::manifest::FileEntry> = Vec::new();
+    let mut completed_files: Vec<FileEntry> = Vec::new();
     let mut current_date = Utc::now().format("%Y-%m-%d").to_string();
 
     // Stats tracking
@@ -208,7 +292,7 @@ async fn archive_stream(
                 // Check for day rollover
                 if date != current_date {
                     info!(stream_name = %stream_name, old = %current_date, new = %date, "Day rollover, writing final manifest");
-                    write_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &mut writer, &tickers, &message_types, &gaps, &mut completed_files)?;
+                    write_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &format_str, writer.as_mut(), &tickers, &message_types, &gaps, &mut completed_files)?;
                     tickers.clear();
                     message_types.clear();
                     gaps.clear();
@@ -250,31 +334,28 @@ async fn archive_stream(
                                 }
                             }
 
-                            // Write to file (returns Some(FileEntry) on rotation)
+                            // Write to archive (returns rotated FileEntries on rotation)
                             let seq = msg.seq;
                             match writer.write(&msg.data, seq, now) {
-                                Ok(Some(rotated_entry)) => {
+                                Ok(rotated_entries) => {
                                     // Ack after successful write
                                     if let Err(e) = msg.ack().await {
                                         error!(stream_name = %stream_name, error = %e, seq = seq, "Failed to ack message");
                                     }
-                                    // File was rotated - update manifest immediately
-                                    info!(
-                                        stream_name = %stream_name,
-                                        file = %rotated_entry.name,
-                                        records = rotated_entry.records,
-                                        seq_range = %format!("{}-{}", rotated_entry.nats_start_seq, rotated_entry.nats_end_seq),
-                                        "File rotated"
-                                    );
-                                    completed_files.push(rotated_entry);
-                                    if let Err(e) = update_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &tickers, &message_types, &gaps, &completed_files) {
-                                        error!(stream_name = %stream_name, error = %e, "Failed to update manifest after rotation");
+                                    for rotated_entry in rotated_entries {
+                                        info!(
+                                            stream_name = %stream_name,
+                                            file = %rotated_entry.name,
+                                            records = rotated_entry.records,
+                                            seq_range = %format!("{}-{}", rotated_entry.nats_start_seq, rotated_entry.nats_end_seq),
+                                            "File rotated"
+                                        );
+                                        completed_files.push(rotated_entry);
                                     }
-                                }
-                                Ok(None) => {
-                                    // Ack after successful write
-                                    if let Err(e) = msg.ack().await {
-                                        error!(stream_name = %stream_name, error = %e, seq = seq, "Failed to ack message");
+                                    if !completed_files.is_empty() {
+                                        if let Err(e) = update_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &format_str, &tickers, &message_types, &gaps, &completed_files) {
+                                            error!(stream_name = %stream_name, error = %e, "Failed to update manifest after rotation");
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -294,6 +375,7 @@ async fn archive_stream(
                     info!(
                         stream_name = %stream_name,
                         feed = %feed,
+                        format = %format_str,
                         messages = total_messages,
                         bytes = total_bytes,
                         tickers = tickers.len(),
@@ -309,7 +391,19 @@ async fn archive_stream(
 
     // Final cleanup
     info!(stream_name = %stream_name, "Writing final manifest");
-    write_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &mut writer, &tickers, &message_types, &gaps, &mut completed_files)?;
+    write_manifest(
+        base_path,
+        feed,
+        &stream_name,
+        &current_date,
+        rotation_interval,
+        &format_str,
+        writer.as_mut(),
+        &tickers,
+        &message_types,
+        &gaps,
+        &mut completed_files,
+    )?;
 
     info!(stream_name = %stream_name, "Archive task stopped");
     Ok(())
@@ -323,12 +417,13 @@ fn update_manifest(
     stream_name: &str,
     date: &str,
     rotation_interval: &str,
+    format: &str,
     tickers: &HashSet<String>,
     message_types: &HashSet<String>,
     gaps: &[Gap],
-    completed_files: &[ssmd_archiver::manifest::FileEntry],
+    completed_files: &[FileEntry],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut manifest = Manifest::new(feed, date, rotation_interval);
+    let mut manifest = Manifest::new(feed, date, rotation_interval, format);
     manifest.files = completed_files.to_vec();
     manifest.tickers = tickers.iter().cloned().collect();
     manifest.message_types = message_types.iter().cloned().collect();
@@ -336,7 +431,11 @@ fn update_manifest(
     manifest.has_gaps = !gaps.is_empty();
 
     // Path: {base_path}/{feed}/{stream_name}/{date}/manifest.json
-    let manifest_path = base_path.join(feed).join(stream_name).join(date).join("manifest.json");
+    let manifest_path = base_path
+        .join(feed)
+        .join(stream_name)
+        .join(date)
+        .join("manifest.json");
     if let Some(parent) = manifest_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -355,17 +454,27 @@ fn write_manifest(
     stream_name: &str,
     date: &str,
     rotation_interval: &str,
-    writer: &mut ArchiveWriter,
+    format: &str,
+    writer: &mut dyn ArchiveOutput,
     tickers: &HashSet<String>,
     message_types: &HashSet<String>,
     gaps: &[Gap],
-    completed_files: &mut Vec<ssmd_archiver::manifest::FileEntry>,
+    completed_files: &mut Vec<FileEntry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Close current file and add to completed files
-    if let Some(entry) = writer.close()? {
-        completed_files.push(entry);
-    }
+    completed_files.extend(writer.close()?);
 
     // Write manifest with all completed files
-    update_manifest(base_path, feed, stream_name, date, rotation_interval, tickers, message_types, gaps, completed_files)
+    update_manifest(
+        base_path,
+        feed,
+        stream_name,
+        date,
+        rotation_interval,
+        format,
+        tickers,
+        message_types,
+        gaps,
+        completed_files,
+    )
 }

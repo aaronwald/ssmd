@@ -66,6 +66,12 @@ type ArchiverSpec struct {
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
+	// Format specifies the output format: "jsonl" (default), "parquet", or "both"
+	// +kubebuilder:validation:Enum=jsonl;parquet;both
+	// +kubebuilder:default=jsonl
+	// +optional
+	Format string `json:"format,omitempty"`
+
 	// ServiceAccountName is the Kubernetes ServiceAccount for the archiver pod.
 	// Required for GKE Workload Identity (maps to a GCP service account).
 	// +optional
@@ -244,6 +250,10 @@ type ArchiverStatus struct {
 	// PendingSyncBytes is the bytes waiting to be synced
 	// +optional
 	PendingSyncBytes int64 `json:"pendingSyncBytes,omitempty"`
+
+	// DuplicatesFiltered tracks duplicate messages filtered by dedup
+	// +optional
+	DuplicatesFiltered int64 `json:"duplicatesFiltered,omitempty"`
 
 	// Conditions represent the current state of the Archiver
 	// +listType=map

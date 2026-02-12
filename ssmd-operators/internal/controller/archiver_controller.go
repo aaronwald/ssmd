@@ -354,6 +354,13 @@ func (r *ArchiverReconciler) constructConfigMap(archiver *ssmdv1alpha1.Archiver)
 	}
 	archiverYAML.WriteString(fmt.Sprintf("  feed: %s\n", feed))
 
+	// Format config
+	format := archiver.Spec.Format
+	if format == "" {
+		format = "jsonl"
+	}
+	archiverYAML.WriteString(fmt.Sprintf("  format: %s\n", format))
+
 	// Rotation config
 	archiverYAML.WriteString("\nrotation:\n")
 	if archiver.Spec.Rotation != nil && archiver.Spec.Rotation.MaxFileAge != "" {

@@ -14,6 +14,8 @@ nats:
 storage:
   path: /data/ssmd
   feed: kalshi
+  # Output format: "jsonl" (default), "parquet", or "both"
+  format: both
 
 rotation:
   interval: 15m
