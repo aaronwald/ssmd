@@ -29,6 +29,7 @@ pub struct ArchiveWriter {
 
 struct CurrentFile {
     path: PathBuf,
+    final_name: String,
     encoder: GzEncoder<File>,
     start_time: DateTime<Utc>,
     records: u64,
@@ -75,13 +76,15 @@ impl ArchiveWriter {
         fs::create_dir_all(&dir)?;
 
         let filename = format!("{}.jsonl.gz", time_str);
-        let path = dir.join(&filename);
+        let tmp_filename = format!("{}.tmp", filename);
+        let path = dir.join(&tmp_filename);
 
         let file = File::create(&path)?;
         let encoder = GzEncoder::new(file, Compression::default());
 
         self.current_file = Some(CurrentFile {
             path,
+            final_name: filename,
             encoder,
             start_time: now,
             records: 0,
@@ -96,10 +99,14 @@ impl ArchiveWriter {
     fn finish_file(&self, file: CurrentFile) -> Result<FileEntry, ArchiverError> {
         file.encoder.finish()?;
 
+        // Atomic rename from .tmp to final name
+        let final_path = file.path.with_file_name(&file.final_name);
+        fs::rename(&file.path, &final_path)?;
+
         let end_time = Utc::now();
 
         Ok(FileEntry {
-            name: file.path.file_name().unwrap().to_string_lossy().to_string(),
+            name: file.final_name,
             start: file.start_time,
             end: end_time,
             records: file.records,
@@ -175,12 +182,17 @@ mod tests {
         assert_eq!(entry.nats_start_seq, 1);
         assert_eq!(entry.nats_end_seq, 2);
 
-        // Verify file contents (path: {base}/{feed}/{stream_name}/{date}/{time}.jsonl.gz)
+        // Verify final file exists and .tmp does not
         let date_str = now.format("%Y-%m-%d").to_string();
         let time_str = now.format("%H%M").to_string();
-        let path = tmp.path().join("kalshi").join("politics").join(&date_str).join(format!("{}.jsonl.gz", time_str));
+        let dir = tmp.path().join("kalshi").join("politics").join(&date_str);
+        let final_path = dir.join(format!("{}.jsonl.gz", time_str));
+        let tmp_path = dir.join(format!("{}.jsonl.gz.tmp", time_str));
 
-        let file = File::open(&path).unwrap();
+        assert!(final_path.exists(), "final file should exist after close");
+        assert!(!tmp_path.exists(), ".tmp file should not exist after close");
+
+        let file = File::open(&final_path).unwrap();
         let decoder = GzDecoder::new(file);
         let reader = BufReader::new(decoder);
         let lines: Vec<_> = reader.lines().collect();
@@ -188,5 +200,30 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].as_ref().unwrap().contains("INXD"));
         assert!(lines[1].as_ref().unwrap().contains("KXBTC"));
+    }
+
+    #[test]
+    fn test_tmp_file_during_write() {
+        let tmp = TempDir::new().unwrap();
+        let mut writer = ArchiveWriter::new(tmp.path().to_path_buf(), "kalshi".to_string(), "politics".to_string(), 15);
+
+        let now = Utc::now();
+        writer.write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now).unwrap();
+
+        // During active write, .tmp should exist and final should not
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let time_str = now.format("%H%M").to_string();
+        let dir = tmp.path().join("kalshi").join("politics").join(&date_str);
+        let tmp_path = dir.join(format!("{}.jsonl.gz.tmp", time_str));
+        let final_path = dir.join(format!("{}.jsonl.gz", time_str));
+
+        assert!(tmp_path.exists(), ".tmp file should exist during active write");
+        assert!(!final_path.exists(), "final file should not exist during active write");
+
+        // After close, .tmp gone and final exists
+        let entries = writer.close().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(!tmp_path.exists(), ".tmp file should not exist after close");
+        assert!(final_path.exists(), "final file should exist after close");
     }
 }

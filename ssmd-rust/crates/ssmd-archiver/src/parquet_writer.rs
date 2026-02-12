@@ -216,9 +216,11 @@ fn write_parquet_file(
     }
 
     let filename = format!("{}_{}.parquet", msg_type, time_str);
-    let path = dir.join(&filename);
+    let tmp_filename = format!("{}.tmp", filename);
+    let tmp_path = dir.join(&tmp_filename);
+    let final_path = dir.join(&filename);
 
-    let file = File::create(&path)?;
+    let file = File::create(&tmp_path)?;
     let props = WriterProperties::builder()
         .set_compression(Compression::SNAPPY)
         .set_max_row_group_size(100_000)
@@ -231,7 +233,10 @@ fn write_parquet_file(
     writer.write(&batch)?;
     writer.close()?;
 
-    let file_size = std::fs::metadata(&path)?.len();
+    // Atomic rename from .tmp to final name
+    fs::rename(&tmp_path, &final_path)?;
+
+    let file_size = std::fs::metadata(&final_path)?.len();
     let raw_bytes = buffer.bytes_estimate as u64;
     let compression_ratio = if file_size > 0 {
         Some(raw_bytes as f64 / file_size as f64)
@@ -547,6 +552,35 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(sides.value(0), "yes");
+    }
+
+    #[test]
+    fn test_no_tmp_files_after_close() {
+        let tmp = TempDir::new().unwrap();
+        let mut writer = make_writer(&tmp);
+
+        let now = hour(2026, 2, 12, 14);
+        let ticker = make_kalshi_ticker("KXBTC", 1707667200);
+        let trade = make_kalshi_trade("KXBTC", 55, "yes", 1707667201);
+
+        writer.write(&ticker, 1, now).unwrap();
+        writer.write(&trade, 2, now).unwrap();
+
+        let entries = writer.close().unwrap();
+        assert_eq!(entries.len(), 2);
+
+        // No .tmp files should remain in the output directory
+        let dir = tmp.path().join("kalshi").join("crypto").join("2026-02-12");
+        let tmp_files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "tmp"))
+            .collect();
+        assert!(tmp_files.is_empty(), "no .tmp files should remain after close, found: {:?}", tmp_files);
+
+        // Final files should exist
+        assert!(dir.join("ticker_1400.parquet").exists());
+        assert!(dir.join("trade_1400.parquet").exists());
     }
 
     #[test]
