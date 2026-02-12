@@ -16,6 +16,8 @@ export {
   pairSnapshots,
   polymarketConditions,
   polymarketTokens,
+  dqDailyScores,
+  dqParquetStats,
   feeTypeEnum,
   type Event,
   type NewEvent,
@@ -39,6 +41,10 @@ export {
   type NewPolymarketCondition,
   type PolymarketToken,
   type NewPolymarketToken,
+  type DqDailyScore,
+  type NewDqDailyScore,
+  type DqParquetStat,
+  type NewDqParquetStat,
 } from "./schema.ts";
 
 // Event operations
@@ -144,3 +150,10 @@ export {
   getCondition,
   getConditionStats,
 } from "./polymarket.ts";
+
+// DQ operations
+export {
+  listDailyScores,
+  getSlaMetrics,
+  getGapReports,
+} from "./dq.ts";

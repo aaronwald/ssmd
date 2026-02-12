@@ -15,6 +15,7 @@ import {
   serial,
   numeric,
   jsonb,
+  date,
 } from "drizzle-orm/pg-core";
 
 // Fee type enum matching PostgreSQL
@@ -211,6 +212,40 @@ export const polymarketTokens = pgTable("polymarket_tokens", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// DQ daily scores table (migration 0014, extended in 0016)
+export const dqDailyScores = pgTable("dq_daily_scores", {
+  id: serial("id").primaryKey(),
+  checkDate: date("check_date").notNull(),
+  feed: text("feed").notNull(),
+  score: numeric("score", { precision: 5, scale: 2 }).notNull(),
+  compositeScore: numeric("composite_score", { precision: 5, scale: 2 }),
+  details: jsonb("details").notNull().default({}),
+  // Added in migration 0016
+  gapCount: integer("gap_count"),
+  gapTotalMinutes: numeric("gap_total_minutes", { precision: 10, scale: 2 }),
+  coveragePct: numeric("coverage_pct", { precision: 5, scale: 2 }),
+  expectedMessages: integer("expected_messages"),
+  actualMessages: integer("actual_messages"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// DQ parquet stats table (migration 0016)
+export const dqParquetStats = pgTable("dq_parquet_stats", {
+  id: serial("id").primaryKey(),
+  path: text("path").notNull().unique(),
+  feed: text("feed").notNull(),
+  msgType: text("msg_type").notNull(),
+  date: date("date").notNull(),
+  rows: integer("rows").notNull(),
+  fileSizeBytes: bigint("file_size_bytes", { mode: "number" }).notNull(),
+  compressionRatio: numeric("compression_ratio", { precision: 8, scale: 4 }),
+  duplicatesFiltered: integer("duplicates_filtered").notNull().default(0),
+  schemaValid: boolean("schema_valid").notNull().default(true),
+  nullViolations: jsonb("null_violations").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Inferred types for select/insert
 export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
@@ -234,3 +269,7 @@ export type PolymarketCondition = typeof polymarketConditions.$inferSelect;
 export type NewPolymarketCondition = typeof polymarketConditions.$inferInsert;
 export type PolymarketToken = typeof polymarketTokens.$inferSelect;
 export type NewPolymarketToken = typeof polymarketTokens.$inferInsert;
+export type DqDailyScore = typeof dqDailyScores.$inferSelect;
+export type NewDqDailyScore = typeof dqDailyScores.$inferInsert;
+export type DqParquetStat = typeof dqParquetStats.$inferSelect;
+export type NewDqParquetStat = typeof dqParquetStats.$inferInsert;

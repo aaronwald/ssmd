@@ -1,12 +1,167 @@
 // dq.ts - Data Quality checks: compare NATS trades with exchange APIs
 // Supports Kalshi, Kraken, and Polymarket exchanges
-// Also includes `daily` subcommand for composite Phase 1 scoring
+// Also includes `daily` subcommand for composite Phase 1+2 scoring
 
 import { createKalshiClient, type KalshiTrade } from "../../lib/api/kalshi.ts";
 import { fetchKrakenTrades } from "../../lib/api/kraken-public.ts";
 import { getEnvContext } from "../utils/env-context.ts";
 import { getRawSql, closeDb } from "../../lib/db/mod.ts";
 import { connect as natsConnect, type NatsConnection } from "npm:nats";
+
+// --- GCS Feed Configuration ---
+
+const GCS_BUCKET = "ssmd-data";
+
+interface GcsFeedConfig {
+  /** Feed name used in scoring (matches dq_daily_scores.feed) */
+  feed: string;
+  /** GCS prefix (bucket subdirectory) */
+  prefix: string;
+  /** Stream subdirectory within prefix */
+  stream: string;
+  /** NATS stream name for message counts */
+  natsStream: string;
+}
+
+const GCS_FEEDS: GcsFeedConfig[] = [
+  { feed: "kalshi-crypto", prefix: "kalshi", stream: "crypto", natsStream: "PROD_KALSHI_CRYPTO" },
+  { feed: "kraken-futures", prefix: "kraken-futures", stream: "futures", natsStream: "PROD_KRAKEN_FUTURES" },
+  { feed: "polymarket", prefix: "polymarket", stream: "markets", natsStream: "PROD_POLYMARKET" },
+];
+
+// --- GCS Utility Functions ---
+
+interface GcsFileInfo {
+  path: string;
+  name: string;
+  sizeBytes: number;
+  msgType: string;
+  time: string; // HHMM
+}
+
+/**
+ * List files in a GCS path with sizes using gcloud storage ls -l.
+ * Returns parsed file info including size, msg_type, and time slot.
+ */
+async function listGcsFilesWithInfo(
+  bucket: string,
+  prefix: string,
+  stream: string,
+  date: string,
+  ext: string = "parquet",
+): Promise<GcsFileInfo[]> {
+  const gsPath = `gs://${bucket}/${prefix}/${stream}/${date}/`;
+  const cmd = new Deno.Command("gcloud", {
+    args: ["storage", "ls", "-l", gsPath],
+    stdout: "piped",
+    stderr: "piped",
+  });
+
+  const output = await cmd.output();
+  if (!output.success) {
+    const err = new TextDecoder().decode(output.stderr);
+    if (err.includes("CommandException") || err.includes("NOT_FOUND") || err.includes("matched no objects")) {
+      return [];
+    }
+    // Non-fatal: log and return empty
+    console.error(`  WARN: gcloud ls failed for ${gsPath}: ${err.slice(0, 200)}`);
+    return [];
+  }
+
+  const text = new TextDecoder().decode(output.stdout);
+  const files: GcsFileInfo[] = [];
+
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("TOTAL:")) continue;
+
+    // gcloud storage ls -l format: "  SIZE  DATE  gs://path"
+    // Example: "  12345  2026-02-12T14:00:00Z  gs://ssmd-data/kalshi/crypto/2026-02-12/ticker_1400.parquet"
+    const match = trimmed.match(/^\s*(\d+)\s+\S+\s+(gs:\/\/.+)$/);
+    if (!match) continue;
+
+    const fullPath = match[2];
+    const sizeBytes = parseInt(match[1], 10);
+    const fileName = fullPath.split("/").pop() ?? "";
+
+    if (!fileName.endsWith(`.${ext}`)) continue;
+
+    // Parse msg_type and time from filename: {msg_type}_{HHMM}.{ext}
+    const baseName = fileName.replace(`.${ext}`, "");
+    const lastUnderscore = baseName.lastIndexOf("_");
+    if (lastUnderscore === -1) continue;
+
+    const msgType = baseName.substring(0, lastUnderscore);
+    const time = baseName.substring(lastUnderscore + 1);
+
+    files.push({ path: fullPath, name: fileName, sizeBytes, msgType, time });
+  }
+
+  return files;
+}
+
+/**
+ * Get the set of unique 15-minute time slots covered by files.
+ * Returns a Set of HHMM strings.
+ */
+function getTimeSlots(files: GcsFileInfo[]): Set<string> {
+  return new Set(files.map((f) => f.time));
+}
+
+/**
+ * Generate all expected 15-minute time slots for a 24-hour day.
+ */
+function allExpectedSlots(): string[] {
+  const slots: string[] = [];
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 15) {
+      slots.push(`${String(h).padStart(2, "0")}${String(m).padStart(2, "0")}`);
+    }
+  }
+  return slots;
+}
+
+/**
+ * Find gaps (missing time slots) in the file set.
+ * Returns contiguous gap ranges with start/end times and duration.
+ */
+function findGaps(
+  files: GcsFileInfo[],
+): { start: string; end: string; durationMinutes: number }[] {
+  const expected = allExpectedSlots();
+  const present = getTimeSlots(files);
+  const gaps: { start: string; end: string; durationMinutes: number }[] = [];
+
+  let gapStart: string | null = null;
+  let gapCount = 0;
+
+  for (const slot of expected) {
+    if (!present.has(slot)) {
+      if (gapStart === null) gapStart = slot;
+      gapCount++;
+    } else {
+      if (gapStart !== null) {
+        gaps.push({
+          start: `${gapStart.slice(0, 2)}:${gapStart.slice(2)}`,
+          end: `${slot.slice(0, 2)}:${slot.slice(2)}`,
+          durationMinutes: gapCount * 15,
+        });
+        gapStart = null;
+        gapCount = 0;
+      }
+    }
+  }
+  // Handle trailing gap
+  if (gapStart !== null) {
+    gaps.push({
+      start: `${gapStart.slice(0, 2)}:${gapStart.slice(2)}`,
+      end: "24:00",
+      durationMinutes: gapCount * 15,
+    });
+  }
+
+  return gaps;
+}
 
 // --- Shared types ---
 
@@ -887,6 +1042,281 @@ async function scoreArchiveSync(
   };
 }
 
+// --- Completeness scoring ---
+
+async function scoreCompleteness(
+  feedConfig: GcsFeedConfig,
+  date: string,
+  sql: ReturnType<typeof getRawSql>,
+  nc: NatsConnection,
+): Promise<{ score: number; details: Record<string, unknown> }> {
+  // 1. Get actual message count from NATS stream (last 24h)
+  let actualMessages = 0;
+  try {
+    const jsm = await nc.jetstreamManager();
+    const info = await jsm.streams.info(feedConfig.natsStream);
+    actualMessages = info.state.messages;
+  } catch {
+    // Stream may not exist
+  }
+
+  // 2. Get historical baseline (avg of last 7 days) from dq_daily_scores
+  let expectedMessages = 0;
+  try {
+    type AvgRow = { avg_msgs: string | null };
+    const rows = await sql`
+      SELECT ROUND(AVG(actual_messages))::int as avg_msgs
+      FROM dq_daily_scores
+      WHERE feed = ${feedConfig.feed}
+        AND check_date >= (${date}::date - INTERVAL '7 days')
+        AND check_date < ${date}::date
+        AND actual_messages IS NOT NULL
+        AND actual_messages > 0
+    ` as AvgRow[];
+    expectedMessages = rows[0]?.avg_msgs ? parseInt(rows[0].avg_msgs) : 0;
+  } catch {
+    // Table may not have history yet
+  }
+
+  // 3. List GCS files for gap detection
+  const files = await listGcsFilesWithInfo(GCS_BUCKET, feedConfig.prefix, feedConfig.stream, date);
+  const gaps = findGaps(files);
+  const totalGapMinutes = gaps.reduce((sum, g) => sum + g.durationMinutes, 0);
+
+  // 4. Calculate file coverage (% of 96 expected 15-min slots)
+  const expectedSlots = 96; // 24h × 4 per hour
+  const presentSlots = getTimeSlots(files).size;
+  const coveragePct = expectedSlots > 0 ? Math.round((presentSlots / expectedSlots) * 10000) / 100 : 0;
+
+  // 5. Score components
+  // Message ratio: actual vs expected (if we have history)
+  let messageScore: number;
+  if (expectedMessages > 0) {
+    const ratio = actualMessages / expectedMessages;
+    if (ratio >= 0.9) messageScore = 100;
+    else if (ratio >= 0.7) messageScore = 75;
+    else if (ratio >= 0.5) messageScore = 50;
+    else if (ratio > 0) messageScore = 25;
+    else messageScore = 0;
+  } else {
+    // No history — score based on whether messages exist at all
+    messageScore = actualMessages > 0 ? 75 : 0;
+  }
+
+  // Gap penalty: more gaps = lower score
+  const gapScore = gaps.length === 0 ? 100
+    : gaps.length <= 2 ? 75
+    : gaps.length <= 5 ? 50
+    : gaps.length <= 10 ? 25
+    : 0;
+
+  // Coverage score: direct percentage mapping
+  const coverageScore = Math.round(coveragePct);
+
+  const checks = [
+    { name: "message_ratio", weight: 0.35, value: messageScore },
+    { name: "gap_penalty", weight: 0.35, value: gapScore },
+    { name: "file_coverage", weight: 0.30, value: coverageScore },
+  ];
+
+  const score = Math.round(checks.reduce((s, c) => s + c.value * c.weight, 0));
+
+  return {
+    score,
+    details: {
+      actualMessages,
+      expectedMessages: expectedMessages || null,
+      fileCount: files.length,
+      presentSlots,
+      expectedSlots,
+      coveragePct,
+      gapCount: gaps.length,
+      gapTotalMinutes: totalGapMinutes,
+      gaps: gaps.slice(0, 10), // Cap at 10 for JSONB storage
+    },
+  };
+}
+
+// --- Parquet quality scoring ---
+
+async function scoreParquetQuality(
+  feedConfig: GcsFeedConfig,
+  date: string,
+  sql: ReturnType<typeof getRawSql>,
+): Promise<{ score: number; details: Record<string, unknown> }> {
+  const files = await listGcsFilesWithInfo(GCS_BUCKET, feedConfig.prefix, feedConfig.stream, date);
+
+  if (files.length === 0) {
+    return {
+      score: 0,
+      details: { error: "no parquet files found", fileCount: 0 },
+    };
+  }
+
+  // Analyze file health
+  const zeroByteFiles = files.filter((f) => f.sizeBytes === 0);
+  const msgTypes = new Set(files.map((f) => f.msgType));
+  const totalBytes = files.reduce((sum, f) => sum + f.sizeBytes, 0);
+  const avgBytes = Math.round(totalBytes / files.length);
+
+  // File size consistency: check for outliers (files < 10% of average)
+  const tinyFiles = avgBytes > 0
+    ? files.filter((f) => f.sizeBytes > 0 && f.sizeBytes < avgBytes * 0.1)
+    : [];
+
+  // Persist per-file stats to dq_parquet_stats
+  let persistedCount = 0;
+  try {
+    for (const file of files) {
+      await sql`
+        INSERT INTO dq_parquet_stats (path, feed, msg_type, date, rows, file_size_bytes, schema_valid)
+        VALUES (
+          ${file.path},
+          ${feedConfig.feed},
+          ${file.msgType},
+          ${date}::date,
+          0,
+          ${file.sizeBytes},
+          true
+        )
+        ON CONFLICT (path) DO UPDATE SET
+          file_size_bytes = EXCLUDED.file_size_bytes,
+          created_at = NOW()
+      `;
+      persistedCount++;
+    }
+  } catch (e) {
+    console.error(`  WARN: Failed to persist parquet stats: ${e}`);
+  }
+
+  // Score components
+  // Files present: are all expected msg_types represented?
+  // We expect at least ticker and trade for kalshi/kraken, book and last_trade_price for polymarket
+  const expectedMsgTypes = getExpectedMsgTypes(feedConfig.feed);
+  const missingTypes = expectedMsgTypes.filter((t) => !msgTypes.has(t));
+  const typeScore = expectedMsgTypes.length > 0
+    ? Math.round(((expectedMsgTypes.length - missingTypes.length) / expectedMsgTypes.length) * 100)
+    : (msgTypes.size > 0 ? 100 : 0);
+
+  // File size health: penalize zero-byte and tiny files
+  const healthyFiles = files.length - zeroByteFiles.length;
+  const healthScore = files.length > 0 ? Math.round((healthyFiles / files.length) * 100) : 0;
+
+  // Consistency: penalize large variance in file sizes
+  const consistencyScore = tinyFiles.length === 0 ? 100
+    : tinyFiles.length <= 3 ? 75
+    : tinyFiles.length <= 10 ? 50
+    : 25;
+
+  const checks = [
+    { name: "msg_types_present", weight: 0.40, value: typeScore },
+    { name: "file_size_health", weight: 0.30, value: healthScore },
+    { name: "consistency", weight: 0.30, value: consistencyScore },
+  ];
+
+  const score = Math.round(checks.reduce((s, c) => s + c.value * c.weight, 0));
+
+  return {
+    score,
+    details: {
+      fileCount: files.length,
+      totalBytes,
+      avgBytes,
+      msgTypes: [...msgTypes],
+      missingMsgTypes: missingTypes,
+      zeroByteCount: zeroByteFiles.length,
+      tinyFileCount: tinyFiles.length,
+      persistedCount,
+    },
+  };
+}
+
+/**
+ * Expected parquet message types per feed.
+ */
+function getExpectedMsgTypes(feed: string): string[] {
+  switch (feed) {
+    case "kalshi-crypto":
+      return ["ticker", "trade"];
+    case "kraken-futures":
+      return ["ticker", "trade"];
+    case "polymarket":
+      return ["book", "last_trade_price"];
+    default:
+      return [];
+  }
+}
+
+// --- SLA scoring ---
+
+async function scoreSLA(
+  feedConfig: GcsFeedConfig,
+  date: string,
+): Promise<{ score: number; details: Record<string, unknown> }> {
+  const files = await listGcsFilesWithInfo(GCS_BUCKET, feedConfig.prefix, feedConfig.stream, date);
+
+  if (files.length === 0) {
+    return {
+      score: 0,
+      details: { uptimePct: 0, freshnessMins: null, hoursWithData: 0 },
+    };
+  }
+
+  // 1. Uptime: % of hours with at least one file
+  const hoursWithData = new Set(files.map((f) => f.time.slice(0, 2))).size;
+  const uptimePct = Math.round((hoursWithData / 24) * 10000) / 100;
+
+  // 2. Freshness: age of most recent file
+  // Sort files by time slot descending to find latest
+  const sorted = [...files].sort((a, b) => b.time.localeCompare(a.time));
+  const latestTime = sorted[0].time;
+  const latestHour = parseInt(latestTime.slice(0, 2), 10);
+  const latestMin = parseInt(latestTime.slice(2), 10);
+
+  // Calculate freshness relative to end of day (or current time if today)
+  const now = new Date();
+  const isToday = date === now.toISOString().slice(0, 10);
+  let freshnessMins: number;
+
+  if (isToday) {
+    const currentMins = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const latestMins = latestHour * 60 + latestMin;
+    freshnessMins = Math.max(0, currentMins - latestMins);
+  } else {
+    // For past dates, freshness is from end of day
+    freshnessMins = (23 * 60 + 45) - (latestHour * 60 + latestMin);
+  }
+
+  // Uptime score
+  const uptimeScore = Math.round(uptimePct);
+
+  // Freshness score
+  let freshnessScore: number;
+  if (freshnessMins < 60) freshnessScore = 100;
+  else if (freshnessMins < 180) freshnessScore = 75;
+  else if (freshnessMins < 360) freshnessScore = 50;
+  else if (freshnessMins < 720) freshnessScore = 25;
+  else freshnessScore = 0;
+
+  const checks = [
+    { name: "uptime", weight: 0.60, value: uptimeScore },
+    { name: "freshness", weight: 0.40, value: freshnessScore },
+  ];
+
+  const score = Math.round(checks.reduce((s, c) => s + c.value * c.weight, 0));
+
+  return {
+    score,
+    details: {
+      hoursWithData,
+      uptimePct,
+      freshnessMins,
+      latestFile: sorted[0].name,
+      freshness_minutes: freshnessMins,
+    },
+  };
+}
+
 async function runDailyDqCheck(flags: DqFlags): Promise<void> {
   const jsonOutput = flags.json === true;
   const today = new Date().toISOString().slice(0, 10);
@@ -922,7 +1352,7 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
     const standardIdleTiers = [[60, 100], [120, 75], [300, 25]];
     const polymarketIdleTiers = [[120, 100], [300, 75], [600, 25]];
 
-    // Score all feeds in parallel
+    // Phase 1: Score connector feeds in parallel
     const [kalshi, kraken, polymarket, funding, archive] = await Promise.all([
       scoreConnectorFeed("kalshi", "crypto", 10000, 50, standardIdleTiers, "PROD_KALSHI_CRYPTO", nc, promUrl, promAvailable),
       scoreConnectorFeed("kraken-futures", undefined, 1000, 2, standardIdleTiers, "PROD_KRAKEN_FUTURES", nc, promUrl, promAvailable),
@@ -931,17 +1361,75 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
       scoreArchiveSync(sql),
     ]);
 
-    // Composite score
-    const composite = Math.round(
-      kalshi.score * 0.30 +
-      kraken.score * 0.25 +
-      polymarket.score * 0.15 +
-      funding.score * 0.20 +
-      archive.score * 0.10
-    );
+    // Phase 2: Score completeness, parquet quality, and SLA per GCS feed
+    // These use gcloud CLI so run sequentially per feed to avoid rate limits,
+    // but all three checks per feed run in parallel.
+    const completenessScores: Record<string, { score: number; details: Record<string, unknown> }> = {};
+    const parquetScores: Record<string, { score: number; details: Record<string, unknown> }> = {};
+    const slaScores: Record<string, { score: number; details: Record<string, unknown> }> = {};
+
+    // Check if gcloud is available before running GCS checks
+    let gcloudAvailable = true;
+    try {
+      const check = new Deno.Command("gcloud", { args: ["--version"], stdout: "piped", stderr: "piped" });
+      const checkOut = await check.output();
+      if (!checkOut.success) gcloudAvailable = false;
+    } catch {
+      gcloudAvailable = false;
+    }
+
+    if (gcloudAvailable) {
+      for (const feedConfig of GCS_FEEDS) {
+        if (!jsonOutput) console.log(`  Scanning GCS: ${feedConfig.prefix}/${feedConfig.stream}...`);
+        const [comp, pq, sla] = await Promise.all([
+          scoreCompleteness(feedConfig, today, sql, nc),
+          scoreParquetQuality(feedConfig, today, sql),
+          scoreSLA(feedConfig, today),
+        ]);
+        completenessScores[feedConfig.feed] = comp;
+        parquetScores[feedConfig.feed] = pq;
+        slaScores[feedConfig.feed] = sla;
+      }
+    } else if (!jsonOutput) {
+      console.warn("WARN: gcloud not available, skipping completeness/parquet/SLA checks");
+    }
+
+    // Aggregate Phase 2 scores (average across feeds)
+    const avgScore = (scores: Record<string, { score: number }>) => {
+      const vals = Object.values(scores);
+      return vals.length > 0 ? Math.round(vals.reduce((s, v) => s + v.score, 0) / vals.length) : 0;
+    };
+    const completenessAvg = avgScore(completenessScores);
+    const parquetAvg = avgScore(parquetScores);
+    const slaAvg = avgScore(slaScores);
+
+    // Composite score with Phase 2 dimensions
+    // Phase 1 weights reduced to make room for Phase 2
+    const hasPhase2 = gcloudAvailable && Object.keys(completenessScores).length > 0;
+    let composite: number;
+    if (hasPhase2) {
+      composite = Math.round(
+        kalshi.score * 0.20 +
+        kraken.score * 0.15 +
+        polymarket.score * 0.10 +
+        funding.score * 0.15 +
+        archive.score * 0.05 +
+        completenessAvg * 0.15 +
+        parquetAvg * 0.10 +
+        slaAvg * 0.10
+      );
+    } else {
+      // Fallback to Phase 1 weights when gcloud not available
+      composite = Math.round(
+        kalshi.score * 0.30 +
+        kraken.score * 0.25 +
+        polymarket.score * 0.15 +
+        funding.score * 0.20 +
+        archive.score * 0.10
+      );
+    }
 
     // Check hard RED overrides
-    // Use == null checks so both 0 and null trigger appropriately
     const issues: string[] = [];
     if (kalshi.details.wsConnected === 0) issues.push("Kalshi WS disconnected");
     if (kraken.details.wsConnected === 0) issues.push("Kraken WS disconnected");
@@ -955,6 +1443,13 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
       issues.push("Funding rate snapshot older than 1h");
     }
     if (archive.score === 0) issues.push("No archiver has synced to GCS in 24+ hours");
+
+    // Phase 2 RED overrides
+    if (hasPhase2) {
+      if (completenessAvg < 25) issues.push("Completeness critically low across feeds");
+      if (parquetAvg === 0) issues.push("No valid parquet files found in GCS");
+      if (slaAvg < 25) issues.push("SLA critically low: poor uptime/freshness");
+    }
 
     let grade: "GREEN" | "YELLOW" | "RED";
     if (issues.length > 0 || composite < 60) {
@@ -973,6 +1468,17 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
         "polymarket": { score: polymarket.score, ...polymarket.details },
         "funding-rate": { score: funding.score, ...funding.details },
         "archive-sync": { score: archive.score, ...archive.details },
+        ...(hasPhase2 ? {
+          "completeness": { score: completenessAvg, ...Object.fromEntries(
+            Object.entries(completenessScores).map(([k, v]) => [k, v.details])
+          )},
+          "parquet-quality": { score: parquetAvg, ...Object.fromEntries(
+            Object.entries(parquetScores).map(([k, v]) => [k, v.details])
+          )},
+          "sla": { score: slaAvg, ...Object.fromEntries(
+            Object.entries(slaScores).map(([k, v]) => [k, v.details])
+          )},
+        } : {}),
       },
       composite,
       grade,
@@ -982,7 +1488,17 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
 
     // Persist scores
     try {
-      const feedEntries = [
+      // Phase 1 feed entries
+      const feedEntries: {
+        feed: string;
+        score: number;
+        details: Record<string, unknown>;
+        gapCount?: number;
+        gapTotalMinutes?: number;
+        coveragePct?: number;
+        expectedMessages?: number;
+        actualMessages?: number;
+      }[] = [
         { feed: "kalshi-crypto", score: kalshi.score, details: kalshi.details },
         { feed: "kraken-futures", score: kraken.score, details: kraken.details },
         { feed: "polymarket", score: polymarket.score, details: polymarket.details },
@@ -990,14 +1506,55 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
         { feed: "archive-sync", score: archive.score, details: archive.details },
       ];
 
+      // Merge Phase 2 data into feed entries (completeness details go into the feed's row)
+      if (hasPhase2) {
+        for (const entry of feedEntries) {
+          const comp = completenessScores[entry.feed];
+          if (comp) {
+            entry.details = {
+              ...entry.details,
+              completeness: comp.details,
+              parquetQuality: parquetScores[entry.feed]?.details,
+              sla: slaScores[entry.feed]?.details,
+            };
+            entry.gapCount = comp.details.gapCount as number;
+            entry.gapTotalMinutes = comp.details.gapTotalMinutes as number;
+            entry.coveragePct = comp.details.coveragePct as number;
+            entry.actualMessages = comp.details.actualMessages as number;
+            entry.expectedMessages = comp.details.expectedMessages as number | undefined;
+          }
+        }
+
+        // Also persist aggregate Phase 2 scores
+        feedEntries.push(
+          { feed: "completeness", score: completenessAvg, details: completenessScores },
+          { feed: "parquet-quality", score: parquetAvg, details: parquetScores },
+          { feed: "sla", score: slaAvg, details: slaScores },
+        );
+      }
+
       for (const entry of feedEntries) {
         await sql`
-          INSERT INTO dq_daily_scores (check_date, feed, score, composite_score, details)
-          VALUES (${today}::date, ${entry.feed}, ${entry.score}, ${composite}, ${JSON.stringify(entry.details)}::jsonb)
+          INSERT INTO dq_daily_scores (
+            check_date, feed, score, composite_score, details,
+            gap_count, gap_total_minutes, coverage_pct, expected_messages, actual_messages
+          )
+          VALUES (
+            ${today}::date, ${entry.feed}, ${entry.score}, ${composite},
+            ${JSON.stringify(entry.details)}::jsonb,
+            ${entry.gapCount ?? null}, ${entry.gapTotalMinutes ?? null},
+            ${entry.coveragePct ?? null}, ${entry.expectedMessages ?? null},
+            ${entry.actualMessages ?? null}
+          )
           ON CONFLICT (check_date, feed) DO UPDATE SET
             score = EXCLUDED.score,
             composite_score = EXCLUDED.composite_score,
             details = EXCLUDED.details,
+            gap_count = EXCLUDED.gap_count,
+            gap_total_minutes = EXCLUDED.gap_total_minutes,
+            coverage_pct = EXCLUDED.coverage_pct,
+            expected_messages = EXCLUDED.expected_messages,
+            actual_messages = EXCLUDED.actual_messages,
             updated_at = NOW()
         `;
       }
@@ -1010,33 +1567,62 @@ async function runDailyDqCheck(flags: DqFlags): Promise<void> {
       console.log(JSON.stringify(report));
     } else {
       console.log();
-      console.log(`Phase 1 DQ: ${grade} (${composite}/100) — ${today}`);
-      console.log("=".repeat(55));
+      console.log(`DQ Report: ${grade} (${composite}/100) — ${today}`);
+      console.log("=".repeat(60));
+
+      // Phase 1: Connector health
+      console.log("  Connector Health:");
       const k = kalshi.details;
       const kr = kraken.details;
       const p = polymarket.details;
       const f = funding.details;
-      console.log(`Kalshi Crypto:    ${String(kalshi.score).padStart(3)}/100 (${fmtNum(k.messages as number)} msgs, ${k.markets ?? "?"} mkts, ${k.idleSec ?? "?"}s idle)`);
-      console.log(`Kraken Futures:   ${String(kraken.score).padStart(3)}/100 (${fmtNum(kr.messages as number)} msgs, ${kr.markets ?? "?"} mkts, ${kr.idleSec ?? "?"}s idle)`);
-      console.log(`Polymarket:       ${String(polymarket.score).padStart(3)}/100 (${fmtNum(p.messages as number)} msgs, ${p.idleSec ?? "?"}s idle)`);
-      console.log(`Funding Rate:     ${String(funding.score).padStart(3)}/100 (${f.snapshots ?? 0} snaps, ${f.products ?? 0} products, ${fmtAge(f.lastFlushAge as number | null)})`);
+      console.log(`    Kalshi Crypto:    ${String(kalshi.score).padStart(3)}/100 (${fmtNum(k.messages as number)} msgs, ${k.markets ?? "?"} mkts, ${k.idleSec ?? "?"}s idle)`);
+      console.log(`    Kraken Futures:   ${String(kraken.score).padStart(3)}/100 (${fmtNum(kr.messages as number)} msgs, ${kr.markets ?? "?"} mkts, ${kr.idleSec ?? "?"}s idle)`);
+      console.log(`    Polymarket:       ${String(polymarket.score).padStart(3)}/100 (${fmtNum(p.messages as number)} msgs, ${p.idleSec ?? "?"}s idle)`);
+      console.log(`    Funding Rate:     ${String(funding.score).padStart(3)}/100 (${f.snapshots ?? 0} snaps, ${f.products ?? 0} products, ${fmtAge(f.lastFlushAge as number | null)})`);
       const archDetails = archive.details as Record<string, { score: number; lastSyncAge: number | null }>;
       const archParts = Object.entries(archDetails)
         .map(([n, d]) => `${n.replace("-archiver", "")}: ${d.lastSyncAge != null ? d.lastSyncAge + "h" : "never"}`)
         .join(", ");
-      console.log(`GCS Archive:      ${String(archive.score).padStart(3)}/100 (${archParts})`);
+      console.log(`    GCS Archive:      ${String(archive.score).padStart(3)}/100 (${archParts})`);
+
+      // Phase 2: Data quality
+      if (hasPhase2) {
+        console.log();
+        console.log("  Data Quality (GCS):");
+        console.log(`    Completeness:     ${String(completenessAvg).padStart(3)}/100`);
+        for (const [feed, s] of Object.entries(completenessScores)) {
+          const d = s.details;
+          console.log(`      ${feed}: ${s.score}/100 (${d.fileCount} files, ${d.gapCount} gaps, ${d.coveragePct}% coverage)`);
+        }
+        console.log(`    Parquet Quality:  ${String(parquetAvg).padStart(3)}/100`);
+        for (const [feed, s] of Object.entries(parquetScores)) {
+          const d = s.details;
+          console.log(`      ${feed}: ${s.score}/100 (${d.fileCount} files, ${fmtBytes(d.totalBytes as number)})`);
+        }
+        console.log(`    SLA:              ${String(slaAvg).padStart(3)}/100`);
+        for (const [feed, s] of Object.entries(slaScores)) {
+          const d = s.details;
+          console.log(`      ${feed}: ${s.score}/100 (${d.hoursWithData}/24h uptime, ${d.freshnessMins ?? "?"}m fresh)`);
+        }
+      }
+
       console.log();
-      console.log(`Composite: ${composite}/100 ${grade}`);
+      console.log(`  Composite: ${composite}/100 ${grade}`);
       if (issues.length > 0) {
         console.log();
-        console.log("Issues:");
+        console.log("  Issues:");
         for (const issue of issues) {
-          console.log(`  - ${issue}`);
+          console.log(`    - ${issue}`);
         }
       }
       if (!promAvailable) {
         console.log();
-        console.log("(Prometheus degraded — scores capped at 50)");
+        console.log("  (Prometheus degraded — scores capped at 50)");
+      }
+      if (!gcloudAvailable) {
+        console.log();
+        console.log("  (gcloud unavailable — Phase 2 metrics skipped)");
       }
     }
   } finally {
@@ -1056,6 +1642,14 @@ function fmtAge(seconds: number | null): string {
   if (seconds < 60) return `${seconds}s ago`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
   return `${(seconds / 3600).toFixed(1)}h ago`;
+}
+
+function fmtBytes(bytes: number | null): string {
+  if (bytes == null) return "?";
+  if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(1)}GB`;
+  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)}MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${bytes}B`;
 }
 
 // --- Utility functions (exported for testing) ---
@@ -1110,7 +1704,7 @@ export function printDqHelp(): void {
   console.log("Data quality checks for market data pipeline");
   console.log();
   console.log("COMMANDS:");
-  console.log("  daily           Score all Phase 1 feeds (Kalshi, Kraken, Polymarket, Funding, GCS Archive)");
+  console.log("  daily           Composite DQ scoring: connector health + completeness + parquet quality + SLA");
   console.log("  trades          Compare NATS trades with exchange API");
   console.log("  secmaster       Run secmaster data quality checks");
   console.log();

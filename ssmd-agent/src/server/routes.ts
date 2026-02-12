@@ -33,6 +33,9 @@ import {
   listTokensByCategories,
   getCondition,
   getConditionStats,
+  listDailyScores,
+  getSlaMetrics,
+  getGapReports,
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
@@ -354,6 +357,41 @@ route("GET", "/v1/fees/:series", async (req, ctx) => {
     return json({ error: `No fee schedule found for ${params.series}` }, 404);
   }
   return json(fee);
+}, true, "secmaster:read");
+
+// DQ (Data Quality) endpoints
+route("GET", "/v1/dq/daily", async (req, ctx) => {
+  const url = new URL(req.url);
+  const scores = await listDailyScores(ctx.db, {
+    feed: url.searchParams.get("feed") ?? undefined,
+    from: url.searchParams.get("from") ?? undefined,
+    to: url.searchParams.get("to") ?? undefined,
+    limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
+  });
+  return json({ scores });
+}, true, "secmaster:read");
+
+route("GET", "/v1/dq/sla", async (req, ctx) => {
+  const url = new URL(req.url);
+  const windowDays = url.searchParams.get("window_days")
+    ? parseInt(url.searchParams.get("window_days")!)
+    : undefined;
+  const metrics = await getSlaMetrics(ctx.db, { windowDays });
+  return json({ metrics });
+}, true, "secmaster:read");
+
+route("GET", "/v1/dq/gaps", async (req, ctx) => {
+  const url = new URL(req.url);
+  const feed = url.searchParams.get("feed");
+  if (!feed) {
+    return json({ error: "feed query parameter is required" }, 400);
+  }
+  const gaps = await getGapReports(ctx.db, {
+    feed,
+    from: url.searchParams.get("from") ?? undefined,
+    to: url.searchParams.get("to") ?? undefined,
+  });
+  return json({ gaps });
 }, true, "secmaster:read");
 
 // Key management endpoints

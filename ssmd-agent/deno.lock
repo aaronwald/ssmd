@@ -8,11 +8,12 @@
     "npm:@langchain/core@0.3": "0.3.80_zod@3.25.76",
     "npm:@langchain/langgraph@0.2": "0.2.74_@langchain+core@0.3.80__zod@3.25.76",
     "npm:@langchain/openai@0.3": "0.3.17_@langchain+core@0.3.80__zod@3.25.76_zod@3.25.76_openai@4.104.0__zod@3.25.76",
-    "npm:drizzle-orm@0.38": "0.38.4_postgres@3.4.7",
+    "npm:drizzle-orm@0.38": "0.38.4_postgres@3.4.5",
     "npm:nats@*": "2.29.3",
     "npm:nats@^2.29.3": "2.29.3",
-    "npm:postgres@*": "3.4.7",
-    "npm:postgres@^3.4.4": "3.4.7",
+    "npm:postgres@*": "3.4.5",
+    "npm:postgres@3.4.5": "3.4.5",
+    "npm:postgres@^3.4.4": "3.4.5",
     "npm:yaml@^2.3.0": "2.8.2",
     "npm:zod@^3.23.0": "3.25.76"
   },
@@ -223,7 +224,7 @@
     "delayed-stream@1.0.0": {
       "integrity": "sha512-ZySD7Nf91aLB0RxL4KGrKHBXl7Eds1DAmEdcoVawXnLD7SDhpNgtuII2aAkg7a7QS41jxPSZ17p4VdGnMHk3MQ=="
     },
-    "drizzle-orm@0.38.4_postgres@3.4.7": {
+    "drizzle-orm@0.38.4_postgres@3.4.5": {
       "integrity": "sha512-s7/5BpLKO+WJRHspvpqTydxFob8i1vo2rEx4pY6TGY7QSMuUfWUuzaY0DIpXCkgHOo37BaFC+SJQb99dDUXT3Q==",
       "dependencies": [
         "postgres"
@@ -455,8 +456,8 @@
         "p-finally"
       ]
     },
-    "postgres@3.4.7": {
-      "integrity": "sha512-Jtc2612XINuBjIl/QTWsV5UvE8UHuNblcO3vVADSrKsrc6RqGX6lOW1cEo3CM2v0XG4Nat8nI+YM7/f26VxXLw=="
+    "postgres@3.4.5": {
+      "integrity": "sha512-cDWgoah1Gez9rN3H4165peY9qfpEo+SA61oQv65O3cRUE1pOEoJWwddwcqKE8XZYjbblOJlYDlLV4h67HrEVDg=="
     },
     "retry@0.13.1": {
       "integrity": "sha512-XQBQ3I8W1Cge0Seh+6gjj03LbmRFWuoszgK9ooCpwYIrhhoO80pfq4cUkU5DkknwfOfFteRwlZ56PYOGYyFWdg=="
