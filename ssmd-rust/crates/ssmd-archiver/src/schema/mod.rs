@@ -8,6 +8,7 @@ use arrow::record_batch::RecordBatch;
 
 pub mod kalshi;
 pub mod kraken;
+pub mod kraken_futures;
 pub mod polymarket;
 
 #[cfg(test)]
@@ -59,6 +60,16 @@ impl SchemaRegistry {
                 );
                 schemas.insert("trade".to_string(), Box::new(kraken::KrakenTradeSchema));
             }
+            "kraken-futures" => {
+                schemas.insert(
+                    "ticker".to_string(),
+                    Box::new(kraken_futures::KrakenFuturesTickerSchema),
+                );
+                schemas.insert(
+                    "trade".to_string(),
+                    Box::new(kraken_futures::KrakenFuturesTradeSchema),
+                );
+            }
             "polymarket" => {
                 schemas.insert(
                     "book".to_string(),
@@ -100,10 +111,18 @@ pub fn detect_message_type(feed: &str, json: &serde_json::Value) -> Option<Strin
             json.get("type")?.as_str().map(String::from)
         }
         "kraken" => {
-            // Kraken uses "channel" field: "ticker", "trade", "heartbeat"
+            // Kraken Spot V2 uses "channel" field: "ticker", "trade", "heartbeat"
             // Messages without "data" are control messages (skip)
             json.get("data")?;
             json.get("channel")?.as_str().map(String::from)
+        }
+        "kraken-futures" => {
+            // Kraken Futures V1 uses flat "feed" field: "ticker", "trade", "ticker_lite", etc.
+            // Skip snapshot/subscription messages (have "event" field)
+            if json.get("event").is_some() {
+                return None;
+            }
+            json.get("feed")?.as_str().map(String::from)
         }
         "polymarket" => {
             // Polymarket uses "event_type" field
@@ -149,6 +168,44 @@ mod tests {
         assert!(reg.get("book").is_some());
         assert!(reg.get("last_trade_price").is_some());
         assert!(reg.get("price_change").is_none());
+    }
+
+    #[test]
+    fn test_registry_kraken_futures() {
+        let reg = SchemaRegistry::for_feed("kraken-futures");
+        assert!(reg.get("ticker").is_some());
+        assert!(reg.get("trade").is_some());
+        assert!(reg.get("heartbeat").is_none());
+    }
+
+    #[test]
+    fn test_detect_kraken_futures_ticker() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"feed":"ticker","product_id":"PF_XBTUSD","bid":65360.0}"#)
+                .unwrap();
+        assert_eq!(
+            detect_message_type("kraken-futures", &json),
+            Some("ticker".into())
+        );
+    }
+
+    #[test]
+    fn test_detect_kraken_futures_trade() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"feed":"trade","product_id":"PF_XBTUSD","uid":"abc"}"#)
+                .unwrap();
+        assert_eq!(
+            detect_message_type("kraken-futures", &json),
+            Some("trade".into())
+        );
+    }
+
+    #[test]
+    fn test_detect_kraken_futures_event_skipped() {
+        // Subscription confirmations have "event" field — should be skipped
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"event":"subscribed","feed":"ticker"}"#).unwrap();
+        assert_eq!(detect_message_type("kraken-futures", &json), None);
     }
 
     #[test]

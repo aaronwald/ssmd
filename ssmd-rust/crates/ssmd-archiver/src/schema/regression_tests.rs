@@ -16,6 +16,7 @@ use parquet::file::properties::WriterProperties;
 
 use super::kalshi::{KalshiTickerSchema, KalshiTradeSchema};
 use super::kraken::{KrakenTickerSchema, KrakenTradeSchema};
+use super::kraken_futures::{KrakenFuturesTickerSchema, KrakenFuturesTradeSchema};
 use super::polymarket::{PolymarketBookSchema, PolymarketTradeSchema};
 use super::MessageSchema;
 
@@ -166,15 +167,13 @@ fn test_kalshi_trade_parquet_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// Kraken — real data uses Futures V1 format (feed/product_id flat objects),
-// NOT the V2 format (channel/data array) that schemas expect.
-//
-// These tests document the format mismatch: parse_batch produces 0 rows
-// because the real messages have no "data" array.
+// Kraken Spot V2 schemas vs Futures V1 real data — format mismatch.
+// The Spot V2 schemas expect channel+data[] wrappers; Futures V1 is flat.
+// These tests document the mismatch (0 rows). Use kraken-futures feed instead.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_kraken_ticker_real_data_format_mismatch() {
+fn test_kraken_spot_v2_ticker_vs_futures_v1_data() {
     let messages = load_fixture("kraken_ticker.jsonl");
     assert!(!messages.is_empty(), "fixture file empty");
 
@@ -182,20 +181,12 @@ fn test_kraken_ticker_real_data_format_mismatch() {
     let input = to_input(&messages);
     let batch = schema.parse_batch(&input).unwrap();
 
-    // Real Kraken Futures data uses flat objects with "feed" field,
-    // not the V2 "channel"+"data" array format the schema expects.
-    // This results in 0 parsed rows — all messages skip the get_data_array() check.
-    assert_eq!(
-        batch.num_rows(),
-        0,
-        "Kraken Futures V1 format has no 'data' array — \
-         schema expects V2 format with channel+data. \
-         Fix: update Kraken schemas for Futures V1 or transform in connector."
-    );
+    // Spot V2 schema expects "data" array — Futures V1 has none → 0 rows.
+    assert_eq!(batch.num_rows(), 0);
 }
 
 #[test]
-fn test_kraken_trade_real_data_format_mismatch() {
+fn test_kraken_spot_v2_trade_vs_futures_v1_data() {
     let messages = load_fixture("kraken_trade.jsonl");
     assert!(!messages.is_empty(), "fixture file empty");
 
@@ -203,13 +194,87 @@ fn test_kraken_trade_real_data_format_mismatch() {
     let input = to_input(&messages);
     let batch = schema.parse_batch(&input).unwrap();
 
-    // Same V1 vs V2 mismatch as ticker.
+    assert_eq!(batch.num_rows(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Kraken Futures — real data uses V1 format (flat feed/product_id objects).
+// The kraken_futures module handles this format correctly.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_kraken_futures_ticker_real_data() {
+    let messages = load_fixture("kraken_ticker.jsonl");
+    assert!(!messages.is_empty(), "fixture file empty");
+
+    let schema = KrakenFuturesTickerSchema;
+    let input = to_input(&messages);
+    let batch = schema.parse_batch(&input).unwrap();
+
     assert_eq!(
         batch.num_rows(),
-        0,
-        "Kraken Futures V1 trade format has no 'data' array — \
-         see kraken_trade.jsonl for real message shape"
+        messages.len(),
+        "All Futures V1 ticker messages must parse"
     );
+    assert_eq!(batch.num_columns(), 21);
+    assert_column_names(
+        &batch,
+        &[
+            "product_id", "bid", "bid_size", "ask", "ask_size", "last",
+            "volume", "volume_quote", "open", "high", "low", "change",
+            "index_price", "mark_price", "open_interest", "funding_rate",
+            "funding_rate_prediction", "next_funding_rate_time",
+            "time", "_nats_seq", "_received_at",
+        ],
+    );
+}
+
+#[test]
+fn test_kraken_futures_ticker_parquet_roundtrip() {
+    let messages = load_fixture("kraken_ticker.jsonl");
+    let schema = KrakenFuturesTickerSchema;
+    let batch = schema.parse_batch(&to_input(&messages)).unwrap();
+    assert!(batch.num_rows() > 0);
+
+    let roundtripped = parquet_roundtrip(&batch);
+    assert_eq!(roundtripped.num_rows(), batch.num_rows());
+    assert_eq!(roundtripped.schema(), batch.schema());
+}
+
+#[test]
+fn test_kraken_futures_trade_real_data() {
+    let messages = load_fixture("kraken_trade.jsonl");
+    assert!(!messages.is_empty(), "fixture file empty");
+
+    let schema = KrakenFuturesTradeSchema;
+    let input = to_input(&messages);
+    let batch = schema.parse_batch(&input).unwrap();
+
+    assert_eq!(
+        batch.num_rows(),
+        messages.len(),
+        "All Futures V1 trade messages must parse"
+    );
+    assert_eq!(batch.num_columns(), 10);
+    assert_column_names(
+        &batch,
+        &[
+            "product_id", "uid", "side", "trade_type", "seq",
+            "qty", "price", "time", "_nats_seq", "_received_at",
+        ],
+    );
+}
+
+#[test]
+fn test_kraken_futures_trade_parquet_roundtrip() {
+    let messages = load_fixture("kraken_trade.jsonl");
+    let schema = KrakenFuturesTradeSchema;
+    let batch = schema.parse_batch(&to_input(&messages)).unwrap();
+    assert!(batch.num_rows() > 0);
+
+    let roundtripped = parquet_roundtrip(&batch);
+    assert_eq!(roundtripped.num_rows(), batch.num_rows());
+    assert_eq!(roundtripped.schema(), batch.schema());
 }
 
 // ---------------------------------------------------------------------------
@@ -329,16 +394,26 @@ fn test_detect_real_kalshi_messages() {
 
 #[test]
 fn test_detect_real_kraken_messages() {
-    let registry = super::SchemaRegistry::for_feed("kraken");
-
-    // Real Kraken Futures messages use "feed" not "channel", and have no "data" array.
-    // detect_message_type checks for "data" first, so these return None.
+    // Spot V2 registry doesn't detect Futures V1 messages (no "data" array)
+    let registry_spot = super::SchemaRegistry::for_feed("kraken");
     let ticker_msg = &load_fixture("kraken_ticker.jsonl")[0];
     let json: serde_json::Value = serde_json::from_slice(ticker_msg).unwrap();
     assert!(
-        registry.detect_and_get(&json).is_none(),
-        "Kraken Futures V1 messages should not be detected — no 'data' array"
+        registry_spot.detect_and_get(&json).is_none(),
+        "Kraken Futures V1 messages should not be detected by Spot V2 registry"
     );
+
+    // Futures registry correctly detects V1 messages
+    let registry_futures = super::SchemaRegistry::for_feed("kraken-futures");
+
+    let json: serde_json::Value = serde_json::from_slice(ticker_msg).unwrap();
+    let (msg_type, _schema) = registry_futures.detect_and_get(&json).unwrap();
+    assert_eq!(msg_type, "ticker");
+
+    let trade_msg = &load_fixture("kraken_trade.jsonl")[0];
+    let json: serde_json::Value = serde_json::from_slice(trade_msg).unwrap();
+    let (msg_type, _schema) = registry_futures.detect_and_get(&json).unwrap();
+    assert_eq!(msg_type, "trade");
 }
 
 #[test]
