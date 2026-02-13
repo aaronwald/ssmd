@@ -27,9 +27,12 @@ pub struct HourStats {
     pub bytes_written: usize,
 }
 
-/// Process all JSONL.gz files for a given feed/stream/date
+/// Process all JSONL.gz files for a given feed/stream/date.
+/// `gcs_prefix` is the top-level GCS prefix (matches archiver storage.remote.prefix).
+/// Full GCS path: {gcs_prefix}/{feed}/{stream}/{date}/
 pub async fn process_date(
     gcs: &GcsClient,
+    gcs_prefix: &str,
     feed: &str,
     stream: &str,
     date: &NaiveDate,
@@ -38,7 +41,7 @@ pub async fn process_date(
 ) -> Result<Vec<HourStats>> {
     let registry = SchemaRegistry::for_feed(feed);
     let date_str = date.format("%Y-%m-%d").to_string();
-    let prefix = format!("{}/{}/{}", feed, stream, date_str);
+    let prefix = format!("{}/{}/{}/{}", gcs_prefix, feed, stream, date_str);
 
     info!(prefix = %prefix, "Listing JSONL.gz files");
     let files = gcs.list_jsonl_files(&prefix).await?;
@@ -95,6 +98,7 @@ pub async fn process_date(
         let stats = process_hour(
             gcs,
             &registry,
+            gcs_prefix,
             feed,
             stream,
             &date_str,
@@ -116,6 +120,7 @@ pub async fn process_date(
 async fn process_hour(
     gcs: &GcsClient,
     registry: &SchemaRegistry,
+    gcs_prefix: &str,
     feed: &str,
     stream: &str,
     date_str: &str,
@@ -210,8 +215,8 @@ async fn process_hour(
 
         // Check if parquet already exists
         let parquet_path = format!(
-            "{}/{}/{}/{}_{}.parquet",
-            feed, stream, date_str, msg_type, hour_time_str
+            "{}/{}/{}/{}/{}_{}.parquet",
+            gcs_prefix, feed, stream, date_str, msg_type, hour_time_str
         );
 
         if !overwrite {

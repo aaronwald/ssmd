@@ -29,6 +29,10 @@ struct Args {
     #[arg(long)]
     bucket: String,
 
+    /// GCS path prefix (matches archiver storage.remote.prefix, defaults to feed name)
+    #[arg(long)]
+    prefix: Option<String>,
+
     /// Overwrite existing parquet files
     #[arg(long, default_value_t = false)]
     overwrite: bool,
@@ -48,11 +52,14 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    let prefix = args.prefix.as_deref().unwrap_or(&args.feed);
+
     info!(
         feed = %args.feed,
         stream = %args.stream,
         date = %args.date,
         bucket = %args.bucket,
+        prefix = %prefix,
         overwrite = args.overwrite,
         dry_run = args.dry_run,
         "Starting parquet generation"
@@ -62,6 +69,7 @@ async fn main() -> Result<()> {
 
     let stats = processor::process_date(
         &gcs,
+        prefix,
         &args.feed,
         &args.stream,
         &args.date,
