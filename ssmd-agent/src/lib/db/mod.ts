@@ -151,9 +151,9 @@ export {
   getConditionStats,
 } from "./polymarket.ts";
 
-// DQ operations
+// Health check operations
 export {
   listDailyScores,
   getSlaMetrics,
   getGapReports,
-} from "./dq.ts";
+} from "./health.ts";

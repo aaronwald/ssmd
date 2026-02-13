@@ -359,8 +359,8 @@ route("GET", "/v1/fees/:series", async (req, ctx) => {
   return json(fee);
 }, true, "secmaster:read");
 
-// DQ (Data Quality) endpoints
-route("GET", "/v1/dq/daily", async (req, ctx) => {
+// Health check endpoints
+route("GET", "/v1/health/daily", async (req, ctx) => {
   const url = new URL(req.url);
   const scores = await listDailyScores(ctx.db, {
     feed: url.searchParams.get("feed") ?? undefined,
@@ -371,7 +371,7 @@ route("GET", "/v1/dq/daily", async (req, ctx) => {
   return json({ scores });
 }, true, "secmaster:read");
 
-route("GET", "/v1/dq/sla", async (req, ctx) => {
+route("GET", "/v1/health/sla", async (req, ctx) => {
   const url = new URL(req.url);
   const windowDays = url.searchParams.get("window_days")
     ? parseInt(url.searchParams.get("window_days")!)
@@ -380,7 +380,7 @@ route("GET", "/v1/dq/sla", async (req, ctx) => {
   return json({ metrics });
 }, true, "secmaster:read");
 
-route("GET", "/v1/dq/gaps", async (req, ctx) => {
+route("GET", "/v1/health/gaps", async (req, ctx) => {
   const url = new URL(req.url);
   const feed = url.searchParams.get("feed");
   if (!feed) {

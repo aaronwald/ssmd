@@ -24,7 +24,7 @@ import { handleSchedule } from "./schedule.ts";
 import { handleStatus } from "./status.ts";
 import { handleEnv } from "./env.ts";
 import { handleMomentum } from "./momentum.ts";
-import { handleDq } from "./dq.ts";
+import { handleHealth } from "./health.ts";
 import { handleKraken } from "./kraken-sync.ts";
 import { handlePolymarket } from "./polymarket-sync.ts";
 import { runFundingRateConsumer } from "./funding-rate-consumer.ts";
@@ -126,8 +126,13 @@ export async function run(args: string[]): Promise<void> {
       await handleMomentum(subcommand, flags);
       break;
 
+    case "health":
+      await handleHealth(subcommand, flags);
+      break;
+
     case "dq":
-      await handleDq(subcommand, flags);
+      console.warn("WARN: 'dq' is deprecated, use 'health' instead");
+      await handleHealth(subcommand, flags);
       break;
 
     case "kraken":
@@ -233,7 +238,7 @@ function printHelp(): void {
   console.log("  momentum          Paper trading momentum models on live data");
   console.log("  kraken            Kraken spot + perpetuals sync");
   console.log("  polymarket        Polymarket conditions sync");
-  console.log("  dq                Data quality checks (compare NATS vs Kalshi API)");
+  console.log("  health            Pipeline health checks (connector status, stream flow, archive sync)");
   console.log("  funding-rate-consumer  Consume Kraken Futures funding rates from NATS");
   console.log("  agent             Start interactive agent REPL");
   console.log("");

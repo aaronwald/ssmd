@@ -583,20 +583,20 @@ export interface DataQualityResult {
     composite: number;
     grade: 'GREEN' | 'YELLOW' | 'RED';
     issues: string[];
-    prometheusDegraded: boolean;
+    prometheusDegraded?: boolean;
   } | null;
   error?: string;
   durationMs: number;
 }
 
 /**
- * Execute ssmd dq daily --json command
+ * Execute ssmd health daily --json command
  * Returns parsed JSON report from CLI output
  */
 export async function runDataQualityCheck(): Promise<DataQualityResult> {
   const startTime = Date.now();
   const command = process.env.SSMD_COMMAND || 'ssmd';
-  const args = ['dq', 'daily', '--json'];
+  const args = ['health', 'daily', '--json'];
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -608,7 +608,7 @@ export async function runDataQualityCheck(): Promise<DataQualityResult> {
     };
   }
 
-  console.log('Starting ssmd dq daily check');
+  console.log('Starting ssmd health daily check');
 
   return new Promise((resolve) => {
     let stdout = '';
@@ -665,7 +665,7 @@ export async function runDataQualityCheck(): Promise<DataQualityResult> {
       }
 
       if (stderr) {
-        console.log('DQ check stderr: ' + stderr.slice(0, 200));
+        console.log('Health check stderr: ' + stderr.slice(0, 200));
       }
 
       resolve({

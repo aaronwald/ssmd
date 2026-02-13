@@ -23,7 +23,7 @@ const { syncArchiverGcs } = proxyActivities<typeof activities>({
   },
 });
 
-// Data quality activities - moderate timeout
+// Health check activities - moderate timeout
 const { runDataQualityCheck } = proxyActivities<typeof activities>({
   startToCloseTimeout: '10 minutes',
   retry: {
@@ -283,9 +283,9 @@ export async function polymarketSyncWorkflow(): Promise<WorkflowResult> {
 }
 
 /**
- * Data Quality workflow - daily scoring of Phase 1 feeds
+ * Health check workflow - daily scoring of Phase 1 feeds
  *
- * Runs `ssmd dq daily --json`, parses the report, and sends a formatted
+ * Runs `ssmd health daily --json`, parses the report, and sends a formatted
  * summary to ntfy topic ssmd-data-quality.
  *
  * Schedule: ssmd-data-quality-daily, daily at 06:00 UTC (1:00 AM ET)
@@ -299,8 +299,8 @@ export async function dataQualityWorkflow(): Promise<WorkflowResult> {
     const errorMsg = result.error?.slice(0, 500) || 'Unknown error';
     try {
       await sendNotification({
-        title: 'Phase 1 DQ: FAILED',
-        message: 'DQ check failed to run\n' + errorMsg,
+        title: 'Health Check: FAILED',
+        message: 'Health check failed to run\n' + errorMsg,
         priority: 'urgent',
         tags: ['rotating_light', 'ssmd'],
         topic: 'ssmd-data-quality',
@@ -308,7 +308,7 @@ export async function dataQualityWorkflow(): Promise<WorkflowResult> {
     } catch (e) {
       console.error('Failed to send notification:', e);
     }
-    throw new Error('Data quality check failed: ' + (result.error || 'no report'));
+    throw new Error('Health check failed: ' + (result.error || 'no report'));
   }
 
   const report = result.report;
@@ -317,18 +317,18 @@ export async function dataQualityWorkflow(): Promise<WorkflowResult> {
   const feedLines: string[] = [];
   const kc = report.feeds['kalshi-crypto'];
   if (kc) {
-    const msgs = kc.messages != null ? fmtK(kc.messages as number) : '?';
-    feedLines.push(`Kalshi Crypto:    ${kc.score}/100 (${msgs} msgs, ${kc.markets ?? '?'} mkts, ${kc.idleSec ?? '?'}s idle)`);
+    const msgs = kc.messageCount != null ? fmtK(kc.messageCount as number) : '?';
+    feedLines.push(`Kalshi Crypto:    ${kc.score}/100 (${msgs} msgs, fresh: ${kc.freshnessScore ?? 0})`);
   }
   const kf = report.feeds['kraken-futures'];
   if (kf) {
-    const msgs = kf.messages != null ? fmtK(kf.messages as number) : '?';
-    feedLines.push(`Kraken Futures:   ${kf.score}/100 (${msgs} msgs, ${kf.markets ?? '?'} mkts, ${kf.idleSec ?? '?'}s idle)`);
+    const msgs = kf.messageCount != null ? fmtK(kf.messageCount as number) : '?';
+    feedLines.push(`Kraken Futures:   ${kf.score}/100 (${msgs} msgs, fresh: ${kf.freshnessScore ?? 0})`);
   }
   const pm = report.feeds['polymarket'];
   if (pm) {
-    const msgs = pm.messages != null ? fmtK(pm.messages as number) : '?';
-    feedLines.push(`Polymarket:       ${pm.score}/100 (${msgs} msgs, ${pm.idleSec ?? '?'}s idle)`);
+    const msgs = pm.messageCount != null ? fmtK(pm.messageCount as number) : '?';
+    feedLines.push(`Polymarket:       ${pm.score}/100 (${msgs} msgs, fresh: ${pm.freshnessScore ?? 0})`);
   }
   const fr = report.feeds['funding-rate'];
   if (fr) {
@@ -340,7 +340,7 @@ export async function dataQualityWorkflow(): Promise<WorkflowResult> {
     const details = as.details as Record<string, { score: number; lastSyncAge: number | null }>;
     if (details) {
       const parts = Object.entries(details)
-        .map(([name, d]) => `${name.replace('-archiver', '')}: ${d.lastSyncAge != null ? d.lastSyncAge + 'h' : 'never'}`)
+        .map(([name, d]) => `${name.replace('archiver-', '')}: ${d.lastSyncAge != null ? d.lastSyncAge + 'h' : 'never'}`)
         .join(', ');
       feedLines.push(`GCS Archive:      ${as.score}/100 (${parts})`);
     }
@@ -351,10 +351,6 @@ export async function dataQualityWorkflow(): Promise<WorkflowResult> {
   if (report.issues.length > 0) {
     body += '\n\nIssues:\n' + report.issues.map(i => '- ' + i).join('\n');
   }
-  if (report.prometheusDegraded) {
-    body += '\n\n(Prometheus degraded — scores capped at 50)';
-  }
-
   // Determine ntfy priority and tags
   let priority: 'default' | 'high' | 'urgent' = 'default';
   let tagEmoji = 'chart_with_upwards_trend';
@@ -368,21 +364,21 @@ export async function dataQualityWorkflow(): Promise<WorkflowResult> {
 
   try {
     await sendNotification({
-      title: `Phase 1 DQ: ${report.grade} (${report.composite}/100) - ${report.date}`,
+      title: `Health: ${report.grade} (${report.composite}/100) - ${report.date}`,
       message: body,
       priority,
       tags: [tagEmoji, 'ssmd'],
       topic: 'ssmd-data-quality',
     });
   } catch (e) {
-    console.error('Failed to send DQ notification:', e);
+    console.error('Failed to send health notification:', e);
   }
 
   const totalDurationMs = Date.now() - startTime;
   return {
     success: true,
     durationMs: totalDurationMs,
-    message: `DQ daily: ${report.grade} (${report.composite}/100) in ${Math.round(totalDurationMs / 1000)}s`,
+    message: `Health daily: ${report.grade} (${report.composite}/100) in ${Math.round(totalDurationMs / 1000)}s`,
   };
 }
 

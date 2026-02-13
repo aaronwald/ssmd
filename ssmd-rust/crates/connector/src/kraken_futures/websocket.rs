@@ -3,7 +3,7 @@
 //! Connects to wss://futures.kraken.com/ws/v1 and manages subscriptions.
 //! Key differences from spot (v2):
 //! - Subscribe: {"event":"subscribe","feed":"<feed>","product_ids":["PI_XBTUSD"]}
-//! - Ping: every 60s (vs 30s for spot)
+//! - Ping: every 30s (matches spot)
 //! - Symbols: PI_XBTUSD, PF_ETHUSD (no slash)
 
 use futures_util::{SinkExt, StreamExt};
@@ -18,8 +18,8 @@ pub const KRAKEN_FUTURES_WS_URL: &str = "wss://futures.kraken.com/ws/v1";
 
 const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1 MiB
 const SUBSCRIBE_TIMEOUT_SECS: u64 = 30;
-const READ_TIMEOUT_SECS: u64 = 180; // 3x ping interval
-pub const PING_INTERVAL_SECS: u64 = 60;
+const READ_TIMEOUT_SECS: u64 = 90; // 3x ping interval
+pub const PING_INTERVAL_SECS: u64 = 30;
 
 #[derive(Debug, thiserror::Error)]
 pub enum KrakenFuturesWsError {

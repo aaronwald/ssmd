@@ -1,5 +1,5 @@
 /**
- * Data quality database operations (Drizzle ORM)
+ * Health check database operations (Drizzle ORM)
  */
 import { desc, sql } from "drizzle-orm";
 import { type Database } from "./client.ts";

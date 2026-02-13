@@ -11,6 +11,7 @@
     "npm:drizzle-orm@0.38": "0.38.4_postgres@3.4.5",
     "npm:nats@*": "2.29.3",
     "npm:nats@^2.29.3": "2.29.3",
+    "npm:nodemailer@6": "6.10.1",
     "npm:postgres@*": "3.4.5",
     "npm:postgres@3.4.5": "3.4.5",
     "npm:postgres@^3.4.4": "3.4.5",
@@ -415,6 +416,9 @@
       "dependencies": [
         "whatwg-url"
       ]
+    },
+    "nodemailer@6.10.1": {
+      "integrity": "sha512-Z+iLaBGVaSjbIzQ4pX6XV41HrooLsQ10ZWPUehGmuantvzWoDVBnmsdUcOIDM1t+yPor5pDhVlDESgOMEGxhHA=="
     },
     "openai@4.104.0_zod@3.25.76": {
       "integrity": "sha512-p99EFNsA/yX6UhVO93f5kJsDRLAg+CTA2RBqdHK4RtK8u5IJw32Hyb2dTGKbnnFmnuoBv5r7Z2CURI9sGZpSuA==",
