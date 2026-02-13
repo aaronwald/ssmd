@@ -52,6 +52,24 @@ export async function upsertFeeChanges(
 
     const scheduledTs = new Date(change.scheduled_ts);
 
+    // Also skip if same series+effective_from already exists (API may return
+    // duplicate fee changes with different IDs for the same effective date)
+    const sameRange = await db
+      .select({ id: seriesFees.id })
+      .from(seriesFees)
+      .where(
+        and(
+          eq(seriesFees.seriesTicker, change.series_ticker),
+          eq(seriesFees.effectiveFrom, scheduledTs)
+        )
+      )
+      .limit(1);
+
+    if (sameRange.length > 0) {
+      result.skipped++;
+      continue;
+    }
+
     // Close previous open period for this series
     const closed = await db
       .update(seriesFees)
@@ -72,15 +90,23 @@ export async function upsertFeeChanges(
     }
 
     // Insert new fee change
-    await db.insert(seriesFees).values({
-      seriesTicker: change.series_ticker,
-      feeType: change.fee_type,
-      feeMultiplier: change.fee_multiplier.toString(),
-      effectiveFrom: scheduledTs,
-      sourceId: change.id,
-    });
-
-    result.inserted++;
+    try {
+      await db.insert(seriesFees).values({
+        seriesTicker: change.series_ticker,
+        feeType: change.fee_type,
+        feeMultiplier: change.fee_multiplier.toString(),
+        effectiveFrom: scheduledTs,
+        sourceId: change.id,
+      });
+      result.inserted++;
+    } catch (e) {
+      if ((e as Error).message?.includes("no_overlapping_fees")) {
+        console.log(`  [DB] Skipping overlapping fee for ${change.series_ticker}`);
+        result.skipped++;
+      } else {
+        throw e;
+      }
+    }
   }
 
   return result;
@@ -186,15 +212,22 @@ export async function seedMissingFees(
     }
 
     // Insert initial fee record with a sentinel effective_from date
-    await db.insert(seriesFees).values({
-      seriesTicker: s.ticker,
-      feeType: s.fee_type,
-      feeMultiplier: s.fee_multiplier.toString(),
-      effectiveFrom: new Date("2020-01-01T00:00:00Z"),
-      sourceId: `seed:${s.ticker}`,
-    });
-
-    seeded++;
+    try {
+      await db.insert(seriesFees).values({
+        seriesTicker: s.ticker,
+        feeType: s.fee_type,
+        feeMultiplier: s.fee_multiplier.toString(),
+        effectiveFrom: new Date("2020-01-01T00:00:00Z"),
+        sourceId: `seed:${s.ticker}`,
+      });
+      seeded++;
+    } catch (e) {
+      if ((e as Error).message?.includes("no_overlapping_fees")) {
+        skipped++;
+      } else {
+        throw e;
+      }
+    }
   }
 
   return { seeded, skipped };
