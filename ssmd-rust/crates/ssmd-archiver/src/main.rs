@@ -11,7 +11,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::task::JoinSet;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_archiver::config::StreamConfig;
@@ -35,7 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
-        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
     let args = Args::parse();
@@ -284,17 +287,17 @@ async fn archive_stream(
                                     if let Err(e) = msg.ack().await {
                                         error!(stream_name = %stream_name, error = %e, seq = seq, "Failed to ack message");
                                     }
-                                    for rotated_entry in rotated_entries {
-                                        info!(
-                                            stream_name = %stream_name,
-                                            file = %rotated_entry.name,
-                                            records = rotated_entry.records,
-                                            seq_range = %format!("{}-{}", rotated_entry.nats_start_seq, rotated_entry.nats_end_seq),
-                                            "File rotated"
-                                        );
-                                        completed_files.push(rotated_entry);
-                                    }
-                                    if !completed_files.is_empty() {
+                                    if !rotated_entries.is_empty() {
+                                        for rotated_entry in rotated_entries {
+                                            info!(
+                                                stream_name = %stream_name,
+                                                file = %rotated_entry.name,
+                                                records = rotated_entry.records,
+                                                seq_range = %format!("{}-{}", rotated_entry.nats_start_seq, rotated_entry.nats_end_seq),
+                                                "File rotated"
+                                            );
+                                            completed_files.push(rotated_entry);
+                                        }
                                         if let Err(e) = update_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &tickers, &message_types, &gaps, &completed_files) {
                                             error!(stream_name = %stream_name, error = %e, "Failed to update manifest after rotation");
                                         }
@@ -382,7 +385,7 @@ fn update_manifest(
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
     std::fs::write(&manifest_path, manifest_json)?;
 
-    info!(stream_name = %stream_name, path = ?manifest_path, files = completed_files.len(), "Updated manifest");
+    debug!(stream_name = %stream_name, path = ?manifest_path, files = completed_files.len(), "Updated manifest");
     Ok(())
 }
 

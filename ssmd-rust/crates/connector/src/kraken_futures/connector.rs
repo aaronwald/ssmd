@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 use super::messages::KrakenFuturesWsMessage;
 use super::websocket::{KrakenFuturesWebSocket, KrakenFuturesWsError, PING_INTERVAL_SECS};
@@ -97,7 +97,7 @@ impl KrakenFuturesConnector {
                             Ok((raw, msg)) => {
                                 match &msg {
                                     KrakenFuturesWsMessage::DataMessage { feed, product_id, .. } => {
-                                        debug!(feed = %feed, product_id = %product_id, "Kraken Futures data message");
+                                        trace!(feed = %feed, product_id = %product_id, "Kraken Futures data message");
                                         match feed.as_str() {
                                             "ticker" | "ticker_lite" => shard_metrics.inc_ticker(),
                                             "trade" | "trade_snapshot" => shard_metrics.inc_trade(),
