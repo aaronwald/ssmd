@@ -66,8 +66,8 @@ type ArchiverSpec struct {
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	// Format specifies the output format: "jsonl" (default), "parquet", or "both"
-	// +kubebuilder:validation:Enum=jsonl;parquet;both
+	// Format specifies the output format (only "jsonl" is supported; parquet is generated offline)
+	// +kubebuilder:validation:Enum=jsonl
 	// +kubebuilder:default=jsonl
 	// +optional
 	Format string `json:"format,omitempty"`

@@ -9,7 +9,7 @@ use flate2::Compression;
 use crate::error::ArchiverError;
 use crate::manifest::FileEntry;
 
-/// Trait for archive output formats (JSONL.gz, Parquet, etc.).
+/// Trait for archive output formats.
 pub trait ArchiveOutput: Send {
     /// Write a message to the archive. Returns file entries from any rotated files.
     fn write(&mut self, data: &[u8], seq: u64, now: DateTime<Utc>) -> Result<Vec<FileEntry>, ArchiverError>;

@@ -68,12 +68,10 @@ spec:
                 type: string
               format:
                 default: jsonl
-                description: 'Format specifies the output format: "jsonl" (default),
-                  "parquet", or "both"'
+                description: Format specifies the output format (only "jsonl" is supported;
+                  parquet is generated offline)
                 enum:
                 - jsonl
-                - parquet
-                - both
                 type: string
               image:
                 description: Image is the container image to use (optional, defaults

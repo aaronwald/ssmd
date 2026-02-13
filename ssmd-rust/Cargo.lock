@@ -3099,21 +3099,16 @@ dependencies = [
 name = "ssmd-archiver"
 version = "0.1.0"
 dependencies = [
- "arrow",
  "async-nats",
  "async-trait",
- "bytes",
  "chrono",
  "clap",
  "flate2",
  "futures-util",
- "object_store",
- "parquet",
  "serde",
  "serde_json",
  "serde_yaml",
  "ssmd-middleware",
- "ssmd-schemas",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

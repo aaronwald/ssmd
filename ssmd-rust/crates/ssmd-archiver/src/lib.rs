@@ -6,9 +6,8 @@
 pub mod config;
 pub mod error;
 pub mod manifest;
-pub mod parquet_writer;
-pub mod schema;
 pub mod subscriber;
+pub mod validation;
 pub mod writer;
 
 pub use config::Config;

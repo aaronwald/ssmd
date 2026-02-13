@@ -25,13 +25,8 @@ clap = { workspace = true }
 futures-util = { workspace = true }
 flate2 = "1.0"
 tokio-util = { version = "0.7", features = ["rt"] }
-arrow = { workspace = true }
-parquet = { workspace = true }
-object_store = { workspace = true }
-bytes = { workspace = true }
 
 ssmd-middleware = { path = "../middleware" }
-ssmd-schemas = { path = "../ssmd-schemas" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

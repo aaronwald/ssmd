@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::task::JoinSet;
@@ -14,10 +14,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use ssmd_archiver::config::{OutputFormat, StreamConfig};
+use ssmd_archiver::config::StreamConfig;
 use ssmd_archiver::manifest::{FileEntry, Gap, Manifest};
-use ssmd_archiver::parquet_writer::ParquetWriter;
 use ssmd_archiver::subscriber::Subscriber;
+use ssmd_archiver::validation::MessageValidator;
 use ssmd_archiver::writer::{ArchiveOutput, ArchiveWriter};
 use ssmd_archiver::Config;
 
@@ -28,49 +28,6 @@ struct Args {
     /// Path to archiver configuration file
     #[arg(short, long)]
     config: PathBuf,
-}
-
-/// Writes to both JSONL.gz and Parquet simultaneously.
-struct MultiWriter {
-    jsonl: ArchiveWriter,
-    parquet: ParquetWriter,
-}
-
-impl MultiWriter {
-    fn new(
-        base_path: PathBuf,
-        feed: String,
-        stream_name: String,
-        rotation_minutes: u32,
-    ) -> Self {
-        Self {
-            jsonl: ArchiveWriter::new(
-                base_path.clone(),
-                feed.clone(),
-                stream_name.clone(),
-                rotation_minutes,
-            ),
-            parquet: ParquetWriter::new(base_path, feed, stream_name),
-        }
-    }
-}
-
-impl ArchiveOutput for MultiWriter {
-    fn write(
-        &mut self,
-        data: &[u8],
-        seq: u64,
-        now: DateTime<Utc>,
-    ) -> Result<Vec<FileEntry>, ssmd_archiver::ArchiverError> {
-        // Write to JSONL but discard its entries — parquet has richer metadata
-        self.jsonl.write(data, seq, now)?;
-        self.parquet.write(data, seq, now)
-    }
-
-    fn close(&mut self) -> Result<Vec<FileEntry>, ssmd_archiver::ArchiverError> {
-        self.jsonl.close()?;
-        self.parquet.close()
-    }
 }
 
 #[tokio::main]
@@ -90,14 +47,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     let rotation_duration = config.rotation.parse_interval()?;
-    let output_format = config.storage.format;
 
     info!(
         nats_url = %config.nats.url,
         streams = config.nats.streams.len(),
         rotation = %config.rotation.interval,
         storage = ?config.storage.path,
-        format = %output_format,
         "Starting archiver"
     );
 
@@ -117,13 +72,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let base_path = Arc::clone(&base_path);
         let feed = Arc::clone(&feed);
         let rotation_interval = Arc::clone(&rotation_interval);
-        let format = output_format;
 
         info!(
             stream = %stream_config.stream,
             name = %stream_config.name,
             filter = %stream_config.filter,
-            format = %format,
             "Spawning archive task"
         );
 
@@ -135,7 +88,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &feed,
                 &rotation_interval,
                 rotation_duration,
-                format,
                 shutdown,
             )
             .await
@@ -199,31 +151,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Create the appropriate writer based on output format.
-fn create_writer(
-    format: OutputFormat,
-    base_path: PathBuf,
-    feed: String,
-    stream_name: String,
-    rotation_minutes: u32,
-) -> Box<dyn ArchiveOutput> {
-    match format {
-        OutputFormat::Jsonl => Box::new(ArchiveWriter::new(
-            base_path,
-            feed,
-            stream_name,
-            rotation_minutes,
-        )),
-        OutputFormat::Parquet => Box::new(ParquetWriter::new(base_path, feed, stream_name)),
-        OutputFormat::Both => Box::new(MultiWriter::new(
-            base_path,
-            feed,
-            stream_name,
-            rotation_minutes,
-        )),
-    }
-}
-
 /// Archive messages from a single stream
 #[allow(clippy::too_many_arguments)]
 async fn archive_stream(
@@ -233,31 +160,30 @@ async fn archive_stream(
     feed: &str,
     rotation_interval: &str,
     rotation_duration: Duration,
-    format: OutputFormat,
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let stream_name = stream_config.name.clone();
     let rotation_minutes = (rotation_duration.as_secs() / 60) as u32;
-    let format_str = format.to_string();
 
     info!(
         stream = %stream_config.stream,
         stream_name = %stream_name,
-        format = %format_str,
         "Connecting to NATS"
     );
 
     // Connect to NATS
     let mut subscriber = Subscriber::connect(nats_url, &stream_config).await?;
 
-    // Create writer based on configured format
-    let mut writer = create_writer(
-        format,
+    // Create JSONL.gz writer
+    let mut writer = ArchiveWriter::new(
         base_path.to_path_buf(),
         feed.to_string(),
         stream_name.clone(),
         rotation_minutes,
     );
+
+    // Create message validator for field-presence checks
+    let validator = MessageValidator::new(feed);
 
     // Track manifest data
     let mut tickers: HashSet<String> = HashSet::new();
@@ -269,6 +195,7 @@ async fn archive_stream(
     // Stats tracking
     let mut total_messages: u64 = 0;
     let mut total_bytes: u64 = 0;
+    let mut validation_failures: u64 = 0;
     let mut first_seq: Option<u64> = None;
     let mut last_seq: u64 = 0;
     let mut last_stats_time = std::time::Instant::now();
@@ -292,7 +219,7 @@ async fn archive_stream(
                 // Check for day rollover
                 if date != current_date {
                     info!(stream_name = %stream_name, old = %current_date, new = %date, "Day rollover, writing final manifest");
-                    write_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &format_str, writer.as_mut(), &tickers, &message_types, &gaps, &mut completed_files)?;
+                    write_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &mut writer, &tickers, &message_types, &gaps, &mut completed_files)?;
                     tickers.clear();
                     message_types.clear();
                     gaps.clear();
@@ -322,11 +249,26 @@ async fn archive_stream(
                             }
                             last_seq = msg.seq;
 
-                            // Extract ticker and type for manifest
+                            // Parse JSON for manifest tracking and validation
                             if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&msg.data) {
+                                // Validate field presence
+                                let vr = validator.validate(&parsed);
+                                if !vr.is_valid() {
+                                    validation_failures += 1;
+                                    warn!(
+                                        stream_name = %stream_name,
+                                        msg_type = ?vr.message_type,
+                                        missing = ?vr.missing_fields,
+                                        seq = msg.seq,
+                                        "Validation failure: missing required fields"
+                                    );
+                                }
+
+                                // Extract type for manifest
                                 if let Some(msg_type) = parsed.get("type").and_then(|v| v.as_str()) {
                                     message_types.insert(msg_type.to_string());
                                 }
+                                // Extract ticker for manifest
                                 if let Some(inner) = parsed.get("msg") {
                                     if let Some(ticker) = inner.get("market_ticker").and_then(|v| v.as_str()) {
                                         tickers.insert(ticker.to_string());
@@ -353,7 +295,7 @@ async fn archive_stream(
                                         completed_files.push(rotated_entry);
                                     }
                                     if !completed_files.is_empty() {
-                                        if let Err(e) = update_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &format_str, &tickers, &message_types, &gaps, &completed_files) {
+                                        if let Err(e) = update_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &tickers, &message_types, &gaps, &completed_files) {
                                             error!(stream_name = %stream_name, error = %e, "Failed to update manifest after rotation");
                                         }
                                     }
@@ -375,9 +317,9 @@ async fn archive_stream(
                     info!(
                         stream_name = %stream_name,
                         feed = %feed,
-                        format = %format_str,
                         messages = total_messages,
                         bytes = total_bytes,
+                        validation_failures = validation_failures,
                         tickers = tickers.len(),
                         seq_range = %format!("{}-{}", first_seq.unwrap_or(0), last_seq),
                         gaps = gaps.len(),
@@ -397,8 +339,7 @@ async fn archive_stream(
         &stream_name,
         &current_date,
         rotation_interval,
-        &format_str,
-        writer.as_mut(),
+        &mut writer,
         &tickers,
         &message_types,
         &gaps,
@@ -417,13 +358,12 @@ fn update_manifest(
     stream_name: &str,
     date: &str,
     rotation_interval: &str,
-    format: &str,
     tickers: &HashSet<String>,
     message_types: &HashSet<String>,
     gaps: &[Gap],
     completed_files: &[FileEntry],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut manifest = Manifest::new(feed, date, rotation_interval, format);
+    let mut manifest = Manifest::new(feed, date, rotation_interval, "jsonl");
     manifest.files = completed_files.to_vec();
     manifest.tickers = tickers.iter().cloned().collect();
     manifest.message_types = message_types.iter().cloned().collect();
@@ -454,8 +394,7 @@ fn write_manifest(
     stream_name: &str,
     date: &str,
     rotation_interval: &str,
-    format: &str,
-    writer: &mut dyn ArchiveOutput,
+    writer: &mut ArchiveWriter,
     tickers: &HashSet<String>,
     message_types: &HashSet<String>,
     gaps: &[Gap],
@@ -471,7 +410,6 @@ fn write_manifest(
         stream_name,
         date,
         rotation_interval,
-        format,
         tickers,
         message_types,
         gaps,

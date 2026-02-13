@@ -27,34 +27,11 @@ pub struct StreamConfig {
     pub filter: String,
 }
 
-/// Output format for archived data.
-#[derive(Debug, Default, Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum OutputFormat {
-    #[default]
-    Jsonl,
-    Parquet,
-    Both,
-}
-
-impl std::fmt::Display for OutputFormat {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OutputFormat::Jsonl => write!(f, "jsonl"),
-            OutputFormat::Parquet => write!(f, "parquet"),
-            OutputFormat::Both => write!(f, "both"),
-        }
-    }
-}
-
 #[derive(Debug, Deserialize, Clone)]
 pub struct StorageConfig {
     pub path: PathBuf,
     /// Feed name for directory structure
     pub feed: String,
-    /// Output format: "jsonl" (default), "parquet", or "both"
-    #[serde(default)]
-    pub format: OutputFormat,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -125,67 +102,6 @@ rotation:
         assert_eq!(config.nats.streams[0].stream, "MARKETDATA");
         assert_eq!(config.storage.feed, "kalshi");
         assert_eq!(config.rotation.interval, "15m");
-        // Default format when not specified
-        assert_eq!(config.storage.format, OutputFormat::Jsonl);
-    }
-
-    #[test]
-    fn test_load_config_parquet_format() {
-        let yaml = r#"
-nats:
-  url: nats://localhost:4222
-  streams:
-    - name: main
-      stream: MARKETDATA
-      consumer: archiver-kalshi
-      filter: "prod.kalshi.json.>"
-
-storage:
-  path: /data/ssmd
-  feed: kalshi
-  format: parquet
-
-rotation:
-  interval: 15m
-"#;
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(yaml.as_bytes()).unwrap();
-
-        let config = Config::load(file.path()).unwrap();
-        assert_eq!(config.storage.format, OutputFormat::Parquet);
-    }
-
-    #[test]
-    fn test_load_config_both_format() {
-        let yaml = r#"
-nats:
-  url: nats://localhost:4222
-  streams:
-    - name: main
-      stream: MARKETDATA
-      consumer: archiver-kalshi
-      filter: "prod.kalshi.json.>"
-
-storage:
-  path: /data/ssmd
-  feed: kalshi
-  format: both
-
-rotation:
-  interval: 15m
-"#;
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(yaml.as_bytes()).unwrap();
-
-        let config = Config::load(file.path()).unwrap();
-        assert_eq!(config.storage.format, OutputFormat::Both);
-    }
-
-    #[test]
-    fn test_output_format_display() {
-        assert_eq!(OutputFormat::Jsonl.to_string(), "jsonl");
-        assert_eq!(OutputFormat::Parquet.to_string(), "parquet");
-        assert_eq!(OutputFormat::Both.to_string(), "both");
     }
 
     #[test]
@@ -231,6 +147,35 @@ rotation:
         assert_eq!(config.nats.streams[0].name, "politics");
         assert_eq!(config.nats.streams[0].stream, "PROD_KALSHI_POLITICS");
         assert_eq!(config.nats.streams[1].name, "economics");
+        assert_eq!(config.storage.feed, "kalshi");
+    }
+
+    #[test]
+    fn test_config_ignores_unknown_fields() {
+        // Existing configs may still have a "format" field — deserialization
+        // should succeed (serde default is to ignore unknown fields with
+        // deny_unknown_fields absent).
+        let yaml = r#"
+nats:
+  url: nats://localhost:4222
+  streams:
+    - name: main
+      stream: MARKETDATA
+      consumer: archiver-kalshi
+      filter: "prod.kalshi.json.>"
+
+storage:
+  path: /data/ssmd
+  feed: kalshi
+  format: jsonl
+
+rotation:
+  interval: 15m
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(yaml.as_bytes()).unwrap();
+
+        let config = Config::load(file.path()).unwrap();
         assert_eq!(config.storage.feed, "kalshi");
     }
 }

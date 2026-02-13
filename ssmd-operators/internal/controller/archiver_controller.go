@@ -354,12 +354,8 @@ func (r *ArchiverReconciler) constructConfigMap(archiver *ssmdv1alpha1.Archiver)
 	}
 	archiverYAML.WriteString(fmt.Sprintf("  feed: %s\n", feed))
 
-	// Format config
-	format := archiver.Spec.Format
-	if format == "" {
-		format = "jsonl"
-	}
-	archiverYAML.WriteString(fmt.Sprintf("  format: %s\n", format))
+	// Format config (only jsonl supported; parquet generated offline)
+	archiverYAML.WriteString("  format: jsonl\n")
 
 	// Rotation config
 	archiverYAML.WriteString("\nrotation:\n")
