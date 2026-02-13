@@ -82,6 +82,14 @@ impl SchemaRegistry {
                     "last_trade_price".to_string(),
                     Box::new(polymarket::PolymarketTradeSchema),
                 );
+                schemas.insert(
+                    "price_change".to_string(),
+                    Box::new(polymarket::PolymarketPriceChangeSchema),
+                );
+                schemas.insert(
+                    "best_bid_ask".to_string(),
+                    Box::new(polymarket::PolymarketBestBidAskSchema),
+                );
             }
             _ => {}
         }
@@ -170,7 +178,9 @@ mod tests {
         let reg = SchemaRegistry::for_feed("polymarket");
         assert!(reg.get("book").is_some());
         assert!(reg.get("last_trade_price").is_some());
-        assert!(reg.get("price_change").is_none());
+        assert!(reg.get("price_change").is_some());
+        assert!(reg.get("best_bid_ask").is_some());
+        assert!(reg.get("new_market").is_none());
     }
 
     #[test]
@@ -274,6 +284,39 @@ mod tests {
             detect_message_type("polymarket", &json),
             Some("last_trade_price".into())
         );
+    }
+
+    #[test]
+    fn test_detect_polymarket_price_change() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"event_type":"price_change","market":"0xabc","price_changes":[]}"#).unwrap();
+        assert_eq!(
+            detect_message_type("polymarket", &json),
+            Some("price_change".into())
+        );
+    }
+
+    #[test]
+    fn test_detect_polymarket_best_bid_ask() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"event_type":"best_bid_ask","market":"0xabc","asset_id":"123"}"#).unwrap();
+        assert_eq!(
+            detect_message_type("polymarket", &json),
+            Some("best_bid_ask".into())
+        );
+    }
+
+    #[test]
+    fn test_polymarket_schema_names() {
+        let reg = SchemaRegistry::for_feed("polymarket");
+
+        let price_change = reg.get("price_change").unwrap();
+        assert_eq!(price_change.schema_name(), "polymarket_price_change");
+        assert_eq!(price_change.schema_version(), "1.0.0");
+
+        let best_bid_ask = reg.get("best_bid_ask").unwrap();
+        assert_eq!(best_bid_ask.schema_name(), "polymarket_best_bid_ask");
+        assert_eq!(best_bid_ask.schema_version(), "1.0.0");
     }
 
     #[test]

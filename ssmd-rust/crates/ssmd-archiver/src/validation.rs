@@ -217,6 +217,43 @@ fn check_polymarket(msg_type: &str, json: &serde_json::Value) -> Vec<&'static st
             }
             missing
         }
+        "price_change" => {
+            let mut missing = vec![];
+            if json.get("market").and_then(|v| v.as_str()).is_none() {
+                missing.push("market");
+            }
+            match json.get("price_changes").and_then(|v| v.as_array()) {
+                Some(arr) if !arr.is_empty() => {
+                    // Validate first item has required fields
+                    let first = &arr[0];
+                    if first.get("asset_id").and_then(|v| v.as_str()).is_none() {
+                        missing.push("price_changes[0].asset_id");
+                    }
+                    if first.get("price").and_then(|v| v.as_str()).is_none() {
+                        missing.push("price_changes[0].price");
+                    }
+                    if first.get("size").and_then(|v| v.as_str()).is_none() {
+                        missing.push("price_changes[0].size");
+                    }
+                    if first.get("side").and_then(|v| v.as_str()).is_none() {
+                        missing.push("price_changes[0].side");
+                    }
+                }
+                Some(_) => missing.push("price_changes (empty)"),
+                None => missing.push("price_changes"),
+            }
+            missing
+        }
+        "best_bid_ask" => {
+            let mut missing = vec![];
+            if json.get("market").and_then(|v| v.as_str()).is_none() {
+                missing.push("market");
+            }
+            if json.get("asset_id").and_then(|v| v.as_str()).is_none() {
+                missing.push("asset_id");
+            }
+            missing
+        }
         _ => vec![],
     }
 }
@@ -438,6 +475,96 @@ mod tests {
         let result = v.validate(&json);
         assert!(!result.is_valid());
         assert_eq!(result.missing_fields, vec!["price"]);
+    }
+
+    #[test]
+    fn test_polymarket_price_change_valid() {
+        let v = MessageValidator::new("polymarket");
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"event_type":"price_change","market":"0xabc","price_changes":[{"asset_id":"123","price":"0.55","size":"100","side":"BUY"}]}"#,
+        ).unwrap();
+        let result = v.validate(&json);
+        assert!(result.is_valid());
+        assert_eq!(result.message_type.as_deref(), Some("price_change"));
+    }
+
+    #[test]
+    fn test_polymarket_price_change_missing_market() {
+        let v = MessageValidator::new("polymarket");
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"event_type":"price_change","price_changes":[{"asset_id":"123","price":"0.55","size":"100","side":"BUY"}]}"#,
+        ).unwrap();
+        let result = v.validate(&json);
+        assert!(!result.is_valid());
+        assert_eq!(result.missing_fields, vec!["market"]);
+    }
+
+    #[test]
+    fn test_polymarket_price_change_missing_price_changes() {
+        let v = MessageValidator::new("polymarket");
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"event_type":"price_change","market":"0xabc"}"#,
+        ).unwrap();
+        let result = v.validate(&json);
+        assert!(!result.is_valid());
+        assert!(result.missing_fields.contains(&"price_changes"));
+    }
+
+    #[test]
+    fn test_polymarket_price_change_empty_array() {
+        let v = MessageValidator::new("polymarket");
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"event_type":"price_change","market":"0xabc","price_changes":[]}"#,
+        ).unwrap();
+        let result = v.validate(&json);
+        assert!(!result.is_valid());
+        assert!(result.missing_fields.contains(&"price_changes (empty)"));
+    }
+
+    #[test]
+    fn test_polymarket_price_change_item_missing_fields() {
+        let v = MessageValidator::new("polymarket");
+        // First item missing price and side
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"event_type":"price_change","market":"0xabc","price_changes":[{"asset_id":"123","size":"100"}]}"#,
+        ).unwrap();
+        let result = v.validate(&json);
+        assert!(!result.is_valid());
+        assert!(result.missing_fields.contains(&"price_changes[0].price"));
+        assert!(result.missing_fields.contains(&"price_changes[0].side"));
+    }
+
+    #[test]
+    fn test_polymarket_best_bid_ask_valid() {
+        let v = MessageValidator::new("polymarket");
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"event_type":"best_bid_ask","market":"0xabc","asset_id":"123","best_bid":"0.55","best_ask":"0.56"}"#,
+        ).unwrap();
+        let result = v.validate(&json);
+        assert!(result.is_valid());
+        assert_eq!(result.message_type.as_deref(), Some("best_bid_ask"));
+    }
+
+    #[test]
+    fn test_polymarket_best_bid_ask_missing_asset_id() {
+        let v = MessageValidator::new("polymarket");
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"event_type":"best_bid_ask","market":"0xabc"}"#,
+        ).unwrap();
+        let result = v.validate(&json);
+        assert!(!result.is_valid());
+        assert_eq!(result.missing_fields, vec!["asset_id"]);
+    }
+
+    #[test]
+    fn test_polymarket_best_bid_ask_missing_market() {
+        let v = MessageValidator::new("polymarket");
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"event_type":"best_bid_ask","asset_id":"123"}"#,
+        ).unwrap();
+        let result = v.validate(&json);
+        assert!(!result.is_valid());
+        assert_eq!(result.missing_fields, vec!["market"]);
     }
 
     // -----------------------------------------------------------------------
