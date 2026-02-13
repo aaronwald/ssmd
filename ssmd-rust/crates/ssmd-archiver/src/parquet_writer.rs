@@ -6,7 +6,7 @@ use chrono::{DateTime, Timelike, Utc};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::error::ArchiverError;
 use crate::manifest::FileEntry;
@@ -88,6 +88,8 @@ impl ParquetWriter {
         let drained: Vec<(String, MessageBuffer)> = self.buffers.drain().collect();
         let mut entries = Vec::new();
 
+        let mut schema_errors: Vec<String> = Vec::new();
+
         for (msg_type, buffer) in &drained {
             if buffer.messages.is_empty() {
                 continue;
@@ -113,6 +115,15 @@ impl ParquetWriter {
                     entries.push(entry);
                 }
                 Ok(None) => {}
+                Err(ArchiverError::SchemaValidation(msg)) => {
+                    error!(
+                        feed = %self.feed,
+                        stream = %self.stream_name,
+                        msg_type = %msg_type,
+                        "{msg}"
+                    );
+                    schema_errors.push(msg);
+                }
                 Err(e) => {
                     warn!(
                         msg_type = %msg_type,
@@ -121,6 +132,12 @@ impl ParquetWriter {
                     );
                 }
             }
+        }
+
+        // Schema validation errors are fatal — archiver should crash-restart
+        // so the issue surfaces via CrashLoopBackOff alerts.
+        if let Some(first_error) = schema_errors.into_iter().next() {
+            return Err(ArchiverError::SchemaValidation(first_error));
         }
 
         Ok(entries)
@@ -212,6 +229,16 @@ fn write_parquet_file(
         .map_err(ArchiverError::Arrow)?;
 
     if batch.num_rows() == 0 {
+        if !buffer.messages.is_empty() {
+            // All messages failed to parse — this is a schema mismatch, not an empty stream.
+            // Fail fast: this means the archiver's Arrow schema does not match the raw WS JSON.
+            return Err(ArchiverError::SchemaValidation(format!(
+                "All {} '{}' messages failed to parse (0 rows produced). \
+                 Schema mismatch suspected — check field names against raw WebSocket JSON.",
+                buffer.messages.len(),
+                msg_type
+            )));
+        }
         return Ok(None);
     }
 
@@ -273,8 +300,9 @@ mod tests {
     }
 
     fn make_kalshi_trade(ticker: &str, price: i64, side: &str, ts: i64) -> Vec<u8> {
+        // Use real Kalshi WS field names: yes_price, taker_side
         format!(
-            r#"{{"type":"trade","sid":1,"msg":{{"market_ticker":"{}","price":{},"count":10,"side":"{}","ts":{}}}}}"#,
+            r#"{{"type":"trade","sid":1,"msg":{{"market_ticker":"{}","yes_price":{},"count":10,"taker_side":"{}","ts":{}}}}}"#,
             ticker, price, side, ts
         )
         .into_bytes()
@@ -581,6 +609,28 @@ mod tests {
         // Final files should exist
         assert!(dir.join("ticker_1400.parquet").exists());
         assert!(dir.join("trade_1400.parquet").exists());
+    }
+
+    #[test]
+    fn test_schema_validation_error_on_total_parse_failure() {
+        let tmp = TempDir::new().unwrap();
+        let mut writer = make_writer(&tmp);
+
+        let now = hour(2026, 2, 12, 14);
+        // Trade message with completely wrong field names — no yes_price/price, no taker_side/side
+        let bad_trade = br#"{"type":"trade","sid":1,"msg":{"market_ticker":"KXBTC","wrong_field":55,"count":10,"bad_side":"yes","ts":100}}"#;
+
+        writer.write(bad_trade, 1, now).unwrap();
+
+        // Close should fail with SchemaValidation error because all trade messages failed
+        let result = writer.close();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Schema validation error"),
+            "Expected SchemaValidation error, got: {}",
+            err
+        );
     }
 
     #[test]

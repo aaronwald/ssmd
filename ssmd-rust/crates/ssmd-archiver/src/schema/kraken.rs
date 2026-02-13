@@ -4,7 +4,7 @@ use arrow::array::*;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
-use tracing::warn;
+use tracing::error;
 
 use super::{hash_dedup_key, MessageSchema};
 
@@ -85,7 +85,7 @@ impl MessageSchema for KrakenTickerSchema {
                         match item.get($field).and_then(|v| v.as_f64()) {
                             Some(v) => v,
                             None => {
-                                warn!(
+                                error!(
                                     field = $field,
                                     "Kraken ticker missing required field, skipping item"
                                 );
@@ -98,7 +98,7 @@ impl MessageSchema for KrakenTickerSchema {
                 let sym = match item.get("symbol").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => {
-                        warn!("Kraken ticker missing 'symbol', skipping item");
+                        error!("Kraken ticker missing 'symbol', skipping item");
                         continue;
                     }
                 };
@@ -208,35 +208,35 @@ impl MessageSchema for KrakenTradeSchema {
                 let sym = match item.get("symbol").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => {
-                        warn!("Kraken trade missing 'symbol', skipping");
+                        error!("Kraken trade missing 'symbol', skipping");
                         continue;
                     }
                 };
                 let s = match item.get("side").and_then(|v| v.as_str()) {
                     Some(v) => v,
                     None => {
-                        warn!("Kraken trade missing 'side', skipping");
+                        error!("Kraken trade missing 'side', skipping");
                         continue;
                     }
                 };
                 let p = match item.get("price").and_then(|v| v.as_f64()) {
                     Some(v) => v,
                     None => {
-                        warn!("Kraken trade missing 'price', skipping");
+                        error!("Kraken trade missing 'price', skipping");
                         continue;
                     }
                 };
                 let q = match item.get("qty").and_then(|v| v.as_f64()) {
                     Some(v) => v,
                     None => {
-                        warn!("Kraken trade missing 'qty', skipping");
+                        error!("Kraken trade missing 'qty', skipping");
                         continue;
                     }
                 };
                 let ot = match item.get("ord_type").and_then(|v| v.as_str()) {
                     Some(v) => v,
                     None => {
-                        warn!("Kraken trade missing 'ord_type', skipping");
+                        error!("Kraken trade missing 'ord_type', skipping");
                         continue;
                     }
                 };
@@ -246,7 +246,7 @@ impl MessageSchema for KrakenTradeSchema {
                     None => match item.get("trade_id").and_then(|v| v.as_u64()) {
                         Some(v) => v.to_string(),
                         None => {
-                            warn!("Kraken trade missing 'trade_id', skipping");
+                            error!("Kraken trade missing 'trade_id', skipping");
                             continue;
                         }
                     },
@@ -254,7 +254,7 @@ impl MessageSchema for KrakenTradeSchema {
                 let ts_str = match item.get("timestamp").and_then(|v| v.as_str()) {
                     Some(v) => v,
                     None => {
-                        warn!("Kraken trade missing 'timestamp', skipping");
+                        error!("Kraken trade missing 'timestamp', skipping");
                         continue;
                     }
                 };
@@ -262,7 +262,7 @@ impl MessageSchema for KrakenTradeSchema {
                 let ts_micros = match chrono::DateTime::parse_from_rfc3339(ts_str) {
                     Ok(dt) => dt.timestamp_micros(),
                     Err(e) => {
-                        warn!(error = %e, ts = ts_str, "Failed to parse Kraken timestamp, skipping");
+                        error!(error = %e, ts = ts_str, "Failed to parse Kraken timestamp, skipping");
                         continue;
                     }
                 };

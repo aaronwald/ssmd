@@ -4,7 +4,7 @@ use arrow::array::*;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
-use tracing::warn;
+use tracing::error;
 
 use super::{hash_dedup_key, MessageSchema};
 
@@ -73,7 +73,7 @@ impl MessageSchema for KalshiTickerSchema {
             let msg = match json.get("msg") {
                 Some(m) => m,
                 None => {
-                    warn!("Kalshi ticker missing 'msg' field, skipping");
+                    error!("Kalshi ticker missing 'msg' field, skipping");
                     continue;
                 }
             };
@@ -81,7 +81,7 @@ impl MessageSchema for KalshiTickerSchema {
             let ticker = match msg.get("market_ticker").and_then(|v| v.as_str()) {
                 Some(t) => t,
                 None => {
-                    warn!("Kalshi ticker missing 'market_ticker', skipping");
+                    error!("Kalshi ticker missing 'market_ticker', skipping");
                     continue;
                 }
             };
@@ -89,7 +89,7 @@ impl MessageSchema for KalshiTickerSchema {
             let ts_secs = match msg.get("ts").and_then(|v| v.as_i64()) {
                 Some(t) => t,
                 None => {
-                    warn!("Kalshi ticker missing 'ts', skipping");
+                    error!("Kalshi ticker missing 'ts', skipping");
                     continue;
                 }
             };
@@ -178,7 +178,7 @@ impl MessageSchema for KalshiTradeSchema {
             let msg = match json.get("msg") {
                 Some(m) => m,
                 None => {
-                    warn!("Kalshi trade missing 'msg' field, skipping");
+                    error!("Kalshi trade missing 'msg' field, skipping");
                     continue;
                 }
             };
@@ -186,35 +186,57 @@ impl MessageSchema for KalshiTradeSchema {
             let ticker = match msg.get("market_ticker").and_then(|v| v.as_str()) {
                 Some(t) => t,
                 None => {
-                    warn!("Kalshi trade missing 'market_ticker', skipping");
+                    error!("Kalshi trade missing 'market_ticker', skipping");
                     continue;
                 }
             };
-            let p = match msg.get("price").and_then(|v| v.as_i64()) {
+            // Kalshi WS sends "yes_price", connector aliases to "price"
+            let p = match msg
+                .get("yes_price")
+                .or_else(|| msg.get("price"))
+                .and_then(|v| v.as_i64())
+            {
                 Some(v) => v,
                 None => {
-                    warn!("Kalshi trade missing 'price', skipping");
+                    error!(
+                        ticker = ticker,
+                        "Kalshi trade missing 'yes_price'/'price', skipping"
+                    );
                     continue;
                 }
             };
             let c = match msg.get("count").and_then(|v| v.as_i64()) {
                 Some(v) => v,
                 None => {
-                    warn!("Kalshi trade missing 'count', skipping");
+                    error!(
+                        ticker = ticker,
+                        "Kalshi trade missing 'count', skipping"
+                    );
                     continue;
                 }
             };
-            let s = match msg.get("side").and_then(|v| v.as_str()) {
+            // Kalshi WS sends "taker_side", connector aliases to "side"
+            let s = match msg
+                .get("taker_side")
+                .or_else(|| msg.get("side"))
+                .and_then(|v| v.as_str())
+            {
                 Some(v) => v,
                 None => {
-                    warn!("Kalshi trade missing 'side', skipping");
+                    error!(
+                        ticker = ticker,
+                        "Kalshi trade missing 'taker_side'/'side', skipping"
+                    );
                     continue;
                 }
             };
             let t = match msg.get("ts").and_then(|v| v.as_i64()) {
                 Some(v) => v,
                 None => {
-                    warn!("Kalshi trade missing 'ts', skipping");
+                    error!(
+                        ticker = ticker,
+                        "Kalshi trade missing 'ts', skipping"
+                    );
                     continue;
                 }
             };
@@ -244,9 +266,8 @@ impl MessageSchema for KalshiTradeSchema {
 
     fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
         let msg = json.get("msg")?;
-        let ticker = msg.get("market_ticker")?.as_str()?;
-        let ts = msg.get("ts")?.as_i64()?.to_string();
-        Some(hash_dedup_key(&["trade", ticker, &ts]))
+        let trade_id = msg.get("trade_id")?.as_str()?;
+        Some(hash_dedup_key(&["trade", trade_id]))
     }
 }
 
@@ -295,7 +316,7 @@ impl MessageSchema for KalshiLifecycleSchema {
             let msg = match json.get("msg") {
                 Some(m) => m,
                 None => {
-                    warn!("Kalshi lifecycle missing 'msg' field, skipping");
+                    error!("Kalshi lifecycle missing 'msg' field, skipping");
                     continue;
                 }
             };
@@ -303,14 +324,14 @@ impl MessageSchema for KalshiLifecycleSchema {
             let ticker = match msg.get("market_ticker").and_then(|v| v.as_str()) {
                 Some(t) => t,
                 None => {
-                    warn!("Kalshi lifecycle missing 'market_ticker', skipping");
+                    error!("Kalshi lifecycle missing 'market_ticker', skipping");
                     continue;
                 }
             };
             let et = match msg.get("event_type").and_then(|v| v.as_str()) {
                 Some(t) => t,
                 None => {
-                    warn!("Kalshi lifecycle missing 'event_type', skipping");
+                    error!("Kalshi lifecycle missing 'event_type', skipping");
                     continue;
                 }
             };
@@ -478,6 +499,65 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(side.value(0), "yes");
+    }
+
+    #[test]
+    fn test_parse_kalshi_trade_ws_field_names() {
+        // Raw Kalshi WS uses "yes_price" and "taker_side" (not "price"/"side")
+        let schema = KalshiTradeSchema;
+        let json = br#"{"type":"trade","sid":1,"msg":{"market_ticker":"KXBTC-123","yes_price":55,"count":10,"taker_side":"yes","ts":1707667200}}"#;
+        let batch = schema
+            .parse_batch(&[(json.to_vec(), 42, 1707667200_000_000)])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.num_columns(), 7);
+
+        let price = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(price.value(0), 55);
+
+        let side = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(side.value(0), "yes");
+    }
+
+    #[test]
+    fn test_parse_kalshi_trade_mixed_field_names() {
+        // Both old ("price"/"side") and new ("yes_price"/"taker_side") should work
+        let schema = KalshiTradeSchema;
+        let old_format = br#"{"type":"trade","msg":{"market_ticker":"A","price":10,"count":1,"side":"yes","ts":100}}"#;
+        let new_format = br#"{"type":"trade","msg":{"market_ticker":"B","yes_price":20,"count":2,"taker_side":"no","ts":200}}"#;
+        let batch = schema
+            .parse_batch(&[
+                (old_format.to_vec(), 1, 100_000_000),
+                (new_format.to_vec(), 2, 200_000_000),
+            ])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 2);
+
+        let prices = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(prices.value(0), 10);
+        assert_eq!(prices.value(1), 20);
+
+        let sides = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(sides.value(0), "yes");
+        assert_eq!(sides.value(1), "no");
     }
 
     #[test]

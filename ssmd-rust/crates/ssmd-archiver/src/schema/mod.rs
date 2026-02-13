@@ -10,6 +10,9 @@ pub mod kalshi;
 pub mod kraken;
 pub mod polymarket;
 
+#[cfg(test)]
+mod regression_tests;
+
 /// Trait for converting raw JSON messages to Arrow RecordBatches.
 pub trait MessageSchema: Send + Sync {
     /// Arrow schema for this message type.

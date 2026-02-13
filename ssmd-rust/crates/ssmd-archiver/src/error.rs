@@ -19,4 +19,7 @@ pub enum ArchiverError {
 
     #[error("Parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
+
+    #[error("Schema validation error: {0}")]
+    SchemaValidation(String),
 }

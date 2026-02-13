@@ -4,7 +4,7 @@ use arrow::array::*;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
-use tracing::warn;
+use tracing::error;
 
 use super::{hash_dedup_key, MessageSchema};
 
@@ -67,14 +67,14 @@ impl MessageSchema for PolymarketBookSchema {
             let aid = match json.get("asset_id").and_then(|v| v.as_str()) {
                 Some(v) => v,
                 None => {
-                    warn!("Polymarket book missing 'asset_id', skipping");
+                    error!("Polymarket book missing 'asset_id', skipping");
                     continue;
                 }
             };
             let mkt = match json.get("market").and_then(|v| v.as_str()) {
                 Some(v) => v,
                 None => {
-                    warn!("Polymarket book missing 'market', skipping");
+                    error!("Polymarket book missing 'market', skipping");
                     continue;
                 }
             };
@@ -189,21 +189,21 @@ impl MessageSchema for PolymarketTradeSchema {
             let aid = match json.get("asset_id").and_then(|v| v.as_str()) {
                 Some(v) => v,
                 None => {
-                    warn!("Polymarket trade missing 'asset_id', skipping");
+                    error!("Polymarket trade missing 'asset_id', skipping");
                     continue;
                 }
             };
             let mkt = match json.get("market").and_then(|v| v.as_str()) {
                 Some(v) => v,
                 None => {
-                    warn!("Polymarket trade missing 'market', skipping");
+                    error!("Polymarket trade missing 'market', skipping");
                     continue;
                 }
             };
             let p = match json.get("price").and_then(|v| v.as_str()) {
                 Some(v) => v,
                 None => {
-                    warn!("Polymarket trade missing 'price', skipping");
+                    error!("Polymarket trade missing 'price', skipping");
                     continue;
                 }
             };
