@@ -6,9 +6,11 @@ members = [
     "crates/connector",
     "crates/ssmd-connector",
     "crates/schema",
+    "crates/ssmd-schemas",
     "crates/ssmd-archiver",
     "crates/ssmd-cdc",
     "crates/ssmd-cache",
+    "crates/ssmd-parquet-gen",
 ]
 
 [workspace.package]

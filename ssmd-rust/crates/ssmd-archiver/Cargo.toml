@@ -31,6 +31,7 @@ object_store = { workspace = true }
 bytes = { workspace = true }
 
 ssmd-middleware = { path = "../middleware" }
+ssmd-schemas = { path = "../ssmd-schemas" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

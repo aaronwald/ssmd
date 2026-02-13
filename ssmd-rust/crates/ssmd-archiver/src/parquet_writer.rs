@@ -6,6 +6,7 @@ use chrono::{DateTime, Timelike, Utc};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
+use parquet::file::metadata::KeyValue;
 use tracing::{error, info, warn};
 
 use crate::error::ArchiverError;
@@ -254,6 +255,10 @@ fn write_parquet_file(
         .set_data_page_size_limit(1024 * 1024) // 1MB
         .set_statistics_enabled(EnabledStatistics::Chunk)
         .set_created_by("ssmd-archiver".to_string())
+        .set_key_value_metadata(Some(vec![
+            KeyValue::new("ssmd.schema_name".to_string(), schema.schema_name().to_string()),
+            KeyValue::new("ssmd.schema_version".to_string(), schema.schema_version().to_string()),
+        ]))
         .build();
 
     let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
@@ -293,7 +298,7 @@ mod tests {
 
     fn make_kalshi_ticker(ticker: &str, ts: i64) -> Vec<u8> {
         format!(
-            r#"{{"type":"ticker","sid":1,"msg":{{"market_ticker":"{}","yes_bid":50,"yes_ask":52,"price":51,"volume":1000,"ts":{}}}}}"#,
+            r#"{{"type":"ticker","sid":1,"msg":{{"market_ticker":"{}","yes_bid":50,"yes_ask":52,"price":51,"volume":1000,"ts":{},"Clock":13281241747}}}}"#,
             ticker, ts
         )
         .into_bytes()
@@ -301,9 +306,10 @@ mod tests {
 
     fn make_kalshi_trade(ticker: &str, price: i64, side: &str, ts: i64) -> Vec<u8> {
         // Use real Kalshi WS field names: yes_price, taker_side
+        // Include trade_id (required) and envelope seq (nullable)
         format!(
-            r#"{{"type":"trade","sid":1,"msg":{{"market_ticker":"{}","yes_price":{},"count":10,"taker_side":"{}","ts":{}}}}}"#,
-            ticker, price, side, ts
+            r#"{{"type":"trade","sid":1,"seq":{},"msg":{{"trade_id":"tid-{}-{}","market_ticker":"{}","yes_price":{},"count":10,"taker_side":"{}","ts":{}}}}}"#,
+            ts, ticker, ts, ticker, price, side, ts
         )
         .into_bytes()
     }
@@ -618,7 +624,7 @@ mod tests {
 
         let now = hour(2026, 2, 12, 14);
         // Trade message with completely wrong field names — no yes_price/price, no taker_side/side
-        let bad_trade = br#"{"type":"trade","sid":1,"msg":{"market_ticker":"KXBTC","wrong_field":55,"count":10,"bad_side":"yes","ts":100}}"#;
+        let bad_trade = br#"{"type":"trade","sid":1,"seq":1,"msg":{"trade_id":"tid-bad","market_ticker":"KXBTC","wrong_field":55,"count":10,"bad_side":"yes","ts":100}}"#;
 
         writer.write(bad_trade, 1, now).unwrap();
 
@@ -631,6 +637,44 @@ mod tests {
             "Expected SchemaValidation error, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_parquet_schema_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let mut writer = make_writer(&tmp);
+
+        let now = hour(2026, 2, 12, 14);
+        let ticker = make_kalshi_ticker("KXBTC", 1707667200);
+        let trade = make_kalshi_trade("KXBTC", 55, "yes", 1707667201);
+
+        writer.write(&ticker, 1, now).unwrap();
+        writer.write(&trade, 2, now).unwrap();
+        writer.close().unwrap();
+
+        let dir = tmp.path().join("kalshi/crypto/2026-02-12");
+
+        // Check ticker metadata
+        let ticker_file = File::open(dir.join("ticker_1400.parquet")).unwrap();
+        let ticker_reader = ParquetRecordBatchReaderBuilder::try_new(ticker_file).unwrap();
+        let ticker_meta = ticker_reader.metadata().file_metadata().key_value_metadata().unwrap();
+        let ticker_kv: std::collections::HashMap<&str, &str> = ticker_meta
+            .iter()
+            .filter_map(|kv| Some((kv.key.as_str(), kv.value.as_ref()?.as_str())))
+            .collect();
+        assert_eq!(ticker_kv.get("ssmd.schema_name"), Some(&"kalshi_ticker"));
+        assert_eq!(ticker_kv.get("ssmd.schema_version"), Some(&"1.1.0"));
+
+        // Check trade metadata
+        let trade_file = File::open(dir.join("trade_1400.parquet")).unwrap();
+        let trade_reader = ParquetRecordBatchReaderBuilder::try_new(trade_file).unwrap();
+        let trade_meta = trade_reader.metadata().file_metadata().key_value_metadata().unwrap();
+        let trade_kv: std::collections::HashMap<&str, &str> = trade_meta
+            .iter()
+            .filter_map(|kv| Some((kv.key.as_str(), kv.value.as_ref()?.as_str())))
+            .collect();
+        assert_eq!(trade_kv.get("ssmd.schema_name"), Some(&"kalshi_trade"));
+        assert_eq!(trade_kv.get("ssmd.schema_version"), Some(&"1.1.0"));
     }
 
     #[test]

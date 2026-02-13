@@ -6,7 +6,7 @@ use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use tracing::error;
 
-use super::{hash_dedup_key, MessageSchema};
+use crate::{hash_dedup_key, MessageSchema};
 
 fn ts_type() -> DataType {
     DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))
@@ -52,6 +52,14 @@ impl KrakenFuturesTickerSchema {
 }
 
 impl MessageSchema for KrakenFuturesTickerSchema {
+    fn schema_name(&self) -> &str {
+        "kraken_futures_ticker"
+    }
+
+    fn schema_version(&self) -> &str {
+        "1.0.0"
+    }
+
     fn schema(&self) -> Arc<Schema> {
         Arc::new(Self::arrow_schema())
     }
@@ -213,6 +221,14 @@ impl KrakenFuturesTradeSchema {
 }
 
 impl MessageSchema for KrakenFuturesTradeSchema {
+    fn schema_name(&self) -> &str {
+        "kraken_futures_trade"
+    }
+
+    fn schema_version(&self) -> &str {
+        "1.0.0"
+    }
+
     fn schema(&self) -> Arc<Schema> {
         Arc::new(Self::arrow_schema())
     }

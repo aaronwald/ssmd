@@ -6,7 +6,7 @@ use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use tracing::error;
 
-use super::{hash_dedup_key, MessageSchema};
+use crate::{hash_dedup_key, MessageSchema};
 
 fn ts_type() -> DataType {
     DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))
@@ -42,6 +42,14 @@ impl PolymarketBookSchema {
 }
 
 impl MessageSchema for PolymarketBookSchema {
+    fn schema_name(&self) -> &str {
+        "polymarket_book"
+    }
+
+    fn schema_version(&self) -> &str {
+        "1.0.0"
+    }
+
     fn schema(&self) -> Arc<Schema> {
         Arc::new(Self::arrow_schema())
     }
@@ -163,6 +171,14 @@ impl PolymarketTradeSchema {
 }
 
 impl MessageSchema for PolymarketTradeSchema {
+    fn schema_name(&self) -> &str {
+        "polymarket_trade"
+    }
+
+    fn schema_version(&self) -> &str {
+        "1.0.0"
+    }
+
     fn schema(&self) -> Arc<Schema> {
         Arc::new(Self::arrow_schema())
     }

@@ -88,7 +88,7 @@ fn test_kalshi_ticker_real_data() {
         messages.len(),
         "All ticker messages must parse — if this fails, schema field names don't match real WS JSON"
     );
-    assert_eq!(batch.num_columns(), 11);
+    assert_eq!(batch.num_columns(), 12);
     assert_column_names(
         &batch,
         &[
@@ -101,6 +101,7 @@ fn test_kalshi_ticker_real_data() {
             "volume",
             "open_interest",
             "ts",
+            "exchange_clock",
             "_nats_seq",
             "_received_at",
         ],
@@ -139,7 +140,7 @@ fn test_kalshi_trade_real_data() {
         "All trade messages must parse — real WS uses yes_price/taker_side, \
          schema must handle these field names"
     );
-    assert_eq!(batch.num_columns(), 7);
+    assert_eq!(batch.num_columns(), 9);
     assert_column_names(
         &batch,
         &[
@@ -148,6 +149,8 @@ fn test_kalshi_trade_real_data() {
             "count",
             "side",
             "ts",
+            "trade_id",
+            "exchange_seq",
             "_nats_seq",
             "_received_at",
         ],

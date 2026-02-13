@@ -3113,6 +3113,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "ssmd-middleware",
+ "ssmd-schemas",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3248,11 +3249,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssmd-parquet-gen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "bytes",
+ "chrono",
+ "clap",
+ "flate2",
+ "futures-util",
+ "object_store",
+ "parquet",
+ "serde_json",
+ "ssmd-schemas",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ssmd-schema"
 version = "0.1.0"
 dependencies = [
  "capnp",
  "capnpc",
+]
+
+[[package]]
+name = "ssmd-schemas"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "chrono",
+ "parquet",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

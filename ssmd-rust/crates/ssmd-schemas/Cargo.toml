@@ -1,0 +1,17 @@
+[package]
+name = "ssmd-schemas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Versioned Arrow/Parquet schemas for SSMD market data"
+
+[dependencies]
+arrow = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+parquet = { workspace = true }
+tempfile = { workspace = true }

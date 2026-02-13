@@ -6,7 +6,7 @@ use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use tracing::error;
 
-use super::{hash_dedup_key, MessageSchema};
+use crate::{hash_dedup_key, MessageSchema};
 
 fn ts_type() -> DataType {
     DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))
@@ -38,6 +38,7 @@ impl KalshiTickerSchema {
             Field::new("volume", DataType::Int64, true),
             Field::new("open_interest", DataType::Int64, true),
             Field::new("ts", ts_type(), false),
+            Field::new("exchange_clock", DataType::Int64, true),
             Field::new("_nats_seq", DataType::UInt64, false),
             Field::new("_received_at", ts_type(), false),
         ])
@@ -45,6 +46,14 @@ impl KalshiTickerSchema {
 }
 
 impl MessageSchema for KalshiTickerSchema {
+    fn schema_name(&self) -> &str {
+        "kalshi_ticker"
+    }
+
+    fn schema_version(&self) -> &str {
+        "1.1.0"
+    }
+
     fn schema(&self) -> Arc<Schema> {
         Arc::new(Self::arrow_schema())
     }
@@ -63,6 +72,7 @@ impl MessageSchema for KalshiTickerSchema {
         let mut volume = Int64Builder::new();
         let mut open_interest = Int64Builder::new();
         let mut ts = TimestampMicrosecondBuilder::new();
+        let mut exchange_clock = Int64Builder::new();
         let mut nats_seq = UInt64Builder::new();
         let mut received_at = TimestampMicrosecondBuilder::new();
 
@@ -103,6 +113,7 @@ impl MessageSchema for KalshiTickerSchema {
             append_optional_i64(&mut volume, msg.get("volume"));
             append_optional_i64(&mut open_interest, msg.get("open_interest"));
             ts.append_value(ts_secs * 1_000_000);
+            append_optional_i64(&mut exchange_clock, msg.get("Clock"));
             nats_seq.append_value(*seq);
             received_at.append_value(*recv_at);
         }
@@ -119,6 +130,7 @@ impl MessageSchema for KalshiTickerSchema {
                 Arc::new(volume.finish()),
                 Arc::new(open_interest.finish()),
                 Arc::new(ts.finish().with_timezone("UTC")),
+                Arc::new(exchange_clock.finish()),
                 Arc::new(nats_seq.finish()),
                 Arc::new(received_at.finish().with_timezone("UTC")),
             ],
@@ -147,6 +159,8 @@ impl KalshiTradeSchema {
             Field::new("count", DataType::Int64, false),
             Field::new("side", DataType::Utf8, false),
             Field::new("ts", ts_type(), false),
+            Field::new("trade_id", DataType::Utf8, false),
+            Field::new("exchange_seq", DataType::Int64, true),
             Field::new("_nats_seq", DataType::UInt64, false),
             Field::new("_received_at", ts_type(), false),
         ])
@@ -154,6 +168,14 @@ impl KalshiTradeSchema {
 }
 
 impl MessageSchema for KalshiTradeSchema {
+    fn schema_name(&self) -> &str {
+        "kalshi_trade"
+    }
+
+    fn schema_version(&self) -> &str {
+        "1.1.0"
+    }
+
     fn schema(&self) -> Arc<Schema> {
         Arc::new(Self::arrow_schema())
     }
@@ -168,6 +190,8 @@ impl MessageSchema for KalshiTradeSchema {
         let mut count = Int64Builder::new();
         let mut side = StringBuilder::new();
         let mut ts = TimestampMicrosecondBuilder::new();
+        let mut trade_id = StringBuilder::new();
+        let mut exchange_seq = Int64Builder::new();
         let mut nats_seq = UInt64Builder::new();
         let mut received_at = TimestampMicrosecondBuilder::new();
 
@@ -187,6 +211,16 @@ impl MessageSchema for KalshiTradeSchema {
                 Some(t) => t,
                 None => {
                     error!("Kalshi trade missing 'market_ticker', skipping");
+                    continue;
+                }
+            };
+            let tid = match msg.get("trade_id").and_then(|v| v.as_str()) {
+                Some(v) => v,
+                None => {
+                    error!(
+                        ticker = ticker,
+                        "Kalshi trade missing 'trade_id', skipping"
+                    );
                     continue;
                 }
             };
@@ -246,6 +280,8 @@ impl MessageSchema for KalshiTradeSchema {
             count.append_value(c);
             side.append_value(s);
             ts.append_value(t * 1_000_000);
+            trade_id.append_value(tid);
+            append_optional_i64(&mut exchange_seq, json.get("seq"));
             nats_seq.append_value(*seq);
             received_at.append_value(*recv_at);
         }
@@ -258,6 +294,8 @@ impl MessageSchema for KalshiTradeSchema {
                 Arc::new(count.finish()),
                 Arc::new(side.finish()),
                 Arc::new(ts.finish().with_timezone("UTC")),
+                Arc::new(trade_id.finish()),
+                Arc::new(exchange_seq.finish()),
                 Arc::new(nats_seq.finish()),
                 Arc::new(received_at.finish().with_timezone("UTC")),
             ],
@@ -292,6 +330,14 @@ impl KalshiLifecycleSchema {
 }
 
 impl MessageSchema for KalshiLifecycleSchema {
+    fn schema_name(&self) -> &str {
+        "kalshi_lifecycle"
+    }
+
+    fn schema_version(&self) -> &str {
+        "1.0.0"
+    }
+
     fn schema(&self) -> Arc<Schema> {
         Arc::new(Self::arrow_schema())
     }
@@ -387,13 +433,13 @@ mod tests {
     #[test]
     fn test_parse_kalshi_ticker() {
         let schema = KalshiTickerSchema;
-        let json = br#"{"type":"ticker","sid":1,"msg":{"market_ticker":"KXBTCD-26FEB12-T50049.99","yes_bid":50,"yes_ask":52,"no_bid":48,"no_ask":50,"price":51,"volume":1000,"open_interest":500,"ts":1707667200}}"#;
+        let json = br#"{"type":"ticker","sid":1,"msg":{"market_ticker":"KXBTCD-26FEB12-T50049.99","yes_bid":50,"yes_ask":52,"no_bid":48,"no_ask":50,"price":51,"volume":1000,"open_interest":500,"ts":1707667200,"Clock":13281241747}}"#;
         let batch = schema
             .parse_batch(&[(json.to_vec(), 1, 1707667200_000_000)])
             .unwrap();
 
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 11);
+        assert_eq!(batch.num_columns(), 12);
 
         let col = batch
             .column(0)
@@ -424,9 +470,17 @@ mod tests {
             .unwrap();
         assert_eq!(col.value(0), 1707667200_000_000);
 
-        // _nats_seq
+        // exchange_clock
         let col = batch
             .column(9)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(col.value(0), 13281241747);
+
+        // _nats_seq
+        let col = batch
+            .column(10)
             .as_any()
             .downcast_ref::<UInt64Array>()
             .unwrap();
@@ -459,18 +513,26 @@ mod tests {
             .downcast_ref::<Int64Array>()
             .unwrap();
         assert!(col.is_null(0));
+
+        // exchange_clock should be null
+        let col = batch
+            .column(9)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert!(col.is_null(0));
     }
 
     #[test]
     fn test_parse_kalshi_trade() {
         let schema = KalshiTradeSchema;
-        let json = br#"{"type":"trade","sid":1,"msg":{"market_ticker":"KXBTC-123","price":55,"count":10,"side":"yes","ts":1707667200}}"#;
+        let json = br#"{"type":"trade","sid":1,"seq":10,"msg":{"trade_id":"f851595a-1234","market_ticker":"KXBTC-123","price":55,"count":10,"side":"yes","ts":1707667200}}"#;
         let batch = schema
             .parse_batch(&[(json.to_vec(), 42, 1707667200_000_000)])
             .unwrap();
 
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 7);
+        assert_eq!(batch.num_columns(), 9);
 
         let ticker = batch
             .column(0)
@@ -499,19 +561,35 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(side.value(0), "yes");
+
+        // trade_id
+        let tid = batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(tid.value(0), "f851595a-1234");
+
+        // exchange_seq
+        let eseq = batch
+            .column(6)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(eseq.value(0), 10);
     }
 
     #[test]
     fn test_parse_kalshi_trade_ws_field_names() {
         // Raw Kalshi WS uses "yes_price" and "taker_side" (not "price"/"side")
         let schema = KalshiTradeSchema;
-        let json = br#"{"type":"trade","sid":1,"msg":{"market_ticker":"KXBTC-123","yes_price":55,"count":10,"taker_side":"yes","ts":1707667200}}"#;
+        let json = br#"{"type":"trade","sid":1,"seq":5,"msg":{"trade_id":"abc-123","market_ticker":"KXBTC-123","yes_price":55,"count":10,"taker_side":"yes","ts":1707667200}}"#;
         let batch = schema
             .parse_batch(&[(json.to_vec(), 42, 1707667200_000_000)])
             .unwrap();
 
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 7);
+        assert_eq!(batch.num_columns(), 9);
 
         let price = batch
             .column(1)
@@ -532,8 +610,8 @@ mod tests {
     fn test_parse_kalshi_trade_mixed_field_names() {
         // Both old ("price"/"side") and new ("yes_price"/"taker_side") should work
         let schema = KalshiTradeSchema;
-        let old_format = br#"{"type":"trade","msg":{"market_ticker":"A","price":10,"count":1,"side":"yes","ts":100}}"#;
-        let new_format = br#"{"type":"trade","msg":{"market_ticker":"B","yes_price":20,"count":2,"taker_side":"no","ts":200}}"#;
+        let old_format = br#"{"type":"trade","seq":1,"msg":{"trade_id":"tid-1","market_ticker":"A","price":10,"count":1,"side":"yes","ts":100}}"#;
+        let new_format = br#"{"type":"trade","seq":2,"msg":{"trade_id":"tid-2","market_ticker":"B","yes_price":20,"count":2,"taker_side":"no","ts":200}}"#;
         let batch = schema
             .parse_batch(&[
                 (old_format.to_vec(), 1, 100_000_000),
@@ -558,6 +636,46 @@ mod tests {
             .unwrap();
         assert_eq!(sides.value(0), "yes");
         assert_eq!(sides.value(1), "no");
+    }
+
+    #[test]
+    fn test_parse_kalshi_trade_no_envelope_seq() {
+        // exchange_seq should be null when top-level "seq" is absent
+        let schema = KalshiTradeSchema;
+        let json = br#"{"type":"trade","sid":1,"msg":{"trade_id":"tid-no-seq","market_ticker":"KXBTC-123","price":55,"count":10,"side":"yes","ts":1707667200}}"#;
+        let batch = schema
+            .parse_batch(&[(json.to_vec(), 42, 1707667200_000_000)])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+
+        // exchange_seq should be null
+        let eseq = batch
+            .column(6)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert!(eseq.is_null(0));
+
+        // trade_id should still be present
+        let tid = batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(tid.value(0), "tid-no-seq");
+    }
+
+    #[test]
+    fn test_parse_kalshi_trade_missing_trade_id() {
+        // Rows without trade_id should be skipped
+        let schema = KalshiTradeSchema;
+        let json = br#"{"type":"trade","seq":10,"msg":{"market_ticker":"KXBTC-123","price":55,"count":10,"side":"yes","ts":1707667200}}"#;
+        let batch = schema
+            .parse_batch(&[(json.to_vec(), 42, 1707667200_000_000)])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 0);
     }
 
     #[test]
@@ -642,8 +760,8 @@ mod tests {
     #[test]
     fn test_multi_message_batch() {
         let schema = KalshiTradeSchema;
-        let msg1 = br#"{"type":"trade","msg":{"market_ticker":"A","price":10,"count":1,"side":"yes","ts":100}}"#;
-        let msg2 = br#"{"type":"trade","msg":{"market_ticker":"B","price":20,"count":2,"side":"no","ts":200}}"#;
+        let msg1 = br#"{"type":"trade","seq":1,"msg":{"trade_id":"tid-1","market_ticker":"A","price":10,"count":1,"side":"yes","ts":100}}"#;
+        let msg2 = br#"{"type":"trade","seq":2,"msg":{"trade_id":"tid-2","market_ticker":"B","price":20,"count":2,"side":"no","ts":200}}"#;
         let batch = schema
             .parse_batch(&[
                 (msg1.to_vec(), 1, 100_000_000),
@@ -667,7 +785,7 @@ mod tests {
         let schema = KalshiTickerSchema;
         let batch = schema.parse_batch(&[]).unwrap();
         assert_eq!(batch.num_rows(), 0);
-        assert_eq!(batch.num_columns(), 11);
+        assert_eq!(batch.num_columns(), 12);
     }
 
     #[test]
