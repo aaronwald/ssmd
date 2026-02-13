@@ -1,0 +1,24 @@
+[package]
+name = "ssmd-parquet-gen"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ssmd-parquet-gen"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true }
+object_store = { workspace = true }
+flate2 = "1.0"
+bytes = { workspace = true }
+futures-util = { workspace = true }
+ssmd-schemas = { path = "../ssmd-schemas" }
