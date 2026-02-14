@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +29,8 @@ pub struct FileEntry {
     pub compression_ratio: Option<f64>,
     pub nats_start_seq: u64,
     pub nats_end_seq: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub records_by_type: Option<HashMap<String, u64>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

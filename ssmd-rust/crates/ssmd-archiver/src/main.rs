@@ -1,6 +1,6 @@
 //! ssmd-archiver binary entry point
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +16,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_archiver::config::StreamConfig;
 use ssmd_archiver::manifest::{FileEntry, Gap};
-use ssmd_archiver::manifest_io::{update_manifest, write_manifest};
+use ssmd_archiver::manifest_io::update_manifest;
 use ssmd_archiver::subscriber::Subscriber;
 use ssmd_archiver::validation::{extract_manifest_fields, MessageValidator};
 use ssmd_archiver::writer::{ArchiveOutput, ArchiveWriter};
@@ -195,6 +195,7 @@ async fn archive_stream(
     let mut gaps: Vec<Gap> = Vec::new();
     let mut completed_files: Vec<FileEntry> = Vec::new();
     let mut current_date = Utc::now().format("%Y-%m-%d").to_string();
+    let mut current_file_type_counts: HashMap<String, u64> = HashMap::new();
 
     // Stats tracking
     let mut total_messages: u64 = 0;
@@ -224,7 +225,11 @@ async fn archive_stream(
                 // Check for day rollover
                 if date != current_date {
                     info!(stream_name = %stream_name, old = %current_date, new = %date, "Day rollover, writing final manifest");
-                    write_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &mut writer, &tickers, &message_types, &gaps, &mut completed_files)?;
+                    for mut entry in writer.close()? {
+                        entry.records_by_type = Some(std::mem::take(&mut current_file_type_counts));
+                        completed_files.push(entry);
+                    }
+                    update_manifest(base_path, feed, &stream_name, &current_date, rotation_interval, &tickers, &message_types, &gaps, &completed_files)?;
                     tickers.clear();
                     message_types.clear();
                     gaps.clear();
@@ -257,19 +262,22 @@ async fn archive_stream(
                             last_seq = msg.seq;
 
                             // Lightweight manifest field extraction (no full JSON tree)
-                            match extract_manifest_fields(feed, msg.payload()) {
+                            let msg_type_for_count = match extract_manifest_fields(feed, msg.payload()) {
                                 Some(fields) => {
-                                    if let Some(t) = fields.msg_type {
-                                        message_types.insert(t);
+                                    let mt = fields.msg_type;
+                                    if let Some(ref t) = mt {
+                                        message_types.insert(t.clone());
                                     }
                                     if let Some(t) = fields.ticker {
                                         tickers.insert(t);
                                     }
+                                    mt
                                 }
                                 None => {
                                     parse_failures += 1;
+                                    None
                                 }
-                            }
+                            };
 
                             // Sampled validation: full parse 1-in-100 messages
                             #[allow(clippy::manual_is_multiple_of)]
@@ -295,7 +303,8 @@ async fn archive_stream(
                                 Ok(rotated_entries) => {
                                     pending_acks.push(msg);
                                     if !rotated_entries.is_empty() {
-                                        for rotated_entry in rotated_entries {
+                                        for mut rotated_entry in rotated_entries {
+                                            rotated_entry.records_by_type = Some(std::mem::take(&mut current_file_type_counts));
                                             info!(
                                                 stream_name = %stream_name,
                                                 file = %rotated_entry.name,
@@ -310,6 +319,10 @@ async fn archive_stream(
                                             error!(stream_name = %stream_name, error = %e, "Failed to update manifest after rotation");
                                         }
                                     }
+                                    // Count current message type for the (possibly new) file
+                                    if let Some(ref t) = msg_type_for_count {
+                                        *current_file_type_counts.entry(t.clone()).or_insert(0) += 1;
+                                    }
                                 }
                                 Err(e) => {
                                     // Don't ack - message will be redelivered by NATS
@@ -320,7 +333,7 @@ async fn archive_stream(
 
                         // Batch ack: flush to OS page cache first, then ack.
                         // At-least-once: crash between flush and ack causes
-                        // redelivery. Downstream parquet-gen dedup handles this.
+                        // redelivery. DQ checks detect duplicates via _nats_seq.
                         if !pending_acks.is_empty() {
                             match writer.flush() {
                                 Ok(()) => {
@@ -370,17 +383,20 @@ async fn archive_stream(
 
     // Final cleanup
     info!(stream_name = %stream_name, "Writing final manifest");
-    write_manifest(
+    for mut entry in writer.close()? {
+        entry.records_by_type = Some(std::mem::take(&mut current_file_type_counts));
+        completed_files.push(entry);
+    }
+    update_manifest(
         base_path,
         feed,
         &stream_name,
         &current_date,
         rotation_interval,
-        &mut writer,
         &tickers,
         &message_types,
         &gaps,
-        &mut completed_files,
+        &completed_files,
     )?;
 
     info!(stream_name = %stream_name, "Archive task stopped");

@@ -138,6 +138,7 @@ impl ArchiveWriter {
             compression_ratio: None,
             nats_start_seq: file.first_seq.unwrap_or(0),
             nats_end_seq: file.last_seq.unwrap_or(0),
+            records_by_type: None,
         })
     }
 }

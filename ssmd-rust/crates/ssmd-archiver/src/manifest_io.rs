@@ -128,6 +128,7 @@ mod tests {
             compression_ratio: None,
             nats_start_seq: 1,
             nats_end_seq: 10,
+            records_by_type: None,
         }];
 
         update_manifest(
@@ -176,6 +177,7 @@ mod tests {
                 compression_ratio: None,
                 nats_start_seq: 11,
                 nats_end_seq: 15,
+                records_by_type: None,
             }],
         };
 
@@ -189,6 +191,7 @@ mod tests {
             compression_ratio: None,
             nats_start_seq: 1,
             nats_end_seq: 10,
+            records_by_type: None,
         }];
 
         let mut tickers = HashSet::new();
