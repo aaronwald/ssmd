@@ -272,7 +272,8 @@ async fn archive_stream(
                             }
 
                             // Sampled validation: full parse 1-in-100 messages
-                            if total_messages.is_multiple_of(100) {
+                            #[allow(clippy::manual_is_multiple_of)]
+                            if total_messages % 100 == 0 {
                                 if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(msg.payload()) {
                                     let vr = validator.validate(&parsed);
                                     if !vr.is_valid() {
