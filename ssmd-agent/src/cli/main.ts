@@ -5,6 +5,7 @@ import { sendFailureEmail } from "./utils/notify.ts";
 if (import.meta.main) {
   try {
     await run(Deno.args);
+    Deno.exit(0);
   } catch (error) {
     const shouldNotify =
       Deno.args.includes("--notify-on-failure") ||
