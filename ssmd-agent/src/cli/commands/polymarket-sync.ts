@@ -92,11 +92,10 @@ export interface PolymarketSyncResult {
 }
 
 /**
- * Fetch all active events from the Gamma API with pagination.
+ * Stream active events from the Gamma API in paginated batches.
  * Events include tags and nested markets arrays.
  */
-async function fetchAllGammaEvents(): Promise<GammaEvent[]> {
-  const allEvents: GammaEvent[] = [];
+async function* fetchGammaEventBatches(): AsyncGenerator<GammaEvent[]> {
   let offset = 0;
 
   while (true) {
@@ -110,13 +109,11 @@ async function fetchAllGammaEvents(): Promise<GammaEvent[]> {
     const events: GammaEvent[] = await res.json();
     if (events.length === 0) break;
 
-    allEvents.push(...events);
+    yield events;
 
     if (events.length < PAGE_SIZE) break;
     offset += PAGE_SIZE;
   }
-
-  return allEvents;
 }
 
 /**
@@ -125,12 +122,11 @@ async function fetchAllGammaEvents(): Promise<GammaEvent[]> {
 export async function runPolymarketSync(
   options: PolymarketSyncOptions = {},
 ): Promise<PolymarketSyncResult> {
+  const syncStartMs = Date.now();
   const noDelete = options.noDelete ?? false;
   const dryRun = options.dryRun ?? false;
 
   console.log("\n[Polymarket] Fetching active events...");
-
-  const gammaEvents = await fetchAllGammaEvents();
 
   const result: PolymarketSyncResult = {
     fetched: 0,
@@ -139,7 +135,7 @@ export async function runPolymarketSync(
     deleted: 0,
   };
 
-  console.log(`[Polymarket] Fetched ${gammaEvents.length} active events`);
+  let eventCount = 0;
 
   // Well-known tag labels for category assignment (priority order)
   const WELL_KNOWN_TAGS = [
@@ -147,129 +143,201 @@ export async function runPolymarketSync(
     "Finance", "Business", "Pop Culture", "Entertainment",
   ];
 
-  // Convert to DB rows, dedup by conditionId and tokenId
-  const conditionMap = new Map<string, NewPolymarketCondition>();
-  const tokenMap = new Map<string, NewPolymarketToken>();
+  // Track IDs seen during this run (used for delete + dry-run summary)
+  const seenConditionIds = new Set<string>();
+  const dryRunConditionIds = new Set<string>();
+  const dryRunTokenIds = new Set<string>();
+  const dryRunConditionCategoryById = new Map<string, string | null>();
+
+  const db = dryRun ? null : getDb();
+
+  let pageCount = 0;
   let skipped = 0;
+  let totalProcessingMs = 0;
+  let totalFetchWaitMs = 0;
+  let totalDbUpsertMs = 0;
 
-  for (const event of gammaEvents) {
-    const tags = event.tags ?? [];
-    const tagSlugs = tags.map((t) => t.slug);
+  try {
+    const eventBatchIterator = fetchGammaEventBatches()[Symbol.asyncIterator]();
+    let nextBatch = eventBatchIterator.next();
 
-    // Pick category from well-known tags (first match wins)
-    let category: string | null = null;
-    for (const wk of WELL_KNOWN_TAGS) {
-      if (tags.some((t) => t.label === wk)) {
-        category = wk;
+    while (true) {
+      const fetchWaitStartMs = Date.now();
+      const currentBatch = await nextBatch;
+      totalFetchWaitMs += Date.now() - fetchWaitStartMs;
+      if (currentBatch.done) {
         break;
       }
+
+      const events = currentBatch.value;
+      nextBatch = eventBatchIterator.next();
+      nextBatch.catch(() => {}); // Prevent unhandled rejection if we exit early
+      const pageProcessStartMs = Date.now();
+
+      pageCount++;
+      eventCount += events.length;
+
+      // Per-page dedup; DB handles cross-page dedup via ON CONFLICT.
+      const conditionMap = new Map<string, NewPolymarketCondition>();
+      const tokenMap = new Map<string, NewPolymarketToken>();
+
+      for (const event of events) {
+        const tags = event.tags ?? [];
+        const tagSlugs = tags.map((t) => t.slug);
+
+        // Pick category from well-known tags (first match wins)
+        let category: string | null = null;
+        for (const wk of WELL_KNOWN_TAGS) {
+          if (tags.some((t) => t.label === wk)) {
+            category = wk;
+            break;
+          }
+        }
+        // Fallback: use first tag label if no well-known match
+        if (!category && tags.length > 0) {
+          category = tags[0].label;
+        }
+
+        for (const market of event.markets ?? []) {
+          result.fetched++;
+
+          const conditionId = market.conditionId ?? market.questionID;
+          if (!conditionId) {
+            skipped++;
+            continue;
+          }
+
+          const tokenIds = parseStringifiedArray(market.clobTokenIds);
+          if (tokenIds.length === 0) {
+            skipped++;
+            continue;
+          }
+
+          const outcomes = parseStringifiedArray(market.outcomes);
+          const outcomePrices = parseStringifiedArray(market.outcomePrices);
+          const status = mapStatus(market.active, market.closed);
+
+          seenConditionIds.add(conditionId);
+
+          // Upsert condition (dedup: last occurrence wins)
+          conditionMap.set(conditionId, {
+            conditionId,
+            question: market.question ?? "",
+            slug: market.slug ?? null,
+            category,
+            tags: tagSlugs,
+            outcomes,
+            status,
+            active: market.active ?? true,
+            endDate: market.endDate ? new Date(market.endDate) : null,
+            resolutionDate: market.resolutionDate ? new Date(market.resolutionDate) : null,
+            winningOutcome: market.winningOutcome ?? null,
+            volume: market.volume ?? null,
+            liquidity: market.liquidity ?? null,
+          });
+
+          if (dryRun) {
+            dryRunConditionIds.add(conditionId);
+            dryRunConditionCategoryById.set(conditionId, category);
+          }
+
+          // Map outcomes 1:1 to token IDs (dedup: last occurrence wins)
+          for (let i = 0; i < tokenIds.length; i++) {
+            const tokenId = tokenIds[i];
+            const outcome = outcomes[i] ?? (i === 0 ? "Yes" : "No");
+            const price = outcomePrices[i] ?? null;
+
+            if (dryRun) {
+              dryRunTokenIds.add(tokenId);
+              continue;
+            }
+
+            tokenMap.set(tokenId, {
+              tokenId,
+              conditionId,
+              outcome,
+              outcomeIndex: i,
+              price,
+            });
+          }
+        }
+      }
+
+      if (db) {
+        const conditions = Array.from(conditionMap.values());
+        const tokens = Array.from(tokenMap.values());
+        const dbUpsertStartMs = Date.now();
+
+        result.conditionsUpserted += await upsertConditions(db, conditions);
+        result.tokensUpserted += await upsertTokens(db, tokens);
+        const dbUpsertDurationMs = Date.now() - dbUpsertStartMs;
+        totalDbUpsertMs += dbUpsertDurationMs;
+
+        const pageDurationMs = Date.now() - pageProcessStartMs;
+        totalProcessingMs += pageDurationMs;
+        console.log(
+          `[Polymarket] Page ${pageCount}: ${events.length} events, ${conditions.length} conditions, ` +
+            `${tokens.length} tokens (${pageDurationMs}ms, db ${dbUpsertDurationMs}ms)`,
+        );
+      } else {
+        const pageDurationMs = Date.now() - pageProcessStartMs;
+        totalProcessingMs += pageDurationMs;
+        console.log(
+          `[Polymarket] Page ${pageCount}: ${events.length} events processed (${pageDurationMs}ms, dry-run)`,
+        );
+      }
     }
-    // Fallback: use first tag label if no well-known match
-    if (!category && tags.length > 0) {
-      category = tags[0].label;
+
+    // Soft-delete must run inside try block while DB is still open
+    if (!noDelete && !dryRun) {
+      result.deleted = await softDeleteMissingConditions(Array.from(seenConditionIds));
+      if (result.deleted > 0) {
+        console.log(`[Polymarket] Soft-deleted ${result.deleted} missing conditions`);
+      }
     }
-
-    for (const market of event.markets ?? []) {
-      result.fetched++;
-
-      const conditionId = market.conditionId ?? market.questionID;
-      if (!conditionId) {
-        skipped++;
-        continue;
-      }
-
-      const tokenIds = parseStringifiedArray(market.clobTokenIds);
-      if (tokenIds.length === 0) {
-        skipped++;
-        continue;
-      }
-
-      const outcomes = parseStringifiedArray(market.outcomes);
-      const outcomePrices = parseStringifiedArray(market.outcomePrices);
-      const status = mapStatus(market.active, market.closed);
-
-      // Upsert condition (dedup: last occurrence wins)
-      conditionMap.set(conditionId, {
-        conditionId,
-        question: market.question ?? "",
-        slug: market.slug ?? null,
-        category,
-        tags: tagSlugs,
-        outcomes,
-        status,
-        active: market.active ?? true,
-        endDate: market.endDate ? new Date(market.endDate) : null,
-        resolutionDate: market.resolutionDate ? new Date(market.resolutionDate) : null,
-        winningOutcome: market.winningOutcome ?? null,
-        volume: market.volume ?? null,
-        liquidity: market.liquidity ?? null,
-      });
-
-      // Map outcomes 1:1 to token IDs (dedup: last occurrence wins)
-      for (let i = 0; i < tokenIds.length; i++) {
-        const outcome = outcomes[i] ?? (i === 0 ? "Yes" : "No");
-        const price = outcomePrices[i] ?? null;
-
-        tokenMap.set(tokenIds[i], {
-          tokenId: tokenIds[i],
-          conditionId,
-          outcome,
-          outcomeIndex: i,
-          price,
-        });
-      }
+  } finally {
+    if (db) {
+      await closeDb();
     }
   }
 
-  console.log(`[Polymarket] Fetched ${result.fetched} markets from ${gammaEvents.length} events`);
+  console.log(`[Polymarket] Fetched ${result.fetched} markets from ${eventCount} events in ${pageCount} pages`);
 
   if (skipped > 0) {
     console.log(`[Polymarket] Skipped ${skipped} markets (missing conditionId or tokenIds)`);
   }
 
-  const conditions = Array.from(conditionMap.values());
-  const allTokens = Array.from(tokenMap.values());
-
   if (dryRun) {
-    console.log(`[Polymarket] Dry run — would upsert ${conditions.length} conditions, ${allTokens.length} tokens`);
+    console.log(
+      `[Polymarket] Dry run — would upsert ${dryRunConditionIds.size} conditions, ${dryRunTokenIds.size} tokens`,
+    );
+
     // Show tag distribution
     const tagCounts = new Map<string, number>();
-    for (const c of conditions) {
-      const cat = c.category ?? "uncategorized";
+    for (const category of dryRunConditionCategoryById.values()) {
+      const cat = category ?? "uncategorized";
       tagCounts.set(cat, (tagCounts.get(cat) ?? 0) + 1);
     }
     for (const [tag, count] of [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)) {
       console.log(`  ${tag}: ${count} conditions`);
     }
+
     return result;
   }
 
-  const db = getDb();
+  console.log(`[Polymarket] Upserted ${result.conditionsUpserted} conditions`);
+  console.log(`[Polymarket] Upserted ${result.tokensUpserted} tokens`);
 
-  try {
-    result.conditionsUpserted = await upsertConditions(db, conditions);
-    console.log(`[Polymarket] Upserted ${result.conditionsUpserted} conditions`);
+  console.log(`\n=== Polymarket Sync Summary ===`);
+  console.log(`Events:     ${eventCount} fetched`);
+  console.log(`Conditions: ${result.conditionsUpserted} upserted, ${result.deleted} deleted`);
+  console.log(`Tokens:     ${result.tokensUpserted} upserted`);
+  console.log(
+    `Timing:     total ${Date.now() - syncStartMs}ms, fetch-wait ${totalFetchWaitMs}ms, processing ${totalProcessingMs}ms` +
+      `, db-upsert ${totalDbUpsertMs}ms`,
+  );
 
-    result.tokensUpserted = await upsertTokens(db, allTokens);
-    console.log(`[Polymarket] Upserted ${result.tokensUpserted} tokens`);
-
-    if (!noDelete) {
-      const currentIds = conditions.map((c) => c.conditionId);
-      result.deleted = await softDeleteMissingConditions(currentIds);
-      if (result.deleted > 0) {
-        console.log(`[Polymarket] Soft-deleted ${result.deleted} missing conditions`);
-      }
-    }
-
-    console.log(`\n=== Polymarket Sync Summary ===`);
-    console.log(`Events:     ${gammaEvents.length} fetched`);
-    console.log(`Conditions: ${result.conditionsUpserted} upserted, ${result.deleted} deleted`);
-    console.log(`Tokens:     ${result.tokensUpserted} upserted`);
-
-    return result;
-  } finally {
-    await closeDb();
-  }
+  return result;
 }
 
 /**
