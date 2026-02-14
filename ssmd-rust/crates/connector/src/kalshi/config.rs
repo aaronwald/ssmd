@@ -62,14 +62,36 @@ impl KalshiConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct EnvVarGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvVarGuard {
+        fn new(keys: &'static [&'static str]) -> Self {
+            let saved = keys.iter().map(|key| (*key, env::var(key).ok())).collect();
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                if let Some(value) = value {
+                    env::set_var(key, value);
+                } else {
+                    env::remove_var(key);
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_config_new() {
-        let config = KalshiConfig::new(
-            "test-key".to_string(),
-            "test-pem".to_string(),
-            true,
-        );
+        let config = KalshiConfig::new("test-key".to_string(), "test-pem".to_string(), true);
 
         assert_eq!(config.api_key, "test-key");
         assert_eq!(config.private_key_pem, "test-pem");
@@ -78,6 +100,9 @@ mod tests {
 
     #[test]
     fn test_config_from_env_missing_api_key() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::new(&["KALSHI_API_KEY", "KALSHI_PRIVATE_KEY", "KALSHI_USE_DEMO"]);
+
         // Clear any existing env vars
         env::remove_var("KALSHI_API_KEY");
         env::remove_var("KALSHI_PRIVATE_KEY");
@@ -94,6 +119,9 @@ mod tests {
 
     #[test]
     fn test_config_from_env_missing_private_key() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::new(&["KALSHI_API_KEY", "KALSHI_PRIVATE_KEY", "KALSHI_USE_DEMO"]);
+
         env::set_var("KALSHI_API_KEY", "test-key");
         env::remove_var("KALSHI_PRIVATE_KEY");
 
@@ -105,12 +133,13 @@ mod tests {
             }
             _ => panic!("Expected MissingEnvVar error"),
         }
-
-        env::remove_var("KALSHI_API_KEY");
     }
 
     #[test]
     fn test_config_from_env_success() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::new(&["KALSHI_API_KEY", "KALSHI_PRIVATE_KEY", "KALSHI_USE_DEMO"]);
+
         env::set_var("KALSHI_API_KEY", "my-api-key");
         env::set_var("KALSHI_PRIVATE_KEY", "my-private-key");
         env::remove_var("KALSHI_USE_DEMO");
@@ -119,13 +148,13 @@ mod tests {
         assert_eq!(config.api_key, "my-api-key");
         assert_eq!(config.private_key_pem, "my-private-key");
         assert!(!config.use_demo);
-
-        env::remove_var("KALSHI_API_KEY");
-        env::remove_var("KALSHI_PRIVATE_KEY");
     }
 
     #[test]
     fn test_config_use_demo_parsing() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::new(&["KALSHI_API_KEY", "KALSHI_PRIVATE_KEY", "KALSHI_USE_DEMO"]);
+
         env::set_var("KALSHI_API_KEY", "key");
         env::set_var("KALSHI_PRIVATE_KEY", "pem");
 
@@ -148,9 +177,5 @@ mod tests {
         // Test empty
         env::set_var("KALSHI_USE_DEMO", "");
         assert!(!KalshiConfig::from_env().unwrap().use_demo);
-
-        env::remove_var("KALSHI_API_KEY");
-        env::remove_var("KALSHI_PRIVATE_KEY");
-        env::remove_var("KALSHI_USE_DEMO");
     }
 }

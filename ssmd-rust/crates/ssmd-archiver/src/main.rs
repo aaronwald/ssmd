@@ -11,13 +11,14 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::task::JoinSet;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_archiver::config::StreamConfig;
-use ssmd_archiver::manifest::{FileEntry, Gap, Manifest};
+use ssmd_archiver::manifest::{FileEntry, Gap};
+use ssmd_archiver::manifest_io::{update_manifest, write_manifest};
 use ssmd_archiver::subscriber::Subscriber;
-use ssmd_archiver::validation::MessageValidator;
+use ssmd_archiver::validation::{extract_manifest_fields, MessageValidator};
 use ssmd_archiver::writer::{ArchiveOutput, ArchiveWriter};
 use ssmd_archiver::Config;
 
@@ -199,6 +200,7 @@ async fn archive_stream(
     let mut total_messages: u64 = 0;
     let mut total_bytes: u64 = 0;
     let mut validation_failures: u64 = 0;
+    let mut parse_failures: u64 = 0;
     let mut first_seq: Option<u64> = None;
     let mut last_seq: u64 = 0;
     let mut last_stats_time = std::time::Instant::now();
@@ -233,9 +235,11 @@ async fn archive_stream(
                 // Fetch messages
                 match subscriber.fetch(100).await {
                     Ok(messages) => {
+                        let mut pending_acks = Vec::with_capacity(messages.len());
+
                         for msg in messages {
                             // Check for gap
-                            if let Some((after_seq, missing)) = subscriber.check_gap(msg.seq) {
+                            if let Some((after_seq, missing)) = msg.gap {
                                 warn!(stream_name = %stream_name, after_seq = after_seq, missing = missing, "Recording gap");
                                 gaps.push(Gap {
                                     after_seq,
@@ -246,54 +250,57 @@ async fn archive_stream(
 
                             // Track stats
                             total_messages += 1;
-                            total_bytes += msg.data.len() as u64;
+                            total_bytes += msg.payload().len() as u64;
                             if first_seq.is_none() {
                                 first_seq = Some(msg.seq);
                             }
                             last_seq = msg.seq;
 
-                            // Parse JSON for manifest tracking and validation
-                            if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&msg.data) {
-                                // Validate field presence
-                                let vr = validator.validate(&parsed);
-                                if !vr.is_valid() {
-                                    validation_failures += 1;
-                                    warn!(
-                                        stream_name = %stream_name,
-                                        msg_type = ?vr.message_type,
-                                        missing = ?vr.missing_fields,
-                                        seq = msg.seq,
-                                        "Validation failure: missing required fields"
-                                    );
+                            // Lightweight manifest field extraction (no full JSON tree)
+                            match extract_manifest_fields(feed, msg.payload()) {
+                                Some(fields) => {
+                                    if let Some(t) = fields.msg_type {
+                                        message_types.insert(t);
+                                    }
+                                    if let Some(t) = fields.ticker {
+                                        tickers.insert(t);
+                                    }
                                 }
+                                None => {
+                                    parse_failures += 1;
+                                }
+                            }
 
-                                // Extract type for manifest
-                                if let Some(msg_type) = parsed.get("type").and_then(|v| v.as_str()) {
-                                    message_types.insert(msg_type.to_string());
-                                }
-                                // Extract ticker for manifest
-                                if let Some(inner) = parsed.get("msg") {
-                                    if let Some(ticker) = inner.get("market_ticker").and_then(|v| v.as_str()) {
-                                        tickers.insert(ticker.to_string());
+                            // Sampled validation: full parse 1-in-100 messages
+                            if total_messages.is_multiple_of(100) {
+                                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(msg.payload()) {
+                                    let vr = validator.validate(&parsed);
+                                    if !vr.is_valid() {
+                                        validation_failures += 1;
+                                        warn!(
+                                            stream_name = %stream_name,
+                                            msg_type = ?vr.message_type,
+                                            missing = ?vr.missing_fields,
+                                            seq = msg.seq,
+                                            "Validation failure: missing required fields"
+                                        );
                                     }
                                 }
                             }
 
                             // Write to archive (returns rotated FileEntries on rotation)
                             let seq = msg.seq;
-                            match writer.write(&msg.data, seq, now) {
+                            match writer.write(msg.payload(), seq, now) {
                                 Ok(rotated_entries) => {
-                                    // Ack after successful write
-                                    if let Err(e) = msg.ack().await {
-                                        error!(stream_name = %stream_name, error = %e, seq = seq, "Failed to ack message");
-                                    }
+                                    pending_acks.push(msg);
                                     if !rotated_entries.is_empty() {
                                         for rotated_entry in rotated_entries {
                                             info!(
                                                 stream_name = %stream_name,
                                                 file = %rotated_entry.name,
                                                 records = rotated_entry.records,
-                                                seq_range = %format!("{}-{}", rotated_entry.nats_start_seq, rotated_entry.nats_end_seq),
+                                                nats_start_seq = rotated_entry.nats_start_seq,
+                                                nats_end_seq = rotated_entry.nats_end_seq,
                                                 "File rotated"
                                             );
                                             completed_files.push(rotated_entry);
@@ -306,6 +313,30 @@ async fn archive_stream(
                                 Err(e) => {
                                     // Don't ack - message will be redelivered by NATS
                                     warn!(stream_name = %stream_name, error = %e, seq = seq, "Failed to write message, will be redelivered");
+                                }
+                            }
+                        }
+
+                        // Batch ack: flush to OS page cache first, then ack.
+                        // At-least-once: crash between flush and ack causes
+                        // redelivery. Downstream parquet-gen dedup handles this.
+                        if !pending_acks.is_empty() {
+                            match writer.flush() {
+                                Ok(()) => {
+                                    for msg in pending_acks {
+                                        let seq = msg.seq;
+                                        if let Err(e) = msg.ack().await {
+                                            error!(stream_name = %stream_name, error = %e, seq = seq, "Failed to ack message");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        stream_name = %stream_name,
+                                        error = %e,
+                                        pending = pending_acks.len(),
+                                        "Failed to flush archive data, skipping acks so messages are redelivered"
+                                    );
                                 }
                             }
                         }
@@ -323,8 +354,10 @@ async fn archive_stream(
                         messages = total_messages,
                         bytes = total_bytes,
                         validation_failures = validation_failures,
+                        parse_failures = parse_failures,
                         tickers = tickers.len(),
-                        seq_range = %format!("{}-{}", first_seq.unwrap_or(0), last_seq),
+                        nats_start_seq = first_seq.unwrap_or(0),
+                        nats_end_seq = last_seq,
                         gaps = gaps.len(),
                         "Archiver stats"
                     );
@@ -351,71 +384,4 @@ async fn archive_stream(
 
     info!(stream_name = %stream_name, "Archive task stopped");
     Ok(())
-}
-
-/// Update manifest with completed files (called on every rotation)
-#[allow(clippy::too_many_arguments)]
-fn update_manifest(
-    base_path: &Path,
-    feed: &str,
-    stream_name: &str,
-    date: &str,
-    rotation_interval: &str,
-    tickers: &HashSet<String>,
-    message_types: &HashSet<String>,
-    gaps: &[Gap],
-    completed_files: &[FileEntry],
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut manifest = Manifest::new(feed, date, rotation_interval, "jsonl");
-    manifest.files = completed_files.to_vec();
-    manifest.tickers = tickers.iter().cloned().collect();
-    manifest.message_types = message_types.iter().cloned().collect();
-    manifest.gaps = gaps.to_vec();
-    manifest.has_gaps = !gaps.is_empty();
-
-    // Path: {base_path}/{feed}/{stream_name}/{date}/manifest.json
-    let manifest_path = base_path
-        .join(feed)
-        .join(stream_name)
-        .join(date)
-        .join("manifest.json");
-    if let Some(parent) = manifest_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let manifest_json = serde_json::to_string_pretty(&manifest)?;
-    std::fs::write(&manifest_path, manifest_json)?;
-
-    debug!(stream_name = %stream_name, path = ?manifest_path, files = completed_files.len(), "Updated manifest");
-    Ok(())
-}
-
-/// Write final manifest (called on shutdown/day rollover, closes current file)
-#[allow(clippy::too_many_arguments)]
-fn write_manifest(
-    base_path: &Path,
-    feed: &str,
-    stream_name: &str,
-    date: &str,
-    rotation_interval: &str,
-    writer: &mut ArchiveWriter,
-    tickers: &HashSet<String>,
-    message_types: &HashSet<String>,
-    gaps: &[Gap],
-    completed_files: &mut Vec<FileEntry>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Close current file and add to completed files
-    completed_files.extend(writer.close()?);
-
-    // Write manifest with all completed files
-    update_manifest(
-        base_path,
-        feed,
-        stream_name,
-        date,
-        rotation_interval,
-        tickers,
-        message_types,
-        gaps,
-        completed_files,
-    )
 }

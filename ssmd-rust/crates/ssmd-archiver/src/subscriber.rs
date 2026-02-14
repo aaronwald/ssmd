@@ -13,12 +13,17 @@ pub struct Subscriber {
 
 /// A received message that must be explicitly acked after processing
 pub struct ReceivedMessage {
-    pub data: Vec<u8>,
     pub seq: u64,
+    pub gap: Option<(u64, u64)>,
     message: Message,
 }
 
 impl ReceivedMessage {
+    /// Access message payload without copying.
+    pub fn payload(&self) -> &[u8] {
+        &self.message.payload
+    }
+
     /// Acknowledge the message after successful processing
     pub async fn ack(self) -> Result<(), ArchiverError> {
         self.message
@@ -85,23 +90,23 @@ impl Subscriber {
             match msg_result {
                 Ok(msg) => {
                     let seq = msg.info().map(|i| i.stream_sequence).unwrap_or(0);
+                    let (gap, next_expected) = compute_gap_and_next(self.expected_seq, seq);
 
-                    // Check for gaps
-                    if let Some(expected) = self.expected_seq {
-                        if seq > expected {
-                            warn!(
-                                expected = expected,
-                                actual = seq,
-                                gap = seq - expected,
-                                "Gap detected in sequence"
-                            );
-                        }
+                    if let Some((after_seq, missing_count)) = gap {
+                        warn!(
+                            expected = self.expected_seq.unwrap_or_default(),
+                            actual = seq,
+                            gap = missing_count,
+                            after_seq = after_seq,
+                            "Gap detected in sequence"
+                        );
                     }
-                    self.expected_seq = Some(seq + 1);
+
+                    self.expected_seq = next_expected;
 
                     result.push(ReceivedMessage {
-                        data: msg.payload.to_vec(),
                         seq,
+                        gap,
                         message: msg,
                     });
                     // Note: ack deferred until after successful write
@@ -116,13 +121,70 @@ impl Subscriber {
         Ok(result)
     }
 
-    /// Check if there was a gap (returns gap info for manifest)
-    pub fn check_gap(&self, seq: u64) -> Option<(u64, u64)> {
-        if let Some(expected) = self.expected_seq {
-            if seq > expected {
-                return Some((expected - 1, seq - expected));
-            }
-        }
-        None
+}
+
+fn compute_gap_and_next(expected_seq: Option<u64>, seq: u64) -> (Option<(u64, u64)>, Option<u64>) {
+    let gap = match expected_seq {
+        Some(expected) if seq > expected => Some((expected.saturating_sub(1), seq - expected)),
+        _ => None,
+    };
+
+    // Never regress expected_seq on out-of-order/redelivered messages.
+    // seq == 0 is a sentinel (no info available) — preserve current expectation.
+    let next_expected = match (expected_seq, seq) {
+        (_, 0) => expected_seq,
+        (Some(exp), _) if seq < exp => expected_seq,
+        _ => Some(seq + 1),
+    };
+
+    (gap, next_expected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_gap_and_next;
+
+    #[test]
+    fn test_compute_gap_and_next_detects_gap() {
+        let (gap, next) = compute_gap_and_next(Some(101), 105);
+        assert_eq!(gap, Some((100, 4)));
+        assert_eq!(next, Some(106));
+    }
+
+    #[test]
+    fn test_compute_gap_and_next_no_gap_in_order() {
+        let (gap, next) = compute_gap_and_next(Some(101), 101);
+        assert_eq!(gap, None);
+        assert_eq!(next, Some(102));
+    }
+
+    #[test]
+    fn test_compute_gap_and_next_ignores_zero_seq_for_next() {
+        let (gap, next) = compute_gap_and_next(Some(17), 0);
+        assert_eq!(gap, None);
+        assert_eq!(next, Some(17));
+    }
+
+    #[test]
+    fn test_compute_gap_and_next_no_regress_on_redelivery() {
+        // After seeing seq 100, expected is 101. Redelivered seq 50 must not regress.
+        let (gap, next) = compute_gap_and_next(Some(101), 50);
+        assert_eq!(gap, None);
+        assert_eq!(next, Some(101)); // stays at 101, not 51
+    }
+
+    #[test]
+    fn test_compute_gap_and_next_no_regress_on_duplicate() {
+        // Exact duplicate of last seen message
+        let (gap, next) = compute_gap_and_next(Some(101), 100);
+        assert_eq!(gap, None);
+        assert_eq!(next, Some(101)); // stays at 101
+    }
+
+    #[test]
+    fn test_compute_gap_and_next_first_message() {
+        let (gap, next) = compute_gap_and_next(None, 42);
+        assert_eq!(gap, None);
+        assert_eq!(next, Some(43));
     }
 }

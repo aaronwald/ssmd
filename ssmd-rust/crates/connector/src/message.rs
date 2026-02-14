@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use ssmd_middleware::now_tsc;
 
 /// Message wraps raw data with metadata.
@@ -9,18 +10,18 @@ pub struct Message {
     /// Feed name (shared reference to avoid allocation)
     pub feed: String,
     /// Raw message bytes (no parsing in hot path)
-    pub data: Vec<u8>,
+    pub data: Bytes,
 }
 
 impl Message {
     /// Create a new message with raw bytes.
     /// Uses TSC timestamp to avoid syscall overhead.
     #[inline]
-    pub fn new(feed: impl Into<String>, data: Vec<u8>) -> Self {
+    pub fn new(feed: impl Into<String>, data: impl Into<Bytes>) -> Self {
         Self {
             tsc: now_tsc(),
             feed: feed.into(),
-            data,
+            data: data.into(),
         }
     }
 
@@ -30,7 +31,7 @@ impl Message {
         Self {
             tsc: now_tsc(),
             feed: feed.into(),
-            data: data.to_vec(),
+            data: Bytes::copy_from_slice(data),
         }
     }
 }

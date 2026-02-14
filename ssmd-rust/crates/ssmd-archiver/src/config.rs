@@ -42,8 +42,7 @@ pub struct RotationConfig {
 impl Config {
     pub fn load(path: &std::path::Path) -> Result<Self, crate::ArchiverError> {
         let content = std::fs::read_to_string(path)?;
-        serde_yaml::from_str(&content)
-            .map_err(|e| crate::ArchiverError::Config(e.to_string()))
+        serde_yaml::from_str(&content).map_err(|e| crate::ArchiverError::Config(e.to_string()))
     }
 }
 
@@ -56,15 +55,25 @@ impl RotationConfig {
         }
 
         let (num_str, unit) = s.split_at(s.len() - 1);
-        let num: u64 = num_str.parse()
+        let num: u64 = num_str
+            .parse()
             .map_err(|_| crate::ArchiverError::Config(format!("Invalid interval: {}", s)))?;
+
+        if num == 0 {
+            return Err(crate::ArchiverError::Config(
+                "Rotation interval must be greater than zero".to_string(),
+            ));
+        }
 
         match unit {
             "s" => Ok(Duration::from_secs(num)),
             "m" => Ok(Duration::from_secs(num * 60)),
             "h" => Ok(Duration::from_secs(num * 60 * 60)),
             "d" => Ok(Duration::from_secs(num * 60 * 60 * 24)),
-            _ => Err(crate::ArchiverError::Config(format!("Unknown unit: {}", unit))),
+            _ => Err(crate::ArchiverError::Config(format!(
+                "Unknown unit: {}",
+                unit
+            ))),
         }
     }
 }
@@ -106,14 +115,37 @@ rotation:
 
     #[test]
     fn test_parse_interval() {
-        let config = RotationConfig { interval: "15m".to_string() };
-        assert_eq!(config.parse_interval().unwrap(), Duration::from_secs(15 * 60));
+        let config = RotationConfig {
+            interval: "15m".to_string(),
+        };
+        assert_eq!(
+            config.parse_interval().unwrap(),
+            Duration::from_secs(15 * 60)
+        );
 
-        let config = RotationConfig { interval: "1h".to_string() };
-        assert_eq!(config.parse_interval().unwrap(), Duration::from_secs(60 * 60));
+        let config = RotationConfig {
+            interval: "1h".to_string(),
+        };
+        assert_eq!(
+            config.parse_interval().unwrap(),
+            Duration::from_secs(60 * 60)
+        );
 
-        let config = RotationConfig { interval: "1d".to_string() };
-        assert_eq!(config.parse_interval().unwrap(), Duration::from_secs(24 * 60 * 60));
+        let config = RotationConfig {
+            interval: "1d".to_string(),
+        };
+        assert_eq!(
+            config.parse_interval().unwrap(),
+            Duration::from_secs(24 * 60 * 60)
+        );
+    }
+
+    #[test]
+    fn test_parse_interval_rejects_zero() {
+        let config = RotationConfig {
+            interval: "0m".to_string(),
+        };
+        assert!(config.parse_interval().is_err());
     }
 
     #[test]

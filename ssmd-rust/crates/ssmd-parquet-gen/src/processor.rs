@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
+use std::io::{BufRead, BufReader};
 use anyhow::Result;
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
@@ -14,6 +14,28 @@ use tracing::{info, warn};
 use ssmd_schemas::{detect_message_type, MessageSchema, SchemaRegistry};
 
 use crate::gcs::GcsClient;
+
+fn for_each_gzip_line<F>(compressed: &[u8], mut on_line: F) -> std::io::Result<()>
+where
+    F: FnMut(&str),
+{
+    let decoder = GzDecoder::new(compressed);
+    let mut reader = BufReader::new(decoder);
+    let mut line_buf = String::new();
+
+    loop {
+        line_buf.clear();
+        let bytes_read = reader.read_line(&mut line_buf)?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        let line = line_buf.trim_end_matches(['\n', '\r']);
+        on_line(line);
+    }
+
+    Ok(())
+}
 
 /// Stats for a single hour's processing
 #[derive(Debug, Default)]
@@ -54,21 +76,7 @@ pub async fn process_date(
     info!(count = files.len(), "Found JSONL.gz files");
 
     // Group files by hour (extract HHMM from filename like "1415.jsonl.gz")
-    let mut by_hour: HashMap<String, Vec<String>> = HashMap::new();
-    for file_path in &files {
-        let filename = file_path.rsplit('/').next().unwrap_or(file_path);
-        // Filename format: HHMM.jsonl.gz (e.g., "1415.jsonl.gz")
-        if let Some(hhmm) = filename.strip_suffix(".jsonl.gz") {
-            // Extract just the hour part (HH)
-            if hhmm.len() >= 2 {
-                let hour_key = &hhmm[..2];
-                by_hour
-                    .entry(hour_key.to_string())
-                    .or_default()
-                    .push(file_path.clone());
-            }
-        }
-    }
+    let by_hour = group_files_by_hour(&files);
 
     let mut hours: Vec<String> = by_hour.keys().cloned().collect();
     hours.sort();
@@ -89,11 +97,10 @@ pub async fn process_date(
 
     for hour_key in &hours {
         let hour_files = &by_hour[hour_key];
-        let hour_num: u32 = hour_key.parse().unwrap_or(0);
-        let hour_ts = date
-            .and_hms_opt(hour_num, 0, 0)
-            .map(|dt| dt.and_utc())
-            .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap().and_utc());
+        let Some(hour_ts) = parse_hour_timestamp(date, hour_key) else {
+            warn!(hour = %hour_key, "Invalid hour key, skipping hour group");
+            continue;
+        };
 
         let stats = process_hour(
             gcs,
@@ -134,7 +141,7 @@ async fn process_hour(
 
     // Collect all messages from all files in this hour
     let mut messages_by_type: HashMap<String, Vec<(Vec<u8>, u64, i64)>> = HashMap::new();
-    let mut dedup_set: HashSet<u64> = HashSet::new();
+    let mut dedup_by_type: HashMap<String, HashSet<u64>> = HashMap::new();
     let mut line_counter: u64 = 0;
     let received_at_micros = hour_ts.timestamp_micros();
 
@@ -150,16 +157,10 @@ async fn process_hour(
 
         stats.files_read += 1;
 
-        let mut decoder = GzDecoder::new(&compressed[..]);
-        let mut content = String::new();
-        if let Err(e) = decoder.read_to_string(&mut content) {
-            warn!(file = %file_path, error = %e, "Failed to decompress, skipping");
-            continue;
-        }
+        let line_result = for_each_gzip_line(&compressed, |line| {
 
-        for line in content.lines() {
             if line.trim().is_empty() {
-                continue;
+                return;
             }
 
             let json: serde_json::Value = match serde_json::from_str(line) {
@@ -167,7 +168,7 @@ async fn process_hour(
                 Err(e) => {
                     warn!(error = %e, "Failed to parse JSON line, skipping");
                     stats.lines_skipped += 1;
-                    continue;
+                    return;
                 }
             };
 
@@ -175,7 +176,7 @@ async fn process_hour(
                 Some(t) => t,
                 None => {
                     stats.lines_skipped += 1;
-                    continue;
+                    return;
                 }
             };
 
@@ -184,15 +185,19 @@ async fn process_hour(
                 Some(schema) => schema.dedup_key(&json),
                 None => {
                     // No schema registered for this type — skip silently
-                    continue;
+                    return;
                 }
             };
 
-            // Dedup check
+            // Dedup check (scoped by message type to avoid cross-type key collisions)
             if let Some(key) = dedup_key {
-                if !dedup_set.insert(key) {
+                let per_type_dedup = dedup_by_type
+                    .entry(msg_type.clone())
+                    .or_default();
+
+                if !per_type_dedup.insert(key) {
                     stats.dedup_count += 1;
-                    continue;
+                    return;
                 }
             }
 
@@ -203,6 +208,10 @@ async fn process_hour(
                 .entry(msg_type)
                 .or_default()
                 .push((line.as_bytes().to_vec(), line_counter, received_at_micros));
+        });
+
+        if let Err(e) = line_result {
+            warn!(file = %file_path, error = %e, "Failed to read decompressed line, skipping file");
         }
     }
 
@@ -275,6 +284,98 @@ async fn process_hour(
     );
 
     Ok(stats)
+}
+
+fn group_files_by_hour(files: &[String]) -> HashMap<String, Vec<String>> {
+    let mut by_hour: HashMap<String, Vec<String>> = HashMap::new();
+
+    for file_path in files {
+        let filename = file_path.rsplit('/').next().unwrap_or(file_path);
+        if let Some(hhmm) = filename.strip_suffix(".jsonl.gz") {
+            if hhmm.len() >= 2 {
+                let hour_key = &hhmm[..2];
+                if let Ok(hour) = hour_key.parse::<u32>() {
+                    if hour < 24 {
+                        by_hour
+                            .entry(hour_key.to_string())
+                            .or_default()
+                            .push(file_path.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    by_hour
+}
+
+fn parse_hour_timestamp(date: &NaiveDate, hour_key: &str) -> Option<DateTime<Utc>> {
+    let hour = hour_key.parse::<u32>().ok()?;
+    if hour >= 24 {
+        return None;
+    }
+    date.and_hms_opt(hour, 0, 0).map(|dt| dt.and_utc())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{group_files_by_hour, parse_hour_timestamp};
+    use chrono::NaiveDate;
+    use flate2::{write::GzEncoder, Compression};
+    use std::io::Write;
+
+    use super::for_each_gzip_line;
+
+    #[test]
+    fn test_group_files_by_hour_skips_invalid_hours() {
+        let files = vec![
+            "x/feed/stream/2026-02-14/0015.jsonl.gz".to_string(),
+            "x/feed/stream/2026-02-14/2360.jsonl.gz".to_string(),
+            "x/feed/stream/2026-02-14/2415.jsonl.gz".to_string(),
+            "x/feed/stream/2026-02-14/ab15.jsonl.gz".to_string(),
+            "x/feed/stream/2026-02-14/0015-01.jsonl.gz".to_string(),
+        ];
+
+        let grouped = group_files_by_hour(&files);
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped.get("00").map(Vec::len), Some(2));
+        assert_eq!(grouped.get("23").map(Vec::len), Some(1));
+        assert!(grouped.get("24").is_none());
+    }
+
+    #[test]
+    fn test_parse_hour_timestamp_bounds() {
+        let date = NaiveDate::from_ymd_opt(2026, 2, 14).unwrap();
+
+        assert!(parse_hour_timestamp(&date, "00").is_some());
+        assert!(parse_hour_timestamp(&date, "23").is_some());
+        assert!(parse_hour_timestamp(&date, "24").is_none());
+        assert!(parse_hour_timestamp(&date, "xx").is_none());
+    }
+
+    #[test]
+    fn test_streaming_reader_handles_large_line_count() {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        for _ in 0..10_000 {
+            encoder
+                .write_all(br#"{"type":"ticker","msg":{"market_ticker":"KXBTC"}}"#)
+                .unwrap();
+            encoder
+                .write_all(b"\n")
+                .unwrap();
+        }
+        let compressed = encoder.finish().unwrap();
+
+        let mut non_empty_lines = 0usize;
+        for_each_gzip_line(&compressed, |line| {
+            if !line.is_empty() {
+                non_empty_lines += 1;
+            }
+        })
+        .unwrap();
+
+        assert_eq!(non_empty_lines, 10_000);
+    }
 }
 
 /// Write a RecordBatch to Parquet bytes in memory

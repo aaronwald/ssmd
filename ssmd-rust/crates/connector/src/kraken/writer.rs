@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use tracing::trace;
 
 use ssmd_middleware::{sanitize_subject_token, SubjectBuilder, Transport};
@@ -105,7 +104,7 @@ impl Writer for KrakenNatsWriter {
 
         // Publish raw bytes - no transformation
         self.transport
-            .publish(&subject, Bytes::from(msg.data.clone()))
+            .publish(&subject, msg.data.clone())
             .await
             .map_err(|e| WriterError::WriteFailed(format!("NATS publish failed: {}", e)))?;
 

@@ -275,7 +275,13 @@ async fn run_kraken_connector(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Parse symbols from environment or use defaults
     let symbols = std::env::var("KRAKEN_SYMBOLS")
-        .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
+        .map(|s| {
+            s.split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
         .unwrap_or_else(|_| vec!["BTC/USD".to_string(), "ETH/USD".to_string()]);
 
     // Extract WebSocket URL from feed config (overrides hardcoded constants)
@@ -308,7 +314,13 @@ async fn run_kraken_futures_connector(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Parse product IDs from environment or use defaults
     let product_ids = std::env::var("KRAKEN_FUTURES_SYMBOLS")
-        .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
+        .map(|s| {
+            s.split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
         .unwrap_or_else(|_| vec![
             "PF_XBTUSD".to_string(),
             "PF_ETHUSD".to_string(),
@@ -374,7 +386,13 @@ async fn run_polymarket_connector(
     // Check for static token IDs from environment (for testing/manual override)
     let static_tokens: Option<Vec<String>> = std::env::var("POLYMARKET_TOKEN_IDS")
         .ok()
-        .map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
+        .map(|s| {
+            s.split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        });
 
     // Extract WebSocket URL from feed config (overrides hardcoded constants)
     let ws_url = feed.get_latest_version().map(|v| v.endpoint.clone());

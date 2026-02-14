@@ -4,6 +4,73 @@
 //! exist before writing. Missing fields are logged as warnings but data
 //! is still written (let DQ catch it downstream).
 
+use serde::Deserialize;
+
+/// Manifest fields extracted from a message without a full JSON tree parse.
+pub struct ManifestFields {
+    pub msg_type: Option<String>,
+    pub ticker: Option<String>,
+}
+
+// Per-feed minimal deserialize targets. serde skips unknown fields by default,
+// so only the named fields are materialized — no heap tree for the rest.
+
+#[derive(Deserialize)]
+struct KalshiEnvelope<'a> {
+    #[serde(rename = "type")]
+    msg_type: Option<&'a str>,
+    msg: Option<KalshiMsg<'a>>,
+}
+
+#[derive(Deserialize)]
+struct KalshiMsg<'a> {
+    market_ticker: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct PolymarketEnvelope<'a> {
+    event_type: Option<&'a str>,
+    market: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct KrakenFuturesEnvelope<'a> {
+    feed: Option<&'a str>,
+    product_id: Option<&'a str>,
+}
+
+/// Extract manifest-relevant fields using minimal serde structs.
+/// Returns None only on parse failure (malformed JSON).
+pub fn extract_manifest_fields(feed: &str, data: &[u8]) -> Option<ManifestFields> {
+    match feed {
+        "kalshi" => {
+            let env: KalshiEnvelope = serde_json::from_slice(data).ok()?;
+            Some(ManifestFields {
+                msg_type: env.msg_type.map(String::from),
+                ticker: env.msg.and_then(|m| m.market_ticker.map(String::from)),
+            })
+        }
+        "polymarket" => {
+            let env: PolymarketEnvelope = serde_json::from_slice(data).ok()?;
+            Some(ManifestFields {
+                msg_type: env.event_type.map(String::from),
+                ticker: env.market.map(String::from),
+            })
+        }
+        "kraken-futures" => {
+            let env: KrakenFuturesEnvelope = serde_json::from_slice(data).ok()?;
+            Some(ManifestFields {
+                msg_type: env.feed.map(String::from),
+                ticker: env.product_id.map(String::from),
+            })
+        }
+        _ => Some(ManifestFields {
+            msg_type: None,
+            ticker: None,
+        }),
+    }
+}
+
 /// Result of validating a single message.
 pub struct ValidationResult {
     pub message_type: Option<String>,
@@ -579,5 +646,54 @@ mod tests {
         let result = v.validate(&json);
         assert!(result.is_valid());
         assert!(result.message_type.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_manifest_fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_kalshi_fields() {
+        let data = br#"{"type":"trade","sid":1,"msg":{"market_ticker":"KXBTC","yes_price":55}}"#;
+        let f = extract_manifest_fields("kalshi", data).unwrap();
+        assert_eq!(f.msg_type.as_deref(), Some("trade"));
+        assert_eq!(f.ticker.as_deref(), Some("KXBTC"));
+    }
+
+    #[test]
+    fn test_extract_kalshi_no_msg() {
+        let data = br#"{"type":"subscribed","sid":1}"#;
+        let f = extract_manifest_fields("kalshi", data).unwrap();
+        assert_eq!(f.msg_type.as_deref(), Some("subscribed"));
+        assert!(f.ticker.is_none());
+    }
+
+    #[test]
+    fn test_extract_polymarket_fields() {
+        let data = br#"{"event_type":"book","market":"0xabc","asset_id":"123","buys":[]}"#;
+        let f = extract_manifest_fields("polymarket", data).unwrap();
+        assert_eq!(f.msg_type.as_deref(), Some("book"));
+        assert_eq!(f.ticker.as_deref(), Some("0xabc"));
+    }
+
+    #[test]
+    fn test_extract_kraken_futures_fields() {
+        let data = br#"{"feed":"ticker","product_id":"PF_XBTUSD","bid":65360.0}"#;
+        let f = extract_manifest_fields("kraken-futures", data).unwrap();
+        assert_eq!(f.msg_type.as_deref(), Some("ticker"));
+        assert_eq!(f.ticker.as_deref(), Some("PF_XBTUSD"));
+    }
+
+    #[test]
+    fn test_extract_returns_none_on_invalid_json() {
+        assert!(extract_manifest_fields("kalshi", b"not json").is_none());
+    }
+
+    #[test]
+    fn test_extract_unknown_feed() {
+        let data = br#"{"foo":"bar"}"#;
+        let f = extract_manifest_fields("unknown", data).unwrap();
+        assert!(f.msg_type.is_none());
+        assert!(f.ticker.is_none());
     }
 }

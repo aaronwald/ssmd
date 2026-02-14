@@ -12,10 +12,18 @@ use crate::manifest::FileEntry;
 /// Trait for archive output formats.
 pub trait ArchiveOutput: Send {
     /// Write a message to the archive. Returns file entries from any rotated files.
-    fn write(&mut self, data: &[u8], seq: u64, now: DateTime<Utc>) -> Result<Vec<FileEntry>, ArchiverError>;
+    fn write(
+        &mut self,
+        data: &[u8],
+        seq: u64,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<FileEntry>, ArchiverError>;
 
     /// Close the writer and flush all remaining data. Returns file entries.
     fn close(&mut self) -> Result<Vec<FileEntry>, ArchiverError>;
+
+    /// Flush buffered archive data to disk for durability before acking messages.
+    fn flush(&mut self) -> Result<(), ArchiverError>;
 }
 
 /// Writes JSONL.gz files with rotation.
@@ -39,7 +47,12 @@ struct CurrentFile {
 }
 
 impl ArchiveWriter {
-    pub fn new(base_path: PathBuf, feed: String, stream_name: String, rotation_minutes: u32) -> Self {
+    pub fn new(
+        base_path: PathBuf,
+        feed: String,
+        stream_name: String,
+        rotation_minutes: u32,
+    ) -> Self {
         Self {
             base_path,
             feed,
@@ -72,12 +85,22 @@ impl ArchiveWriter {
         let time_str = now.format("%H%M").to_string();
 
         // Path: {base_path}/{feed}/{stream_name}/{date}/
-        let dir = self.base_path.join(&self.feed).join(&self.stream_name).join(&date_str);
+        let dir = self
+            .base_path
+            .join(&self.feed)
+            .join(&self.stream_name)
+            .join(&date_str);
         fs::create_dir_all(&dir)?;
 
-        let filename = format!("{}.jsonl.gz", time_str);
-        let tmp_filename = format!("{}.tmp", filename);
-        let path = dir.join(&tmp_filename);
+        let mut filename = format!("{}.jsonl.gz", time_str);
+        let mut path = dir.join(format!("{}.tmp", filename));
+        let mut suffix: u32 = 1;
+
+        while path.exists() || dir.join(&filename).exists() {
+            filename = format!("{}-{:02}.jsonl.gz", time_str, suffix);
+            path = dir.join(format!("{}.tmp", filename));
+            suffix += 1;
+        }
 
         let file = File::create(&path)?;
         let encoder = GzEncoder::new(file, Compression::default());
@@ -120,7 +143,12 @@ impl ArchiveWriter {
 }
 
 impl ArchiveOutput for ArchiveWriter {
-    fn write(&mut self, data: &[u8], seq: u64, now: DateTime<Utc>) -> Result<Vec<FileEntry>, ArchiverError> {
+    fn write(
+        &mut self,
+        data: &[u8],
+        seq: u64,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<FileEntry>, ArchiverError> {
         // Check if we need to rotate
         let rotated = if self.should_rotate(now) {
             self.rotate(now)?
@@ -133,7 +161,11 @@ impl ArchiveOutput for ArchiveWriter {
             self.open_new_file(now)?;
         }
 
-        let file = self.current_file.as_mut().unwrap();
+        let Some(file) = self.current_file.as_mut() else {
+            return Err(ArchiverError::Io(std::io::Error::other(
+                "archive writer missing active file",
+            )));
+        };
 
         // Track sequence
         if file.first_seq.is_none() {
@@ -157,6 +189,18 @@ impl ArchiveOutput for ArchiveWriter {
         }
         Ok(Vec::new())
     }
+
+    fn flush(&mut self) -> Result<(), ArchiverError> {
+        let Some(file) = self.current_file.as_mut() else {
+            return Ok(());
+        };
+
+        // Flush gzip internal buffer to the OS page cache. We intentionally
+        // skip fdatasync here — it runs every 100ms and the cost would hurt
+        // throughput. Data reaches disk on rotation (finish_file) or OS writeback.
+        file.encoder.flush()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -169,11 +213,22 @@ mod tests {
     #[test]
     fn test_write_records() {
         let tmp = TempDir::new().unwrap();
-        let mut writer = ArchiveWriter::new(tmp.path().to_path_buf(), "kalshi".to_string(), "politics".to_string(), 15);
+        let mut writer = ArchiveWriter::new(
+            tmp.path().to_path_buf(),
+            "kalshi".to_string(),
+            "politics".to_string(),
+            15,
+        );
 
         let now = Utc::now();
-        assert!(writer.write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now).unwrap().is_empty());
-        assert!(writer.write(br#"{"type":"trade","ticker":"KXBTC"}"#, 2, now).unwrap().is_empty());
+        assert!(writer
+            .write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now)
+            .unwrap()
+            .is_empty());
+        assert!(writer
+            .write(br#"{"type":"trade","ticker":"KXBTC"}"#, 2, now)
+            .unwrap()
+            .is_empty());
 
         let entries = writer.close().unwrap();
         assert_eq!(entries.len(), 1);
@@ -205,10 +260,17 @@ mod tests {
     #[test]
     fn test_tmp_file_during_write() {
         let tmp = TempDir::new().unwrap();
-        let mut writer = ArchiveWriter::new(tmp.path().to_path_buf(), "kalshi".to_string(), "politics".to_string(), 15);
+        let mut writer = ArchiveWriter::new(
+            tmp.path().to_path_buf(),
+            "kalshi".to_string(),
+            "politics".to_string(),
+            15,
+        );
 
         let now = Utc::now();
-        writer.write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now).unwrap();
+        writer
+            .write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now)
+            .unwrap();
 
         // During active write, .tmp should exist and final should not
         let date_str = now.format("%Y-%m-%d").to_string();
@@ -217,13 +279,69 @@ mod tests {
         let tmp_path = dir.join(format!("{}.jsonl.gz.tmp", time_str));
         let final_path = dir.join(format!("{}.jsonl.gz", time_str));
 
-        assert!(tmp_path.exists(), ".tmp file should exist during active write");
-        assert!(!final_path.exists(), "final file should not exist during active write");
+        assert!(
+            tmp_path.exists(),
+            ".tmp file should exist during active write"
+        );
+        assert!(
+            !final_path.exists(),
+            "final file should not exist during active write"
+        );
 
         // After close, .tmp gone and final exists
         let entries = writer.close().unwrap();
         assert_eq!(entries.len(), 1);
         assert!(!tmp_path.exists(), ".tmp file should not exist after close");
         assert!(final_path.exists(), "final file should exist after close");
+    }
+
+    #[test]
+    fn test_filename_collision_uses_suffix() {
+        let tmp = TempDir::new().unwrap();
+        let mut writer = ArchiveWriter::new(
+            tmp.path().to_path_buf(),
+            "kalshi".to_string(),
+            "politics".to_string(),
+            15,
+        );
+
+        let now = Utc::now();
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let time_str = now.format("%H%M").to_string();
+        let dir = tmp.path().join("kalshi").join("politics").join(&date_str);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let existing_final = dir.join(format!("{}.jsonl.gz", time_str));
+        std::fs::write(&existing_final, b"existing").unwrap();
+
+        writer
+            .write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now)
+            .unwrap();
+        let entries = writer.close().unwrap();
+        assert_eq!(entries.len(), 1);
+
+        assert_eq!(entries[0].name, format!("{}-01.jsonl.gz", time_str));
+        assert!(dir.join(&entries[0].name).exists());
+    }
+
+    #[test]
+    fn test_flush_succeeds_with_open_file() {
+        let tmp = TempDir::new().unwrap();
+        let mut writer = ArchiveWriter::new(
+            tmp.path().to_path_buf(),
+            "kalshi".to_string(),
+            "politics".to_string(),
+            15,
+        );
+
+        let now = Utc::now();
+        writer
+            .write(br#"{"type":"trade","ticker":"INXD"}"#, 1, now)
+            .unwrap();
+
+        writer.flush().unwrap();
+        let entries = writer.close().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].records, 1);
     }
 }

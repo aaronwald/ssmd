@@ -56,6 +56,29 @@ impl PolymarketNatsWriter {
     pub fn message_count(&self) -> u64 {
         self.message_count
     }
+
+    fn subject_from_element(&self, element: &serde_json::Value) -> Option<String> {
+        let market = element
+            .get("market")
+            .and_then(|v| v.as_str())
+            .map(sanitize_subject_token)?;
+
+        match element.get("event_type").and_then(|v| v.as_str()) {
+            Some("last_trade_price") => Some(self.subjects.json_trade(&market)),
+            Some("price_change") | Some("best_bid_ask") => Some(self.subjects.json_ticker(&market)),
+            Some("book") => Some(self.subjects.json_orderbook(&market)),
+            Some("new_market") | Some("market_resolved") => Some(self.subjects.json_lifecycle(&market)),
+            Some("tick_size_change") => None,
+            Some(_) => None,
+            None => {
+                if element.get("bids").is_some() || element.get("asks").is_some() {
+                    Some(self.subjects.json_orderbook(&market))
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -69,7 +92,44 @@ impl Writer for PolymarketNatsWriter {
         };
 
         // Skip PONG responses
-        if msg.data == b"PONG" {
+        if msg.data.as_ref() == b"PONG" {
+            return Ok(());
+        }
+
+        // Fast path: most payloads are single typed JSON objects. Route and publish
+        // raw bytes directly to avoid JSON re-serialization and extra allocation.
+        if let Ok(ws_msg) = serde_json::from_slice::<PolymarketWsMessage>(&msg.data) {
+            let condition_id = sanitize_subject_token(ws_msg.condition_id());
+
+            let subject = match ws_msg {
+                PolymarketWsMessage::LastTradePrice { .. } => {
+                    self.subjects.json_trade(&condition_id)
+                }
+                PolymarketWsMessage::PriceChange { .. } => {
+                    self.subjects.json_ticker(&condition_id)
+                }
+                PolymarketWsMessage::Book { .. } => {
+                    self.subjects.json_orderbook(&condition_id)
+                }
+                PolymarketWsMessage::BestBidAsk { .. } => {
+                    self.subjects.json_ticker(&condition_id)
+                }
+                PolymarketWsMessage::NewMarket { .. }
+                | PolymarketWsMessage::MarketResolved { .. } => {
+                    self.subjects.json_lifecycle(&condition_id)
+                }
+                PolymarketWsMessage::TickSizeChange { .. } => {
+                    trace!(market = %condition_id, "Tick size change event, skipping publish");
+                    return Ok(());
+                }
+            };
+
+            self.transport
+                .publish(&subject, msg.data.clone())
+                .await
+                .map_err(|e| WriterError::WriteFailed(format!("NATS publish failed: {}", e)))?;
+
+            self.message_count += 1;
             return Ok(());
         }
 
@@ -91,59 +151,14 @@ impl Writer for PolymarketNatsWriter {
             }
         };
 
-        for element in &elements {
-            // Try to parse as typed message. Book snapshots from the WS don't have
-            // event_type, so inject it if we detect bids/asks fields.
-            let ws_msg: PolymarketWsMessage = if element.get("event_type").is_some() {
-                serde_json::from_value(element.clone()).map_err(|e| {
-                    WriterError::WriteFailed(format!(
-                        "Failed to parse typed Polymarket message: {}",
-                        e
-                    ))
-                })?
-            } else if element.get("bids").is_some() || element.get("asks").is_some() {
-                // Book snapshot without event_type — inject it for serde dispatch
-                let mut obj = element.clone();
-                obj["event_type"] = serde_json::Value::String("book".to_string());
-                serde_json::from_value(obj).map_err(|e| {
-                    WriterError::WriteFailed(format!(
-                        "Failed to parse book snapshot: {}",
-                        e
-                    ))
-                })?
-            } else {
-                // Unknown message type without event_type — skip
-                trace!(preview = %element, "Skipping unknown Polymarket message without event_type");
+        for element in elements {
+            let Some(subject) = self.subject_from_element(&element) else {
+                trace!(preview = %element, "Skipping unsupported Polymarket element");
                 continue;
             };
 
-            let condition_id = sanitize_subject_token(ws_msg.condition_id());
-
-            let subject = match &ws_msg {
-                PolymarketWsMessage::LastTradePrice { .. } => {
-                    self.subjects.json_trade(&condition_id)
-                }
-                PolymarketWsMessage::PriceChange { .. } => {
-                    self.subjects.json_ticker(&condition_id)
-                }
-                PolymarketWsMessage::Book { .. } => {
-                    self.subjects.json_orderbook(&condition_id)
-                }
-                PolymarketWsMessage::BestBidAsk { .. } => {
-                    self.subjects.json_ticker(&condition_id)
-                }
-                PolymarketWsMessage::NewMarket { .. }
-                | PolymarketWsMessage::MarketResolved { .. } => {
-                    self.subjects.json_lifecycle(&condition_id)
-                }
-                PolymarketWsMessage::TickSizeChange { .. } => {
-                    trace!(market = %condition_id, "Tick size change event, skipping publish");
-                    continue;
-                }
-            };
-
             // Publish individual element as raw JSON bytes
-            let element_bytes = serde_json::to_vec(element)
+            let element_bytes = serde_json::to_vec(&element)
                 .map_err(|e| WriterError::WriteFailed(format!("JSON serialize failed: {}", e)))?;
             self.transport
                 .publish(&subject, Bytes::from(element_bytes))

@@ -7,7 +7,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use tracing::{trace, warn};
 
 use ssmd_middleware::{SubjectBuilder, Transport};
@@ -180,7 +179,7 @@ impl Writer for NatsWriter {
 
         // Publish raw bytes - no transformation
         self.transport
-            .publish(&subject, Bytes::from(msg.data.clone()))
+            .publish(&subject, msg.data.clone())
             .await
             .map_err(|e| WriterError::WriteFailed(format!("NATS publish failed: {}", e)))?;
 
