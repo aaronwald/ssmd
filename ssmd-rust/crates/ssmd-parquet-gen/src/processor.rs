@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use anyhow::Result;
 use arrow::record_batch::RecordBatch;
@@ -43,7 +43,6 @@ pub struct HourStats {
     pub files_read: usize,
     pub lines_parsed: usize,
     pub lines_skipped: usize,
-    pub dedup_count: u64,
     pub parquet_files_written: usize,
     pub records_by_type: HashMap<String, usize>,
     pub bytes_written: usize,
@@ -141,7 +140,6 @@ async fn process_hour(
 
     // Collect all messages from all files in this hour
     let mut messages_by_type: HashMap<String, Vec<(Vec<u8>, u64, i64)>> = HashMap::new();
-    let mut dedup_by_type: HashMap<String, HashSet<u64>> = HashMap::new();
     let mut line_counter: u64 = 0;
     let received_at_micros = hour_ts.timestamp_micros();
 
@@ -181,24 +179,9 @@ async fn process_hour(
             };
 
             // Check if we have a schema for this type
-            let dedup_key = match registry.get(&msg_type) {
-                Some(schema) => schema.dedup_key(&json),
-                None => {
-                    // No schema registered for this type — skip silently
-                    return;
-                }
-            };
-
-            // Dedup check (scoped by message type to avoid cross-type key collisions)
-            if let Some(key) = dedup_key {
-                let per_type_dedup = dedup_by_type
-                    .entry(msg_type.clone())
-                    .or_default();
-
-                if !per_type_dedup.insert(key) {
-                    stats.dedup_count += 1;
-                    return;
-                }
+            if registry.get(&msg_type).is_none() {
+                // No schema registered for this type — skip silently
+                return;
             }
 
             line_counter += 1;
@@ -278,7 +261,6 @@ async fn process_hour(
         files_read = stats.files_read,
         lines_parsed = stats.lines_parsed,
         lines_skipped = stats.lines_skipped,
-        dedup_count = stats.dedup_count,
         parquet_files = stats.parquet_files_written,
         "Hour processing complete"
     );

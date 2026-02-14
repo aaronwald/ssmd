@@ -82,13 +82,11 @@ async fn main() -> Result<()> {
     let total_records: usize = stats.iter().flat_map(|s| s.records_by_type.values()).sum();
     let total_files: usize = stats.iter().map(|s| s.parquet_files_written).sum();
     let total_bytes: usize = stats.iter().map(|s| s.bytes_written).sum();
-    let total_dedup: u64 = stats.iter().map(|s| s.dedup_count).sum();
 
     info!(
         total_records = total_records,
         total_parquet_files = total_files,
         total_bytes = total_bytes,
-        total_dedup = total_dedup,
         "Processing complete"
     );
 

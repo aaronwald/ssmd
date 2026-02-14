@@ -6,7 +6,7 @@ use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use tracing::error;
 
-use crate::{hash_dedup_key, MessageSchema};
+use crate::MessageSchema;
 
 fn ts_type() -> DataType {
     DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))
@@ -147,17 +147,6 @@ impl MessageSchema for KrakenTickerSchema {
                 Arc::new(received_at.finish().with_timezone("UTC")),
             ],
         )
-    }
-
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
-        let items = get_data_array(json)?;
-        let item = items.first()?;
-        let sym = item.get("symbol")?.as_str()?;
-        let bid = format!("{}", item.get("bid")?.as_f64()?);
-        let ask = format!("{}", item.get("ask")?.as_f64()?);
-        let last = format!("{}", item.get("last")?.as_f64()?);
-        let vol = format!("{}", item.get("volume")?.as_f64()?);
-        Some(hash_dedup_key(&[sym, &bid, &ask, &last, &vol]))
     }
 }
 
@@ -310,16 +299,6 @@ impl MessageSchema for KrakenTradeSchema {
             ],
         )
     }
-
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
-        let items = get_data_array(json)?;
-        let item = items.first()?;
-        let sym = item.get("symbol")?.as_str()?;
-        let tid = item
-            .get("trade_id")
-            .and_then(|v| v.as_str().map(String::from).or_else(|| v.as_u64().map(|n| n.to_string())))?;
-        Some(hash_dedup_key(&[sym, &tid]))
-    }
 }
 
 #[cfg(test)]
@@ -461,35 +440,6 @@ mod tests {
             .parse_batch(&[(json.to_vec(), 1, 1000)])
             .unwrap();
         assert_eq!(batch.num_rows(), 0);
-    }
-
-    #[test]
-    fn test_dedup_key_kraken_ticker() {
-        let schema = KrakenTickerSchema;
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"channel":"ticker","type":"update","data":[{"symbol":"BTC/USD","bid":97000.0,"ask":97000.1,"last":97000.0,"volume":1234.0}]}"#,
-        )
-        .unwrap();
-        let key = schema.dedup_key(&json);
-        assert!(key.is_some());
-    }
-
-    #[test]
-    fn test_dedup_key_kraken_trade() {
-        let schema = KrakenTradeSchema;
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","trade_id":"12345"}]}"#,
-        )
-        .unwrap();
-        let key = schema.dedup_key(&json);
-        assert!(key.is_some());
-
-        // Different trade_id → different key
-        let json2: serde_json::Value = serde_json::from_str(
-            r#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","trade_id":"12346"}]}"#,
-        )
-        .unwrap();
-        assert_ne!(schema.dedup_key(&json), schema.dedup_key(&json2));
     }
 
     #[test]

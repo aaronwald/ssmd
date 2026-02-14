@@ -6,7 +6,7 @@ use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use tracing::error;
 
-use crate::{hash_dedup_key, MessageSchema};
+use crate::MessageSchema;
 
 fn ts_type() -> DataType {
     DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))
@@ -136,16 +136,6 @@ impl MessageSchema for PolymarketBookSchema {
             ],
         )
     }
-
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
-        let aid = json.get("asset_id")?.as_str()?;
-        let ts = json
-            .get("timestamp")
-            .and_then(parse_timestamp_ms)
-            .map(|v| v.to_string())
-            .unwrap_or_default();
-        Some(hash_dedup_key(&[aid, &ts]))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -263,17 +253,6 @@ impl MessageSchema for PolymarketTradeSchema {
                 Arc::new(received_at.finish().with_timezone("UTC")),
             ],
         )
-    }
-
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
-        let aid = json.get("asset_id")?.as_str()?;
-        let p = json.get("price")?.as_str().unwrap_or("");
-        let ts = json
-            .get("timestamp")
-            .and_then(parse_timestamp_ms)
-            .map(|v| v.to_string())
-            .unwrap_or_default();
-        Some(hash_dedup_key(&[aid, p, &ts]))
     }
 }
 
@@ -429,24 +408,6 @@ impl MessageSchema for PolymarketPriceChangeSchema {
             ],
         )
     }
-
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
-        // For price_change messages, dedup on the whole message using
-        // market + timestamp. Individual items are flattened during parse,
-        // but dedup operates on the source message level.
-        let mkt = json.get("market")?.as_str()?;
-        let ts = json
-            .get("timestamp")
-            .and_then(parse_timestamp_ms)
-            .map(|v| v.to_string())
-            .unwrap_or_default();
-        // Include first item's asset_id + hash for uniqueness when multiple
-        // price_change messages share the same market/timestamp
-        let first_item = json.get("price_changes").and_then(|v| v.as_array()).and_then(|a| a.first());
-        let first_aid = first_item.and_then(|i| i.get("asset_id")).and_then(|v| v.as_str()).unwrap_or("");
-        let first_hash = first_item.and_then(|i| i.get("hash")).and_then(|v| v.as_str()).unwrap_or("");
-        Some(hash_dedup_key(&[mkt, &ts, first_aid, first_hash]))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -553,16 +514,6 @@ impl MessageSchema for PolymarketBestBidAskSchema {
                 Arc::new(received_at.finish().with_timezone("UTC")),
             ],
         )
-    }
-
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
-        let aid = json.get("asset_id")?.as_str()?;
-        let ts = json
-            .get("timestamp")
-            .and_then(parse_timestamp_ms)
-            .map(|v| v.to_string())
-            .unwrap_or_default();
-        Some(hash_dedup_key(&[aid, &ts]))
     }
 }
 
@@ -738,35 +689,6 @@ mod tests {
             .parse_batch(&[(json.to_vec(), 1, 1000)])
             .unwrap();
         assert_eq!(batch.num_rows(), 0);
-    }
-
-    #[test]
-    fn test_dedup_key_book() {
-        let schema = PolymarketBookSchema;
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"event_type":"book","asset_id":"123","timestamp":"1706000000000"}"#,
-        )
-        .unwrap();
-        let key = schema.dedup_key(&json);
-        assert!(key.is_some());
-
-        // Different timestamp → different key
-        let json2: serde_json::Value = serde_json::from_str(
-            r#"{"event_type":"book","asset_id":"123","timestamp":"1706000001000"}"#,
-        )
-        .unwrap();
-        assert_ne!(schema.dedup_key(&json), schema.dedup_key(&json2));
-    }
-
-    #[test]
-    fn test_dedup_key_trade() {
-        let schema = PolymarketTradeSchema;
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"event_type":"last_trade_price","asset_id":"123","price":"0.55","timestamp":"1706000000000"}"#,
-        )
-        .unwrap();
-        let key = schema.dedup_key(&json);
-        assert!(key.is_some());
     }
 
     #[test]
@@ -1015,31 +937,6 @@ mod tests {
         assert_eq!(batch.num_columns(), 11);
     }
 
-    #[test]
-    fn test_dedup_key_price_change() {
-        let schema = PolymarketPriceChangeSchema;
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"event_type":"price_change","market":"0xabc","timestamp":"1706000000000","price_changes":[{"asset_id":"A","price":"0.55","size":"100","side":"BUY","hash":"h1"}]}"#,
-        )
-        .unwrap();
-        let key = schema.dedup_key(&json);
-        assert!(key.is_some());
-
-        // Different timestamp → different key
-        let json2: serde_json::Value = serde_json::from_str(
-            r#"{"event_type":"price_change","market":"0xabc","timestamp":"1706000001000","price_changes":[{"asset_id":"A","price":"0.55","size":"100","side":"BUY","hash":"h1"}]}"#,
-        )
-        .unwrap();
-        assert_ne!(schema.dedup_key(&json), schema.dedup_key(&json2));
-
-        // Same market/timestamp but different first item → different key
-        let json3: serde_json::Value = serde_json::from_str(
-            r#"{"event_type":"price_change","market":"0xabc","timestamp":"1706000000000","price_changes":[{"asset_id":"B","price":"0.55","size":"100","side":"BUY","hash":"h2"}]}"#,
-        )
-        .unwrap();
-        assert_ne!(schema.dedup_key(&json), schema.dedup_key(&json3));
-    }
-
     // -------------------------------------------------------------------
     // PolymarketBestBidAskSchema
     // -------------------------------------------------------------------
@@ -1155,24 +1052,6 @@ mod tests {
         let batch = schema.parse_batch(&[]).unwrap();
         assert_eq!(batch.num_rows(), 0);
         assert_eq!(batch.num_columns(), 8);
-    }
-
-    #[test]
-    fn test_dedup_key_best_bid_ask() {
-        let schema = PolymarketBestBidAskSchema;
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"event_type":"best_bid_ask","market":"0xabc","asset_id":"123","timestamp":"1706000000000"}"#,
-        )
-        .unwrap();
-        let key = schema.dedup_key(&json);
-        assert!(key.is_some());
-
-        // Different timestamp → different key
-        let json2: serde_json::Value = serde_json::from_str(
-            r#"{"event_type":"best_bid_ask","market":"0xabc","asset_id":"123","timestamp":"1706000001000"}"#,
-        )
-        .unwrap();
-        assert_ne!(schema.dedup_key(&json), schema.dedup_key(&json2));
     }
 
     #[test]

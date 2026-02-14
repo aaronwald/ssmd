@@ -6,7 +6,7 @@ use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use tracing::error;
 
-use crate::{hash_dedup_key, MessageSchema};
+use crate::MessageSchema;
 
 fn ts_type() -> DataType {
     DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))
@@ -135,13 +135,6 @@ impl MessageSchema for KalshiTickerSchema {
                 Arc::new(received_at.finish().with_timezone("UTC")),
             ],
         )
-    }
-
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
-        let msg = json.get("msg")?;
-        let ticker = msg.get("market_ticker")?.as_str()?;
-        let ts = msg.get("ts")?.as_i64()?.to_string();
-        Some(hash_dedup_key(&["ticker", ticker, &ts]))
     }
 }
 
@@ -301,12 +294,6 @@ impl MessageSchema for KalshiTradeSchema {
             ],
         )
     }
-
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
-        let msg = json.get("msg")?;
-        let trade_id = msg.get("trade_id")?.as_str()?;
-        Some(hash_dedup_key(&["trade", trade_id]))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -416,13 +403,6 @@ impl MessageSchema for KalshiLifecycleSchema {
                 Arc::new(received_at.finish().with_timezone("UTC")),
             ],
         )
-    }
-
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
-        let msg = json.get("msg")?;
-        let ticker = msg.get("market_ticker")?.as_str()?;
-        let et = msg.get("event_type")?.as_str()?;
-        Some(hash_dedup_key(&[ticker, et]))
     }
 }
 
@@ -788,32 +768,4 @@ mod tests {
         assert_eq!(batch.num_columns(), 12);
     }
 
-    #[test]
-    fn test_dedup_key_ticker() {
-        let schema = KalshiTickerSchema;
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"type":"ticker","msg":{"market_ticker":"KXBTC","ts":1707667200}}"#,
-        )
-        .unwrap();
-        let key = schema.dedup_key(&json);
-        assert!(key.is_some());
-
-        // Same input → same key
-        let key2 = schema.dedup_key(&json);
-        assert_eq!(key, key2);
-
-        // Different ts → different key
-        let json2: serde_json::Value = serde_json::from_str(
-            r#"{"type":"ticker","msg":{"market_ticker":"KXBTC","ts":1707667201}}"#,
-        )
-        .unwrap();
-        assert_ne!(schema.dedup_key(&json), schema.dedup_key(&json2));
-    }
-
-    #[test]
-    fn test_dedup_key_missing_fields() {
-        let schema = KalshiTickerSchema;
-        let json: serde_json::Value = serde_json::from_str(r#"{"type":"ticker"}"#).unwrap();
-        assert!(schema.dedup_key(&json).is_none());
-    }
 }

@@ -6,7 +6,7 @@ use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use tracing::error;
 
-use crate::{hash_dedup_key, MessageSchema};
+use crate::MessageSchema;
 
 fn ts_type() -> DataType {
     DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))
@@ -186,15 +186,6 @@ impl MessageSchema for KrakenFuturesTickerSchema {
             ],
         )
     }
-
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
-        let pid = json.get("product_id")?.as_str()?;
-        let bid = format!("{}", json.get("bid")?.as_f64()?);
-        let ask = format!("{}", json.get("ask")?.as_f64()?);
-        let last = format!("{}", json.get("last")?.as_f64()?);
-        let vol = format!("{}", json.get("volume")?.as_f64()?);
-        Some(hash_dedup_key(&[pid, &bid, &ask, &last, &vol]))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,11 +329,6 @@ impl MessageSchema for KrakenFuturesTradeSchema {
             ],
         )
     }
-
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64> {
-        let uid = json.get("uid")?.as_str()?;
-        Some(hash_dedup_key(&["trade", uid]))
-    }
 }
 
 #[cfg(test)]
@@ -405,32 +391,6 @@ mod tests {
 
         let ts = batch.column(7).as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
         assert_eq!(ts.value(0), 1770920339688 * 1000);
-    }
-
-    #[test]
-    fn test_dedup_key_futures_ticker() {
-        let schema = KrakenFuturesTickerSchema;
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"product_id":"PF_XBTUSD","bid":65360.0,"ask":65361.0,"last":65367.0,"volume":5826.47}"#,
-        ).unwrap();
-        let key = schema.dedup_key(&json);
-        assert!(key.is_some());
-    }
-
-    #[test]
-    fn test_dedup_key_futures_trade() {
-        let schema = KrakenFuturesTradeSchema;
-        let json1: serde_json::Value = serde_json::from_str(
-            r#"{"uid":"16dc1852-127b-40c9-acbb-5916ce98ee04"}"#,
-        ).unwrap();
-        let json2: serde_json::Value = serde_json::from_str(
-            r#"{"uid":"d57af348-e45f-4191-a15a-9946dbf1870b"}"#,
-        ).unwrap();
-        let key1 = schema.dedup_key(&json1);
-        let key2 = schema.dedup_key(&json2);
-        assert!(key1.is_some());
-        assert!(key2.is_some());
-        assert_ne!(key1, key2);
     }
 
     #[test]

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
@@ -28,10 +27,6 @@ pub trait MessageSchema: Send + Sync {
     /// Parse a batch of JSON messages into a RecordBatch.
     /// Each entry is (raw_json_bytes, nats_seq, received_at_micros).
     fn parse_batch(&self, messages: &[(Vec<u8>, u64, i64)]) -> Result<RecordBatch, ArrowError>;
-
-    /// Extract dedup key (hash of primary key fields) from JSON.
-    /// Returns None if message type doesn't match this schema.
-    fn dedup_key(&self, json: &serde_json::Value) -> Option<u64>;
 }
 
 /// Registry mapping (feed, detected_type) to the right schema.
@@ -141,15 +136,6 @@ pub fn detect_message_type(feed: &str, json: &serde_json::Value) -> Option<Strin
         }
         _ => None,
     }
-}
-
-/// Helper to compute a dedup hash from string-like components.
-pub fn hash_dedup_key(parts: &[&str]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for part in parts {
-        part.hash(&mut hasher);
-    }
-    hasher.finish()
 }
 
 #[cfg(test)]
@@ -327,16 +313,6 @@ mod tests {
         let (msg_type, schema) = reg.detect_and_get(&json).unwrap();
         assert_eq!(msg_type, "ticker");
         assert_eq!(schema.schema().fields().len(), 12);
-    }
-
-    #[test]
-    fn test_hash_dedup_key_stable() {
-        let h1 = hash_dedup_key(&["ticker", "KXBTC", "1707667200"]);
-        let h2 = hash_dedup_key(&["ticker", "KXBTC", "1707667200"]);
-        assert_eq!(h1, h2);
-
-        let h3 = hash_dedup_key(&["ticker", "KXBTC", "1707667201"]);
-        assert_ne!(h1, h3);
     }
 
     #[test]
