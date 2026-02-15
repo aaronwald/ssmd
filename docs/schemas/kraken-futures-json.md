@@ -5,6 +5,16 @@
 **Connector Version**: ssmd-connector v0.8.9+ (Rust)
 **Archiver Format**: Raw WebSocket JSON (no envelope wrapper)
 
+### Exchange Properties
+
+| Property | Value |
+|----------|-------|
+| **Sequenced** | Yes — `seq` on trade messages (per-product_id, monotonically increasing) |
+| **Gap detection** | Trade only, via `seq` column in parquet (per-product_id GROUP BY). Ticker has no sequence. |
+| **Identifier** | `product_id` — prefix-coded string (e.g. `PF_XBTUSD`, `PI_ETHUSD`) |
+| **Timestamps** | Epoch milliseconds (UTC) |
+| **Price units** | Decimal (e.g. `97000.5`) |
+
 ---
 
 ## Overview

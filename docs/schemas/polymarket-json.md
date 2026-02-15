@@ -11,6 +11,16 @@ relationship to secmaster tables.
 - Rust structs: `ssmd-rust/crates/connector/src/polymarket/messages.rs`
 - Polymarket CLOB docs: https://docs.polymarket.com/developers/CLOB/websocket/market-channel
 
+### Exchange Properties
+
+| Property | Value |
+|----------|-------|
+| **Sequenced** | **No** — Polymarket provides no sequence numbers on any message type |
+| **Gap detection** | Not possible at message level. DQ relies on time-slot coverage and manifest presence. |
+| **Identifier** | `asset_id` (token_id, large decimal integer) + `market` (condition_id, 0x hex hash) |
+| **Timestamps** | Milliseconds (string or integer, varies by message type) |
+| **Price units** | Decimal strings (e.g. `"0.55"`) — preserved as Utf8 in parquet |
+
 ---
 
 ## Table of Contents

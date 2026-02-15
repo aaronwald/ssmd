@@ -10,6 +10,16 @@ pipeline interprets each field.
 **Source of truth**: Kalshi AsyncAPI spec at `https://docs.kalshi.com/asyncapi.yaml`
 and our connector code at `ssmd-rust/crates/connector/src/kalshi/messages.rs`.
 
+### Exchange Properties
+
+| Property | Value |
+|----------|-------|
+| **Sequenced** | Partially — `seq` on trade and orderbook channels only (per-subscription scope). Ticker has `Clock` (global monotonic, not sequential). |
+| **Gap detection** | Trade only, via `exchange_seq` column in parquet (per-ticker GROUP BY). Ticker and lifecycle have no usable sequence. |
+| **Identifier** | `market_ticker` — human-readable string (e.g. `KXBTCD-26FEB07-T98000`) |
+| **Timestamps** | Unix seconds (UTC) |
+| **Price units** | Cents (0-99 for yes/no bid/ask) |
+
 ---
 
 ## Envelope Structure
