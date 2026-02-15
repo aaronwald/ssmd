@@ -536,7 +536,7 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 		},
 		Env: env,
 		Ports: []corev1.ContainerPort{
-			{Name: "health", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+			{Name: "metrics", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{
@@ -556,21 +556,21 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: "/health",
-					Port: intstr.FromString("health"),
+					Port: intstr.FromInt32(8080),
 				},
 			},
-			InitialDelaySeconds: 30,
-			PeriodSeconds:       10,
+			InitialDelaySeconds: 10,
+			PeriodSeconds:       30,
 		},
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/health",
-					Port: intstr.FromString("health"),
+					Path: "/ready",
+					Port: intstr.FromInt32(8080),
 				},
 			},
-			InitialDelaySeconds: 10,
-			PeriodSeconds:       5,
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       10,
 		},
 	}
 

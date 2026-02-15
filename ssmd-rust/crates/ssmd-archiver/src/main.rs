@@ -1,7 +1,9 @@
 //! ssmd-archiver binary entry point
 
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +19,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use ssmd_archiver::config::StreamConfig;
 use ssmd_archiver::manifest::{FileEntry, Gap};
 use ssmd_archiver::manifest_io::update_manifest;
+use ssmd_archiver::metrics::{ArchiverMetrics, StreamMetrics};
+use ssmd_archiver::server::{run_server, ServerState};
 use ssmd_archiver::subscriber::Subscriber;
 use ssmd_archiver::validation::{extract_manifest_fields, MessageValidator};
 use ssmd_archiver::writer::{ArchiveOutput, ArchiveWriter};
@@ -29,6 +33,10 @@ struct Args {
     /// Path to archiver configuration file
     #[arg(short, long)]
     config: PathBuf,
+
+    /// Address for health/metrics HTTP server
+    #[arg(long, default_value = "0.0.0.0:8080")]
+    health_addr: SocketAddr,
 }
 
 #[tokio::main]
@@ -66,6 +74,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base_path = Arc::new(config.storage.path.clone());
     let feed = Arc::new(config.storage.feed.clone());
     let rotation_interval = Arc::new(config.rotation.interval.clone());
+    let connected = Arc::new(AtomicBool::new(false));
+    let last_message_epoch_secs = Arc::new(AtomicU64::new(0));
+
+    // Create metrics
+    let archiver_metrics = ArchiverMetrics::new(config.storage.feed.as_str());
+    archiver_metrics.set_active_streams(config.nats.streams.len());
+
+    // Spawn HTTP health/metrics server
+    let server_state = ServerState::new(
+        config.storage.feed.as_str(),
+        connected.clone(),
+        last_message_epoch_secs.clone(),
+    );
+    let health_addr = args.health_addr;
+    tokio::spawn(async move {
+        info!(%health_addr, "Starting health/metrics server");
+        if let Err(e) = run_server(health_addr, server_state).await {
+            error!(error = %e, "Health server failed");
+        }
+    });
 
     // Spawn a task per stream
     let mut tasks: JoinSet<Result<(), Box<dyn std::error::Error + Send + Sync>>> = JoinSet::new();
@@ -76,6 +104,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let base_path = Arc::clone(&base_path);
         let feed = Arc::clone(&feed);
         let rotation_interval = Arc::clone(&rotation_interval);
+        let connected = connected.clone();
+        let last_message_epoch_secs = last_message_epoch_secs.clone();
+        let metrics = archiver_metrics.for_stream(&stream_config.name);
 
         info!(
             stream = %stream_config.stream,
@@ -93,6 +124,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &rotation_interval,
                 rotation_duration,
                 shutdown,
+                metrics,
+                connected,
+                last_message_epoch_secs,
             )
             .await
         });
@@ -165,6 +199,9 @@ async fn archive_stream(
     rotation_interval: &str,
     rotation_duration: Duration,
     shutdown: CancellationToken,
+    metrics: StreamMetrics,
+    connected: Arc<AtomicBool>,
+    last_message_epoch_secs: Arc<AtomicU64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let stream_name = stream_config.name.clone();
     let rotation_minutes = (rotation_duration.as_secs() / 60) as u32;
@@ -177,6 +214,7 @@ async fn archive_stream(
 
     // Connect to NATS
     let mut subscriber = Subscriber::connect(nats_url, &stream_config).await?;
+    connected.store(true, Ordering::SeqCst);
 
     // Create JSONL.gz writer
     let mut writer = ArchiveWriter::new(
@@ -197,11 +235,7 @@ async fn archive_stream(
     let mut current_date = Utc::now().format("%Y-%m-%d").to_string();
     let mut current_file_type_counts: HashMap<String, u64> = HashMap::new();
 
-    // Stats tracking
-    let mut total_messages: u64 = 0;
-    let mut total_bytes: u64 = 0;
-    let mut validation_failures: u64 = 0;
-    let mut parse_failures: u64 = 0;
+    // Sequence tracking (local — not worth Prometheus overhead)
     let mut first_seq: Option<u64> = None;
     let mut last_seq: u64 = 0;
     let mut last_stats_time = std::time::Instant::now();
@@ -251,15 +285,18 @@ async fn archive_stream(
                                     missing_count: missing,
                                     detected_at: now,
                                 });
+                                metrics.inc_gap();
                             }
 
-                            // Track stats
-                            total_messages += 1;
-                            total_bytes += msg.payload().len() as u64;
+                            // Track stats via Prometheus metrics
+                            metrics.inc_bytes(msg.payload().len() as u64);
                             if first_seq.is_none() {
                                 first_seq = Some(msg.seq);
                             }
                             last_seq = msg.seq;
+                            let epoch_secs = now.timestamp() as u64;
+                            last_message_epoch_secs.store(epoch_secs, Ordering::Relaxed);
+                            metrics.set_last_message_timestamp(epoch_secs as f64);
 
                             // Lightweight manifest field extraction (no full JSON tree)
                             let msg_type_for_count = match extract_manifest_fields(feed, msg.payload()) {
@@ -267,6 +304,9 @@ async fn archive_stream(
                                     let mt = fields.msg_type;
                                     if let Some(ref t) = mt {
                                         message_types.insert(t.clone());
+                                        metrics.inc_message(t);
+                                    } else {
+                                        metrics.inc_message("unknown");
                                     }
                                     if let Some(t) = fields.ticker {
                                         tickers.insert(t);
@@ -274,18 +314,19 @@ async fn archive_stream(
                                     mt
                                 }
                                 None => {
-                                    parse_failures += 1;
+                                    metrics.inc_parse_failure();
+                                    metrics.inc_message("unknown");
                                     None
                                 }
                             };
 
                             // Sampled validation: full parse 1-in-100 messages
                             #[allow(clippy::manual_is_multiple_of)]
-                            if total_messages % 100 == 0 {
+                            if metrics.get_messages_total() % 100 == 0 {
                                 if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(msg.payload()) {
                                     let vr = validator.validate(&parsed);
                                     if !vr.is_valid() {
-                                        validation_failures += 1;
+                                        metrics.inc_validation_failure();
                                         warn!(
                                             stream_name = %stream_name,
                                             msg_type = ?vr.message_type,
@@ -304,6 +345,7 @@ async fn archive_stream(
                                     pending_acks.push(msg);
                                     if !rotated_entries.is_empty() {
                                         for mut rotated_entry in rotated_entries {
+                                            metrics.inc_files_rotated();
                                             rotated_entry.records_by_type = Some(std::mem::take(&mut current_file_type_counts));
                                             info!(
                                                 stream_name = %stream_name,
@@ -360,15 +402,15 @@ async fn archive_stream(
                     }
                 }
 
-                // Periodic stats log
+                // Periodic stats log (read from Prometheus counters)
                 if last_stats_time.elapsed() >= stats_interval {
                     info!(
                         stream_name = %stream_name,
                         feed = %feed,
-                        messages = total_messages,
-                        bytes = total_bytes,
-                        validation_failures = validation_failures,
-                        parse_failures = parse_failures,
+                        messages = metrics.get_messages_total(),
+                        bytes = metrics.get_bytes_total(),
+                        validation_failures = metrics.get_validation_failures(),
+                        parse_failures = metrics.get_parse_failures(),
                         tickers = tickers.len(),
                         nats_start_seq = first_seq.unwrap_or(0),
                         nats_end_seq = last_seq,

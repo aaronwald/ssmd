@@ -7,6 +7,8 @@ pub mod config;
 pub mod error;
 pub mod manifest;
 pub mod manifest_io;
+pub mod metrics;
+pub mod server;
 pub mod subscriber;
 pub mod validation;
 pub mod writer;
