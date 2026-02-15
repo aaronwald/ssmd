@@ -111,13 +111,18 @@ impl KrakenFuturesConnector {
                                         }
                                     }
                                     KrakenFuturesWsMessage::Heartbeat { .. } => {
+                                        shard_metrics.inc_message("heartbeat");
                                         trace!("Kraken Futures heartbeat received");
                                     }
                                     KrakenFuturesWsMessage::Error { message, .. } => {
+                                        shard_metrics.inc_message("error");
                                         warn!(message = ?message, "Kraken Futures WS error");
                                     }
-                                    _ => {
-                                        // Info, subscribed — skip
+                                    KrakenFuturesWsMessage::Info { .. } => {
+                                        shard_metrics.inc_message("info");
+                                    }
+                                    KrakenFuturesWsMessage::Subscribed { .. } => {
+                                        shard_metrics.inc_message("subscribed");
                                     }
                                 }
                             }

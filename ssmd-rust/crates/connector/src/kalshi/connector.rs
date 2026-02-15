@@ -409,7 +409,26 @@ impl KalshiConnector {
                                         shard_metrics.inc_event_lifecycle();
                                         true
                                     }
-                                    _ => false,
+                                    WsMessage::Subscribed { .. } => {
+                                        shard_metrics.inc_message("subscribed");
+                                        false
+                                    }
+                                    WsMessage::Ok { .. } => {
+                                        shard_metrics.inc_message("ok");
+                                        false
+                                    }
+                                    WsMessage::Unsubscribed { .. } => {
+                                        shard_metrics.inc_message("unsubscribed");
+                                        false
+                                    }
+                                    WsMessage::Error { .. } => {
+                                        shard_metrics.inc_message("error");
+                                        false
+                                    }
+                                    WsMessage::Unknown => {
+                                        shard_metrics.inc_message("unknown");
+                                        false
+                                    }
                                 };
 
                                 if !should_forward {

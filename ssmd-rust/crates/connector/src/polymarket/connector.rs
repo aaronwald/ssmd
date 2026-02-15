@@ -181,8 +181,9 @@ impl PolymarketConnector {
 
                         match result {
                             Ok(raw_json) => {
-                                // Skip PONG responses
+                                // Skip PONG responses (don't forward to NATS)
                                 if raw_json == "PONG" {
+                                    shard_metrics.inc_message("pong");
                                     continue;
                                 }
 
