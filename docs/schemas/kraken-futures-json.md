@@ -70,6 +70,8 @@ Raw WebSocket JSON lines (no envelope wrapper), unlike Kalshi which uses
 
 ### ticker
 
+**Exchange docs**: [Ticker](https://docs.kraken.com/api/docs/futures-api/websocket/ticker)
+
 The primary data feed. Provides a full snapshot of the current market state for a
 product, updated on every change (price, volume, funding rate, etc.).
 
@@ -169,6 +171,8 @@ in the Parquet Schema section below.
 
 ### trade
 
+**Exchange docs**: [Trade](https://docs.kraken.com/api/docs/futures-api/websocket/trade)
+
 Individual fill events. Each message represents one matched trade.
 
 **Frequency**: Event-driven — one message per fill.
@@ -229,6 +233,8 @@ currently uses NATS `_nats_seq` for duplicate detection rather than trade `uid`.
 
 ### trade_snapshot
 
+**Exchange docs**: [Trade](https://docs.kraken.com/api/docs/futures-api/websocket/trade) (snapshot section)
+
 Sent immediately after subscribing to the `trade` feed. Contains recent trade history.
 Our connector recognizes this feed type in metrics (`connector.rs:103`) and counts it
 as a trade message.
@@ -286,6 +292,8 @@ but would be skipped during parquet generation.
 
 ### ticker_lite
 
+**Exchange docs**: [Ticker Lite](https://docs.kraken.com/api/docs/futures-api/websocket/ticker-lite)
+
 A lightweight variant of the ticker feed with fewer fields. Tracked in connector
 metrics (`connector.rs:102`) but **not actively subscribed** in our deployment.
 
@@ -309,6 +317,8 @@ through to the "Unknown Kraken Futures feed, skipping" debug log (`writer.rs:84`
 ---
 
 ### book_snapshot / book
+
+**Exchange docs**: [Book](https://docs.kraken.com/api/docs/futures-api/websocket/book)
 
 Orderbook data. The `book_snapshot` feed provides the initial L2 orderbook state;
 `book` provides incremental updates. Tracked in connector metrics (`connector.rs:104`)

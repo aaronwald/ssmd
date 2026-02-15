@@ -173,6 +173,8 @@ optional (nullable) except where noted.
 
 ### last_trade_price
 
+**Exchange docs**: [Market Channel](https://docs.polymarket.com/developers/CLOB/websocket/market-channel)
+
 Trade execution event. Triggered when a maker and taker order match.
 
 **NATS routing**: `{prefix}.json.trade.{condition_id}`
@@ -208,6 +210,8 @@ Trade execution event. Triggered when a maker and taker order match.
 ---
 
 ### book
+
+**Exchange docs**: [Market Channel](https://docs.polymarket.com/developers/CLOB/websocket/market-channel)
 
 Full orderbook snapshot. Emitted immediately upon subscription and whenever
 trades change the orderbook. This is typically the largest message type.
@@ -265,6 +269,8 @@ presence of `bids`/`asks` fields and routes them to the orderbook subject.
 ---
 
 ### price_change
+
+**Exchange docs**: [Market Channel](https://docs.polymarket.com/developers/CLOB/websocket/market-channel)
 
 Incremental orderbook price level update. Triggered by new orders or
 cancellations that change a price level.
@@ -333,6 +339,8 @@ data pipeline.
 
 ### best_bid_ask
 
+**Exchange docs**: [Market Channel](https://docs.polymarket.com/developers/CLOB/websocket/market-channel)
+
 Top-of-book quote update. Emitted when the best bid or ask price changes.
 Requires `custom_feature_enabled: true` in the subscription message.
 
@@ -367,6 +375,8 @@ Requires `custom_feature_enabled: true` in the subscription message.
 ---
 
 ### new_market
+
+**Exchange docs**: [Market Channel](https://docs.polymarket.com/developers/CLOB/websocket/market-channel)
 
 Notification that a new market (condition) has been created. Requires
 `custom_feature_enabled: true`.
@@ -408,6 +418,8 @@ corresponds to `outcomes[0]`.
 
 ### market_resolved
 
+**Exchange docs**: [Market Channel](https://docs.polymarket.com/developers/CLOB/websocket/market-channel)
+
 Notification that a market has been resolved (settled). The winning outcome
 and token are identified. Requires `custom_feature_enabled: true`.
 
@@ -440,6 +452,8 @@ process.
 ---
 
 ### tick_size_change
+
+**Exchange docs**: [Market Channel](https://docs.polymarket.com/developers/CLOB/websocket/market-channel)
 
 Notification that the minimum tick size has changed for a token. Polymarket
 adjusts tick sizes when prices approach extreme values (above 0.96 or below

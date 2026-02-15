@@ -42,6 +42,7 @@ route deserialization to the correct variant.
 
 ### Ticker (`type: "ticker"`)
 
+**Exchange docs**: [Market Ticker](https://docs.kalshi.com/websockets/market-ticker.md)
 **Channel**: `ticker`
 **Scope**: All markets (global subscribe) or filtered by `market_tickers`
 **Frequency**: On every quote/volume change for subscribed markets
@@ -135,6 +136,7 @@ the JSONL archive (raw pass-through).
 
 ### Trade (`type: "trade"`)
 
+**Exchange docs**: [Public Trades](https://docs.kalshi.com/websockets/public-trades.md)
 **Channel**: `trade`
 **Scope**: All markets (global subscribe) or filtered by `market_tickers`
 **Frequency**: On every trade execution
@@ -229,6 +231,7 @@ JSON pass-through.
 
 ### Market Lifecycle V2 (`type: "market_lifecycle_v2"`)
 
+**Exchange docs**: [Market & Event Lifecycle](https://docs.kalshi.com/websockets/market-&-event-lifecycle.md)
 **Channel**: `market_lifecycle_v2`
 **Scope**: All markets (global, no filtering)
 **Frequency**: On market state transitions
@@ -322,6 +325,7 @@ pub struct MarketLifecycleData {
 
 ### Event Lifecycle (`type: "event_lifecycle"`)
 
+**Exchange docs**: [Market & Event Lifecycle](https://docs.kalshi.com/websockets/market-&-event-lifecycle.md)
 **Channel**: `market_lifecycle_v2` (shared channel — both market and event lifecycle events arrive here)
 **Scope**: All events (global)
 **Frequency**: When parent events are created
@@ -384,6 +388,7 @@ have a dedicated parquet schema. They are preserved in JSONL archives.
 
 ### Orderbook Snapshot (`type: "orderbook_snapshot"`)
 
+**Exchange docs**: [Orderbook Updates](https://docs.kalshi.com/websockets/orderbook-updates.md)
 **Channel**: `orderbook_delta` (initial message after subscribing)
 **Scope**: Per-market subscription only (requires `market_ticker`)
 **Frequency**: Once per subscription, then deltas
@@ -426,6 +431,7 @@ snapshot and increments with each subsequent delta.
 
 ### Orderbook Delta (`type: "orderbook_delta"`)
 
+**Exchange docs**: [Orderbook Updates](https://docs.kalshi.com/websockets/orderbook-updates.md)
 **Channel**: `orderbook_delta` (incremental updates after snapshot)
 **Scope**: Per-market subscription
 **Frequency**: On every orderbook change
