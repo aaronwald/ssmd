@@ -10,3 +10,18 @@ versions:
       message: json
     endpoint: wss://ws.kraken.com/v2
     auth_method: none
+
+# Message types received from this exchange
+# Kraken Spot trade_id is a string/UUID — not sequential, not usable for gap detection.
+message_types:
+  ticker:
+    identifier_field: symbol
+    timestamp_field: _received_at
+    timestamp_format: pipeline
+    sequenced: false
+  trade:
+    identifier_field: symbol
+    timestamp_field: timestamp
+    timestamp_format: iso8601
+    sequenced: false
+    # trade_id exists but is a UUID string, not a monotonic integer

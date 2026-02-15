@@ -10,3 +10,29 @@ versions:
       message: json
     endpoint: wss://ws-subscriptions-clob.polymarket.com/ws/market
     auth_method: none
+
+# Message types received from this exchange
+# Polymarket provides NO sequence numbers on any message type.
+# Gap detection relies on time-slot coverage and manifest presence only.
+message_types:
+  last_trade_price:
+    identifier_field: asset_id
+    timestamp_field: _received_at
+    timestamp_format: pipeline
+    sequenced: false
+  book:
+    identifier_field: asset_id
+    timestamp_field: _received_at
+    timestamp_format: pipeline
+    sequenced: false
+  price_change:
+    identifier_field: asset_id
+    timestamp_field: _received_at
+    timestamp_format: pipeline
+    sequenced: false
+    fanout: true  # price_changes[] array produces N parquet rows per JSONL line
+  best_bid_ask:
+    identifier_field: asset_id
+    timestamp_field: _received_at
+    timestamp_format: pipeline
+    sequenced: false

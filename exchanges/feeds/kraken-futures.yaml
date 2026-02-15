@@ -10,3 +10,18 @@ versions:
       message: json
     endpoint: wss://futures.kraken.com/ws/v1
     auth_method: none
+
+# Message types received from this exchange
+message_types:
+  ticker:
+    identifier_field: product_id
+    timestamp_field: time
+    timestamp_format: epoch_millis
+    sequenced: false
+  trade:
+    identifier_field: product_id
+    timestamp_field: time
+    timestamp_format: epoch_millis
+    sequenced: true
+    sequence_field: seq
+    sequence_scope: per_product  # each product_id has its own monotonic sequence

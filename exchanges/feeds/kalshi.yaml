@@ -12,6 +12,27 @@ versions:
     auth_method: api_key
     rate_limit_per_second: 10
 
+# Message types received from this exchange
+message_types:
+  ticker:
+    identifier_field: market_ticker
+    timestamp_field: ts
+    timestamp_format: unix_seconds
+    sequenced: false
+    # Clock field exists but is global monotonic, not per-market sequential
+  trade:
+    identifier_field: market_ticker
+    timestamp_field: ts
+    timestamp_format: unix_seconds
+    sequenced: true
+    sequence_field: exchange_seq  # envelope `seq`, stored as exchange_seq in parquet
+    sequence_scope: per_subscription  # scoped to sid, resets on reconnect
+  market_lifecycle_v2:
+    identifier_field: market_ticker
+    timestamp_field: _received_at
+    timestamp_format: pipeline
+    sequenced: false
+
 # Component defaults for operators
 defaults:
   connector:
