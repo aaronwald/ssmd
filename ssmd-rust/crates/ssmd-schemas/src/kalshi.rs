@@ -39,6 +39,7 @@ impl KalshiTickerSchema {
             Field::new("open_interest", DataType::Int64, true),
             Field::new("ts", ts_type(), false),
             Field::new("exchange_clock", DataType::Int64, true),
+            Field::new("sid", DataType::Int64, true),
             Field::new("_nats_seq", DataType::UInt64, false),
             Field::new("_received_at", ts_type(), false),
         ])
@@ -51,7 +52,7 @@ impl MessageSchema for KalshiTickerSchema {
     }
 
     fn schema_version(&self) -> &str {
-        "1.1.0"
+        "1.2.0"
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -73,6 +74,7 @@ impl MessageSchema for KalshiTickerSchema {
         let mut open_interest = Int64Builder::new();
         let mut ts = TimestampMicrosecondBuilder::new();
         let mut exchange_clock = Int64Builder::new();
+        let mut sid = Int64Builder::new();
         let mut nats_seq = UInt64Builder::new();
         let mut received_at = TimestampMicrosecondBuilder::new();
 
@@ -114,6 +116,7 @@ impl MessageSchema for KalshiTickerSchema {
             append_optional_i64(&mut open_interest, msg.get("open_interest"));
             ts.append_value(ts_secs * 1_000_000);
             append_optional_i64(&mut exchange_clock, msg.get("Clock"));
+            append_optional_i64(&mut sid, json.get("sid"));
             nats_seq.append_value(*seq);
             received_at.append_value(*recv_at);
         }
@@ -131,6 +134,7 @@ impl MessageSchema for KalshiTickerSchema {
                 Arc::new(open_interest.finish()),
                 Arc::new(ts.finish().with_timezone("UTC")),
                 Arc::new(exchange_clock.finish()),
+                Arc::new(sid.finish()),
                 Arc::new(nats_seq.finish()),
                 Arc::new(received_at.finish().with_timezone("UTC")),
             ],
@@ -154,6 +158,7 @@ impl KalshiTradeSchema {
             Field::new("ts", ts_type(), false),
             Field::new("trade_id", DataType::Utf8, false),
             Field::new("exchange_seq", DataType::Int64, true),
+            Field::new("sid", DataType::Int64, true),
             Field::new("_nats_seq", DataType::UInt64, false),
             Field::new("_received_at", ts_type(), false),
         ])
@@ -166,7 +171,7 @@ impl MessageSchema for KalshiTradeSchema {
     }
 
     fn schema_version(&self) -> &str {
-        "1.1.0"
+        "1.2.0"
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -185,6 +190,7 @@ impl MessageSchema for KalshiTradeSchema {
         let mut ts = TimestampMicrosecondBuilder::new();
         let mut trade_id = StringBuilder::new();
         let mut exchange_seq = Int64Builder::new();
+        let mut sid = Int64Builder::new();
         let mut nats_seq = UInt64Builder::new();
         let mut received_at = TimestampMicrosecondBuilder::new();
 
@@ -275,6 +281,7 @@ impl MessageSchema for KalshiTradeSchema {
             ts.append_value(t * 1_000_000);
             trade_id.append_value(tid);
             append_optional_i64(&mut exchange_seq, json.get("seq"));
+            append_optional_i64(&mut sid, json.get("sid"));
             nats_seq.append_value(*seq);
             received_at.append_value(*recv_at);
         }
@@ -289,6 +296,7 @@ impl MessageSchema for KalshiTradeSchema {
                 Arc::new(ts.finish().with_timezone("UTC")),
                 Arc::new(trade_id.finish()),
                 Arc::new(exchange_seq.finish()),
+                Arc::new(sid.finish()),
                 Arc::new(nats_seq.finish()),
                 Arc::new(received_at.finish().with_timezone("UTC")),
             ],
@@ -419,7 +427,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 12);
+        assert_eq!(batch.num_columns(), 13);
 
         let col = batch
             .column(0)
@@ -458,9 +466,17 @@ mod tests {
             .unwrap();
         assert_eq!(col.value(0), 13281241747);
 
-        // _nats_seq
+        // sid
         let col = batch
             .column(10)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(col.value(0), 1);
+
+        // _nats_seq
+        let col = batch
+            .column(11)
             .as_any()
             .downcast_ref::<UInt64Array>()
             .unwrap();
@@ -501,6 +517,14 @@ mod tests {
             .downcast_ref::<Int64Array>()
             .unwrap();
         assert!(col.is_null(0));
+
+        // sid should be null (not in envelope)
+        let col = batch
+            .column(10)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert!(col.is_null(0));
     }
 
     #[test]
@@ -512,7 +536,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 9);
+        assert_eq!(batch.num_columns(), 10);
 
         let ticker = batch
             .column(0)
@@ -557,6 +581,14 @@ mod tests {
             .downcast_ref::<Int64Array>()
             .unwrap();
         assert_eq!(eseq.value(0), 10);
+
+        // sid
+        let sid = batch
+            .column(7)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(sid.value(0), 1);
     }
 
     #[test]
@@ -569,7 +601,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 9);
+        assert_eq!(batch.num_columns(), 10);
 
         let price = batch
             .column(1)
@@ -636,6 +668,14 @@ mod tests {
             .downcast_ref::<Int64Array>()
             .unwrap();
         assert!(eseq.is_null(0));
+
+        // sid should be present (it's in the envelope even without seq)
+        let sid = batch
+            .column(7)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(sid.value(0), 1);
 
         // trade_id should still be present
         let tid = batch
@@ -765,7 +805,7 @@ mod tests {
         let schema = KalshiTickerSchema;
         let batch = schema.parse_batch(&[]).unwrap();
         assert_eq!(batch.num_rows(), 0);
-        assert_eq!(batch.num_columns(), 12);
+        assert_eq!(batch.num_columns(), 13);
     }
 
 }

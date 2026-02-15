@@ -27,6 +27,7 @@ message_types:
     sequenced: true
     sequence_field: exchange_seq  # envelope `seq`, stored as exchange_seq in parquet
     sequence_scope: per_subscription  # scoped to sid, resets on reconnect
+    sequence_group_by: sid  # DQ groups seq gaps by this column (not ticker)
   market_lifecycle_v2:
     identifier_field: market_ticker
     timestamp_field: _received_at
