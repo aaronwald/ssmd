@@ -278,6 +278,17 @@ All images are built via GitHub Actions on tag push. Do not use docker/podman di
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Kubernetes deployment |
 | [AGENT.md](AGENT.md) | Signal development agent |
 
+### Data Schemas
+
+Detailed field-level documentation for all exchange WebSocket messages and parquet output formats:
+
+| Doc | Purpose |
+|-----|---------|
+| [Kalshi JSON Schema](docs/schemas/kalshi-json.md) | Ticker, trade, lifecycle WS messages — field definitions, sequence numbers, price units |
+| [Kraken Futures JSON Schema](docs/schemas/kraken-futures-json.md) | V1 flat format, ticker/trade fields, funding rates, seq numbering |
+| [Polymarket JSON Schema](docs/schemas/polymarket-json.md) | CLOB WS messages, condition/token identifier model, array fan-out |
+| [Parquet Schemas](docs/schemas/parquet-schemas.md) | All 11 Arrow schemas, JSON→parquet column mapping, type conversions, versioning |
+
 ## License
 
 MIT
