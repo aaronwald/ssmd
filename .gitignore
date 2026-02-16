@@ -7,6 +7,9 @@ bin/
 
 # Secrets
 priv.pem
+.env
+.env.*
+!.env.example
 
 # Rust
 target/
