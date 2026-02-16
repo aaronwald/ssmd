@@ -61,7 +61,7 @@ export async function listParquetFiles(
 
   for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
     const dateStr = d.toISOString().slice(0, 10);
-    const prefix = `${config.prefix}/${config.stream}/${dateStr}/`;
+    const prefix = `${config.prefix}/${config.prefix}/${config.stream}/${dateStr}/`;
 
     const [gcsFiles] = await storage.bucket(bucket).getFiles({ prefix });
 
