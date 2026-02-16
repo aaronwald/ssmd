@@ -141,7 +141,8 @@ async fn process_hour(
     // Collect all messages from all files in this hour
     let mut messages_by_type: HashMap<String, Vec<(Vec<u8>, u64, i64)>> = HashMap::new();
     let mut line_counter: u64 = 0;
-    let received_at_micros = hour_ts.timestamp_micros();
+    // Fallback for old JSONL files that lack archiver-injected metadata
+    let fallback_received_at = hour_ts.timestamp_micros();
 
     for file_path in files {
         info!(file = %file_path, "Downloading JSONL.gz");
@@ -187,10 +188,18 @@ async fn process_hour(
             line_counter += 1;
             stats.lines_parsed += 1;
 
+            // Extract archiver-injected metadata, or fall back for old files
+            let msg_nats_seq = json.get("_nats_seq")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(line_counter);
+            let msg_received_at = json.get("_received_at")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(fallback_received_at);
+
             messages_by_type
                 .entry(msg_type)
                 .or_default()
-                .push((line.as_bytes().to_vec(), line_counter, received_at_micros));
+                .push((line.as_bytes().to_vec(), msg_nats_seq, msg_received_at));
         });
 
         if let Err(e) = line_result {
@@ -307,6 +316,49 @@ mod tests {
     use std::io::Write;
 
     use super::for_each_gzip_line;
+
+    /// Extract archiver-injected metadata from a parsed JSON line.
+    /// Returns (nats_seq, received_at_micros) using fallback values if absent.
+    fn extract_metadata(json: &serde_json::Value, fallback_seq: u64, fallback_received_at: i64) -> (u64, i64) {
+        let nats_seq = json.get("_nats_seq")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(fallback_seq);
+        let received_at = json.get("_received_at")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(fallback_received_at);
+        (nats_seq, received_at)
+    }
+
+    #[test]
+    fn test_extract_metadata_with_injected_fields() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"type":"trade","msg":{},"_received_at":1707667200123456,"_nats_seq":42}"#,
+        ).unwrap();
+        let (seq, recv_at) = extract_metadata(&json, 999, 0);
+        assert_eq!(seq, 42);
+        assert_eq!(recv_at, 1707667200123456);
+    }
+
+    #[test]
+    fn test_extract_metadata_falls_back_for_old_files() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"type":"trade","msg":{}}"#,
+        ).unwrap();
+        let (seq, recv_at) = extract_metadata(&json, 7, 1000000);
+        assert_eq!(seq, 7);
+        assert_eq!(recv_at, 1000000);
+    }
+
+    #[test]
+    fn test_extract_metadata_partial_fields() {
+        // Only _received_at present, _nats_seq absent
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"type":"trade","_received_at":5555}"#,
+        ).unwrap();
+        let (seq, recv_at) = extract_metadata(&json, 10, 0);
+        assert_eq!(seq, 10); // fallback
+        assert_eq!(recv_at, 5555); // from JSON
+    }
 
     #[test]
     fn test_group_files_by_hour_skips_invalid_hours() {

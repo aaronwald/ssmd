@@ -174,11 +174,26 @@ impl ArchiveOutput for ArchiveWriter {
         }
         file.last_seq = Some(seq);
 
-        // Write the line
-        file.encoder.write_all(data)?;
-        file.encoder.write_all(b"\n")?;
-        file.records += 1;
-        file.bytes_written += data.len() as u64 + 1;
+        // Inject _received_at and _nats_seq into JSON payload via byte-level
+        // manipulation (no serde round-trip — this is the hot path).
+        let received_at_micros = now.timestamp_micros();
+        if let Some(pos) = data.iter().rposition(|&b| b == b'}') {
+            file.encoder.write_all(&data[..pos])?;
+            let suffix = format!(
+                ",\"_received_at\":{},\"_nats_seq\":{}}}",
+                received_at_micros, seq
+            );
+            file.encoder.write_all(suffix.as_bytes())?;
+            file.encoder.write_all(b"\n")?;
+            file.records += 1;
+            file.bytes_written += pos as u64 + suffix.len() as u64 + 1;
+        } else {
+            // No closing brace — write raw (shouldn't happen for well-formed JSON)
+            file.encoder.write_all(data)?;
+            file.encoder.write_all(b"\n")?;
+            file.records += 1;
+            file.bytes_written += data.len() as u64 + 1;
+        }
 
         Ok(rotated.into_iter().collect())
     }
@@ -210,6 +225,14 @@ mod tests {
     use flate2::read::GzDecoder;
     use std::io::{BufRead, BufReader};
     use tempfile::TempDir;
+
+    /// Helper to read lines from a gzip file produced by ArchiveWriter.
+    fn read_gz_lines(path: &std::path::Path) -> Vec<String> {
+        let file = File::open(path).unwrap();
+        let decoder = GzDecoder::new(file);
+        let reader = BufReader::new(decoder);
+        reader.lines().map(|l| l.unwrap()).collect()
+    }
 
     #[test]
     fn test_write_records() {
@@ -344,5 +367,78 @@ mod tests {
         let entries = writer.close().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].records, 1);
+    }
+
+    #[test]
+    fn test_write_injects_metadata_fields() {
+        let tmp = TempDir::new().unwrap();
+        let mut writer = ArchiveWriter::new(
+            tmp.path().to_path_buf(),
+            "kalshi".to_string(),
+            "politics".to_string(),
+            15,
+        );
+
+        let now = Utc::now();
+        writer
+            .write(br#"{"type":"trade","ticker":"INXD"}"#, 42, now)
+            .unwrap();
+        writer
+            .write(br#"{"type":"ticker","msg":{"market_ticker":"KXBTC"}}"#, 43, now)
+            .unwrap();
+
+        let entries = writer.close().unwrap();
+        assert_eq!(entries.len(), 1);
+
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let dir = tmp.path().join("kalshi").join("politics").join(&date_str);
+        let final_path = dir.join(&entries[0].name);
+        let lines = read_gz_lines(&final_path);
+
+        assert_eq!(lines.len(), 2);
+
+        // Verify first line has injected fields
+        let json1: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(json1.get("_nats_seq").unwrap().as_u64().unwrap(), 42);
+        assert_eq!(
+            json1.get("_received_at").unwrap().as_i64().unwrap(),
+            now.timestamp_micros()
+        );
+        // Original fields preserved
+        assert_eq!(json1.get("type").unwrap().as_str().unwrap(), "trade");
+        assert_eq!(json1.get("ticker").unwrap().as_str().unwrap(), "INXD");
+
+        // Verify second line
+        let json2: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
+        assert_eq!(json2.get("_nats_seq").unwrap().as_u64().unwrap(), 43);
+        assert_eq!(
+            json2.get("_received_at").unwrap().as_i64().unwrap(),
+            now.timestamp_micros()
+        );
+        // Nested content preserved
+        assert_eq!(
+            json2.get("msg").unwrap().get("market_ticker").unwrap().as_str().unwrap(),
+            "KXBTC"
+        );
+    }
+
+    #[test]
+    fn test_bytes_written_accounts_for_injected_fields() {
+        let tmp = TempDir::new().unwrap();
+        let mut writer = ArchiveWriter::new(
+            tmp.path().to_path_buf(),
+            "kalshi".to_string(),
+            "politics".to_string(),
+            15,
+        );
+
+        let now = Utc::now();
+        let data = br#"{"type":"trade"}"#;
+        writer.write(data, 1, now).unwrap();
+
+        let entries = writer.close().unwrap();
+        // bytes_written should be greater than just data + newline
+        // because we injected ,"_received_at":...,"_nats_seq":...}
+        assert!(entries[0].bytes > data.len() as u64 + 1);
     }
 }
