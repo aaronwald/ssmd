@@ -63,6 +63,9 @@ export interface AuthInfo {
   userEmail: string;
   scopes: string[];
   keyPrefix: string;
+  allowedFeeds: string[];
+  dateRangeStart: string;
+  dateRangeEnd: string;
 }
 
 type Handler = (req: Request, ctx: RouteContext) => Promise<Response>;
@@ -411,6 +414,9 @@ route("POST", "/v1/keys", async (req, ctx) => {
     environment?: "live" | "test";
     userEmail?: string;
     expiresInHours?: number;
+    allowedFeeds?: string[];
+    dateRangeStart?: string;
+    dateRangeEnd?: string;
   };
 
   // Validate required fields
@@ -423,6 +429,28 @@ route("POST", "/v1/keys", async (req, ctx) => {
     if (!VALID_SCOPES.includes(scope)) {
       return json({ error: `Invalid scope: ${scope}` }, 400);
     }
+  }
+
+  // Validate allowed feeds (required)
+  if (!body.allowedFeeds || body.allowedFeeds.length === 0) {
+    return json({ error: "allowedFeeds is required and must not be empty" }, 400);
+  }
+  for (const feed of body.allowedFeeds) {
+    if (!FEED_CONFIG[feed]) {
+      return json({ error: `Invalid feed: ${feed}. Valid feeds: ${Object.keys(FEED_CONFIG).join(", ")}` }, 400);
+    }
+  }
+
+  // Validate date range (required)
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!body.dateRangeStart || !body.dateRangeEnd) {
+    return json({ error: "dateRangeStart and dateRangeEnd are required (YYYY-MM-DD)" }, 400);
+  }
+  if (!dateRegex.test(body.dateRangeStart) || !dateRegex.test(body.dateRangeEnd)) {
+    return json({ error: "dateRangeStart and dateRangeEnd must be YYYY-MM-DD format" }, 400);
+  }
+  if (new Date(body.dateRangeStart) > new Date(body.dateRangeEnd)) {
+    return json({ error: "dateRangeStart must be before or equal to dateRangeEnd" }, 400);
   }
 
   // Validate expiration
@@ -446,6 +474,9 @@ route("POST", "/v1/keys", async (req, ctx) => {
     scopes: body.scopes,
     rateLimitTier: body.rateLimitTier ?? "standard",
     expiresAt: expiresAt ?? null,
+    allowedFeeds: body.allowedFeeds,
+    dateRangeStart: body.dateRangeStart,
+    dateRangeEnd: body.dateRangeEnd,
   });
 
   // Return full key ONCE
@@ -457,6 +488,9 @@ route("POST", "/v1/keys", async (req, ctx) => {
     rateLimitTier: apiKey.rateLimitTier,
     createdAt: apiKey.createdAt,
     expiresAt: apiKey.expiresAt,
+    allowedFeeds: apiKey.allowedFeeds,
+    dateRangeStart: apiKey.dateRangeStart,
+    dateRangeEnd: apiKey.dateRangeEnd,
   }, 201);
 }, true, "admin:write");
 
@@ -482,6 +516,9 @@ route("GET", "/v1/keys", async (req, ctx) => {
       lastUsedAt: k.lastUsedAt,
       createdAt: k.createdAt,
       expiresAt: k.expiresAt,
+      allowedFeeds: k.allowedFeeds,
+      dateRangeStart: k.dateRangeStart,
+      dateRangeEnd: k.dateRangeEnd,
     })),
   });
 }, true, "secmaster:read");
@@ -603,6 +640,28 @@ route("GET", "/v1/data/download", async (req, ctx) => {
     return json({ error: "Maximum date range is 7 days" }, 400);
   }
 
+  // Enforce key feed restrictions
+  if (!auth.allowedFeeds.includes(feed)) {
+    return json({ error: `Key not authorized for feed: ${feed}` }, 403);
+  }
+
+  // Enforce key date range restrictions (clamp to allowed range)
+  const keyStart = new Date(auth.dateRangeStart);
+  const keyEnd = new Date(auth.dateRangeEnd);
+
+  // Check for any overlap
+  if (toDate < keyStart || fromDate > keyEnd) {
+    return json({
+      error: `Key date range is ${auth.dateRangeStart} to ${auth.dateRangeEnd}. Requested range has no overlap.`,
+    }, 403);
+  }
+
+  // Clamp to allowed range
+  const clampedFrom = fromDate < keyStart ? keyStart : fromDate;
+  const clampedTo = toDate > keyEnd ? keyEnd : toDate;
+  const effectiveFrom = clampedFrom.toISOString().slice(0, 10);
+  const effectiveTo = clampedTo.toISOString().slice(0, 10);
+
   // Parse expires param (e.g., "12h", "6h")
   const expiresMatch = expiresParam.match(/^(\d+)h$/);
   if (!expiresMatch) {
@@ -619,7 +678,7 @@ route("GET", "/v1/data/download", async (req, ctx) => {
   }
 
   // List and sign files
-  const files = await listParquetFiles(bucket, feed, from, to, msgType);
+  const files = await listParquetFiles(bucket, feed, effectiveFrom, effectiveTo, msgType);
 
   if (files.length > 200) {
     return json({ error: `Too many files (${files.length}). Maximum 200 per request. Narrow your date range or filter by type.` }, 400);
@@ -632,16 +691,16 @@ route("GET", "/v1/data/download", async (req, ctx) => {
     keyPrefix: auth.keyPrefix,
     userEmail: auth.userEmail,
     feed,
-    dateFrom: from,
-    dateTo: to,
+    dateFrom: effectiveFrom,
+    dateTo: effectiveTo,
     msgType: msgType ?? null,
     filesCount: signedFiles.length,
   }).catch((err) => console.error("Failed to log data access:", err));
 
   return json({
     feed,
-    from,
-    to,
+    from: effectiveFrom,
+    to: effectiveTo,
     type: msgType ?? null,
     files: signedFiles,
     expiresIn: `${expiresInHours}h`,
@@ -847,6 +906,9 @@ export function createRouter(ctx: RouteContext): (req: Request) => Promise<Respo
             userEmail: authResult.userEmail,
             scopes: authResult.scopes,
             keyPrefix: authResult.keyPrefix,
+            allowedFeeds: authResult.allowedFeeds,
+            dateRangeStart: authResult.dateRangeStart,
+            dateRangeEnd: authResult.dateRangeEnd,
           } as AuthInfo,
         });
       }
