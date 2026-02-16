@@ -8,7 +8,7 @@
     "agent": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run src/cli.ts",
     "cli": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run --allow-sys src/cli/main.ts",
     "dev": "deno run --watch --allow-net --allow-env src/main.ts",
-    "server": "deno run --allow-net --allow-env src/server/main.ts",
+    "server": "deno run --allow-net --allow-env --allow-sys src/server/main.ts",
     "signal-runner": "deno run --allow-net --allow-env --allow-read src/cli/commands/signal-runner.ts",
     "check": "deno check src/main.ts src/cli.ts src/cli/main.ts src/server/main.ts src/cli/commands/signal-runner.ts src/cli/commands/status.ts",
     "test": "deno test --allow-read --allow-write --allow-net --allow-env test/"

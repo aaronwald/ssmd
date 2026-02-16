@@ -23,4 +23,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8080/health || exit 1
 
 # Run the server
-CMD ["deno", "run", "--allow-net", "--allow-env", "--allow-read", "src/server/main.ts"]
+CMD ["deno", "run", "--allow-net", "--allow-env", "--allow-read", "--allow-sys", "src/server/main.ts"]
