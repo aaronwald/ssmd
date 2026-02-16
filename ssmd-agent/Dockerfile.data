@@ -9,8 +9,8 @@ COPY src/server/ ./src/server/
 COPY src/lib/ ./src/lib/
 COPY src/cli/ ./src/cli/
 
-# Cache dependencies
-RUN deno cache src/server/main.ts src/cli/main.ts
+# Cache dependencies (server only; CLI deps cached at runtime for CronJob use)
+RUN deno cache src/server/main.ts
 
 # Create non-root user for security (deno image already has 'deno' user)
 USER deno
