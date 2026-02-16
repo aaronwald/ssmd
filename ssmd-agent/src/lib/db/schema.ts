@@ -86,6 +86,9 @@ export const apiKeys = pgTable("api_keys", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
+  allowedFeeds: text("allowed_feeds").array().notNull(),
+  dateRangeStart: date("date_range_start").notNull(),
+  dateRangeEnd: date("date_range_end").notNull(),
 });
 
 // Settings table for key-value configuration (e.g., guardrails)
