@@ -14,6 +14,9 @@ interface KeysFlags {
   expires?: string;
   name?: string;
   json?: boolean;
+  feeds?: string;
+  "date-from"?: string;
+  "date-to"?: string;
 }
 
 function getApiConfig(): { apiUrl: string; apiKey: string } {
@@ -57,7 +60,30 @@ async function createKey(flags: KeysFlags): Promise<void> {
   const email = flags.email;
   if (!email) {
     console.error("Error: --email is required");
-    console.log("Usage: ssmd keys create --email alice@uni.edu --scopes datasets:read [--expires 72h] [--name 'Alice research']");
+    console.log("Usage: ssmd keys create --email alice@uni.edu --feeds kalshi,polymarket --date-from 2026-01-01 --date-to 2026-06-30");
+    Deno.exit(1);
+  }
+
+  // Validate feeds (required)
+  const feedsStr = flags.feeds;
+  if (!feedsStr) {
+    console.error("Error: --feeds is required");
+    console.log("Usage: ssmd keys create --email alice@uni.edu --feeds kalshi,polymarket --date-from 2026-01-01 --date-to 2026-06-30");
+    Deno.exit(1);
+  }
+  const allowedFeeds = feedsStr.split(",").map((f) => f.trim()).filter(Boolean);
+
+  // Validate date range (required)
+  const dateFrom = flags["date-from"];
+  const dateTo = flags["date-to"];
+  if (!dateFrom || !dateTo) {
+    console.error("Error: --date-from and --date-to are required (YYYY-MM-DD)");
+    console.log("Usage: ssmd keys create --email alice@uni.edu --feeds kalshi --date-from 2026-01-01 --date-to 2026-06-30");
+    Deno.exit(1);
+  }
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(dateFrom) || !dateRegex.test(dateTo)) {
+    console.error("Error: --date-from and --date-to must be YYYY-MM-DD format");
     Deno.exit(1);
   }
 
@@ -84,6 +110,9 @@ async function createKey(flags: KeysFlags): Promise<void> {
     name,
     scopes,
     userEmail: email,
+    allowedFeeds,
+    dateRangeStart: dateFrom,
+    dateRangeEnd: dateTo,
   };
   if (expiresInHours !== undefined) {
     body.expiresInHours = expiresInHours;
@@ -113,6 +142,8 @@ async function createKey(flags: KeysFlags): Promise<void> {
     console.log(`  Prefix:     ${result.prefix}`);
     console.log(`  Name:       ${result.name}`);
     console.log(`  Scopes:     ${result.scopes.join(", ")}`);
+    console.log(`  Feeds:      ${result.allowedFeeds.join(", ")}`);
+    console.log(`  Date range: ${result.dateRangeStart} → ${result.dateRangeEnd}`);
     console.log(`  Created:    ${result.createdAt}`);
     if (result.expiresAt) {
       console.log(`  Expires:    ${result.expiresAt}`);
@@ -143,6 +174,9 @@ async function listKeys(flags: KeysFlags): Promise<void> {
       lastUsedAt: string | null;
       createdAt: string;
       expiresAt: string | null;
+      allowedFeeds: string[];
+      dateRangeStart: string;
+      dateRangeEnd: string;
     }>;
   };
 
@@ -157,14 +191,18 @@ async function listKeys(flags: KeysFlags): Promise<void> {
   }
 
   console.log();
-  console.log(`${"PREFIX".padEnd(14)} ${"EMAIL".padEnd(25)} ${"SCOPES".padEnd(20)} ${"EXPIRES".padEnd(20)} ${"LAST USED".padEnd(20)}`);
-  console.log("-".repeat(100));
+  console.log(`${"PREFIX".padEnd(14)} ${"EMAIL".padEnd(25)} ${"FEEDS".padEnd(30)} ${"DATE RANGE".padEnd(25)} ${"EXPIRES".padEnd(20)}`);
+  console.log("-".repeat(115));
 
   for (const k of keys) {
+    const feeds = k.allowedFeeds.join(",");
+    const farFuture = k.dateRangeEnd >= "2099-01-01";
+    const dateRange = farFuture
+      ? `${k.dateRangeStart} →`
+      : `${k.dateRangeStart} → ${k.dateRangeEnd}`;
     const expires = k.expiresAt ? new Date(k.expiresAt).toISOString().slice(0, 16) : "never";
-    const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt).toISOString().slice(0, 16) : "never";
     console.log(
-      `${k.prefix.padEnd(14)} ${k.userEmail.padEnd(25)} ${k.scopes.join(",").padEnd(20)} ${expires.padEnd(20)} ${lastUsed.padEnd(20)}`
+      `${k.prefix.padEnd(14)} ${k.userEmail.padEnd(25)} ${feeds.padEnd(30)} ${dateRange.padEnd(25)} ${expires.padEnd(20)}`
     );
   }
   console.log();
@@ -210,11 +248,14 @@ function printKeysHelp(): void {
   console.log("  revoke    Revoke an API key by prefix");
   console.log();
   console.log("OPTIONS (create):");
-  console.log("  --email EMAIL       User email (required)");
-  console.log("  --scopes SCOPES     Comma-separated scopes (default: datasets:read)");
-  console.log("  --expires HOURS     Expiration (e.g., 72h, max 720h)");
-  console.log("  --name NAME         Key name/description");
-  console.log("  --json              Output JSON format");
+  console.log("  --email EMAIL         User email (required)");
+  console.log("  --feeds FEEDS         Comma-separated feed names (required, e.g., kalshi,polymarket)");
+  console.log("  --date-from DATE      Start of allowed date range, YYYY-MM-DD (required)");
+  console.log("  --date-to DATE        End of allowed date range, YYYY-MM-DD (required, use 2099-12-31 for open-ended)");
+  console.log("  --scopes SCOPES       Comma-separated scopes (default: datasets:read)");
+  console.log("  --expires HOURS       Expiration (e.g., 72h, max 720h)");
+  console.log("  --name NAME           Key name/description");
+  console.log("  --json                Output JSON format");
   console.log();
   console.log("OPTIONS (list):");
   console.log("  --json              Output JSON format");
@@ -224,7 +265,7 @@ function printKeysHelp(): void {
   console.log("  SSMD_DATA_API_KEY   Admin API key for key management");
   console.log();
   console.log("EXAMPLES:");
-  console.log('  ssmd keys create --email alice@uni.edu --scopes datasets:read --expires 72h --name "Alice research"');
+  console.log('  ssmd keys create --email alice@uni.edu --feeds kalshi,polymarket --date-from 2026-01-01 --date-to 2026-06-30 --scopes datasets:read');
   console.log("  ssmd keys list");
   console.log("  ssmd keys revoke sk_live_abc123");
 }
