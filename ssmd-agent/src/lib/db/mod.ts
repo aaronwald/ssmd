@@ -18,6 +18,7 @@ export {
   polymarketTokens,
   dqDailyScores,
   dqParquetStats,
+  dataAccessLog,
   feeTypeEnum,
   type Event,
   type NewEvent,
@@ -45,6 +46,8 @@ export {
   type NewDqDailyScore,
   type DqParquetStat,
   type NewDqParquetStat,
+  type DataAccessLogEntry,
+  type NewDataAccessLogEntry,
 } from "./schema.ts";
 
 // Event operations
@@ -157,3 +160,10 @@ export {
   getSlaMetrics,
   getGapReports,
 } from "./health.ts";
+
+// Access log operations
+export {
+  logDataAccess,
+  listRecentAccess,
+  listAccessByUser,
+} from "./accesslog.ts";

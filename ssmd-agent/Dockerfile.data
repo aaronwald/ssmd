@@ -7,9 +7,10 @@ WORKDIR /app
 COPY deno.json ./
 COPY src/server/ ./src/server/
 COPY src/lib/ ./src/lib/
+COPY src/cli/ ./src/cli/
 
 # Cache dependencies
-RUN deno cache src/server/main.ts
+RUN deno cache src/server/main.ts src/cli/main.ts
 
 # Create non-root user for security (deno image already has 'deno' user)
 USER deno

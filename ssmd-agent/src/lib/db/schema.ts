@@ -85,6 +85,7 @@ export const apiKeys = pgTable("api_keys", {
   lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
 });
 
 // Settings table for key-value configuration (e.g., guardrails)
@@ -246,6 +247,19 @@ export const dqParquetStats = pgTable("dq_parquet_stats", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Data access audit log
+export const dataAccessLog = pgTable("data_access_log", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  keyPrefix: varchar("key_prefix", { length: 30 }).notNull(),
+  userEmail: varchar("user_email", { length: 255 }).notNull(),
+  feed: varchar("feed", { length: 64 }).notNull(),
+  dateFrom: date("date_from").notNull(),
+  dateTo: date("date_to").notNull(),
+  msgType: varchar("msg_type", { length: 64 }),
+  filesCount: integer("files_count").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Inferred types for select/insert
 export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
@@ -273,3 +287,5 @@ export type DqDailyScore = typeof dqDailyScores.$inferSelect;
 export type NewDqDailyScore = typeof dqDailyScores.$inferInsert;
 export type DqParquetStat = typeof dqParquetStats.$inferSelect;
 export type NewDqParquetStat = typeof dqParquetStats.$inferInsert;
+export type DataAccessLogEntry = typeof dataAccessLog.$inferSelect;
+export type NewDataAccessLogEntry = typeof dataAccessLog.$inferInsert;

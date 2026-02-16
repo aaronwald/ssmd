@@ -9,6 +9,7 @@ export interface CachedKeyInfo {
   scopes: string[];
   rateLimitTier: string;
   revoked: boolean;
+  expiresAt: string | null;
 }
 
 /**

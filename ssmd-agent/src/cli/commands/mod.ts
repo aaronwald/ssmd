@@ -28,10 +28,13 @@ import { handleHealth } from "./health.ts";
 import { handleKraken } from "./kraken-sync.ts";
 import { handlePolymarket } from "./polymarket-sync.ts";
 import { runFundingRateConsumer } from "./funding-rate-consumer.ts";
+import { handleKeys } from "./keys.ts";
+import { handleShare } from "./share.ts";
+import { handleAuditEmail } from "./audit-email.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
-    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag", "env", "config", "balance", "filter", "cache-dir", "results-dir", "run-id", "image", "bucket", "prefix", "trades-out", "spec", "name", "sort", "min-trades", "ticker", "window"],
+    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag", "env", "config", "balance", "filter", "cache-dir", "results-dir", "run-id", "image", "bucket", "prefix", "trades-out", "spec", "name", "sort", "min-trades", "ticker", "window", "email", "scopes", "expires"],
     boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait", "follow", "games-only", "by-series", "json", "csv", "exclude-halted", "detailed", "spot", "perps", "notify-on-failure"],
     alias: { h: "help", v: "version", t: "type", e: "endpoint", f: "follow" },
     default: { wait: true },
@@ -143,6 +146,18 @@ export async function run(args: string[]): Promise<void> {
       await handlePolymarket(subcommand, flags);
       break;
 
+    case "keys":
+      await handleKeys(subcommand, flags);
+      break;
+
+    case "share":
+      await handleShare(subcommand, flags);
+      break;
+
+    case "audit-email":
+      await handleAuditEmail();
+      break;
+
     case "funding-rate-consumer":
       await runFundingRateConsumer(args.slice(1));
       break;
@@ -239,6 +254,9 @@ function printHelp(): void {
   console.log("  kraken            Kraken spot + perpetuals sync");
   console.log("  polymarket        Polymarket conditions sync");
   console.log("  health            Pipeline health checks (connector status, stream flow, archive sync)");
+  console.log("  keys              Manage API keys (create, list, revoke)");
+  console.log("  share             Generate signed URLs for parquet data sharing");
+  console.log("  audit-email       Send daily data access audit report email");
   console.log("  funding-rate-consumer  Consume Kraken Futures funding rates from NATS");
   console.log("  agent             Start interactive agent REPL");
   console.log("");

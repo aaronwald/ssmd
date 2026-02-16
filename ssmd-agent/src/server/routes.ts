@@ -42,6 +42,8 @@ import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
 import { getUsageForPrefix, getTokenUsage, trackTokenUsage } from "../lib/auth/ratelimit.ts";
 import { getGuardrailSettings, applyGuardrails, checkModelAllowed } from "../lib/guardrails/mod.ts";
 import { getRedis } from "../lib/redis/mod.ts";
+import { listParquetFiles, generateSignedUrls, FEED_CONFIG } from "../lib/gcs/mod.ts";
+import { logDataAccess } from "../lib/db/mod.ts";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
 const USAGE_CACHE_TTL = 120; // 2 minutes
@@ -407,6 +409,8 @@ route("POST", "/v1/keys", async (req, ctx) => {
     scopes: string[];
     rateLimitTier?: string;
     environment?: "live" | "test";
+    userEmail?: string;
+    expiresInHours?: number;
   };
 
   // Validate required fields
@@ -421,17 +425,27 @@ route("POST", "/v1/keys", async (req, ctx) => {
     }
   }
 
+  // Validate expiration
+  let expiresAt: Date | undefined;
+  if (body.expiresInHours !== undefined) {
+    if (body.expiresInHours < 1 || body.expiresInHours > 720) {
+      return json({ error: "expiresInHours must be between 1 and 720 (30 days)" }, 400);
+    }
+    expiresAt = new Date(Date.now() + body.expiresInHours * 3600_000);
+  }
+
   const { fullKey, prefix, hash } = await generateApiKey(body.environment ?? "live");
 
   const apiKey = await createApiKey(ctx.db, {
     id: crypto.randomUUID(),
     userId: auth.userId,
-    userEmail: auth.userEmail,
+    userEmail: body.userEmail ?? auth.userEmail,
     keyPrefix: prefix,
     keyHash: hash,
     name: body.name,
     scopes: body.scopes,
     rateLimitTier: body.rateLimitTier ?? "standard",
+    expiresAt: expiresAt ?? null,
   });
 
   // Return full key ONCE
@@ -442,6 +456,7 @@ route("POST", "/v1/keys", async (req, ctx) => {
     scopes: apiKey.scopes,
     rateLimitTier: apiKey.rateLimitTier,
     createdAt: apiKey.createdAt,
+    expiresAt: apiKey.expiresAt,
   }, 201);
 }, true, "admin:write");
 
@@ -466,6 +481,7 @@ route("GET", "/v1/keys", async (req, ctx) => {
       rateLimitTier: k.rateLimitTier,
       lastUsedAt: k.lastUsedAt,
       createdAt: k.createdAt,
+      expiresAt: k.expiresAt,
     })),
   });
 }, true, "secmaster:read");
@@ -548,6 +564,100 @@ route("PUT", "/v1/settings/:key", async (req, ctx) => {
   const setting = await upsertSetting(ctx.db, params.key, body.value);
   return json(setting);
 }, true, "admin:write");
+
+// Data download endpoint - generate signed URLs for parquet files
+route("GET", "/v1/data/download", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+
+  const feed = url.searchParams.get("feed");
+  const from = url.searchParams.get("from");
+  const to = url.searchParams.get("to");
+  const msgType = url.searchParams.get("type") ?? undefined;
+  const expiresParam = url.searchParams.get("expires") ?? "12h";
+
+  // Validate required params
+  if (!feed || !from || !to) {
+    return json({ error: "feed, from, and to query parameters are required" }, 400);
+  }
+
+  // Validate feed name
+  if (!FEED_CONFIG[feed]) {
+    return json({ error: `Invalid feed: ${feed}. Valid feeds: ${Object.keys(FEED_CONFIG).join(", ")}` }, 400);
+  }
+
+  // Validate date format
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(from) || !dateRegex.test(to)) {
+    return json({ error: "from and to must be YYYY-MM-DD format" }, 400);
+  }
+
+  // Validate date range (max 7 days)
+  const fromDate = new Date(from);
+  const toDate = new Date(to);
+  const daysDiff = (toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24);
+  if (daysDiff < 0) {
+    return json({ error: "from must be before or equal to to" }, 400);
+  }
+  if (daysDiff > 6) {
+    return json({ error: "Maximum date range is 7 days" }, 400);
+  }
+
+  // Parse expires param (e.g., "12h", "6h")
+  const expiresMatch = expiresParam.match(/^(\d+)h$/);
+  if (!expiresMatch) {
+    return json({ error: "expires must be in format like '12h'" }, 400);
+  }
+  const expiresInHours = parseInt(expiresMatch[1], 10);
+  if (expiresInHours < 1 || expiresInHours > 12) {
+    return json({ error: "expires must be between 1h and 12h" }, 400);
+  }
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) {
+    return json({ error: "GCS_BUCKET not configured" }, 503);
+  }
+
+  // List and sign files
+  const files = await listParquetFiles(bucket, feed, from, to, msgType);
+
+  if (files.length > 200) {
+    return json({ error: `Too many files (${files.length}). Maximum 200 per request. Narrow your date range or filter by type.` }, 400);
+  }
+
+  const signedFiles = await generateSignedUrls(bucket, files, expiresInHours);
+
+  // Audit log (fire-and-forget)
+  logDataAccess(ctx.db, {
+    keyPrefix: auth.keyPrefix,
+    userEmail: auth.userEmail,
+    feed,
+    dateFrom: from,
+    dateTo: to,
+    msgType: msgType ?? null,
+    filesCount: signedFiles.length,
+  }).catch((err) => console.error("Failed to log data access:", err));
+
+  return json({
+    feed,
+    from,
+    to,
+    type: msgType ?? null,
+    files: signedFiles,
+    expiresIn: `${expiresInHours}h`,
+  });
+}, true, "datasets:read");
+
+// Data feeds listing endpoint
+route("GET", "/v1/data/feeds", async () => {
+  const feeds = Object.entries(FEED_CONFIG).map(([name, info]) => ({
+    name,
+    prefix: info.prefix,
+    stream: info.stream,
+    messageTypes: info.messageTypes,
+  }));
+  return json({ feeds });
+}, true, "datasets:read");
 
 // Chat completions proxy (OpenRouter)
 route("POST", "/v1/chat/completions", async (req, ctx) => {

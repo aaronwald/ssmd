@@ -61,6 +61,7 @@ export async function validateApiKey(
       scopes: dbKey.scopes,
       rateLimitTier: dbKey.rateLimitTier,
       revoked: dbKey.revokedAt !== null,
+      expiresAt: dbKey.expiresAt?.toISOString() ?? null,
     };
 
     // Cache for next time
@@ -70,6 +71,11 @@ export async function validateApiKey(
   // Check if revoked
   if (keyInfo.revoked) {
     return { valid: false, status: 401, error: "API key revoked" };
+  }
+
+  // Check if expired
+  if (keyInfo.expiresAt && new Date(keyInfo.expiresAt) < new Date()) {
+    return { valid: false, status: 401, error: "API key expired" };
   }
 
   // Verify secret
