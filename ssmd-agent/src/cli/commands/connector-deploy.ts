@@ -322,7 +322,7 @@ async function logsConnector(flags: ConnectorDeployFlags, opts: KubectlOptions):
     ], opts).catch(() => "");
 
     // If no deployment in status, try the conventional name
-    const targetDeployment = deploymentName.trim() || `connector-${name}`;
+    const targetDeployment = deploymentName.trim() || `${name}-connector`;
 
     // Build kubectl logs args
     const logsArgs = ["logs", `deployment/${targetDeployment}`];

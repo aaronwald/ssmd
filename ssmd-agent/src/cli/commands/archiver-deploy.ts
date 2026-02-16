@@ -392,7 +392,7 @@ async function logsArchiver(flags: ArchiverDeployFlags, opts: KubectlOptions): P
     ], opts).catch(() => "");
 
     // If no deployment in status, try the conventional name
-    const targetDeployment = deploymentName.trim() || `archiver-${name}`;
+    const targetDeployment = deploymentName.trim() || `${name}-archiver`;
 
     // Build kubectl logs args
     const logsArgs = ["logs", `deployment/${targetDeployment}`];
