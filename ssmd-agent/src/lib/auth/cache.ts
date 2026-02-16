@@ -10,6 +10,9 @@ export interface CachedKeyInfo {
   rateLimitTier: string;
   revoked: boolean;
   expiresAt: string | null;
+  allowedFeeds: string[];
+  dateRangeStart: string;  // YYYY-MM-DD
+  dateRangeEnd: string;    // YYYY-MM-DD
 }
 
 /**

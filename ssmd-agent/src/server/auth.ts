@@ -23,6 +23,9 @@ export interface AuthResult {
   keyPrefix?: string;
   rateLimitRemaining?: number;
   rateLimitResetAt?: number;
+  allowedFeeds?: string[];
+  dateRangeStart?: string;
+  dateRangeEnd?: string;
 }
 
 /**
@@ -62,6 +65,9 @@ export async function validateApiKey(
       rateLimitTier: dbKey.rateLimitTier,
       revoked: dbKey.revokedAt !== null,
       expiresAt: dbKey.expiresAt?.toISOString() ?? null,
+      allowedFeeds: dbKey.allowedFeeds,
+      dateRangeStart: dbKey.dateRangeStart,
+      dateRangeEnd: dbKey.dateRangeEnd,
     };
 
     // Cache for next time
@@ -107,6 +113,9 @@ export async function validateApiKey(
     keyPrefix: prefix,
     rateLimitRemaining: rateLimit.remaining,
     rateLimitResetAt: rateLimit.resetAt,
+    allowedFeeds: keyInfo.allowedFeeds,
+    dateRangeStart: keyInfo.dateRangeStart,
+    dateRangeEnd: keyInfo.dateRangeEnd,
   };
 }
 
