@@ -19,9 +19,11 @@ message_types:
     timestamp_field: _received_at
     timestamp_format: pipeline
     sequenced: false
+    fanout: true  # data[] array produces N parquet rows per JSONL line
   trade:
     identifier_field: symbol
     timestamp_field: timestamp
     timestamp_format: iso8601
     sequenced: false
+    fanout: true  # data[] array produces N parquet rows per JSONL line
     # trade_id exists but is a UUID string, not a monotonic integer
