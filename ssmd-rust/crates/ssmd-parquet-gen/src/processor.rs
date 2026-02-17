@@ -9,12 +9,79 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use ssmd_schemas::{detect_message_type, MessageSchema, SchemaRegistry};
 
 use crate::gcs::GcsClient;
+
+/// Per-file metadata entry in the manifest
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ParquetFileEntry {
+    pub path: String,
+    pub message_type: String,
+    pub hour: String,
+    pub bytes: usize,
+    pub row_count: usize,
+    pub schema_name: String,
+    pub schema_version: String,
+}
+
+/// Column definition within a schema
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SchemaColumnDef {
+    pub name: String,
+    pub arrow_type: String,
+    pub nullable: bool,
+}
+
+/// Schema info for a message type in the manifest
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ManifestSchemaInfo {
+    pub schema_name: String,
+    pub schema_version: String,
+    pub columns: Vec<SchemaColumnDef>,
+}
+
+/// Format an Arrow DataType as a readable string
+pub fn format_arrow_type(dt: &arrow::datatypes::DataType) -> String {
+    use arrow::datatypes::DataType;
+    match dt {
+        DataType::Boolean => "Boolean".to_string(),
+        DataType::Int8 => "Int8".to_string(),
+        DataType::Int16 => "Int16".to_string(),
+        DataType::Int32 => "Int32".to_string(),
+        DataType::Int64 => "Int64".to_string(),
+        DataType::UInt8 => "UInt8".to_string(),
+        DataType::UInt16 => "UInt16".to_string(),
+        DataType::UInt32 => "UInt32".to_string(),
+        DataType::UInt64 => "UInt64".to_string(),
+        DataType::Float16 => "Float16".to_string(),
+        DataType::Float32 => "Float32".to_string(),
+        DataType::Float64 => "Float64".to_string(),
+        DataType::Utf8 => "Utf8".to_string(),
+        DataType::LargeUtf8 => "LargeUtf8".to_string(),
+        DataType::Binary => "Binary".to_string(),
+        DataType::LargeBinary => "LargeBinary".to_string(),
+        DataType::Date32 => "Date32".to_string(),
+        DataType::Date64 => "Date64".to_string(),
+        DataType::Timestamp(unit, tz) => {
+            let unit_str = match unit {
+                arrow::datatypes::TimeUnit::Second => "Second",
+                arrow::datatypes::TimeUnit::Millisecond => "Millisecond",
+                arrow::datatypes::TimeUnit::Microsecond => "Microsecond",
+                arrow::datatypes::TimeUnit::Nanosecond => "Nanosecond",
+            };
+            match tz {
+                Some(tz) => format!("Timestamp({}, {})", unit_str, tz),
+                None => format!("Timestamp({}, None)", unit_str),
+            }
+        }
+        DataType::List(field) => format!("List({})", format_arrow_type(field.data_type())),
+        other => format!("{:?}", other),
+    }
+}
 
 fn for_each_gzip_line<F>(compressed: &[u8], mut on_line: F) -> std::io::Result<()>
 where
@@ -53,10 +120,11 @@ pub struct HourStats {
     pub records_by_type: HashMap<String, usize>,
     pub parquet_files_written: usize,
     pub bytes_written: usize,
+    pub files_written: Vec<ParquetFileEntry>,
 }
 
 /// Stats for the parquet manifest (single hour or aggregated totals)
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ManifestStats {
     pub files_read: usize,
     pub lines_total: usize,
@@ -70,7 +138,7 @@ pub struct ManifestStats {
 }
 
 /// Parquet generation manifest written to GCS
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ParquetManifest {
     pub feed: String,
     pub stream: String,
@@ -79,6 +147,10 @@ pub struct ParquetManifest {
     pub version: String,
     pub hours: BTreeMap<String, ManifestStats>,
     pub totals: ManifestStats,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ParquetFileEntry>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas: BTreeMap<String, ManifestSchemaInfo>,
 }
 
 impl ManifestStats {
@@ -347,6 +419,15 @@ async fn process_hour(
             .records_by_type
             .insert(msg_type.clone(), batch.num_rows());
         stats.bytes_written += bytes_len;
+        stats.files_written.push(ParquetFileEntry {
+            path: parquet_path.clone(),
+            message_type: msg_type.clone(),
+            hour: hour_time_str.clone(),
+            bytes: bytes_len,
+            row_count: batch.num_rows(),
+            schema_name: schema.schema_name().to_string(),
+            schema_version: schema.schema_version().to_string(),
+        });
     }
 
     info!(
@@ -517,14 +598,51 @@ async fn write_manifest(
         hours.insert(hour_key_4digit, hour_manifest);
     }
 
+    // Collect per-file entries from all hours
+    let files: Vec<ParquetFileEntry> = all_stats
+        .iter()
+        .flat_map(|s| s.files_written.iter().cloned())
+        .collect();
+
+    // Build schema info from the registry
+    let registry = SchemaRegistry::for_feed(feed);
+    let mut schemas = BTreeMap::new();
+    for file in &files {
+        schemas
+            .entry(file.message_type.clone())
+            .or_insert_with(|| {
+                let columns = registry
+                    .get(&file.message_type)
+                    .map(|s| {
+                        s.schema()
+                            .fields()
+                            .iter()
+                            .map(|f| SchemaColumnDef {
+                                name: f.name().clone(),
+                                arrow_type: format_arrow_type(f.data_type()),
+                                nullable: f.is_nullable(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                ManifestSchemaInfo {
+                    schema_name: file.schema_name.clone(),
+                    schema_version: file.schema_version.clone(),
+                    columns,
+                }
+            });
+    }
+
     let manifest = ParquetManifest {
         feed: feed.to_string(),
         stream: stream.to_string(),
         date: date_str.to_string(),
         generated_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        version: "1.0.0".to_string(),
+        version: "2.0.0".to_string(),
         hours,
         totals,
+        files,
+        schemas,
     };
 
     let json_bytes = serde_json::to_vec_pretty(&manifest)?;

@@ -1,9 +1,10 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use chrono::NaiveDate;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod catalog;
 mod gcs;
 mod processor;
 
@@ -13,21 +14,24 @@ mod processor;
     about = "Generate Parquet files from JSONL.gz archives in GCS"
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Feed name (e.g., kalshi, kraken-futures, polymarket)
     #[arg(long)]
-    feed: String,
+    feed: Option<String>,
 
     /// Stream name (e.g., crypto, futures, markets)
     #[arg(long)]
-    stream: String,
+    stream: Option<String>,
 
     /// Date to process (YYYY-MM-DD)
     #[arg(long)]
-    date: NaiveDate,
+    date: Option<NaiveDate>,
 
     /// GCS bucket name
     #[arg(long)]
-    bucket: String,
+    bucket: Option<String>,
 
     /// GCS path prefix (matches archiver storage.remote.prefix, defaults to feed name)
     #[arg(long)]
@@ -42,6 +46,19 @@ struct Args {
     dry_run: bool,
 }
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Generate root catalog.json from per-date manifests
+    Catalog {
+        /// GCS bucket name
+        #[arg(long)]
+        bucket: String,
+        /// Output path in bucket for catalog.json
+        #[arg(long, default_value = "catalog.json")]
+        output: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -52,27 +69,50 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let prefix = args.prefix.as_deref().unwrap_or(&args.feed);
+    // Dispatch subcommand
+    if let Some(Command::Catalog { bucket, output }) = args.command {
+        info!(bucket = %bucket, output = %output, "Generating catalog");
+        let gcs = gcs::GcsClient::from_env(&bucket)?;
+        catalog::generate_catalog(&gcs, &output).await?;
+        info!("Catalog generation complete");
+        return Ok(());
+    }
+
+    // Backward-compatible flat args for CronJob invocation
+    let feed = args
+        .feed
+        .ok_or_else(|| anyhow::anyhow!("--feed is required"))?;
+    let stream = args
+        .stream
+        .ok_or_else(|| anyhow::anyhow!("--stream is required"))?;
+    let date = args
+        .date
+        .ok_or_else(|| anyhow::anyhow!("--date is required"))?;
+    let bucket = args
+        .bucket
+        .ok_or_else(|| anyhow::anyhow!("--bucket is required"))?;
+
+    let prefix = args.prefix.as_deref().unwrap_or(&feed);
 
     info!(
-        feed = %args.feed,
-        stream = %args.stream,
-        date = %args.date,
-        bucket = %args.bucket,
+        feed = %feed,
+        stream = %stream,
+        date = %date,
+        bucket = %bucket,
         prefix = %prefix,
         overwrite = args.overwrite,
         dry_run = args.dry_run,
         "Starting parquet generation"
     );
 
-    let gcs = gcs::GcsClient::from_env(&args.bucket)?;
+    let gcs = gcs::GcsClient::from_env(&bucket)?;
 
     let stats = processor::process_date(
         &gcs,
         prefix,
-        &args.feed,
-        &args.stream,
-        &args.date,
+        &feed,
+        &stream,
+        &date,
         args.overwrite,
         args.dry_run,
     )
@@ -89,6 +129,10 @@ async fn main() -> Result<()> {
         total_bytes = total_bytes,
         "Processing complete"
     );
+
+    if total_records == 0 {
+        bail!("No records processed — check feed/stream/date");
+    }
 
     Ok(())
 }

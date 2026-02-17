@@ -1,5 +1,4 @@
 // HTTP server routes
-import { listDatasets } from "./handlers/datasets.ts";
 import { globalRegistry } from "./metrics.ts";
 import { validateApiKey, hasScope } from "./auth.ts";
 import {
@@ -42,7 +41,7 @@ import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
 import { getUsageForPrefix, getTokenUsage, trackTokenUsage } from "../lib/auth/ratelimit.ts";
 import { getGuardrailSettings, applyGuardrails, checkModelAllowed } from "../lib/guardrails/mod.ts";
 import { getRedis } from "../lib/redis/mod.ts";
-import { listParquetFiles, generateSignedUrls, FEED_CONFIG } from "../lib/gcs/mod.ts";
+import { listParquetFiles, generateSignedUrls, FEED_CONFIG, getCatalog } from "../lib/gcs/mod.ts";
 import { logDataAccess } from "../lib/db/mod.ts";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
@@ -113,15 +112,18 @@ route("GET", "/metrics", async () => {
   });
 }, false);
 
-// Datasets endpoint
-route("GET", "/datasets", async (req, ctx) => {
+// Legacy /datasets → redirect to /v1/data/catalog
+route("GET", "/datasets", async (req) => {
   const url = new URL(req.url);
-  const feedFilter = url.searchParams.get("feed") ?? undefined;
-  const fromDate = url.searchParams.get("from") ?? undefined;
-  const toDate = url.searchParams.get("to") ?? undefined;
-
-  const datasets = await listDatasets(ctx.dataDir, feedFilter, fromDate, toDate);
-  return json({ datasets });
+  const target = new URL("/v1/data/catalog", url.origin);
+  // Forward query params
+  for (const [key, value] of url.searchParams) {
+    target.searchParams.set(key, value);
+  }
+  return new Response(null, {
+    status: 301,
+    headers: { "Location": target.toString() },
+  });
 }, true, "datasets:read");
 
 // Events endpoints
@@ -707,8 +709,29 @@ route("GET", "/v1/data/download", async (req, ctx) => {
   });
 }, true, "datasets:read");
 
-// Data feeds listing endpoint
+// Data feeds listing endpoint — enriched from catalog when available
 route("GET", "/v1/data/feeds", async () => {
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (bucket) {
+    try {
+      const catalog = await getCatalog(bucket);
+      if (catalog) {
+        const feeds = catalog.feeds.map((f) => ({
+          name: f.feed,
+          prefix: f.prefix,
+          stream: f.stream,
+          messageTypes: f.message_types,
+          dateMin: f.date_min,
+          dateMax: f.date_max,
+          totalFiles: f.total_files,
+          totalRows: f.total_rows,
+        }));
+        return json({ feeds, catalogGeneratedAt: catalog.generated_at });
+      }
+    } catch {
+      // Fall through to FEED_CONFIG
+    }
+  }
   const feeds = Object.entries(FEED_CONFIG).map(([name, info]) => ({
     name,
     prefix: info.prefix,
@@ -716,6 +739,122 @@ route("GET", "/v1/data/feeds", async () => {
     messageTypes: info.messageTypes,
   }));
   return json({ feeds });
+}, true, "datasets:read");
+
+// Data catalog endpoint — discover available feeds and dates
+route("GET", "/v1/data/catalog", async (req) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+
+  const feedParam = url.searchParams.get("feed");
+  const fromParam = url.searchParams.get("from");
+  const toParam = url.searchParams.get("to");
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) {
+    return json({ error: "GCS_BUCKET not configured" }, 503);
+  }
+
+  const catalog = await getCatalog(bucket);
+  if (!catalog) {
+    return json({ error: "Catalog not available. Run parquet-gen catalog to generate." }, 503);
+  }
+
+  // Filter feeds by key's allowed feeds
+  const allowedFeeds = catalog.feeds.filter((f) =>
+    auth.allowedFeeds.includes(f.feed)
+  );
+
+  if (feedParam) {
+    // Single-feed detail: return dates within range
+    const feedSummary = allowedFeeds.find((f) => f.feed === feedParam);
+    if (!feedSummary) {
+      return json({ error: `Feed not found or not authorized: ${feedParam}` }, 404);
+    }
+
+    let dates = feedSummary.dates;
+    if (fromParam) {
+      dates = dates.filter((d) => d >= fromParam);
+    }
+    if (toParam) {
+      dates = dates.filter((d) => d <= toParam);
+    }
+
+    // Build per-date info from totals (lightweight, no per-date manifest fetch)
+    const dateEntries = dates.map((d) => ({
+      date: d,
+      messageTypes: feedSummary.message_types,
+    }));
+
+    return json({
+      feed: feedParam,
+      from: fromParam ?? feedSummary.date_min,
+      to: toParam ?? feedSummary.date_max,
+      dates: dateEntries,
+    });
+  }
+
+  // Overview: all authorized feeds
+  const feedOverviews = allowedFeeds.map((f) => ({
+    feed: f.feed,
+    stream: f.stream,
+    messageTypes: f.message_types,
+    dateMin: f.date_min,
+    dateMax: f.date_max,
+    totalFiles: f.total_files,
+    totalRows: f.total_rows,
+  }));
+
+  return json({
+    feeds: feedOverviews,
+    catalogGeneratedAt: catalog.generated_at,
+  });
+}, true, "datasets:read");
+
+// Data schemas endpoint — discover parquet column schemas
+route("GET", "/v1/data/schemas", async (req) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+
+  const feedParam = url.searchParams.get("feed");
+  const typeParam = url.searchParams.get("type");
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) {
+    return json({ error: "GCS_BUCKET not configured" }, 503);
+  }
+
+  const catalog = await getCatalog(bucket);
+  if (!catalog) {
+    return json({ error: "Catalog not available. Run parquet-gen catalog to generate." }, 503);
+  }
+
+  // Filter feeds by allowed feeds
+  let feeds = catalog.feeds.filter((f) => auth.allowedFeeds.includes(f.feed));
+  if (feedParam) {
+    feeds = feeds.filter((f) => f.feed === feedParam);
+  }
+
+  // deno-lint-ignore no-explicit-any
+  const schemas: any[] = [];
+  for (const f of feeds) {
+    for (const [msgType, schemaInfo] of Object.entries(f.schemas)) {
+      if (typeParam && msgType !== typeParam) continue;
+      schemas.push({
+        feed: f.feed,
+        messageType: msgType,
+        schemaName: schemaInfo.schema_name,
+        schemaVersion: schemaInfo.schema_version,
+        columns: schemaInfo.columns.map((c) => ({
+          name: c.name,
+          type: c.arrow_type,
+          nullable: c.nullable,
+        })),
+      });
+    }
+  }
+
+  return json({ schemas });
 }, true, "datasets:read");
 
 // Chat completions proxy (OpenRouter)

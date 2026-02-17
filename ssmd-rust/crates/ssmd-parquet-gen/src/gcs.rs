@@ -51,6 +51,23 @@ impl GcsClient {
         Ok(())
     }
 
+    /// List all files matching a suffix under a prefix
+    pub async fn list_files_with_suffix(&self, prefix: &str, suffix: &str) -> Result<Vec<String>> {
+        use futures_util::StreamExt;
+        let prefix_path = ObjectPath::from(prefix);
+        let mut paths = Vec::new();
+        let mut stream = self.store.list(Some(&prefix_path));
+        while let Some(meta) = stream.next().await {
+            let meta = meta?;
+            let path = meta.location.to_string();
+            if path.ends_with(suffix) {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+        Ok(paths)
+    }
+
     /// Check if a path exists
     pub async fn exists(&self, path: &str) -> Result<bool> {
         let obj_path = ObjectPath::from(path);
