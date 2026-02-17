@@ -6,9 +6,9 @@ import { Storage } from "@google-cloud/storage";
 
 /** Feed → GCS path mapping (matches parquet-gen CronJob layout) */
 export const FEED_CONFIG: Record<string, FeedInfo> = {
-  "kalshi": { prefix: "kalshi", stream: "crypto", messageTypes: ["ticker", "trade"] },
+  "kalshi": { prefix: "kalshi", stream: "crypto", messageTypes: ["ticker", "trade", "market_lifecycle_v2"] },
   "kraken-futures": { prefix: "kraken-futures", stream: "futures", messageTypes: ["ticker", "trade"] },
-  "polymarket": { prefix: "polymarket", stream: "markets", messageTypes: ["book", "last_trade_price"] },
+  "polymarket": { prefix: "polymarket", stream: "markets", messageTypes: ["book", "last_trade_price", "price_change", "best_bid_ask"] },
 };
 
 export interface FeedInfo {
