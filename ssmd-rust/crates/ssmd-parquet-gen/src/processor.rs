@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader};
-use anyhow::Result;
+use anyhow::{bail, Result};
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -9,6 +9,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
+use serde::Serialize;
 use tracing::{info, warn};
 
 use ssmd_schemas::{detect_message_type, MessageSchema, SchemaRegistry};
@@ -40,12 +41,80 @@ where
 /// Stats for a single hour's processing
 #[derive(Debug, Default)]
 pub struct HourStats {
+    pub hour_key: String,
     pub files_read: usize,
-    pub lines_parsed: usize,
-    pub lines_skipped: usize,
-    pub parquet_files_written: usize,
+    pub lines_total: usize,
+    pub lines_empty: usize,
+    pub lines_json_error: usize,
+    pub lines_type_unknown: usize,
+    pub lines_no_schema: HashMap<String, usize>,
+    pub parse_batch_input: HashMap<String, usize>,
+    pub parse_batch_dropped: HashMap<String, usize>,
     pub records_by_type: HashMap<String, usize>,
+    pub parquet_files_written: usize,
     pub bytes_written: usize,
+}
+
+/// Stats for the parquet manifest (single hour or aggregated totals)
+#[derive(Debug, Serialize, Default)]
+pub struct ManifestStats {
+    pub files_read: usize,
+    pub lines_total: usize,
+    pub lines_empty: usize,
+    pub lines_json_error: usize,
+    pub lines_type_unknown: usize,
+    pub lines_no_schema: BTreeMap<String, usize>,
+    pub parse_batch_input: BTreeMap<String, usize>,
+    pub parse_batch_dropped: BTreeMap<String, usize>,
+    pub records_written: BTreeMap<String, usize>,
+}
+
+/// Parquet generation manifest written to GCS
+#[derive(Debug, Serialize)]
+pub struct ParquetManifest {
+    pub feed: String,
+    pub stream: String,
+    pub date: String,
+    pub generated_at: String,
+    pub version: String,
+    pub hours: BTreeMap<String, ManifestStats>,
+    pub totals: ManifestStats,
+}
+
+impl ManifestStats {
+    fn from_hour_stats(stats: &HourStats) -> Self {
+        Self {
+            files_read: stats.files_read,
+            lines_total: stats.lines_total,
+            lines_empty: stats.lines_empty,
+            lines_json_error: stats.lines_json_error,
+            lines_type_unknown: stats.lines_type_unknown,
+            lines_no_schema: stats.lines_no_schema.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+            parse_batch_input: stats.parse_batch_input.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+            parse_batch_dropped: stats.parse_batch_dropped.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+            records_written: stats.records_by_type.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        }
+    }
+
+    fn merge(&mut self, other: &ManifestStats) {
+        self.files_read += other.files_read;
+        self.lines_total += other.lines_total;
+        self.lines_empty += other.lines_empty;
+        self.lines_json_error += other.lines_json_error;
+        self.lines_type_unknown += other.lines_type_unknown;
+        for (k, v) in &other.lines_no_schema {
+            *self.lines_no_schema.entry(k.clone()).or_default() += v;
+        }
+        for (k, v) in &other.parse_batch_input {
+            *self.parse_batch_input.entry(k.clone()).or_default() += v;
+        }
+        for (k, v) in &other.parse_batch_dropped {
+            *self.parse_batch_dropped.entry(k.clone()).or_default() += v;
+        }
+        for (k, v) in &other.records_written {
+            *self.records_written.entry(k.clone()).or_default() += v;
+        }
+    }
 }
 
 /// Process all JSONL.gz files for a given feed/stream/date.
@@ -118,6 +187,10 @@ pub async fn process_date(
         all_stats.push(stats);
     }
 
+    if !all_stats.is_empty() {
+        write_manifest(gcs, gcs_prefix, feed, stream, &date_str, &all_stats).await?;
+    }
+
     Ok(all_stats)
 }
 
@@ -135,7 +208,7 @@ async fn process_hour(
     hour_ts: DateTime<Utc>,
     overwrite: bool,
 ) -> Result<HourStats> {
-    let mut stats = HourStats::default();
+    let mut stats = HourStats { hour_key: hour_key.to_string(), ..Default::default() };
     let hour_time_str = format!("{}00", hour_key);
 
     // Collect all messages from all files in this hour
@@ -158,7 +231,10 @@ async fn process_hour(
 
         let line_result = for_each_gzip_line(&compressed, |line| {
 
+            stats.lines_total += 1;
+
             if line.trim().is_empty() {
+                stats.lines_empty += 1;
                 return;
             }
 
@@ -166,7 +242,7 @@ async fn process_hour(
                 Ok(v) => v,
                 Err(e) => {
                     warn!(error = %e, "Failed to parse JSON line, skipping");
-                    stats.lines_skipped += 1;
+                    stats.lines_json_error += 1;
                     return;
                 }
             };
@@ -174,19 +250,18 @@ async fn process_hour(
             let msg_type = match detect_message_type(feed, &json) {
                 Some(t) => t,
                 None => {
-                    stats.lines_skipped += 1;
+                    stats.lines_type_unknown += 1;
                     return;
                 }
             };
 
             // Check if we have a schema for this type
             if registry.get(&msg_type).is_none() {
-                // No schema registered for this type — skip silently
+                *stats.lines_no_schema.entry(msg_type).or_default() += 1;
                 return;
             }
 
             line_counter += 1;
-            stats.lines_parsed += 1;
 
             // Extract archiver-injected metadata, or fall back for old files
             let msg_nats_seq = json.get("_nats_seq")
@@ -233,6 +308,8 @@ async fn process_hour(
             }
         }
 
+        stats.parse_batch_input.insert(msg_type.clone(), messages.len());
+
         let batch = match schema.parse_batch(messages) {
             Ok(b) => b,
             Err(e) => {
@@ -242,8 +319,15 @@ async fn process_hour(
         };
 
         if batch.num_rows() == 0 {
-            warn!(msg_type = %msg_type, messages = messages.len(), "parse_batch returned 0 rows, skipping");
-            continue;
+            bail!(
+                "parse_batch returned 0 rows for type '{}' with {} input messages — likely schema field name mismatch",
+                msg_type, messages.len()
+            );
+        }
+
+        let dropped = messages.len() - batch.num_rows();
+        if dropped > 0 {
+            stats.parse_batch_dropped.insert(msg_type.clone(), dropped);
         }
 
         let parquet_bytes = write_parquet_to_bytes(&batch, schema)?;
@@ -268,8 +352,10 @@ async fn process_hour(
     info!(
         hour = %hour_key,
         files_read = stats.files_read,
-        lines_parsed = stats.lines_parsed,
-        lines_skipped = stats.lines_skipped,
+        lines_total = stats.lines_total,
+        lines_empty = stats.lines_empty,
+        lines_json_error = stats.lines_json_error,
+        lines_type_unknown = stats.lines_type_unknown,
         parquet_files = stats.parquet_files_written,
         "Hour processing complete"
     );
@@ -410,6 +496,47 @@ mod tests {
 
         assert_eq!(non_empty_lines, 10_000);
     }
+}
+
+/// Write parquet-manifest.json to GCS with per-hour and aggregate stats
+async fn write_manifest(
+    gcs: &GcsClient,
+    gcs_prefix: &str,
+    feed: &str,
+    stream: &str,
+    date_str: &str,
+    all_stats: &[HourStats],
+) -> Result<()> {
+    let mut hours = BTreeMap::new();
+    let mut totals = ManifestStats::default();
+
+    for stats in all_stats {
+        let hour_manifest = ManifestStats::from_hour_stats(stats);
+        totals.merge(&hour_manifest);
+        let hour_key_4digit = format!("{}00", stats.hour_key);
+        hours.insert(hour_key_4digit, hour_manifest);
+    }
+
+    let manifest = ParquetManifest {
+        feed: feed.to_string(),
+        stream: stream.to_string(),
+        date: date_str.to_string(),
+        generated_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        version: "1.0.0".to_string(),
+        hours,
+        totals,
+    };
+
+    let json_bytes = serde_json::to_vec_pretty(&manifest)?;
+    let manifest_path = format!(
+        "{}/{}/{}/{}/parquet-manifest.json",
+        gcs_prefix, feed, stream, date_str
+    );
+
+    info!(path = %manifest_path, bytes = json_bytes.len(), "Writing parquet manifest");
+    gcs.put(&manifest_path, Bytes::from(json_bytes)).await?;
+
+    Ok(())
 }
 
 /// Write a RecordBatch to Parquet bytes in memory
