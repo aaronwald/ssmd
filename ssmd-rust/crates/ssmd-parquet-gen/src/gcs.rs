@@ -78,4 +78,13 @@ impl GcsClient {
         }
     }
 
+    /// Download a file if it exists, returning None on NotFound
+    pub async fn get_optional(&self, path: &str) -> Result<Option<Bytes>> {
+        let obj_path = ObjectPath::from(path);
+        match self.store.get(&obj_path).await {
+            Ok(result) => Ok(Some(result.bytes().await?)),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
 }

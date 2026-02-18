@@ -124,7 +124,7 @@ pub struct HourStats {
 }
 
 /// Stats for the parquet manifest (single hour or aggregated totals)
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct ManifestStats {
     pub files_read: usize,
     pub lines_total: usize,
@@ -192,12 +192,16 @@ impl ManifestStats {
 /// Process all JSONL.gz files for a given feed/stream/date.
 /// `gcs_prefix` is the top-level GCS prefix (matches archiver storage.remote.prefix).
 /// Full GCS path: {gcs_prefix}/{feed}/{stream}/{date}/
+/// Optional `hour_start`/`hour_end` filter processing to a range of hours (inclusive).
+#[allow(clippy::too_many_arguments)]
 pub async fn process_date(
     gcs: &GcsClient,
     gcs_prefix: &str,
     feed: &str,
     stream: &str,
     date: &NaiveDate,
+    hour_start: Option<u32>,
+    hour_end: Option<u32>,
     overwrite: bool,
     dry_run: bool,
 ) -> Result<Vec<HourStats>> {
@@ -220,6 +224,27 @@ pub async fn process_date(
 
     let mut hours: Vec<String> = by_hour.keys().cloned().collect();
     hours.sort();
+
+    // Filter hours to requested range
+    if hour_start.is_some() || hour_end.is_some() {
+        let start = hour_start.unwrap_or(0);
+        let end = hour_end.unwrap_or(23);
+        let before = hours.len();
+        hours.retain(|h| {
+            if let Ok(hour_val) = h.parse::<u32>() {
+                hour_val >= start && hour_val <= end
+            } else {
+                false
+            }
+        });
+        info!(
+            hour_start = start,
+            hour_end = end,
+            total_hours = before,
+            filtered_hours = hours.len(),
+            "Applied hour range filter"
+        );
+    }
 
     if dry_run {
         info!("Dry run — listing files by hour:");
@@ -260,7 +285,7 @@ pub async fn process_date(
     }
 
     if !all_stats.is_empty() {
-        write_manifest(gcs, gcs_prefix, feed, stream, &date_str, &all_stats).await?;
+        write_or_merge_manifest(gcs, gcs_prefix, feed, stream, &date_str, &all_stats).await?;
     }
 
     Ok(all_stats)
@@ -579,8 +604,10 @@ mod tests {
     }
 }
 
-/// Write parquet-manifest.json to GCS with per-hour and aggregate stats
-async fn write_manifest(
+/// Write or merge parquet-manifest.json to GCS.
+/// If an existing manifest is present, merge new hour stats into it
+/// (supporting incremental 6-hour runs). Otherwise create fresh.
+async fn write_or_merge_manifest(
     gcs: &GcsClient,
     gcs_prefix: &str,
     feed: &str,
@@ -588,25 +615,51 @@ async fn write_manifest(
     date_str: &str,
     all_stats: &[HourStats],
 ) -> Result<()> {
-    let mut hours = BTreeMap::new();
-    let mut totals = ManifestStats::default();
+    let manifest_path = format!(
+        "{}/{}/{}/{}/parquet-manifest.json",
+        gcs_prefix, feed, stream, date_str
+    );
 
+    // Try to load existing manifest for merge
+    let existing = match gcs.get_optional(&manifest_path).await? {
+        Some(bytes) => {
+            match serde_json::from_slice::<ParquetManifest>(&bytes) {
+                Ok(m) => {
+                    info!(path = %manifest_path, hours = m.hours.len(), "Loaded existing manifest for merge");
+                    Some(m)
+                }
+                Err(e) => {
+                    warn!(path = %manifest_path, error = %e, "Failed to parse existing manifest, creating fresh");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
+    // Start from existing or empty
+    let mut hours = existing.as_ref().map(|m| m.hours.clone()).unwrap_or_default();
+    let mut files: Vec<ParquetFileEntry> = existing.as_ref().map(|m| m.files.clone()).unwrap_or_default();
+    let mut schemas = existing.as_ref().map(|m| m.schemas.clone()).unwrap_or_default();
+
+    // Merge new hour stats — only update hours that produced new parquet files
     for stats in all_stats {
-        let hour_manifest = ManifestStats::from_hour_stats(stats);
-        totals.merge(&hour_manifest);
+        if stats.parquet_files_written == 0 {
+            continue;
+        }
         let hour_key_4digit = format!("{}00", stats.hour_key);
-        hours.insert(hour_key_4digit, hour_manifest);
+        hours.insert(hour_key_4digit, ManifestStats::from_hour_stats(stats));
+
+        // Add new file entries, deduplicating by path
+        for entry in &stats.files_written {
+            if !files.iter().any(|f| f.path == entry.path) {
+                files.push(entry.clone());
+            }
+        }
     }
 
-    // Collect per-file entries from all hours
-    let files: Vec<ParquetFileEntry> = all_stats
-        .iter()
-        .flat_map(|s| s.files_written.iter().cloned())
-        .collect();
-
-    // Build schema info from the registry
+    // Merge schema info from the registry for any new file types
     let registry = SchemaRegistry::for_feed(feed);
-    let mut schemas = BTreeMap::new();
     for file in &files {
         schemas
             .entry(file.message_type.clone())
@@ -633,6 +686,12 @@ async fn write_manifest(
             });
     }
 
+    // Recalculate totals from all hours
+    let mut totals = ManifestStats::default();
+    for hour_stats in hours.values() {
+        totals.merge(hour_stats);
+    }
+
     let manifest = ParquetManifest {
         feed: feed.to_string(),
         stream: stream.to_string(),
@@ -646,11 +705,6 @@ async fn write_manifest(
     };
 
     let json_bytes = serde_json::to_vec_pretty(&manifest)?;
-    let manifest_path = format!(
-        "{}/{}/{}/{}/parquet-manifest.json",
-        gcs_prefix, feed, stream, date_str
-    );
-
     info!(path = %manifest_path, bytes = json_bytes.len(), "Writing parquet manifest");
     gcs.put(&manifest_path, Bytes::from(json_bytes)).await?;
 

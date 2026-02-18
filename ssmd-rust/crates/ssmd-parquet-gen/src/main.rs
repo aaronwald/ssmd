@@ -37,6 +37,14 @@ struct Args {
     #[arg(long)]
     prefix: Option<String>,
 
+    /// Start hour (0-23) — process only hours >= this value
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=23))]
+    hour_start: Option<u32>,
+
+    /// End hour (0-23) — process only hours <= this value
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=23))]
+    hour_end: Option<u32>,
+
     /// Overwrite existing parquet files
     #[arg(long, default_value_t = false)]
     overwrite: bool,
@@ -94,12 +102,22 @@ async fn main() -> Result<()> {
 
     let prefix = args.prefix.as_deref().unwrap_or(&feed);
 
+    // Validate hour range
+    if let (Some(start), Some(end)) = (args.hour_start, args.hour_end) {
+        if start > end {
+            bail!("--hour-start ({}) must be <= --hour-end ({})", start, end);
+        }
+    }
+    let hour_filtering = args.hour_start.is_some() || args.hour_end.is_some();
+
     info!(
         feed = %feed,
         stream = %stream,
         date = %date,
         bucket = %bucket,
         prefix = %prefix,
+        hour_start = ?args.hour_start,
+        hour_end = ?args.hour_end,
         overwrite = args.overwrite,
         dry_run = args.dry_run,
         "Starting parquet generation"
@@ -113,6 +131,8 @@ async fn main() -> Result<()> {
         &feed,
         &stream,
         &date,
+        args.hour_start,
+        args.hour_end,
         args.overwrite,
         args.dry_run,
     )
@@ -130,7 +150,7 @@ async fn main() -> Result<()> {
         "Processing complete"
     );
 
-    if total_records == 0 {
+    if total_records == 0 && !hour_filtering {
         bail!("No records processed — check feed/stream/date");
     }
 
