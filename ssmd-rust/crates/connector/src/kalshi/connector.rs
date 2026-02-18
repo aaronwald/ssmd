@@ -435,8 +435,17 @@ impl KalshiConnector {
                                     continue;
                                 }
 
-                                // Pass through raw Kalshi JSON bytes - no re-serialization
-                                if tx.send(raw_json.into_bytes()).await.is_err() {
+                                // Inject _shard_id into the JSON envelope before forwarding
+                                let forwarded = if raw_json.ends_with('}') {
+                                    format!(
+                                        "{},\"_shard_id\":{}}}",
+                                        &raw_json[..raw_json.len() - 1],
+                                        shard_id
+                                    )
+                                } else {
+                                    raw_json
+                                };
+                                if tx.send(forwarded.into_bytes()).await.is_err() {
                                     info!(shard_id, "Channel closed, stopping receiver");
                                     shard_metrics.set_disconnected();
                                     break;

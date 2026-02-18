@@ -312,7 +312,7 @@ mod tests {
             serde_json::from_str(r#"{"type":"ticker","msg":{}}"#).unwrap();
         let (msg_type, schema) = reg.detect_and_get(&json).unwrap();
         assert_eq!(msg_type, "ticker");
-        assert_eq!(schema.schema().fields().len(), 13);
+        assert_eq!(schema.schema().fields().len(), 14);
     }
 
     #[test]
@@ -320,11 +320,11 @@ mod tests {
         let reg = SchemaRegistry::for_feed("kalshi");
         let ticker = reg.get("ticker").unwrap();
         assert_eq!(ticker.schema_name(), "kalshi_ticker");
-        assert_eq!(ticker.schema_version(), "1.2.0");
+        assert_eq!(ticker.schema_version(), "1.3.0");
 
         let trade = reg.get("trade").unwrap();
         assert_eq!(trade.schema_name(), "kalshi_trade");
-        assert_eq!(trade.schema_version(), "1.2.0");
+        assert_eq!(trade.schema_version(), "1.3.0");
 
         let lifecycle = reg.get("market_lifecycle_v2").unwrap();
         assert_eq!(lifecycle.schema_name(), "kalshi_lifecycle");
