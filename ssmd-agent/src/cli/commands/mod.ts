@@ -10,11 +10,9 @@ import {
   printFeed,
   type CreateFeedOptions,
 } from "./feed.ts";
-import { handleBacktest } from "./backtest.ts";
 import { handleSecmaster } from "./secmaster.ts";
 import { handleFees } from "./fees.ts";
 import { handleSeries } from "./series.ts";
-import { handleSignal } from "./signal.ts";
 import { handleSignalDeploy } from "./signal-deploy.ts";
 import { handleNotifierDeploy } from "./notifier-deploy.ts";
 import { handleConnectorDeploy } from "./connector-deploy.ts";
@@ -23,11 +21,9 @@ import { handleScale } from "./scale.ts";
 import { handleSchedule } from "./schedule.ts";
 import { handleStatus } from "./status.ts";
 import { handleEnv } from "./env.ts";
-import { handleMomentum } from "./momentum.ts";
 import { handleHealth } from "./health.ts";
 import { handleKraken } from "./kraken-sync.ts";
 import { handlePolymarket } from "./polymarket-sync.ts";
-import { runFundingRateConsumer } from "./funding-rate-consumer.ts";
 import { handleKeys } from "./keys.ts";
 import { handleShare } from "./share.ts";
 import { handleAuditEmail } from "./audit-email.ts";
@@ -70,9 +66,11 @@ export async function run(args: string[]): Promise<void> {
       await handleFeedCommand(subcommand, flags);
       break;
 
-    case "backtest":
+    case "backtest": {
+      const { handleBacktest } = await import("./backtest.ts");
       await handleBacktest(subcommand, flags);
       break;
+    }
 
     case "secmaster":
       await handleSecmaster(subcommand, flags);
@@ -92,6 +90,7 @@ export async function run(args: string[]): Promise<void> {
         await handleSignalDeploy(subcommand, flags);
       } else {
         // Local signal commands (list, run, subscribe)
+        const { handleSignal } = await import("./signal.ts");
         await handleSignal(subcommand, flags);
       }
       break;
@@ -125,9 +124,11 @@ export async function run(args: string[]): Promise<void> {
       await handleEnv(subcommand, flags);
       break;
 
-    case "momentum":
+    case "momentum": {
+      const { handleMomentum } = await import("./momentum.ts");
       await handleMomentum(subcommand, flags);
       break;
+    }
 
     case "health":
       await handleHealth(subcommand, flags);
@@ -158,9 +159,11 @@ export async function run(args: string[]): Promise<void> {
       await handleAuditEmail();
       break;
 
-    case "funding-rate-consumer":
+    case "funding-rate-consumer": {
+      const { runFundingRateConsumer } = await import("./funding-rate-consumer.ts");
       await runFundingRateConsumer(args.slice(1));
       break;
+    }
 
     case "agent":
       // Launch the existing agent REPL
