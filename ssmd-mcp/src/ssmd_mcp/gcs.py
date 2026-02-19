@@ -48,16 +48,7 @@ def _setup_duckdb_gcs(conn: duckdb.DuckDBPyConnection) -> bool:
     conn.execute("SET s3_endpoint='storage.googleapis.com';")
     conn.execute("SET s3_url_style='path';")
 
-    # Try credential chain first
-    try:
-        conn.execute("CREATE SECRET IF NOT EXISTS gcs_secret (TYPE GCS, PROVIDER CREDENTIAL_CHAIN);")
-        # Test if it actually works
-        conn.execute(f"SELECT 1")
-        return True
-    except Exception:
-        pass
-
-    # Fall back to gcloud access token with bearer auth
+    # Use gcloud access token — most reliable for local dev
     token = _get_gcs_token()
     if token:
         try:
@@ -72,11 +63,13 @@ def _setup_duckdb_gcs(conn: duckdb.DuckDBPyConnection) -> bool:
             return True
         except Exception as e:
             logger.warning("Failed to create GCS secret with access token: %s", e)
-            # Last resort: set bearer token directly
-            conn.execute(f"SET s3_access_key_id='';")
-            conn.execute(f"SET s3_secret_access_key='';")
-            conn.execute(f"SET http_extra_headers=MAP {{'Authorization': 'Bearer {token}'}};")
-            return True
+
+    # Fall back to credential chain (works in some environments)
+    try:
+        conn.execute("CREATE SECRET IF NOT EXISTS gcs_secret (TYPE GCS, PROVIDER CREDENTIAL_CHAIN);")
+        return True
+    except Exception:
+        pass
 
     return False
 
