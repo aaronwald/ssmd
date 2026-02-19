@@ -88,6 +88,14 @@ Deno.test("GET /v1/markets returns 401 without valid API key", async () => {
   assertEquals(res.status, 401);
 });
 
+Deno.test("GET /v1/markets/lookup returns 401 without valid API key", async () => {
+  const router = createTestRouter();
+  const req = new Request("http://localhost/v1/markets/lookup?ids=TICKER1");
+  const res = await router(req);
+
+  assertEquals(res.status, 401);
+});
+
 Deno.test("GET /v1/keys returns 401 without valid API key", async () => {
   const router = createTestRouter();
   const req = new Request("http://localhost/v1/keys");

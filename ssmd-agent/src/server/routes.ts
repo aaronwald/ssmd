@@ -35,6 +35,8 @@ import {
   listDailyScores,
   getSlaMetrics,
   getGapReports,
+  lookupMarketsByIds,
+  VALID_FEEDS,
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
@@ -189,6 +191,32 @@ route("GET", "/v1/markets", async (req, ctx) => {
   const markets = await listMarkets(ctx.db, options);
   return json({ markets });
 }, true, "secmaster:read");
+
+// Cross-feed market lookup by IDs (Kalshi tickers, Kraken pair_ids, Polymarket condition/token IDs)
+route("GET", "/v1/markets/lookup", async (req, ctx) => {
+  const url = new URL(req.url);
+
+  const idsParam = url.searchParams.get("ids");
+  if (!idsParam) {
+    return json({ error: "ids query parameter is required" }, 400);
+  }
+
+  const ids = idsParam.split(",").map((s) => s.trim()).filter(Boolean);
+  if (ids.length === 0) {
+    return json({ error: "at least one ID is required" }, 400);
+  }
+  if (ids.length > 100) {
+    return json({ error: "maximum 100 IDs per request" }, 400);
+  }
+
+  const feed = url.searchParams.get("feed") ?? undefined;
+  if (feed && !VALID_FEEDS.includes(feed)) {
+    return json({ error: `Invalid feed: ${feed}. Valid feeds: ${VALID_FEEDS.join(", ")}` }, 400);
+  }
+
+  const markets = await lookupMarketsByIds(ctx.db, ids, feed);
+  return json({ markets });
+}, true, "datasets:read");
 
 route("GET", "/v1/markets/:ticker", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;

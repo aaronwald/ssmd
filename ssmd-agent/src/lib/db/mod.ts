@@ -167,3 +167,10 @@ export {
   listRecentAccess,
   listAccessByUser,
 } from "./accesslog.ts";
+
+// Cross-feed market lookup
+export {
+  lookupMarketsByIds,
+  VALID_FEEDS,
+  type LookupResult,
+} from "./lookup.ts";
