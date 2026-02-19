@@ -28,20 +28,14 @@ export async function initDuckDB(): Promise<void> {
   await connection.run("SET s3_endpoint='storage.googleapis.com'");
   await connection.run("SET s3_url_style='path'");
 
-  // Get access token from GKE metadata server (Workload Identity)
-  // DuckDB's CREDENTIAL_CHAIN doesn't work with metadata server, so fetch token directly
-  try {
-    const tokenResp = await fetch(
-      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-      { headers: { "Metadata-Flavor": "Google" } },
-    );
-    const { access_token } = await tokenResp.json();
-    await connection.run(`SET s3_access_key_id=''`);
-    await connection.run(`SET s3_secret_access_key=''`);
-    await connection.run(`SET s3_session_token='${access_token}'`);
-    console.log("DuckDB initialized with GCS access (metadata server token)");
-  } catch {
-    // Fall back to credential chain (works with ADC file / gcloud auth locally)
+  // GCS auth: use HMAC credentials from env (GKE), fall back to credential chain (local dev)
+  const hmacKeyId = Deno.env.get("GCS_HMAC_KEY_ID");
+  const hmacSecret = Deno.env.get("GCS_HMAC_SECRET");
+  if (hmacKeyId && hmacSecret) {
+    await connection.run(`SET s3_access_key_id='${hmacKeyId}'`);
+    await connection.run(`SET s3_secret_access_key='${hmacSecret}'`);
+    console.log("DuckDB initialized with GCS access (HMAC credentials)");
+  } else {
     try {
       await connection.run("CREATE SECRET (TYPE GCS, PROVIDER CREDENTIAL_CHAIN)");
       console.log("DuckDB initialized with GCS access (credential chain)");
