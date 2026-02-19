@@ -4,6 +4,12 @@
  */
 import { DuckDBInstance } from "@duckdb/node-api";
 
+// Ensure BigInt values are JSON-serializable (DuckDB returns BigInt for integer/timestamp columns)
+// deno-lint-ignore no-explicit-any
+(BigInt.prototype as any).toJSON = function () {
+  return Number(this);
+};
+
 let instance: DuckDBInstance | null = null;
 let connection: Awaited<ReturnType<DuckDBInstance["connect"]>> | null = null;
 
@@ -45,6 +51,22 @@ export async function initDuckDB(): Promise<void> {
   }
 }
 
+/** Convert DuckDB values to JSON-safe types (BigInt → Number, nested objects recursed). */
+function toSerializable(val: unknown): unknown {
+  if (val === null || val === undefined) return val;
+  if (typeof val === "bigint") return Number(val);
+  if (Array.isArray(val)) return val.map(toSerializable);
+  if (typeof val === "object") {
+    const obj = val as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(obj)) {
+      out[k] = toSerializable(obj[k]);
+    }
+    return out;
+  }
+  return val;
+}
+
 export interface QueryResult {
   columns: string[];
   rows: Record<string, unknown>[];
@@ -72,8 +94,7 @@ export async function query(sql: string): Promise<QueryResult> {
     for (let r = 0; r < rowCount; r++) {
       const row: Record<string, unknown> = {};
       for (let c = 0; c < columnCount; c++) {
-        const val = chunk.getColumnVector(c).getItem(r);
-        row[columns[c]] = typeof val === "bigint" ? Number(val) : val;
+        row[columns[c]] = toSerializable(chunk.getColumnVector(c).getItem(r));
       }
       rows.push(row);
     }
