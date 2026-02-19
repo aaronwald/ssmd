@@ -15,8 +15,10 @@ export async function initDuckDB(): Promise<void> {
   instance = await DuckDBInstance.create();
   connection = await instance.connect();
 
-  // Configure memory limit
+  // Configure memory limit and extension directory (writable /tmp for read-only rootfs)
   await connection.run("SET memory_limit='512MB'");
+  await connection.run("SET extension_directory='/tmp/duckdb_ext'");
+  await connection.run("SET temp_directory='/tmp/duckdb_tmp'");
 
   // Load httpfs for GCS access
   await connection.run("INSTALL httpfs");
