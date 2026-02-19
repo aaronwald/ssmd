@@ -28,10 +28,27 @@ export async function initDuckDB(): Promise<void> {
   await connection.run("SET s3_endpoint='storage.googleapis.com'");
   await connection.run("SET s3_url_style='path'");
 
-  // Use GCS credential chain (Workload Identity in GKE)
-  await connection.run("CREATE SECRET (TYPE GCS, PROVIDER CREDENTIAL_CHAIN)");
-
-  console.log("DuckDB initialized with GCS access");
+  // Get access token from GKE metadata server (Workload Identity)
+  // DuckDB's CREDENTIAL_CHAIN doesn't work with metadata server, so fetch token directly
+  try {
+    const tokenResp = await fetch(
+      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+      { headers: { "Metadata-Flavor": "Google" } },
+    );
+    const { access_token } = await tokenResp.json();
+    await connection.run(`SET s3_access_key_id=''`);
+    await connection.run(`SET s3_secret_access_key=''`);
+    await connection.run(`SET s3_session_token='${access_token}'`);
+    console.log("DuckDB initialized with GCS access (metadata server token)");
+  } catch {
+    // Fall back to credential chain (works with ADC file / gcloud auth locally)
+    try {
+      await connection.run("CREATE SECRET (TYPE GCS, PROVIDER CREDENTIAL_CHAIN)");
+      console.log("DuckDB initialized with GCS access (credential chain)");
+    } catch (e) {
+      console.warn("DuckDB GCS auth failed, queries may not work:", (e as Error).message);
+    }
+  }
 }
 
 export interface QueryResult {
