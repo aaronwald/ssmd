@@ -26,7 +26,8 @@
     "drizzle-orm/postgres-js": "npm:drizzle-orm@^0.38.0/postgres-js",
     "drizzle-orm/pg-core": "npm:drizzle-orm@^0.38.0/pg-core",
     "@google-cloud/storage": "npm:@google-cloud/storage@^7",
-    "nodemailer": "npm:nodemailer@^6"
+    "nodemailer": "npm:nodemailer@^6",
+    "@duckdb/node-api": "npm:@duckdb/node-api@^1"
   },
   "compilerOptions": {
     "strict": true

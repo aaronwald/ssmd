@@ -2,6 +2,7 @@
 export { logger, cors } from "./middleware.ts";
 export { createRouter, API_VERSION, type RouteContext, type AuthInfo } from "./routes.ts";
 export { validateApiKey, hasScope } from "./auth.ts";
+export { initDuckDB, closeDuckDB } from "../lib/duckdb/mod.ts";
 
 import { createRouter, type RouteContext } from "./routes.ts";
 import { logger, cors } from "./middleware.ts";

@@ -45,6 +45,9 @@ import { getGuardrailSettings, applyGuardrails, checkModelAllowed } from "../lib
 import { getRedis } from "../lib/redis/mod.ts";
 import { listParquetFiles, generateSignedUrls, FEED_CONFIG, getCatalog } from "../lib/gcs/mod.ts";
 import { logDataAccess } from "../lib/db/mod.ts";
+import { query as duckdbQuery } from "../lib/duckdb/mod.ts";
+import { buildTradeSQL, buildPriceSQL, expandFeedPath, validateSelectOnly, enforceLimitSafety } from "../lib/duckdb/queries.ts";
+import { VALID_DATA_FEEDS, FEED_PATHS } from "../lib/duckdb/feed-config.ts";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
 const USAGE_CACHE_TTL = 120; // 2 minutes
@@ -883,6 +886,215 @@ route("GET", "/v1/data/schemas", async (req) => {
   }
 
   return json({ schemas });
+}, true, "datasets:read");
+
+// DuckDB parquet query endpoints
+route("GET", "/v1/data/trades", async (req) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+
+  const feed = url.searchParams.get("feed");
+  if (!feed || !VALID_DATA_FEEDS.includes(feed)) {
+    return json({ error: `Invalid or missing feed. Valid: ${VALID_DATA_FEEDS.join(", ")}` }, 400);
+  }
+
+  if (!auth.allowedFeeds.includes(feed)) {
+    return json({ error: `Key not authorized for feed: ${feed}` }, 403);
+  }
+
+  const date = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(date)) {
+    return json({ error: "date must be YYYY-MM-DD format" }, 400);
+  }
+
+  // Check date range
+  if (date < auth.dateRangeStart || date > auth.dateRangeEnd) {
+    return json({ error: `Date ${date} outside key range ${auth.dateRangeStart} to ${auth.dateRangeEnd}` }, 403);
+  }
+
+  const limitParam = url.searchParams.get("limit");
+  const limit = Math.min(Math.max(parseInt(limitParam ?? "20", 10) || 20, 1), 1000);
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
+
+  try {
+    const sql = buildTradeSQL(bucket, feed, date, limit);
+    const result = await duckdbQuery(sql);
+    return json({ feed, date, count: result.rows.length, trades: result.rows });
+  } catch (err) {
+    console.error("Trade query failed:", err);
+    return json({ error: `Query failed: ${(err as Error).message}` }, 500);
+  }
+}, true, "datasets:read");
+
+route("GET", "/v1/data/prices", async (req) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+
+  const feed = url.searchParams.get("feed");
+  if (!feed || !VALID_DATA_FEEDS.includes(feed)) {
+    return json({ error: `Invalid or missing feed. Valid: ${VALID_DATA_FEEDS.join(", ")}` }, 400);
+  }
+
+  if (!auth.allowedFeeds.includes(feed)) {
+    return json({ error: `Key not authorized for feed: ${feed}` }, 403);
+  }
+
+  const date = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(date)) {
+    return json({ error: "date must be YYYY-MM-DD format" }, 400);
+  }
+
+  if (date < auth.dateRangeStart || date > auth.dateRangeEnd) {
+    return json({ error: `Date ${date} outside key range ${auth.dateRangeStart} to ${auth.dateRangeEnd}` }, 403);
+  }
+
+  const hour = url.searchParams.get("hour") ?? undefined;
+  if (hour && !/^\d{4}$/.test(hour)) {
+    return json({ error: "hour must be HHMM format (e.g., 1400)" }, 400);
+  }
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
+
+  try {
+    const sql = buildPriceSQL(bucket, feed, date, hour);
+    const result = await duckdbQuery(sql);
+    return json({ feed, date, hour: hour ?? null, count: result.rows.length, prices: result.rows });
+  } catch (err) {
+    console.error("Price query failed:", err);
+    return json({ error: `Query failed: ${(err as Error).message}` }, 500);
+  }
+}, true, "datasets:read");
+
+route("POST", "/v1/data/query", async (req) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+
+  let body: { sql: string; feed?: string; date?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid JSON body" }, 400);
+  }
+
+  if (!body.sql || typeof body.sql !== "string") {
+    return json({ error: "sql is required" }, 400);
+  }
+
+  if (!validateSelectOnly(body.sql)) {
+    return json({ error: "Only SELECT queries are allowed" }, 400);
+  }
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
+
+  let expanded = expandFeedPath(body.sql, bucket, body.feed, body.date);
+  expanded = enforceLimitSafety(expanded);
+
+  try {
+    const result = await duckdbQuery(expanded);
+    return json({ sql: expanded, count: result.rows.length, columns: result.columns, rows: result.rows });
+  } catch (err) {
+    console.error("Raw query failed:", err);
+    return json({ error: `Query failed: ${(err as Error).message}`, sql: expanded }, 500);
+  }
+}, true, "datasets:read");
+
+route("GET", "/v1/data/freshness", async (req) => {
+  const url = new URL(req.url);
+  const feedParam = url.searchParams.get("feed");
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
+
+  const feeds = feedParam ? [feedParam] : VALID_DATA_FEEDS;
+  const staleThresholdHours = 7;
+  const results: Record<string, unknown>[] = [];
+
+  const { Storage } = await import("@google-cloud/storage");
+  const storage = new Storage();
+
+  for (const feed of feeds) {
+    if (!VALID_DATA_FEEDS.includes(feed)) {
+      results.push({ feed, status: "unknown", error: "Invalid feed" });
+      continue;
+    }
+
+    try {
+      const prefix = FEED_PATHS[feed];
+
+      // Use apiResponse to get prefixes (date dirs)
+      const [, , apiResp] = await storage.bucket(bucket).getFiles({
+        prefix: `${prefix}/`,
+        delimiter: "/",
+        autoPaginate: false,
+      });
+
+      const prefixes: string[] = (apiResp as { prefixes?: string[] }).prefixes ?? [];
+      const dates = prefixes
+        .map((p: string) => p.replace(`${prefix}/`, "").replace("/", ""))
+        .filter((d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+        .sort()
+        .reverse();
+
+      if (dates.length === 0) {
+        results.push({ feed, status: "no_data", newest_date: null, stale: true });
+        continue;
+      }
+
+      const newestDate = dates[0];
+
+      // List files in newest date directory
+      const [dateFiles] = await storage.bucket(bucket).getFiles({
+        prefix: `${prefix}/${newestDate}/`,
+      });
+
+      let newestHour: string | null = null;
+      for (const f of dateFiles) {
+        const name = f.name.split("/").pop() ?? "";
+        if (!name.endsWith(".parquet") && !name.endsWith(".jsonl") && !name.endsWith(".jsonl.gz")) continue;
+        const base = name.replace(".parquet", "").replace(".jsonl.gz", "").replace(".jsonl", "");
+        const lastUnderscore = base.lastIndexOf("_");
+        if (lastUnderscore === -1) continue;
+        const hourPart = base.substring(lastUnderscore + 1);
+        if (/^\d{4}$/.test(hourPart)) {
+          if (!newestHour || hourPart > newestHour) {
+            newestHour = hourPart;
+          }
+        }
+      }
+
+      // Calculate age
+      const now = new Date();
+      const dateObj = new Date(newestDate + "T00:00:00Z");
+      if (newestHour) {
+        dateObj.setUTCHours(parseInt(newestHour.slice(0, 2), 10));
+      }
+      const ageHours = (now.getTime() - dateObj.getTime()) / 3600000;
+      const stale = ageHours > staleThresholdHours;
+
+      results.push({
+        feed,
+        status: stale ? "stale" : "fresh",
+        newest_date: newestDate,
+        newest_hour: newestHour,
+        age_hours: Math.round(ageHours * 10) / 10,
+        stale,
+      });
+    } catch (err) {
+      console.error(`Freshness check failed for ${feed}:`, err);
+      results.push({ feed, status: "error", error: (err as Error).message });
+    }
+  }
+
+  return json({
+    checked_at: new Date().toISOString(),
+    stale_threshold_hours: staleThresholdHours,
+    feeds: results,
+  });
 }, true, "datasets:read");
 
 // Chat completions proxy (OpenRouter)

@@ -1,5 +1,11 @@
 # ssmd-data-ts: TypeScript data server for market data
-FROM denoland/deno:2.6.5
+FROM denoland/deno:bin-2.6.5 AS deno_bin
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN groupadd -g 1000 deno && useradd -u 1000 -g deno -m deno
+
+COPY --from=deno_bin /deno /usr/local/bin/deno
 
 WORKDIR /app
 
@@ -12,15 +18,15 @@ COPY src/cli/ ./src/cli/
 # Cache dependencies (server only; CLI deps cached at runtime for CronJob use)
 RUN deno cache src/server/main.ts
 
-# Create non-root user for security (deno image already has 'deno' user)
+# Create non-root user for security
 USER deno
 
 # Expose port
 EXPOSE 8080
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:8080/health || exit 1
 
-# Run the server
-CMD ["deno", "run", "--allow-net", "--allow-env", "--allow-read", "--allow-sys", "src/server/main.ts"]
+# Run the server (--allow-ffi for DuckDB N-API, --allow-write=/tmp for DuckDB temp files)
+CMD ["deno", "run", "--allow-net", "--allow-env", "--allow-read", "--allow-sys", "--allow-ffi", "--allow-write=/tmp", "src/server/main.ts"]

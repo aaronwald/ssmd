@@ -25,6 +25,34 @@ def _get_client(cfg: Config) -> httpx.Client:
     )
 
 
+def api_get(cfg: Config, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Generic GET request to ssmd-data-ts API."""
+    if not cfg.api_url:
+        return {"error": "SSMD_API_URL not configured"}
+    try:
+        with _get_client(cfg) as client:
+            resp = client.get(path, params=params)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPError as e:
+        logger.error("API GET %s failed: %s", path, e)
+        return {"error": str(e)}
+
+
+def api_post(cfg: Config, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Generic POST request to ssmd-data-ts API."""
+    if not cfg.api_url:
+        return {"error": "SSMD_API_URL not configured"}
+    try:
+        with _get_client(cfg) as client:
+            resp = client.post(path, json=json_body)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPError as e:
+        logger.error("API POST %s failed: %s", path, e)
+        return {"error": str(e)}
+
+
 def lookup_markets(cfg: Config, ids: list[str], feed: str | None = None) -> list[dict[str, Any]]:
     """Look up markets by ID via ssmd-data-ts GET /v1/markets.
 
