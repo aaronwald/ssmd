@@ -51,17 +51,32 @@ def _setup_duckdb_gcs(conn: duckdb.DuckDBPyConnection) -> bool:
     # Try credential chain first
     try:
         conn.execute("CREATE SECRET IF NOT EXISTS gcs_secret (TYPE GCS, PROVIDER CREDENTIAL_CHAIN);")
+        # Test if it actually works
+        conn.execute(f"SELECT 1")
         return True
     except Exception:
         pass
 
-    # Fall back to gcloud token
+    # Fall back to gcloud access token with bearer auth
     token = _get_gcs_token()
     if token:
-        conn.execute(f"SET s3_access_key_id='';")
-        conn.execute(f"SET s3_secret_access_key='';")
-        conn.execute(f"SET s3_session_token='{token}';")
-        return True
+        try:
+            conn.execute("DROP SECRET IF EXISTS gcs_secret;")
+            conn.execute(f"""
+                CREATE SECRET gcs_secret (
+                    TYPE GCS,
+                    PROVIDER ACCESS_TOKEN,
+                    ACCESS_TOKEN '{token}'
+                );
+            """)
+            return True
+        except Exception as e:
+            logger.warning("Failed to create GCS secret with access token: %s", e)
+            # Last resort: set bearer token directly
+            conn.execute(f"SET s3_access_key_id='';")
+            conn.execute(f"SET s3_secret_access_key='';")
+            conn.execute(f"SET http_extra_headers=MAP {{'Authorization': 'Bearer {token}'}};")
+            return True
 
     return False
 

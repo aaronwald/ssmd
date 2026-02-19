@@ -52,8 +52,8 @@ def _query_with_fallback(
     """
     gcs_path = gcs_parquet_path(cfg, feed, date_str, file_type, hour)
 
-    # Try direct GCS access
-    sql = sql_template.format(path=gcs_path)
+    # Try direct GCS access (path is already a quoted string for read_parquet)
+    sql = sql_template.format(path=f"'{gcs_path}'")
     result = _try_query(conn, sql)
     if result is not None:
         cols = [desc[0] for desc in result.description]
@@ -61,10 +61,8 @@ def _query_with_fallback(
 
     # Fall back: download via gsutil to /tmp
     logger.info("Falling back to gsutil download for %s", gcs_path)
-    gs_path = gcs_path.replace("s3://", "gs://")
     if hour is None:
         # Glob pattern — list and download matching files
-        gs_dir = gcs_gs_path(cfg, feed, date_str)
         files = list_gcs_files(cfg, feed, date_str)
         matching = [f for f in files if f.endswith(".parquet") and f"/{file_type}_" in f]
         if not matching:
@@ -79,12 +77,14 @@ def _query_with_fallback(
                 local_paths.append(local)
         if not local_paths:
             return []
+        # DuckDB list syntax for multiple files: ['path1', 'path2']
         path_expr = "[" + ", ".join(f"'{p}'" for p in local_paths) + "]"
     else:
         fname = f"{file_type}_{hour}.parquet"
         local = os.path.join(tempfile.gettempdir(), f"ssmd_{feed}_{date_str}_{fname}")
+        gs_path_gs = gcs_path.replace("s3://", "gs://")
         if not os.path.exists(local):
-            _gsutil_download(gs_path, local)
+            _gsutil_download(gs_path_gs, local)
         if not os.path.exists(local):
             return []
         path_expr = f"'{local}'"
@@ -118,7 +118,7 @@ def query_trades(cfg: Config, feed: str, date_str: str | None = None, limit: int
                 MIN({price_col}) as min_price,
                 MAX({price_col}) as max_price,
                 AVG({price_col}) as avg_price
-            FROM read_parquet('{{path}}')
+            FROM read_parquet({{path}})
             GROUP BY {ticker_col}
             ORDER BY trade_count DESC
             LIMIT {limit}
@@ -134,7 +134,7 @@ def query_trades(cfg: Config, feed: str, date_str: str | None = None, limit: int
                 MIN({price_col}) / 100.0 as min_price,
                 MAX({price_col}) / 100.0 as max_price,
                 AVG({price_col}) / 100.0 as avg_price
-            FROM read_parquet('{{path}}')
+            FROM read_parquet({{path}})
             GROUP BY {ticker_col}
             ORDER BY trade_count DESC
             LIMIT {limit}
@@ -150,7 +150,7 @@ def query_trades(cfg: Config, feed: str, date_str: str | None = None, limit: int
                 MIN({price_col}) as min_price,
                 MAX({price_col}) as max_price,
                 AVG({price_col}) as avg_price
-            FROM read_parquet('{{path}}')
+            FROM read_parquet({{path}})
             GROUP BY {ticker_col}
             ORDER BY trade_count DESC
             LIMIT {limit}
@@ -188,7 +188,7 @@ def query_prices(cfg: Config, feed: str, date_str: str | None = None, hour: str 
                 volume,
                 open_interest,
                 ts
-            FROM read_parquet('{path}')
+            FROM read_parquet({path})
             QUALIFY ROW_NUMBER() OVER (PARTITION BY market_ticker ORDER BY ts DESC) = 1
             ORDER BY volume DESC
         """
@@ -202,7 +202,7 @@ def query_prices(cfg: Config, feed: str, date_str: str | None = None, hour: str 
                 volume,
                 funding_rate,
                 mark_price
-            FROM read_parquet('{path}')
+            FROM read_parquet({path})
             QUALIFY ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY rowid DESC) = 1
             ORDER BY volume DESC
         """
@@ -215,7 +215,7 @@ def query_prices(cfg: Config, feed: str, date_str: str | None = None, hour: str 
                 best_bid,
                 best_ask,
                 spread
-            FROM read_parquet('{path}')
+            FROM read_parquet({path})
             QUALIFY ROW_NUMBER() OVER (PARTITION BY asset_id ORDER BY rowid DESC) = 1
             ORDER BY spread ASC
         """
