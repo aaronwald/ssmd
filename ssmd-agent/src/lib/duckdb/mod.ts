@@ -72,7 +72,8 @@ export async function query(sql: string): Promise<QueryResult> {
     for (let r = 0; r < rowCount; r++) {
       const row: Record<string, unknown> = {};
       for (let c = 0; c < columnCount; c++) {
-        row[columns[c]] = chunk.getColumnVector(c).getItem(r);
+        const val = chunk.getColumnVector(c).getItem(r);
+        row[columns[c]] = typeof val === "bigint" ? Number(val) : val;
       }
       rows.push(row);
     }
