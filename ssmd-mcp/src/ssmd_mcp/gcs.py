@@ -10,32 +10,6 @@ from ssmd_mcp.config import Config
 
 logger = logging.getLogger(__name__)
 
-# Cache the access token for the session
-_gcs_token: str | None = None
-_gcs_token_time: datetime | None = None
-
-
-def _get_gcs_token() -> str | None:
-    """Get GCS access token via gcloud CLI."""
-    global _gcs_token, _gcs_token_time
-    # Reuse token if less than 30 min old
-    if _gcs_token and _gcs_token_time:
-        age = (datetime.now() - _gcs_token_time).total_seconds()
-        if age < 1800:
-            return _gcs_token
-    try:
-        result = subprocess.run(
-            ["gcloud", "auth", "application-default", "print-access-token"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            _gcs_token = result.stdout.strip()
-            _gcs_token_time = datetime.now()
-            return _gcs_token
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return None
-
 
 def _setup_duckdb_gcs(conn: duckdb.DuckDBPyConnection) -> bool:
     """Configure DuckDB for GCS access. Returns True if successful."""
@@ -48,28 +22,12 @@ def _setup_duckdb_gcs(conn: duckdb.DuckDBPyConnection) -> bool:
     conn.execute("SET s3_endpoint='storage.googleapis.com';")
     conn.execute("SET s3_url_style='path';")
 
-    # Use gcloud access token — most reliable for local dev
-    token = _get_gcs_token()
-    if token:
-        try:
-            conn.execute("DROP SECRET IF EXISTS gcs_secret;")
-            conn.execute(f"""
-                CREATE SECRET gcs_secret (
-                    TYPE GCS,
-                    PROVIDER ACCESS_TOKEN,
-                    ACCESS_TOKEN '{token}'
-                );
-            """)
-            return True
-        except Exception as e:
-            logger.warning("Failed to create GCS secret with access token: %s", e)
-
-    # Fall back to credential chain (works in some environments)
+    # Use GCS credential chain (requires `gcloud auth application-default login`)
     try:
         conn.execute("CREATE SECRET IF NOT EXISTS gcs_secret (TYPE GCS, PROVIDER CREDENTIAL_CHAIN);")
         return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("GCS credential chain failed: %s. Will fall back to gsutil.", e)
 
     return False
 

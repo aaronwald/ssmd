@@ -203,7 +203,7 @@ def query_prices(cfg: Config, feed: str, date_str: str | None = None, hour: str 
                 funding_rate,
                 mark_price
             FROM read_parquet({path})
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY rowid DESC) = 1
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY _received_at DESC) = 1
             ORDER BY volume DESC
         """
     else:
@@ -216,7 +216,7 @@ def query_prices(cfg: Config, feed: str, date_str: str | None = None, hour: str 
                 best_ask,
                 spread
             FROM read_parquet({path})
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY asset_id ORDER BY rowid DESC) = 1
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY asset_id ORDER BY _received_at DESC) = 1
             ORDER BY spread ASC
         """
 
