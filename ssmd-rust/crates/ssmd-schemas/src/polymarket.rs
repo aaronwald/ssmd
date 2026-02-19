@@ -20,6 +20,14 @@ fn parse_timestamp_ms(value: &serde_json::Value) -> Option<i64> {
         .or_else(|| value.as_i64())
 }
 
+/// Parse a numeric value from a JSON string (e.g., "0.55") or number.
+fn parse_f64_str(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .or_else(|| value.as_f64())
+}
+
 // ---------------------------------------------------------------------------
 // PolymarketBookSchema
 // ---------------------------------------------------------------------------
@@ -149,10 +157,10 @@ impl PolymarketTradeSchema {
         Schema::new(vec![
             Field::new("asset_id", DataType::Utf8, false),
             Field::new("market", DataType::Utf8, false),
-            Field::new("price", DataType::Utf8, false),
+            Field::new("price", DataType::Float64, false),
             Field::new("side", DataType::Utf8, true),
-            Field::new("size", DataType::Utf8, true),
-            Field::new("fee_rate_bps", DataType::Utf8, true),
+            Field::new("size", DataType::Float64, true),
+            Field::new("fee_rate_bps", DataType::Float64, true),
             Field::new("timestamp_ms", DataType::Int64, true),
             Field::new("_nats_seq", DataType::UInt64, false),
             Field::new("_received_at", ts_type(), false),
@@ -166,7 +174,7 @@ impl MessageSchema for PolymarketTradeSchema {
     }
 
     fn schema_version(&self) -> &str {
-        "1.0.0"
+        "2.0.0"
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -180,10 +188,10 @@ impl MessageSchema for PolymarketTradeSchema {
     fn parse_batch(&self, messages: &[(Vec<u8>, u64, i64)]) -> Result<RecordBatch, ArrowError> {
         let mut asset_id = StringBuilder::new();
         let mut market = StringBuilder::new();
-        let mut price = StringBuilder::new();
+        let mut price = Float64Builder::new();
         let mut side = StringBuilder::new();
-        let mut size = StringBuilder::new();
-        let mut fee_rate_bps = StringBuilder::new();
+        let mut size = Float64Builder::new();
+        let mut fee_rate_bps = Float64Builder::new();
         let mut timestamp_ms = Int64Builder::new();
         let mut nats_seq = UInt64Builder::new();
         let mut received_at = TimestampMicrosecondBuilder::new();
@@ -206,10 +214,10 @@ impl MessageSchema for PolymarketTradeSchema {
                     continue;
                 }
             };
-            let p = match json.get("price").and_then(|v| v.as_str()) {
+            let p = match json.get("price").and_then(parse_f64_str) {
                 Some(v) => v,
                 None => {
-                    error!("Polymarket trade missing 'price', skipping");
+                    error!("Polymarket trade missing/invalid 'price', skipping");
                     continue;
                 }
             };
@@ -222,11 +230,11 @@ impl MessageSchema for PolymarketTradeSchema {
                 Some(v) => side.append_value(v),
                 None => side.append_null(),
             }
-            match json.get("size").and_then(|v| v.as_str()) {
+            match json.get("size").and_then(parse_f64_str) {
                 Some(v) => size.append_value(v),
                 None => size.append_null(),
             }
-            match json.get("fee_rate_bps").and_then(|v| v.as_str()) {
+            match json.get("fee_rate_bps").and_then(parse_f64_str) {
                 Some(v) => fee_rate_bps.append_value(v),
                 None => fee_rate_bps.append_null(),
             }
@@ -268,12 +276,12 @@ impl PolymarketPriceChangeSchema {
             Field::new("market", DataType::Utf8, false),
             Field::new("timestamp_ms", DataType::Int64, true),
             Field::new("asset_id", DataType::Utf8, false),
-            Field::new("price", DataType::Utf8, false),
-            Field::new("size", DataType::Utf8, false),
+            Field::new("price", DataType::Float64, false),
+            Field::new("size", DataType::Float64, false),
             Field::new("side", DataType::Utf8, false),
             Field::new("hash", DataType::Utf8, true),
-            Field::new("best_bid", DataType::Utf8, true),
-            Field::new("best_ask", DataType::Utf8, true),
+            Field::new("best_bid", DataType::Float64, true),
+            Field::new("best_ask", DataType::Float64, true),
             Field::new("_nats_seq", DataType::UInt64, false),
             Field::new("_received_at", ts_type(), false),
         ])
@@ -286,7 +294,7 @@ impl MessageSchema for PolymarketPriceChangeSchema {
     }
 
     fn schema_version(&self) -> &str {
-        "1.0.0"
+        "2.0.0"
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -301,12 +309,12 @@ impl MessageSchema for PolymarketPriceChangeSchema {
         let mut market = StringBuilder::new();
         let mut timestamp_ms = Int64Builder::new();
         let mut asset_id = StringBuilder::new();
-        let mut price = StringBuilder::new();
-        let mut size = StringBuilder::new();
+        let mut price = Float64Builder::new();
+        let mut size = Float64Builder::new();
         let mut side = StringBuilder::new();
         let mut hash_b = StringBuilder::new();
-        let mut best_bid = StringBuilder::new();
-        let mut best_ask = StringBuilder::new();
+        let mut best_bid = Float64Builder::new();
+        let mut best_ask = Float64Builder::new();
         let mut nats_seq = UInt64Builder::new();
         let mut received_at = TimestampMicrosecondBuilder::new();
 
@@ -341,17 +349,17 @@ impl MessageSchema for PolymarketPriceChangeSchema {
                         continue;
                     }
                 };
-                let p = match item.get("price").and_then(|v| v.as_str()) {
+                let p = match item.get("price").and_then(parse_f64_str) {
                     Some(v) => v,
                     None => {
-                        error!("Polymarket price_change item missing 'price', skipping item");
+                        error!("Polymarket price_change item missing/invalid 'price', skipping item");
                         continue;
                     }
                 };
-                let sz = match item.get("size").and_then(|v| v.as_str()) {
+                let sz = match item.get("size").and_then(parse_f64_str) {
                     Some(v) => v,
                     None => {
-                        error!("Polymarket price_change item missing 'size', skipping item");
+                        error!("Polymarket price_change item missing/invalid 'size', skipping item");
                         continue;
                     }
                 };
@@ -377,11 +385,11 @@ impl MessageSchema for PolymarketPriceChangeSchema {
                     Some(h) => hash_b.append_value(h),
                     None => hash_b.append_null(),
                 }
-                match item.get("best_bid").and_then(|v| v.as_str()) {
+                match item.get("best_bid").and_then(parse_f64_str) {
                     Some(v) => best_bid.append_value(v),
                     None => best_bid.append_null(),
                 }
-                match item.get("best_ask").and_then(|v| v.as_str()) {
+                match item.get("best_ask").and_then(parse_f64_str) {
                     Some(v) => best_ask.append_value(v),
                     None => best_ask.append_null(),
                 }
@@ -421,9 +429,9 @@ impl PolymarketBestBidAskSchema {
         Schema::new(vec![
             Field::new("market", DataType::Utf8, false),
             Field::new("asset_id", DataType::Utf8, false),
-            Field::new("best_bid", DataType::Utf8, true),
-            Field::new("best_ask", DataType::Utf8, true),
-            Field::new("spread", DataType::Utf8, true),
+            Field::new("best_bid", DataType::Float64, true),
+            Field::new("best_ask", DataType::Float64, true),
+            Field::new("spread", DataType::Float64, true),
             Field::new("timestamp_ms", DataType::Int64, true),
             Field::new("_nats_seq", DataType::UInt64, false),
             Field::new("_received_at", ts_type(), false),
@@ -437,7 +445,7 @@ impl MessageSchema for PolymarketBestBidAskSchema {
     }
 
     fn schema_version(&self) -> &str {
-        "1.0.0"
+        "2.0.0"
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -451,9 +459,9 @@ impl MessageSchema for PolymarketBestBidAskSchema {
     fn parse_batch(&self, messages: &[(Vec<u8>, u64, i64)]) -> Result<RecordBatch, ArrowError> {
         let mut market = StringBuilder::new();
         let mut asset_id = StringBuilder::new();
-        let mut best_bid = StringBuilder::new();
-        let mut best_ask = StringBuilder::new();
-        let mut spread = StringBuilder::new();
+        let mut best_bid = Float64Builder::new();
+        let mut best_ask = Float64Builder::new();
+        let mut spread = Float64Builder::new();
         let mut timestamp_ms = Int64Builder::new();
         let mut nats_seq = UInt64Builder::new();
         let mut received_at = TimestampMicrosecondBuilder::new();
@@ -480,15 +488,15 @@ impl MessageSchema for PolymarketBestBidAskSchema {
             market.append_value(mkt);
             asset_id.append_value(aid);
 
-            match json.get("best_bid").and_then(|v| v.as_str()) {
+            match json.get("best_bid").and_then(parse_f64_str) {
                 Some(v) => best_bid.append_value(v),
                 None => best_bid.append_null(),
             }
-            match json.get("best_ask").and_then(|v| v.as_str()) {
+            match json.get("best_ask").and_then(parse_f64_str) {
                 Some(v) => best_ask.append_value(v),
                 None => best_ask.append_null(),
             }
-            match json.get("spread").and_then(|v| v.as_str()) {
+            match json.get("spread").and_then(parse_f64_str) {
                 Some(v) => spread.append_value(v),
                 None => spread.append_null(),
             }
@@ -625,9 +633,9 @@ mod tests {
         let price = batch
             .column(2)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
-        assert_eq!(price.value(0), "0.55");
+        assert!((price.value(0) - 0.55).abs() < f64::EPSILON);
 
         let side = batch
             .column(3)
@@ -635,6 +643,20 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(side.value(0), "BUY");
+
+        let size = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert!((size.value(0) - 100.0).abs() < f64::EPSILON);
+
+        let fee = batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert!((fee.value(0) - 0.0).abs() < f64::EPSILON);
 
         let ts = batch
             .column(6)
@@ -667,7 +689,7 @@ mod tests {
         let size = batch
             .column(4)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
         assert!(size.is_null(0));
 
@@ -703,7 +725,7 @@ mod tests {
     fn test_multi_message_batch() {
         let schema = PolymarketTradeSchema;
         let msg1 = br#"{"event_type":"last_trade_price","asset_id":"A","market":"0x1","price":"0.50"}"#;
-        let msg2 = br#"{"event_type":"last_trade_price","asset_id":"B","market":"0x2","price":"0.60","side":"SELL"}"#;
+        let msg2 = br#"{"event_type":"last_trade_price","asset_id":"B","market":"0x2","price":"0.60","side":"SELL","size":"200"}"#;
         let batch = schema
             .parse_batch(&[
                 (msg1.to_vec(), 1, 1000),
@@ -761,16 +783,16 @@ mod tests {
         let price = batch
             .column(3)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
-        assert_eq!(price.value(0), "0.55");
+        assert!((price.value(0) - 0.55).abs() < f64::EPSILON);
 
         let size = batch
             .column(4)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
-        assert_eq!(size.value(0), "750");
+        assert!((size.value(0) - 750.0).abs() < f64::EPSILON);
 
         let side = batch
             .column(5)
@@ -789,16 +811,16 @@ mod tests {
         let best_bid = batch
             .column(7)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
-        assert_eq!(best_bid.value(0), "0.55");
+        assert!((best_bid.value(0) - 0.55).abs() < f64::EPSILON);
 
         let best_ask = batch
             .column(8)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
-        assert_eq!(best_ask.value(0), "0.56");
+        assert!((best_ask.value(0) - 0.56).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -878,14 +900,14 @@ mod tests {
         let best_bid = batch
             .column(7)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
         assert!(best_bid.is_null(0));
 
         let best_ask = batch
             .column(8)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
         assert!(best_ask.is_null(0));
     }
@@ -969,23 +991,23 @@ mod tests {
         let bid = batch
             .column(2)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
-        assert_eq!(bid.value(0), "0.55");
+        assert!((bid.value(0) - 0.55).abs() < f64::EPSILON);
 
         let ask = batch
             .column(3)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
-        assert_eq!(ask.value(0), "0.56");
+        assert!((ask.value(0) - 0.56).abs() < f64::EPSILON);
 
         let spread = batch
             .column(4)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
-        assert_eq!(spread.value(0), "0.01");
+        assert!((spread.value(0) - 0.01).abs() < f64::EPSILON);
 
         let ts = batch
             .column(5)
@@ -1009,21 +1031,21 @@ mod tests {
         let bid = batch
             .column(2)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
         assert!(bid.is_null(0));
 
         let ask = batch
             .column(3)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
         assert!(ask.is_null(0));
 
         let spread = batch
             .column(4)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float64Array>()
             .unwrap();
         assert!(spread.is_null(0));
 

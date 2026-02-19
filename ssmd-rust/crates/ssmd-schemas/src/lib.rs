@@ -298,11 +298,11 @@ mod tests {
 
         let price_change = reg.get("price_change").unwrap();
         assert_eq!(price_change.schema_name(), "polymarket_price_change");
-        assert_eq!(price_change.schema_version(), "1.0.0");
+        assert_eq!(price_change.schema_version(), "2.0.0");
 
         let best_bid_ask = reg.get("best_bid_ask").unwrap();
         assert_eq!(best_bid_ask.schema_name(), "polymarket_best_bid_ask");
-        assert_eq!(best_bid_ask.schema_version(), "1.0.0");
+        assert_eq!(best_bid_ask.schema_version(), "2.0.0");
     }
 
     #[test]
