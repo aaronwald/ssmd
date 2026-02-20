@@ -15,6 +15,8 @@ from ssmd_mcp.tools import (
     lookup_market,
     list_feeds,
     check_freshness,
+    query_events,
+    query_volume,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -81,9 +83,10 @@ TOOLS = [
     Tool(
         name="lookup_market",
         description=(
-            "Look up market metadata from ssmd-data-ts API (GET /v1/markets). "
-            "Returns market name, description, status, and other metadata. "
-            "Results are cached in-memory for the session."
+            "Look up market metadata from ssmd-data-ts API (GET /v1/markets/lookup). "
+            "Returns id, feed, name, event, series, status, closeTime, volume, volumeUnit, openInterest. "
+            "Searches Kalshi tickers, Kraken pair_ids, Polymarket condition/token IDs. "
+            "Results cached in-memory for session."
         ),
         inputSchema={
             "type": "object",
@@ -128,6 +131,58 @@ TOOLS = [
             },
         },
     ),
+    Tool(
+        name="query_events",
+        description=(
+            "Query event-level trade summaries from ssmd parquet files. "
+            "Groups markets by parent event (Kalshi events, Polymarket conditions) "
+            "and aggregates trade activity. Returns event name, close time, market count, "
+            "total volume, and top markets. Kraken has no event hierarchy — returns per-instrument. "
+            "Volume units differ by feed: contracts (Kalshi), USD (Polymarket), base currency (Kraken)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "feed": {
+                    "type": "string",
+                    "enum": ["kalshi", "kraken-futures", "polymarket"],
+                    "description": "Feed name",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "Date in YYYY-MM-DD format. Defaults to today.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Max events to return. Default 20.",
+                },
+            },
+            "required": ["feed"],
+        },
+    ),
+    Tool(
+        name="query_volume",
+        description=(
+            "Get volume summary across feeds for a date. Returns per-feed trade counts, "
+            "total volume (in feed-native units), active ticker count, and top tickers. "
+            "Does NOT sum across feeds — volumes use different units "
+            "(contracts, USD, base currency)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": "Date in YYYY-MM-DD format. Defaults to today.",
+                },
+                "feed": {
+                    "type": "string",
+                    "description": "Optional: filter to a single feed.",
+                },
+            },
+        },
+    ),
 ]
 
 
@@ -158,6 +213,19 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
     elif name == "check_freshness":
         return check_freshness(
             cfg,
+            feed=arguments.get("feed"),
+        )
+    elif name == "query_events":
+        return query_events(
+            cfg,
+            feed=arguments["feed"],
+            date_str=arguments.get("date"),
+            limit=arguments.get("limit", 20),
+        )
+    elif name == "query_volume":
+        return query_volume(
+            cfg,
+            date_str=arguments.get("date"),
             feed=arguments.get("feed"),
         )
     else:

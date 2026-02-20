@@ -37,6 +37,10 @@ import {
   getGapReports,
   lookupMarketsByIds,
   VALID_FEEDS,
+  events,
+  markets,
+  pairs,
+  polymarketConditions,
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
@@ -46,8 +50,17 @@ import { getRedis } from "../lib/redis/mod.ts";
 import { listParquetFiles, generateSignedUrls, FEED_CONFIG, getCatalog } from "../lib/gcs/mod.ts";
 import { logDataAccess } from "../lib/db/mod.ts";
 import { query as duckdbQuery } from "../lib/duckdb/mod.ts";
-import { buildTradeSQL, buildPriceSQL } from "../lib/duckdb/queries.ts";
+import {
+  buildTradeSQL,
+  buildPriceSQL,
+  buildEventVolumeSQL,
+  buildEventMarketsSQL,
+  buildTotalVolumeSQL,
+  buildTopTickersSQL,
+  VOLUME_UNITS,
+} from "../lib/duckdb/queries.ts";
 import { VALID_DATA_FEEDS, FEED_PATHS } from "../lib/duckdb/feed-config.ts";
+import { and, inArray, isNull } from "drizzle-orm";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
 const USAGE_CACHE_TTL = 120; // 2 minutes
@@ -968,6 +981,216 @@ route("GET", "/v1/data/prices", async (req) => {
     console.error("Price query failed:", err);
     return json({ error: `Query failed: ${(err as Error).message}` }, 500);
   }
+}, true, "datasets:read");
+
+// Event volume aggregation endpoint
+route("GET", "/v1/data/events", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+
+  const feed = url.searchParams.get("feed");
+  if (!feed || !VALID_DATA_FEEDS.includes(feed)) {
+    return json({ error: `Invalid or missing feed. Valid: ${VALID_DATA_FEEDS.join(", ")}` }, 400);
+  }
+
+  if (!auth.allowedFeeds.includes(feed)) {
+    return json({ error: `Key not authorized for feed: ${feed}` }, 403);
+  }
+
+  const date = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(date)) {
+    return json({ error: "date must be YYYY-MM-DD format" }, 400);
+  }
+
+  if (date < auth.dateRangeStart || date > auth.dateRangeEnd) {
+    return json({ error: `Date ${date} outside key range ${auth.dateRangeStart} to ${auth.dateRangeEnd}` }, 403);
+  }
+
+  const limitParam = url.searchParams.get("limit");
+  const limit = Math.min(Math.max(parseInt(limitParam ?? "20", 10) || 20, 1), 100);
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
+
+  try {
+    // Step 1: Query DuckDB for event-level volume
+    const eventSQL = buildEventVolumeSQL(bucket, feed, date, limit);
+    const eventResult = await duckdbQuery(eventSQL);
+
+    if (eventResult.rows.length === 0) {
+      return json({ feed, date, volumeUnit: VOLUME_UNITS[feed], events: [] });
+    }
+
+    const eventIds = eventResult.rows.map((r) => String(r.event_id));
+
+    // Step 2: Get top markets per event
+    const marketsSQL = buildEventMarketsSQL(bucket, feed, date, eventIds, 5);
+    const marketsResult = await duckdbQuery(marketsSQL);
+
+    // Group top markets by event_id
+    const marketsByEvent: Record<string, Record<string, unknown>[]> = {};
+    for (const row of marketsResult.rows) {
+      const eid = String(row.event_id);
+      if (!marketsByEvent[eid]) marketsByEvent[eid] = [];
+      marketsByEvent[eid].push({
+        ticker: row.ticker,
+        tradeCount: row.trade_count,
+        volume: row.volume,
+      });
+    }
+
+    // Step 3: Batch-enrich event IDs with secmaster metadata
+    const metadata: Record<string, Record<string, unknown>> = {};
+
+    if (feed === "kalshi") {
+      const rows = await ctx.db
+        .select({
+          eventTicker: events.eventTicker,
+          title: events.title,
+          category: events.category,
+          status: events.status,
+          strikeDate: events.strikeDate,
+        })
+        .from(events)
+        .where(and(inArray(events.eventTicker, eventIds), isNull(events.deletedAt)));
+      for (const row of rows) {
+        metadata[row.eventTicker] = {
+          title: row.title,
+          category: row.category,
+          status: row.status,
+          strikeDate: row.strikeDate?.toISOString() ?? null,
+        };
+      }
+    } else if (feed === "polymarket") {
+      const rows = await ctx.db
+        .select({
+          conditionId: polymarketConditions.conditionId,
+          question: polymarketConditions.question,
+          status: polymarketConditions.status,
+          endDate: polymarketConditions.endDate,
+        })
+        .from(polymarketConditions)
+        .where(and(inArray(polymarketConditions.conditionId, eventIds), isNull(polymarketConditions.deletedAt)));
+      for (const row of rows) {
+        metadata[row.conditionId] = {
+          question: row.question,
+          status: row.status,
+          endDate: row.endDate?.toISOString() ?? null,
+        };
+      }
+    } else if (feed === "kraken-futures") {
+      const rows = await ctx.db
+        .select({
+          pairId: pairs.pairId,
+          base: pairs.base,
+          quote: pairs.quote,
+          status: pairs.status,
+        })
+        .from(pairs)
+        .where(and(inArray(pairs.pairId, eventIds), isNull(pairs.deletedAt)));
+      for (const row of rows) {
+        metadata[row.pairId] = {
+          symbol: `${row.base}/${row.quote}`,
+          status: row.status ?? "active",
+        };
+      }
+    }
+
+    // Step 4: Combine results
+    const enrichedEvents = eventResult.rows.map((row) => {
+      const eid = String(row.event_id);
+      return {
+        eventId: eid,
+        totalTradeCount: row.total_trade_count,
+        totalVolume: row.total_volume,
+        marketCount: row.market_count ?? 1,
+        metadata: metadata[eid] ?? null,
+        topMarkets: marketsByEvent[eid] ?? [],
+      };
+    });
+
+    return json({
+      feed,
+      date,
+      volumeUnit: VOLUME_UNITS[feed],
+      count: enrichedEvents.length,
+      events: enrichedEvents,
+    });
+  } catch (err) {
+    console.error("Event volume query failed:", err);
+    return json({ error: `Query failed: ${(err as Error).message}` }, 500);
+  }
+}, true, "datasets:read");
+
+// Volume summary endpoint (per-feed or cross-feed)
+route("GET", "/v1/data/volume", async (req) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+
+  const feedParam = url.searchParams.get("feed");
+  if (feedParam && !VALID_DATA_FEEDS.includes(feedParam)) {
+    return json({ error: `Invalid feed. Valid: ${VALID_DATA_FEEDS.join(", ")}` }, 400);
+  }
+
+  if (feedParam && !auth.allowedFeeds.includes(feedParam)) {
+    return json({ error: `Key not authorized for feed: ${feedParam}` }, 403);
+  }
+
+  const date = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(date)) {
+    return json({ error: "date must be YYYY-MM-DD format" }, 400);
+  }
+
+  if (date < auth.dateRangeStart || date > auth.dateRangeEnd) {
+    return json({ error: `Date ${date} outside key range ${auth.dateRangeStart} to ${auth.dateRangeEnd}` }, 403);
+  }
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
+
+  const feeds = feedParam
+    ? [feedParam]
+    : VALID_DATA_FEEDS.filter((f) => auth.allowedFeeds.includes(f));
+
+  const feedSummaries: Record<string, unknown>[] = [];
+
+  for (const feed of feeds) {
+    if (!auth.allowedFeeds.includes(feed)) continue;
+
+    try {
+      const totalSQL = buildTotalVolumeSQL(bucket, feed, date);
+      const topSQL = buildTopTickersSQL(bucket, feed, date, 5);
+      const [totalResult, topResult] = await Promise.all([
+        duckdbQuery(totalSQL),
+        duckdbQuery(topSQL),
+      ]);
+
+      const totals = totalResult.rows[0] ?? { total_trade_count: 0, total_volume: 0, active_tickers: 0 };
+
+      feedSummaries.push({
+        feed,
+        totalTradeCount: totals.total_trade_count,
+        totalVolume: totals.total_volume,
+        volumeUnit: VOLUME_UNITS[feed],
+        activeTickers: totals.active_tickers,
+        topTickers: topResult.rows.map((r) => ({
+          ticker: r.ticker,
+          tradeCount: r.trade_count,
+          volume: r.volume,
+        })),
+      });
+    } catch (err) {
+      console.error(`Volume query failed for ${feed}:`, err);
+      feedSummaries.push({
+        feed,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  return json({ date, feeds: feedSummaries });
 }, true, "datasets:read");
 
 route("GET", "/v1/data/freshness", async (req) => {

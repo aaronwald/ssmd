@@ -54,3 +54,25 @@ def check_freshness(cfg: Config, feed: str | None = None) -> str:
         params["feed"] = feed
     result = api_get(cfg, "/v1/data/freshness", params)
     return json.dumps(result, default=str)
+
+
+def query_events(cfg: Config, feed: str, date_str: str | None = None, limit: int = 20) -> str:
+    """Query event-level trade summaries via ssmd-data-ts API."""
+    params: dict[str, Any] = {"feed": feed}
+    if date_str:
+        params["date"] = date_str
+    if limit != 20:
+        params["limit"] = limit
+    result = api_get(cfg, "/v1/data/events", params)
+    return json.dumps(result, default=str)
+
+
+def query_volume(cfg: Config, date_str: str | None = None, feed: str | None = None) -> str:
+    """Query volume summary via ssmd-data-ts API."""
+    params: dict[str, Any] = {}
+    if date_str:
+        params["date"] = date_str
+    if feed:
+        params["feed"] = feed
+    result = api_get(cfg, "/v1/data/volume", params)
+    return json.dumps(result, default=str)

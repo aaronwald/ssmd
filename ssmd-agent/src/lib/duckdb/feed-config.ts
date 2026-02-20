@@ -40,7 +40,7 @@ export const TRADE_CONFIG: Record<string, TradeConfig> = {
     fileType: "last_trade_price",
     tickerCol: "asset_id",
     priceCol: "price",
-    qtyCol: null,
+    qtyCol: "size",
     priceDivisor: 1,
   },
 };

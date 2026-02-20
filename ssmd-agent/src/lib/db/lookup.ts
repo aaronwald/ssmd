@@ -19,6 +19,10 @@ export interface LookupResult {
   event: string | null;
   series: string | null;
   status: string;
+  closeTime: string | null;
+  volume: number | null;
+  volumeUnit: string | null;
+  openInterest: number | null;
 }
 
 const VALID_FEEDS = ["kalshi", "kraken-futures", "polymarket"];
@@ -52,6 +56,9 @@ export async function lookupMarketsByIds(
             status: markets.status,
             eventTicker: markets.eventTicker,
             seriesTicker: events.seriesTicker,
+            closeTime: markets.closeTime,
+            volume: markets.volume,
+            openInterest: markets.openInterest,
           })
           .from(markets)
           .innerJoin(events, eq(markets.eventTicker, events.eventTicker))
@@ -70,6 +77,10 @@ export async function lookupMarketsByIds(
             event: row.eventTicker,
             series: row.seriesTicker,
             status: row.status,
+            closeTime: row.closeTime?.toISOString() ?? null,
+            volume: row.volume ?? null,
+            volumeUnit: "contracts",
+            openInterest: row.openInterest ?? null,
           });
         }
       })(),
@@ -87,6 +98,7 @@ export async function lookupMarketsByIds(
             quote: pairs.quote,
             status: pairs.status,
             marketType: pairs.marketType,
+            volume24h: pairs.volume24h,
           })
           .from(pairs)
           .where(
@@ -104,6 +116,10 @@ export async function lookupMarketsByIds(
             event: null,
             series: row.marketType,
             status: row.status ?? "active",
+            closeTime: null,
+            volume: row.volume24h ? Number(row.volume24h) : null,
+            volumeUnit: "base_currency",
+            openInterest: null,
           });
         }
       })(),
@@ -121,6 +137,8 @@ export async function lookupMarketsByIds(
             question: polymarketConditions.question,
             status: polymarketConditions.status,
             category: polymarketConditions.category,
+            endDate: polymarketConditions.endDate,
+            volume: polymarketConditions.volume,
           })
           .from(polymarketConditions)
           .where(
@@ -141,6 +159,10 @@ export async function lookupMarketsByIds(
             event: null,
             series: row.category,
             status: row.status,
+            closeTime: row.endDate?.toISOString() ?? null,
+            volume: row.volume ? Number(row.volume) : null,
+            volumeUnit: "usd",
+            openInterest: null,
           });
         }
 
@@ -153,6 +175,8 @@ export async function lookupMarketsByIds(
             question: polymarketConditions.question,
             status: polymarketConditions.status,
             category: polymarketConditions.category,
+            endDate: polymarketConditions.endDate,
+            volume: polymarketConditions.volume,
           })
           .from(polymarketTokens)
           .innerJoin(
@@ -177,6 +201,10 @@ export async function lookupMarketsByIds(
             event: row.conditionId,
             series: row.category,
             status: row.status,
+            closeTime: row.endDate?.toISOString() ?? null,
+            volume: row.volume ? Number(row.volume) : null,
+            volumeUnit: "usd",
+            openInterest: null,
           });
         }
       })(),

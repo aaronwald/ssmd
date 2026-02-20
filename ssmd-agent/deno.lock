@@ -1428,6 +1428,7 @@
   },
   "workspace": {
     "dependencies": [
+      "npm:@duckdb/node-api@1.4.4-r.1",
       "npm:@google-cloud/storage@7",
       "npm:@langchain/anthropic@0.3",
       "npm:@langchain/core@0.3",
