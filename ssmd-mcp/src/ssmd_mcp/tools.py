@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 from ssmd_mcp.config import Config
-from ssmd_mcp.api import api_get, api_post, lookup_markets
+from ssmd_mcp.api import api_get, lookup_markets
 
 logger = logging.getLogger(__name__)
 
@@ -29,17 +29,6 @@ def query_prices(cfg: Config, feed: str, date_str: str | None = None, hour: str 
     if hour:
         params["hour"] = hour
     result = api_get(cfg, "/v1/data/prices", params)
-    return json.dumps(result, default=str)
-
-
-def query_raw(cfg: Config, sql: str, feed: str | None = None, date_str: str | None = None) -> str:
-    """Execute freeform DuckDB SQL via ssmd-data-ts API."""
-    body: dict[str, Any] = {"sql": sql}
-    if feed:
-        body["feed"] = feed
-    if date_str:
-        body["date"] = date_str
-    result = api_post(cfg, "/v1/data/query", body)
     return json.dumps(result, default=str)
 
 

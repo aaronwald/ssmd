@@ -12,7 +12,6 @@ from ssmd_mcp.config import load_config, Config
 from ssmd_mcp.tools import (
     query_trades,
     query_prices,
-    query_raw,
     lookup_market,
     list_feeds,
     check_freshness,
@@ -77,33 +76,6 @@ TOOLS = [
                 },
             },
             "required": ["feed"],
-        },
-    ),
-    Tool(
-        name="query_raw",
-        description=(
-            "Execute freeform DuckDB SQL against ssmd parquet data. "
-            "Use $FEED_PATH(feed) or $FEED_PATH(feed, date) macro to reference "
-            "parquet files. Example: SELECT * FROM read_parquet('$FEED_PATH(kalshi)trade_*.parquet') LIMIT 10. "
-            "Row limit: 1000."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "sql": {
-                    "type": "string",
-                    "description": "DuckDB SQL query. Use $FEED_PATH(feed) or $FEED_PATH(feed, date) macros.",
-                },
-                "feed": {
-                    "type": "string",
-                    "description": "Default feed for $FEED_PATH expansion.",
-                },
-                "date": {
-                    "type": "string",
-                    "description": "Default date for $FEED_PATH expansion. YYYY-MM-DD.",
-                },
-            },
-            "required": ["sql"],
         },
     ),
     Tool(
@@ -174,13 +146,6 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             feed=arguments["feed"],
             date_str=arguments.get("date"),
             hour=arguments.get("hour"),
-        )
-    elif name == "query_raw":
-        return query_raw(
-            cfg,
-            sql=arguments["sql"],
-            feed=arguments.get("feed"),
-            date_str=arguments.get("date"),
         )
     elif name == "lookup_market":
         return lookup_market(

@@ -46,7 +46,7 @@ import { getRedis } from "../lib/redis/mod.ts";
 import { listParquetFiles, generateSignedUrls, FEED_CONFIG, getCatalog } from "../lib/gcs/mod.ts";
 import { logDataAccess } from "../lib/db/mod.ts";
 import { query as duckdbQuery } from "../lib/duckdb/mod.ts";
-import { buildTradeSQL, buildPriceSQL, expandFeedPath, validateSelectOnly, enforceLimitSafety } from "../lib/duckdb/queries.ts";
+import { buildTradeSQL, buildPriceSQL } from "../lib/duckdb/queries.ts";
 import { VALID_DATA_FEEDS, FEED_PATHS } from "../lib/duckdb/feed-config.ts";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
@@ -967,39 +967,6 @@ route("GET", "/v1/data/prices", async (req) => {
   } catch (err) {
     console.error("Price query failed:", err);
     return json({ error: `Query failed: ${(err as Error).message}` }, 500);
-  }
-}, true, "datasets:read");
-
-route("POST", "/v1/data/query", async (req) => {
-  const auth = (req as Request & { auth: AuthInfo }).auth;
-
-  let body: { sql: string; feed?: string; date?: string };
-  try {
-    body = await req.json();
-  } catch {
-    return json({ error: "Invalid JSON body" }, 400);
-  }
-
-  if (!body.sql || typeof body.sql !== "string") {
-    return json({ error: "sql is required" }, 400);
-  }
-
-  if (!validateSelectOnly(body.sql)) {
-    return json({ error: "Only SELECT queries are allowed" }, 400);
-  }
-
-  const bucket = Deno.env.get("GCS_BUCKET");
-  if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
-
-  let expanded = expandFeedPath(body.sql, bucket, body.feed, body.date);
-  expanded = enforceLimitSafety(expanded);
-
-  try {
-    const result = await duckdbQuery(expanded);
-    return json({ sql: expanded, count: result.rows.length, columns: result.columns, rows: result.rows });
-  } catch (err) {
-    console.error("Raw query failed:", err);
-    return json({ error: `Query failed: ${(err as Error).message}`, sql: expanded }, 500);
   }
 }, true, "datasets:read");
 

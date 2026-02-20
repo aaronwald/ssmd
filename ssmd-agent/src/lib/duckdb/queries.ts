@@ -2,7 +2,7 @@
  * SQL query builders for DuckDB parquet queries.
  * Ported from ssmd-mcp Python tools.py.
  */
-import { TRADE_CONFIG, PRICE_CONFIG, FEED_PATHS, gcsParquetPath } from "./feed-config.ts";
+import { TRADE_CONFIG, PRICE_CONFIG, gcsParquetPath } from "./feed-config.ts";
 
 /**
  * Build trade aggregation SQL for a feed.
@@ -101,51 +101,3 @@ export function buildPriceSQL(
   `.trim();
 }
 
-/**
- * Expand $FEED_PATH(feed) and $FEED_PATH(feed, date) macros in SQL.
- */
-export function expandFeedPath(
-  sql: string,
-  bucket: string,
-  defaultFeed?: string,
-  defaultDate?: string,
-): string {
-  const today = defaultDate ?? new Date().toISOString().slice(0, 10);
-
-  return sql.replace(
-    /\$FEED_PATH\(\s*([a-z-]+)\s*(?:,\s*([0-9-]+)\s*)?\)/g,
-    (_match, feed: string, date?: string) => {
-      const d = date ?? today;
-      const prefix = FEED_PATHS[feed] ?? feed;
-      return `s3://${bucket}/${prefix}/${d}/`;
-    },
-  );
-}
-
-/**
- * Validate SQL is SELECT-only (safety check for query_raw).
- */
-export function validateSelectOnly(sql: string): boolean {
-  const normalized = sql.trim().toUpperCase();
-  const forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "GRANT", "REVOKE"];
-  // Check if the statement starts with a forbidden keyword
-  for (const kw of forbidden) {
-    if (normalized.startsWith(kw)) return false;
-  }
-  // Also check for these as standalone statements after semicolons
-  const statements = normalized.split(";").map(s => s.trim()).filter(Boolean);
-  for (const stmt of statements) {
-    for (const kw of forbidden) {
-      if (stmt.startsWith(kw)) return false;
-    }
-  }
-  return true;
-}
-
-/**
- * Enforce LIMIT 1000 safety on raw queries.
- */
-export function enforceLimitSafety(sql: string): string {
-  if (/\bLIMIT\b/i.test(sql)) return sql;
-  return sql.replace(/;?\s*$/, " LIMIT 1000");
-}
