@@ -68,6 +68,9 @@ impl KrakenFuturesConnector {
             use std::time::Duration;
             use tokio::time::{interval, Instant};
 
+            let connected_at = Instant::now();
+            let mut message_count: u64 = 0;
+
             let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -81,9 +84,16 @@ impl KrakenFuturesConnector {
                         trace!(idle_secs, "Sending Kraken Futures ping");
                         shard_metrics.set_idle_seconds(idle_secs as f64);
                         if let Err(e) = ws.ping().await {
-                            error!(error = %e, "Failed to send Kraken Futures ping");
+                            let uptime_secs = connected_at.elapsed().as_secs();
+                            error!(
+                                error = %e,
+                                uptime_secs,
+                                message_count,
+                                reason = "ping_failed",
+                                "Kraken Futures ping failed, exiting for restart"
+                            );
                             shard_metrics.set_disconnected();
-                            break;
+                            std::process::exit(1);
                         }
                         update_activity(&last_activity, &shard_metrics, idle_secs as f64);
                     }
@@ -95,6 +105,7 @@ impl KrakenFuturesConnector {
 
                         match result {
                             Ok((raw, msg)) => {
+                                message_count += 1;
                                 match &msg {
                                     KrakenFuturesWsMessage::DataMessage { feed, product_id, .. } => {
                                         trace!(feed = %feed, product_id = %product_id, "Kraken Futures data message");
@@ -127,7 +138,19 @@ impl KrakenFuturesConnector {
                                 }
                             }
                             Err(e) => {
-                                error!(error = %e, "Kraken Futures WS error, exiting");
+                                let uptime_secs = connected_at.elapsed().as_secs();
+                                let reason = match &e {
+                                    KrakenFuturesWsError::ConnectionClosed => "connection_closed",
+                                    KrakenFuturesWsError::ReadTimeout => "read_timeout",
+                                    _ => "ws_error",
+                                };
+                                error!(
+                                    error = %e,
+                                    uptime_secs,
+                                    message_count,
+                                    reason,
+                                    "Kraken Futures WebSocket disconnect, exiting for restart"
+                                );
                                 shard_metrics.set_disconnected();
                                 std::process::exit(1);
                             }
@@ -136,10 +159,6 @@ impl KrakenFuturesConnector {
                 }
             }
 
-            // Try to close gracefully
-            if let Err(e) = ws.close().await {
-                error!(error = %e, "Error closing Kraken Futures WebSocket");
-            }
         });
     }
 }

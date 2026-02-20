@@ -136,7 +136,10 @@ impl KrakenFuturesWebSocket {
                 // Recurse to get next real message
                 Box::pin(self.recv_raw()).await
             }
-            tungstenite::Message::Close(_) => Err(KrakenFuturesWsError::ConnectionClosed),
+            tungstenite::Message::Close(frame) => {
+                info!(frame = ?frame, "Kraken Futures WebSocket closed");
+                Err(KrakenFuturesWsError::ConnectionClosed)
+            }
             _ => Box::pin(self.recv_raw()).await,
         }
     }

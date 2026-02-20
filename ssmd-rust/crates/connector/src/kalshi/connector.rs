@@ -310,6 +310,9 @@ impl KalshiConnector {
             let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+            let connected_at = Instant::now();
+            let mut message_count: u64 = 0;
+
             // Track last activity for logging (local Instant for idle_secs calculation)
             let mut last_activity = Instant::now();
 
@@ -325,9 +328,17 @@ impl KalshiConnector {
                         // Update idle seconds metric before ping
                         shard_metrics.set_idle_seconds(idle_secs as f64);
                         if let Err(e) = ws.ping().await {
-                            error!(shard_id, error = %e, "Failed to send ping, connection may be dead");
+                            let uptime_secs = connected_at.elapsed().as_secs();
+                            error!(
+                                shard_id,
+                                error = %e,
+                                uptime_secs,
+                                message_count,
+                                reason = "ping_failed",
+                                "Kalshi ping failed, exiting for restart"
+                            );
                             shard_metrics.set_disconnected();
-                            break;
+                            std::process::exit(1);
                         }
                         // Ping succeeded - update activity tracker
                         update_activity(&activity_tracker, &shard_metrics, idle_secs as f64);
@@ -387,6 +398,7 @@ impl KalshiConnector {
 
                         match result {
                             Ok((raw_json, msg)) => {
+                                message_count += 1;
                                 // Record metrics and determine if we should forward
                                 let should_forward = match &msg {
                                     WsMessage::Ticker { .. } => {
@@ -451,13 +463,22 @@ impl KalshiConnector {
                                     break;
                                 }
                             }
-                            Err(WebSocketError::ConnectionClosed) => {
-                                error!(shard_id, "Kalshi WebSocket connection closed, exiting for restart");
-                                shard_metrics.set_disconnected();
-                                std::process::exit(1);
-                            }
                             Err(e) => {
-                                error!(shard_id, error = %e, "Kalshi WebSocket error, exiting for restart");
+                                let uptime_secs = connected_at.elapsed().as_secs();
+                                let reason = match &e {
+                                    WebSocketError::ConnectionClosed => "connection_closed",
+                                    WebSocketError::Connection(_) => "read_timeout",
+                                    WebSocketError::SubscriptionFailed(_) => "subscription_failed",
+                                    _ => "ws_error",
+                                };
+                                error!(
+                                    shard_id,
+                                    error = %e,
+                                    uptime_secs,
+                                    message_count,
+                                    reason,
+                                    "Kalshi WebSocket disconnect, exiting for restart"
+                                );
                                 shard_metrics.set_disconnected();
                                 std::process::exit(1);
                             }
@@ -466,10 +487,6 @@ impl KalshiConnector {
                 }
             }
 
-            // Try to close gracefully
-            if let Err(e) = ws.close().await {
-                error!(shard_id, error = %e, "Error closing Kalshi WebSocket");
-            }
         });
     }
 }

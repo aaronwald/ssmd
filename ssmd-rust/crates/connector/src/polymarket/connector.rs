@@ -154,6 +154,9 @@ impl PolymarketConnector {
             use std::time::Duration;
             use tokio::time::{interval, Instant};
 
+            let connected_at = Instant::now();
+            let mut message_count: u64 = 0;
+
             let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -166,9 +169,17 @@ impl PolymarketConnector {
                         let idle_secs = last_activity_instant.elapsed().as_secs();
                         shard_metrics.set_idle_seconds(idle_secs as f64);
                         if let Err(e) = ws.ping().await {
-                            error!(shard = shard_id, error = %e, "Failed to send Polymarket ping");
+                            let uptime_secs = connected_at.elapsed().as_secs();
+                            error!(
+                                shard = shard_id,
+                                error = %e,
+                                uptime_secs,
+                                message_count,
+                                reason = "ping_failed",
+                                "Polymarket ping failed, exiting for restart"
+                            );
                             shard_metrics.set_disconnected();
-                            break;
+                            std::process::exit(1);
                         }
                         update_activity(&activity_tracker, &shard_metrics, idle_secs as f64);
                     }
@@ -181,6 +192,7 @@ impl PolymarketConnector {
 
                         match result {
                             Ok(raw_json) => {
+                                message_count += 1;
                                 // Skip PONG responses (don't forward to NATS)
                                 if raw_json == "PONG" {
                                     shard_metrics.inc_message("pong");
@@ -202,13 +214,21 @@ impl PolymarketConnector {
                                     break;
                                 }
                             }
-                            Err(PolymarketWebSocketError::ConnectionClosed) => {
-                                error!(shard = shard_id, "Polymarket WebSocket closed, exiting for restart");
-                                shard_metrics.set_disconnected();
-                                std::process::exit(1);
-                            }
                             Err(e) => {
-                                error!(shard = shard_id, error = %e, "Polymarket WebSocket error, exiting for restart");
+                                let uptime_secs = connected_at.elapsed().as_secs();
+                                let reason = match &e {
+                                    PolymarketWebSocketError::ConnectionClosed => "connection_closed",
+                                    PolymarketWebSocketError::Connection(_) => "read_timeout",
+                                    _ => "ws_error",
+                                };
+                                error!(
+                                    shard = shard_id,
+                                    error = %e,
+                                    uptime_secs,
+                                    message_count,
+                                    reason,
+                                    "Polymarket WebSocket disconnect, exiting for restart"
+                                );
                                 shard_metrics.set_disconnected();
                                 std::process::exit(1);
                             }
@@ -217,9 +237,6 @@ impl PolymarketConnector {
                 }
             }
 
-            if let Err(e) = ws.close().await {
-                error!(shard = shard_id, error = %e, "Error closing Polymarket WebSocket");
-            }
         });
     }
 }
