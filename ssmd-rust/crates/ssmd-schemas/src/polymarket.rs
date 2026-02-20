@@ -159,7 +159,7 @@ impl PolymarketTradeSchema {
             Field::new("market", DataType::Utf8, false),
             Field::new("price", DataType::Float64, false),
             Field::new("side", DataType::Utf8, true),
-            Field::new("size", DataType::Float64, true),
+            Field::new("size", DataType::Float64, false),
             Field::new("fee_rate_bps", DataType::Float64, true),
             Field::new("timestamp_ms", DataType::Int64, true),
             Field::new("_nats_seq", DataType::UInt64, false),
@@ -174,7 +174,7 @@ impl MessageSchema for PolymarketTradeSchema {
     }
 
     fn schema_version(&self) -> &str {
-        "2.0.0"
+        "2.1.0"
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -221,7 +221,15 @@ impl MessageSchema for PolymarketTradeSchema {
                     continue;
                 }
             };
+            let sz = match json.get("size").and_then(parse_f64_str) {
+                Some(v) => v,
+                None => {
+                    error!("Polymarket trade missing/invalid 'size', skipping");
+                    continue;
+                }
+            };
 
+            // All required fields validated — safe to append
             asset_id.append_value(aid);
             market.append_value(mkt);
             price.append_value(p);
@@ -230,10 +238,7 @@ impl MessageSchema for PolymarketTradeSchema {
                 Some(v) => side.append_value(v),
                 None => side.append_null(),
             }
-            match json.get("size").and_then(parse_f64_str) {
-                Some(v) => size.append_value(v),
-                None => size.append_null(),
-            }
+            size.append_value(sz);
             match json.get("fee_rate_bps").and_then(parse_f64_str) {
                 Some(v) => fee_rate_bps.append_value(v),
                 None => fee_rate_bps.append_null(),
@@ -669,15 +674,15 @@ mod tests {
     #[test]
     fn test_parse_polymarket_trade_nullable_fields() {
         let schema = PolymarketTradeSchema;
-        // Minimal: only required fields
-        let json = br#"{"event_type":"last_trade_price","asset_id":"123","market":"0xabc","price":"0.50"}"#;
+        // Trade with required fields (asset_id, market, price, size) + nullable side/fee/timestamp
+        let json = br#"{"event_type":"last_trade_price","asset_id":"123","market":"0xabc","price":"0.50","size":"75"}"#;
         let batch = schema
             .parse_batch(&[(json.to_vec(), 1, 1000)])
             .unwrap();
 
         assert_eq!(batch.num_rows(), 1);
 
-        // side should be null
+        // side should be null (optional)
         let side = batch
             .column(3)
             .as_any()
@@ -685,21 +690,33 @@ mod tests {
             .unwrap();
         assert!(side.is_null(0));
 
-        // size should be null
+        // size should be 75.0 (required, non-nullable)
         let size = batch
             .column(4)
             .as_any()
             .downcast_ref::<Float64Array>()
             .unwrap();
-        assert!(size.is_null(0));
+        assert!((size.value(0) - 75.0).abs() < f64::EPSILON);
 
-        // timestamp_ms should be null
+        // timestamp_ms should be null (optional)
         let ts = batch
             .column(6)
             .as_any()
             .downcast_ref::<Int64Array>()
             .unwrap();
         assert!(ts.is_null(0));
+    }
+
+    #[test]
+    fn test_skip_polymarket_trade_missing_size() {
+        let schema = PolymarketTradeSchema;
+        // Trade without size should be skipped entirely
+        let json = br#"{"event_type":"last_trade_price","asset_id":"123","market":"0xabc","price":"0.50"}"#;
+        let batch = schema
+            .parse_batch(&[(json.to_vec(), 1, 1000)])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 0);
     }
 
     #[test]
@@ -724,7 +741,7 @@ mod tests {
     #[test]
     fn test_multi_message_batch() {
         let schema = PolymarketTradeSchema;
-        let msg1 = br#"{"event_type":"last_trade_price","asset_id":"A","market":"0x1","price":"0.50"}"#;
+        let msg1 = br#"{"event_type":"last_trade_price","asset_id":"A","market":"0x1","price":"0.50","size":"150"}"#;
         let msg2 = br#"{"event_type":"last_trade_price","asset_id":"B","market":"0x2","price":"0.60","side":"SELL","size":"200"}"#;
         let batch = schema
             .parse_batch(&[

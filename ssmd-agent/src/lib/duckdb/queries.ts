@@ -77,7 +77,7 @@ export function buildEventVolumeSQL(
       SELECT
         market AS event_id,
         COUNT(*) as total_trade_count,
-        COALESCE(SUM(size), 0) as total_volume,
+        SUM(size) as total_volume,
         COUNT(DISTINCT asset_id) as market_count
       FROM read_parquet('${path}')
       GROUP BY 1
@@ -139,7 +139,7 @@ export function buildEventMarketsSQL(
         market AS event_id,
         asset_id as ticker,
         COUNT(*) as trade_count,
-        COALESCE(SUM(size), 0) as volume
+        SUM(size) as volume
       FROM read_parquet('${path}')
       WHERE market IN (${escaped})
       GROUP BY 1, 2
