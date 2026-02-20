@@ -21,14 +21,21 @@ export async function initDuckDB(): Promise<void> {
   instance = await DuckDBInstance.create();
   connection = await instance.connect();
 
-  // Configure memory limit and extension directory (writable /tmp for read-only rootfs)
+  // Configure memory limit and temp directory (writable /tmp for read-only rootfs)
   await connection.run("SET memory_limit='512MB'");
-  await connection.run("SET extension_directory='/tmp/duckdb_ext'");
   await connection.run("SET temp_directory='/tmp/duckdb_tmp'");
 
-  // Load httpfs for GCS access
-  await connection.run("INSTALL httpfs");
-  await connection.run("LOAD httpfs");
+  // Load httpfs for GCS access.
+  // Try pre-installed extension first (Docker image at /app/duckdb_ext),
+  // fall back to runtime install (local dev).
+  try {
+    await connection.run("SET extension_directory='/app/duckdb_ext'");
+    await connection.run("LOAD httpfs");
+  } catch {
+    await connection.run("SET extension_directory='/tmp/duckdb_ext'");
+    await connection.run("INSTALL httpfs");
+    await connection.run("LOAD httpfs");
+  }
 
   // Configure for GCS (DuckDB uses S3 protocol with GCS endpoint)
   await connection.run("SET s3_endpoint='storage.googleapis.com'");

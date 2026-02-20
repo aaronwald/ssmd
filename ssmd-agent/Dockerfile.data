@@ -18,6 +18,13 @@ COPY src/cli/ ./src/cli/
 # Cache dependencies (server only; CLI deps cached at runtime for CronJob use)
 RUN deno cache src/server/main.ts
 
+# Pre-install DuckDB httpfs extension (DuckDB's internal downloader hangs in K8s).
+# Version must match @duckdb/node-api in deno.json (currently 1.4.4).
+RUN mkdir -p /app/duckdb_ext/v1.4.4/linux_amd64 && \
+    curl -sL https://extensions.duckdb.org/v1.4.4/linux_amd64/httpfs.duckdb_extension.gz | \
+    gunzip > /app/duckdb_ext/v1.4.4/linux_amd64/httpfs.duckdb_extension && \
+    chmod -R 755 /app/duckdb_ext
+
 # Create non-root user for security
 USER deno
 
