@@ -197,7 +197,9 @@ async function callClaude(
       summary: parsed.summary,
       feed_diagnoses: parsed.feed_diagnoses ?? [],
       trends: parsed.trends ?? [],
-      recommendations: parsed.recommendations ?? [],
+      recommendations: (parsed.recommendations ?? []).map((r) =>
+        typeof r === "string" ? r : (r as Record<string, unknown>).action ?? (r as Record<string, unknown>).recommendation ?? JSON.stringify(r)
+      ),
     };
   } catch (e) {
     console.error(`Failed to parse Claude response: ${e}`);
@@ -253,8 +255,9 @@ function printDiagnosis(date: string, d: Diagnosis): void {
 
 // --- Email ---
 
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+function escapeHtml(str: unknown): string {
+  const s = typeof str === "string" ? str : String(str ?? "");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 function gradeColor(status: string): string {
