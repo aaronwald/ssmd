@@ -10,6 +10,9 @@ import { listDailyScores } from "../../lib/db/health.ts";
 import { config } from "../../config.ts";
 import nodemailer from "nodemailer";
 
+// Model for diagnosis (must be in the OpenRouter allowlist)
+const DIAGNOSIS_MODEL = "anthropic/claude-sonnet-4.6";
+
 // --- System prompt ---
 // Inlined because CLI runs as a deno compile binary (no filesystem access).
 // To update: edit below, tag cli-ts-v*, push, bump image tag in
@@ -162,7 +165,7 @@ async function callClaude(
       "X-API-Key": apiKey,
     },
     body: JSON.stringify({
-      model: config.model,
+      model: DIAGNOSIS_MODEL,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: JSON.stringify(data) },
