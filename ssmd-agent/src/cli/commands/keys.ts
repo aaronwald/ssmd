@@ -193,20 +193,19 @@ async function listKeys(flags: KeysFlags): Promise<void> {
     return;
   }
 
-  console.log();
-  console.log(`${"PREFIX".padEnd(14)} ${"EMAIL".padEnd(25)} ${"FEEDS".padEnd(30)} ${"DATE RANGE".padEnd(25)} ${"EXPIRES".padEnd(20)}`);
-  console.log("-".repeat(115));
-
   for (const k of keys) {
-    const feeds = k.allowedFeeds.join(",");
+    const feeds = k.allowedFeeds.join(", ");
+    const scopes = k.scopes.join(", ");
     const farFuture = k.dateRangeEnd >= "2099-01-01";
     const dateRange = farFuture
       ? `${k.dateRangeStart} →`
       : `${k.dateRangeStart} → ${k.dateRangeEnd}`;
     const expires = k.expiresAt ? new Date(k.expiresAt).toISOString().slice(0, 16) : "never";
-    console.log(
-      `${k.prefix.padEnd(14)} ${k.userEmail.padEnd(25)} ${feeds.padEnd(30)} ${dateRange.padEnd(25)} ${expires.padEnd(20)}`
-    );
+    console.log();
+    console.log(`  ${k.prefix}  ${k.userEmail}  (${k.name})`);
+    console.log(`    scopes:  ${scopes}`);
+    console.log(`    feeds:   ${feeds}`);
+    console.log(`    dates:   ${dateRange}  expires: ${expires}`);
   }
   console.log();
 }

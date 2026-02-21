@@ -4,6 +4,7 @@
     "jsr:@std/assert@*": "1.0.16",
     "jsr:@std/cli@*": "1.0.25",
     "jsr:@std/internal@^1.0.12": "1.0.12",
+    "npm:@duckdb/node-api@1.4.4-r.1": "1.4.4-r.1",
     "npm:@google-cloud/storage@7": "7.19.0",
     "npm:@langchain/anthropic@0.3": "0.3.34_@langchain+core@0.3.80__zod@3.25.76_zod@3.25.76",
     "npm:@langchain/core@0.3": "0.3.80_zod@3.25.76",
@@ -50,6 +51,47 @@
     },
     "@cfworker/json-schema@4.1.1": {
       "integrity": "sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og=="
+    },
+    "@duckdb/node-api@1.4.4-r.1": {
+      "integrity": "sha512-oqaH9DXTJNwyLkd2FgJwmSnWVqjB5irbESeTeNVMBnM03iRaNY545BhfBDumu1TnOV2koIdG1mNsmjgq/ZTIkA==",
+      "dependencies": [
+        "@duckdb/node-bindings"
+      ]
+    },
+    "@duckdb/node-bindings-darwin-arm64@1.4.4-r.1": {
+      "integrity": "sha512-/NtbkCgCAOJDxw41XvSGV/mxQAlsx+2xUvhIVUj6fxoOfTG4jTttRhuphwE3EXNoWzJOjZxCZ5LwhC/qb6ZwLg==",
+      "os": ["darwin"],
+      "cpu": ["arm64"]
+    },
+    "@duckdb/node-bindings-darwin-x64@1.4.4-r.1": {
+      "integrity": "sha512-lzFRDrZwc1EoV513vmKufasiAQ2WlhEb0O6guRBarbvOKKVhRb8tQ5H7LPVTrIewjTI3XDgHrnK+vfh9L+xQcA==",
+      "os": ["darwin"],
+      "cpu": ["x64"]
+    },
+    "@duckdb/node-bindings-linux-arm64@1.4.4-r.1": {
+      "integrity": "sha512-wq92/EcTiOTRW1RSDOwjeLyMMXWwNVNwU21TQdfu3sgS86+Ih3raaK68leDgY5cWgf72We3J2W7HYz8GwxcMYw==",
+      "os": ["linux"],
+      "cpu": ["arm64"]
+    },
+    "@duckdb/node-bindings-linux-x64@1.4.4-r.1": {
+      "integrity": "sha512-fjYNc+t4/T7mhzZ57oJoIQaWvbYVvxhidcNNansQFiWnd6/JMLCULd4qnt8XI3Tt2BrZsraH690KSBIS3QPt0w==",
+      "os": ["linux"],
+      "cpu": ["x64"]
+    },
+    "@duckdb/node-bindings-win32-x64@1.4.4-r.1": {
+      "integrity": "sha512-+J+MUYGvYWfX0balWToDIy3CBYg7hHI0KQUQ39+SniinXlMF8+puRW6ebyQ+AXrcrKkwuj4wzJuEBD0AdhHGtw==",
+      "os": ["win32"],
+      "cpu": ["x64"]
+    },
+    "@duckdb/node-bindings@1.4.4-r.1": {
+      "integrity": "sha512-NFm0AMrK3kiVLQhgnGUEjX5c8Elm93dYePZ9BUCvvd0AVVTKEBeRhBp9afziuzP3Sl5+7XQ1TyaBLsZJKKBDBQ==",
+      "optionalDependencies": [
+        "@duckdb/node-bindings-darwin-arm64",
+        "@duckdb/node-bindings-darwin-x64",
+        "@duckdb/node-bindings-linux-arm64",
+        "@duckdb/node-bindings-linux-x64",
+        "@duckdb/node-bindings-win32-x64"
+      ]
     },
     "@google-cloud/paginator@5.0.2": {
       "integrity": "sha512-DJS3s0OVH4zFDB1PzjxAsHqJT6sKVbRwwML0ZBP9PbU7Yebtu/7SWMRzvO2J3nUi9pRNITCfu4LJeooM2w4pjg==",

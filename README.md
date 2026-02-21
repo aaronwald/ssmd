@@ -13,20 +13,7 @@ Market data capture, archival, and signal development platform. Connects to exch
 
 ## Architecture
 
-```
-Exchange WS ──→ Connector ──→ NATS JetStream ──→ Archiver (JSONL.gz → GCS)
-                   │                 │
-                   │                 ├──→ Signal Runner ──→ NATS (SIGNAL_FIRES)
-                   │                 ├──→ Notifier (→ ntfy.sh)
-                   │                 └──→ Funding Rate Consumer (→ PostgreSQL)
-                   │
-                   └──→ CDC Consumer (dynamic market subscriptions)
-
-PostgreSQL ←── secmaster sync (REST APIs)
-    │
-    ├──→ ssmd-cdc ──→ NATS (SECMASTER_CDC) ──→ Connector + ssmd-cache (Redis)
-    └──→ ssmd-data-ts (HTTP API)
-```
+![ssmd Architecture](docs/architecture.svg)
 
 **Data flows:**
 - **Market data**: Exchange WS → Connector → NATS → Archiver + Signal Runner + Consumers
@@ -35,6 +22,7 @@ PostgreSQL ←── secmaster sync (REST APIs)
 - **Funding rates**: NATS → Funding Rate Consumer → pair_snapshots (PostgreSQL)
 - **Signals**: Signal Runner → NATS (SIGNAL_FIRES) → Notifier → ntfy.sh
 - **Archives**: Archiver → local PVC → GCS sync (Temporal scheduled)
+- **Diagnosis**: PostgreSQL (scores) + data-ts (freshness/volume) → Claude → Email
 
 ## Components
 
@@ -188,6 +176,7 @@ REST API with API key auth (`X-API-Key` header). Scopes: `secmaster:read`, `data
 
 | Endpoint | Description |
 |----------|-------------|
+| `GET /v1/markets/lookup` | Look up markets by ID across exchanges |
 | `GET /datasets` | Archived datasets by feed/date |
 | `GET /version` | API version |
 | `GET /health` | Health check (no auth) |
@@ -200,6 +189,7 @@ REST API with API key auth (`X-API-Key` header). Scopes: `secmaster:read`, `data
 |----------|-------------|
 | `POST /v1/keys` | Create API key |
 | `GET /v1/keys` | List API keys |
+| `PATCH /v1/keys/:prefix` | Update API key scopes |
 | `DELETE /v1/keys/:prefix` | Revoke API key |
 | `GET /v1/keys/usage` | Rate limit and token usage |
 | `GET /v1/settings` | Get all settings |
@@ -236,7 +226,12 @@ The agent REPL (`ssmd-agent/src/agent/`) provides LangGraph tools that wrap the 
 | `polymarket` | Polymarket conditions sync |
 | `fees sync/list/stats` | Fee schedule management |
 | `series` | Series metadata operations |
+| `health daily` | Pipeline health checks and email report |
+| `diagnosis analyze` | AI-powered health/DQ analysis via Claude |
 | `dq daily/trades` | Data quality scoring and trade checks |
+| `keys create/list/update/revoke` | API key management |
+| `share` | Generate signed URLs for parquet data sharing |
+| `audit-email` | Daily data access audit report email |
 | `scale down/up/status` | Cluster scaling for maintenance |
 | `schedule list/describe` | Temporal schedule management |
 | `archiver sync/deploy/list/status/logs/delete` | Archiver management |

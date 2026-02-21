@@ -1,0 +1,266 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 700" font-family="'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif">
+  <defs>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 3.5 L 0 7 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 3.5 L 0 7 z" fill="#60a5fa"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 3.5 L 0 7 z" fill="#34d399"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 3.5 L 0 7 z" fill="#fbbf24"/>
+    </marker>
+    <marker id="arrow-pink" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 3.5 L 0 7 z" fill="#f472b6"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 3.5 L 0 7 z" fill="#a78bfa"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1100" height="700" rx="12" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="550" y="36" text-anchor="middle" fill="#e2e8f0" font-size="16" font-weight="600" letter-spacing="0.5">ssmd Architecture</text>
+
+  <!-- ═══════════ ROW 1: MARKET DATA PIPELINE ═══════════ -->
+
+  <!-- Exchanges -->
+  <g filter="url(#shadow)">
+    <rect x="30" y="70" width="130" height="44" rx="8" fill="#1e3a5f" stroke="#3b82f6" stroke-width="1.2"/>
+    <text x="95" y="88" text-anchor="middle" fill="#93c5fd" font-size="10" font-weight="500">EXCHANGE</text>
+    <text x="95" y="103" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Kalshi</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="30" y="126" width="130" height="44" rx="8" fill="#1e3a5f" stroke="#3b82f6" stroke-width="1.2"/>
+    <text x="95" y="144" text-anchor="middle" fill="#93c5fd" font-size="10" font-weight="500">EXCHANGE</text>
+    <text x="95" y="159" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Kraken Futures</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="30" y="182" width="130" height="44" rx="8" fill="#1e3a5f" stroke="#3b82f6" stroke-width="1.2"/>
+    <text x="95" y="200" text-anchor="middle" fill="#93c5fd" font-size="10" font-weight="500">EXCHANGE</text>
+    <text x="95" y="215" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Polymarket</text>
+  </g>
+
+  <!-- Connectors -->
+  <g filter="url(#shadow)">
+    <rect x="220" y="70" width="140" height="156" rx="8" fill="#14332b" stroke="#10b981" stroke-width="1.2"/>
+    <text x="290" y="94" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="500">RUST</text>
+    <text x="290" y="112" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">Connectors</text>
+    <line x1="240" y1="122" x2="340" y2="122" stroke="#10b981" stroke-opacity="0.3" stroke-width="0.8"/>
+    <text x="290" y="140" text-anchor="middle" fill="#94a3b8" font-size="10">WebSocket clients</text>
+    <text x="290" y="156" text-anchor="middle" fill="#94a3b8" font-size="10">CDC consumer</text>
+    <text x="290" y="172" text-anchor="middle" fill="#94a3b8" font-size="10">Shard manager</text>
+    <text x="290" y="188" text-anchor="middle" fill="#94a3b8" font-size="10">Cap'n Proto encode</text>
+  </g>
+
+  <!-- NATS JetStream -->
+  <g filter="url(#shadow)">
+    <rect x="420" y="70" width="140" height="156" rx="8" fill="#2d1f4e" stroke="#a78bfa" stroke-width="1.2"/>
+    <text x="490" y="94" text-anchor="middle" fill="#c4b5fd" font-size="10" font-weight="500">MESSAGING</text>
+    <text x="490" y="112" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">NATS JetStream</text>
+    <line x1="440" y1="122" x2="540" y2="122" stroke="#a78bfa" stroke-opacity="0.3" stroke-width="0.8"/>
+    <text x="490" y="140" text-anchor="middle" fill="#94a3b8" font-size="10">Market data streams</text>
+    <text x="490" y="156" text-anchor="middle" fill="#94a3b8" font-size="10">SECMASTER_CDC</text>
+    <text x="490" y="172" text-anchor="middle" fill="#94a3b8" font-size="10">SIGNAL_FIRES</text>
+    <text x="490" y="188" text-anchor="middle" fill="#94a3b8" font-size="10">Lifecycle events</text>
+  </g>
+
+  <!-- Archiver -->
+  <g filter="url(#shadow)">
+    <rect x="620" y="62" width="150" height="50" rx="8" fill="#14332b" stroke="#10b981" stroke-width="1.2"/>
+    <text x="695" y="82" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="500">RUST</text>
+    <text x="695" y="98" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Archiver</text>
+  </g>
+
+  <!-- Signal Runner -->
+  <g filter="url(#shadow)">
+    <rect x="620" y="124" width="150" height="50" rx="8" fill="#1a2744" stroke="#38bdf8" stroke-width="1.2"/>
+    <text x="695" y="144" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="500">DENO</text>
+    <text x="695" y="160" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Signal Runner</text>
+  </g>
+
+  <!-- Funding Rate Consumer -->
+  <g filter="url(#shadow)">
+    <rect x="620" y="186" width="150" height="50" rx="8" fill="#1a2744" stroke="#38bdf8" stroke-width="1.2"/>
+    <text x="695" y="206" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="500">DENO</text>
+    <text x="695" y="222" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Funding Rates</text>
+  </g>
+
+  <!-- GCS -->
+  <g filter="url(#shadow)">
+    <rect x="830" y="62" width="130" height="50" rx="8" fill="#3b2710" stroke="#f59e0b" stroke-width="1.2"/>
+    <text x="895" y="82" text-anchor="middle" fill="#fcd34d" font-size="10" font-weight="500">STORAGE</text>
+    <text x="895" y="98" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">GCS (Parquet)</text>
+  </g>
+
+  <!-- ntfy.sh -->
+  <g filter="url(#shadow)">
+    <rect x="830" y="124" width="130" height="50" rx="8" fill="#3b1028" stroke="#f472b6" stroke-width="1.2"/>
+    <text x="895" y="144" text-anchor="middle" fill="#f9a8d4" font-size="10" font-weight="500">NOTIFY</text>
+    <text x="895" y="160" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">ntfy.sh</text>
+  </g>
+
+  <!-- Row 1 arrows -->
+  <line x1="160" y1="92" x2="218" y2="120" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+  <line x1="160" y1="148" x2="218" y2="148" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+  <line x1="160" y1="204" x2="218" y2="176" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+  <line x1="360" y1="148" x2="418" y2="148" stroke="#10b981" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+  <line x1="560" y1="87" x2="618" y2="87" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow-purple)"/>
+  <line x1="560" y1="149" x2="618" y2="149" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow-purple)"/>
+  <line x1="560" y1="211" x2="618" y2="211" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow-purple)"/>
+  <line x1="770" y1="87" x2="828" y2="87" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+  <line x1="770" y1="149" x2="828" y2="149" stroke="#f472b6" stroke-width="1.5" marker-end="url(#arrow-pink)"/>
+
+  <!-- ═══════════ ROW 2: SECMASTER + CDC ═══════════ -->
+  <line x1="30" y1="268" x2="1070" y2="268" stroke="#334155" stroke-width="0.8" stroke-dasharray="4,4"/>
+  <text x="550" y="290" text-anchor="middle" fill="#64748b" font-size="11" font-weight="500" letter-spacing="1">SECMASTER &amp; CDC</text>
+
+  <!-- PostgreSQL -->
+  <g filter="url(#shadow)">
+    <rect x="30" y="310" width="150" height="70" rx="8" fill="#3b2710" stroke="#f59e0b" stroke-width="1.2"/>
+    <text x="105" y="334" text-anchor="middle" fill="#fcd34d" font-size="10" font-weight="500">DATABASE</text>
+    <text x="105" y="352" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">PostgreSQL</text>
+    <text x="105" y="370" text-anchor="middle" fill="#94a3b8" font-size="10">Secmaster, DQ scores</text>
+  </g>
+
+  <!-- ssmd-cdc -->
+  <g filter="url(#shadow)">
+    <rect x="240" y="315" width="130" height="50" rx="8" fill="#14332b" stroke="#10b981" stroke-width="1.2"/>
+    <text x="305" y="335" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="500">RUST</text>
+    <text x="305" y="351" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">ssmd-cdc</text>
+  </g>
+
+  <!-- Redis -->
+  <g filter="url(#shadow)">
+    <rect x="430" y="315" width="120" height="50" rx="8" fill="#3b1028" stroke="#ef4444" stroke-width="1.2"/>
+    <text x="490" y="335" text-anchor="middle" fill="#fca5a5" font-size="10" font-weight="500">CACHE</text>
+    <text x="490" y="351" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Redis</text>
+  </g>
+
+  <!-- K8s Operator -->
+  <g filter="url(#shadow)">
+    <rect x="620" y="315" width="130" height="50" rx="8" fill="#162317" stroke="#22c55e" stroke-width="1.2"/>
+    <text x="685" y="335" text-anchor="middle" fill="#86efac" font-size="10" font-weight="500">GO</text>
+    <text x="685" y="351" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">K8s Operator</text>
+  </g>
+
+  <!-- Secmaster Sync CLI -->
+  <g filter="url(#shadow)">
+    <rect x="30" y="400" width="150" height="44" rx="8" fill="#1a2744" stroke="#38bdf8" stroke-width="1.2"/>
+    <text x="105" y="418" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="500">DENO CLI</text>
+    <text x="105" y="434" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Secmaster Sync</text>
+  </g>
+
+  <!-- Row 2 arrows -->
+  <line x1="105" y1="400" x2="105" y2="382" stroke="#38bdf8" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="180" y1="340" x2="238" y2="340" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+  <line x1="370" y1="340" x2="428" y2="340" stroke="#a78bfa" stroke-width="1.2" marker-end="url(#arrow-purple)"/>
+  <!-- CDC → Connectors (feedback loop) -->
+  <path d="M 305 315 L 305 260 L 290 260 L 290 228" stroke="#10b981" stroke-width="1.2" fill="none" marker-end="url(#arrow-green)" stroke-dasharray="4,3"/>
+  <!-- Funding Rates → PostgreSQL -->
+  <path d="M 695 236 L 695 260 L 105 260 L 105 308" stroke="#f59e0b" stroke-width="1.2" fill="none" marker-end="url(#arrow-amber)" stroke-dasharray="4,3"/>
+
+  <!-- ═══════════ ROW 3: SERVICES & OPERATIONS ═══════════ -->
+  <line x1="30" y1="470" x2="1070" y2="470" stroke="#334155" stroke-width="0.8" stroke-dasharray="4,4"/>
+  <text x="550" y="492" text-anchor="middle" fill="#64748b" font-size="11" font-weight="500" letter-spacing="1">SERVICES &amp; OPERATIONS</text>
+
+  <!-- data-ts -->
+  <g filter="url(#shadow)">
+    <rect x="30" y="512" width="150" height="70" rx="8" fill="#1a2744" stroke="#38bdf8" stroke-width="1.2"/>
+    <text x="105" y="536" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="500">DENO HTTP</text>
+    <text x="105" y="554" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">ssmd-data-ts</text>
+    <text x="105" y="572" text-anchor="middle" fill="#94a3b8" font-size="10">REST API + LLM proxy</text>
+  </g>
+
+  <!-- Diagnosis -->
+  <g filter="url(#shadow)">
+    <rect x="240" y="512" width="150" height="70" rx="8" fill="#1a2744" stroke="#38bdf8" stroke-width="1.2"/>
+    <text x="315" y="536" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="500">DENO CRONJOB</text>
+    <text x="315" y="554" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">Diagnosis</text>
+    <text x="315" y="572" text-anchor="middle" fill="#94a3b8" font-size="10">Claude-powered analysis</text>
+  </g>
+
+  <!-- Health Daily -->
+  <g filter="url(#shadow)">
+    <rect x="450" y="512" width="150" height="70" rx="8" fill="#1a2744" stroke="#38bdf8" stroke-width="1.2"/>
+    <text x="525" y="536" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="500">DENO CRONJOB</text>
+    <text x="525" y="554" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">Health Daily</text>
+    <text x="525" y="572" text-anchor="middle" fill="#94a3b8" font-size="10">Pipeline health scores</text>
+  </g>
+
+  <!-- DQ Daily -->
+  <g filter="url(#shadow)">
+    <rect x="660" y="512" width="150" height="70" rx="8" fill="#27221a" stroke="#eab308" stroke-width="1.2"/>
+    <text x="735" y="536" text-anchor="middle" fill="#fde047" font-size="10" font-weight="500">PYTHON CRONJOB</text>
+    <text x="735" y="554" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">DQ Daily</text>
+    <text x="735" y="572" text-anchor="middle" fill="#94a3b8" font-size="10">Data quality checks</text>
+  </g>
+
+  <!-- Temporal Worker -->
+  <g filter="url(#shadow)">
+    <rect x="870" y="512" width="150" height="70" rx="8" fill="#1c2127" stroke="#94a3b8" stroke-width="1.2"/>
+    <text x="945" y="536" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="500">NODE.JS</text>
+    <text x="945" y="554" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">Temporal Worker</text>
+    <text x="945" y="572" text-anchor="middle" fill="#94a3b8" font-size="10">GCS sync, schedules</text>
+  </g>
+
+  <!-- Email -->
+  <g filter="url(#shadow)">
+    <rect x="310" y="630" width="130" height="44" rx="8" fill="#3b1028" stroke="#f472b6" stroke-width="1.2"/>
+    <text x="375" y="648" text-anchor="middle" fill="#f9a8d4" font-size="10" font-weight="500">NOTIFY</text>
+    <text x="375" y="663" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Email (SMTP)</text>
+  </g>
+
+  <!-- Claude -->
+  <g filter="url(#shadow)">
+    <rect x="100" y="630" width="130" height="44" rx="8" fill="#2d1f4e" stroke="#a78bfa" stroke-width="1.2"/>
+    <text x="165" y="648" text-anchor="middle" fill="#c4b5fd" font-size="10" font-weight="500">AI</text>
+    <text x="165" y="663" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Claude (LLM)</text>
+  </g>
+
+  <!-- Row 3 arrows -->
+  <!-- PostgreSQL → data-ts -->
+  <path d="M 70 380 L 70 510" stroke="#f59e0b" stroke-width="1.2" fill="none" marker-end="url(#arrow-amber)" stroke-dasharray="4,3"/>
+  <!-- Diagnosis → data-ts (API calls) -->
+  <line x1="240" y1="547" x2="182" y2="547" stroke="#38bdf8" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <!-- Diagnosis → PostgreSQL (reads scores) -->
+  <path d="M 280 512 L 280 460 L 140 460 L 140 382" stroke="#f59e0b" stroke-width="1.2" fill="none" marker-end="url(#arrow-amber)" stroke-dasharray="4,3"/>
+  <!-- Health → PostgreSQL (writes scores) -->
+  <path d="M 470 512 L 470 460 L 155 460 L 155 382" stroke="#f59e0b" stroke-width="1.2" fill="none" marker-end="url(#arrow-amber)" stroke-dasharray="4,3"/>
+  <!-- DQ → PostgreSQL (writes scores) -->
+  <path d="M 690 512 L 690 455 L 170 455 L 170 382" stroke="#eab308" stroke-width="1.2" fill="none" marker-end="url(#arrow-amber)" stroke-dasharray="4,3"/>
+  <!-- data-ts → Claude (LLM proxy) -->
+  <line x1="120" y1="582" x2="148" y2="628" stroke="#a78bfa" stroke-width="1.2" marker-end="url(#arrow-purple)" stroke-dasharray="4,3"/>
+  <!-- Diagnosis → Email -->
+  <line x1="340" y1="582" x2="360" y2="628" stroke="#f472b6" stroke-width="1.2" marker-end="url(#arrow-pink)"/>
+  <!-- Health → Email -->
+  <path d="M 520 582 L 520 610 L 420 610 L 420 628" stroke="#f472b6" stroke-width="1.2" fill="none" marker-end="url(#arrow-pink)" stroke-dasharray="4,3"/>
+
+  <!-- ═══════════ LEGEND ═══════════ -->
+  <g transform="translate(830, 310)">
+    <text x="0" y="0" fill="#64748b" font-size="10" font-weight="600" letter-spacing="0.5">LEGEND</text>
+    <rect x="0" y="10" width="12" height="12" rx="2" fill="#1e3a5f" stroke="#3b82f6" stroke-width="1"/>
+    <text x="18" y="20" fill="#94a3b8" font-size="10">Exchange</text>
+    <rect x="0" y="28" width="12" height="12" rx="2" fill="#14332b" stroke="#10b981" stroke-width="1"/>
+    <text x="18" y="38" fill="#94a3b8" font-size="10">Rust service</text>
+    <rect x="0" y="46" width="12" height="12" rx="2" fill="#1a2744" stroke="#38bdf8" stroke-width="1"/>
+    <text x="18" y="56" fill="#94a3b8" font-size="10">Deno/TS service</text>
+    <rect x="0" y="64" width="12" height="12" rx="2" fill="#2d1f4e" stroke="#a78bfa" stroke-width="1"/>
+    <text x="18" y="74" fill="#94a3b8" font-size="10">Messaging / AI</text>
+    <rect x="0" y="82" width="12" height="12" rx="2" fill="#3b2710" stroke="#f59e0b" stroke-width="1"/>
+    <text x="18" y="92" fill="#94a3b8" font-size="10">Storage</text>
+    <rect x="0" y="100" width="12" height="12" rx="2" fill="#3b1028" stroke="#f472b6" stroke-width="1"/>
+    <text x="18" y="110" fill="#94a3b8" font-size="10">Notification</text>
+    <line x1="0" y1="126" x2="30" y2="126" stroke="#94a3b8" stroke-width="1.2"/>
+    <text x="36" y="130" fill="#94a3b8" font-size="10">Data flow</text>
+    <line x1="0" y1="144" x2="30" y2="144" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4,3"/>
+    <text x="36" y="148" fill="#94a3b8" font-size="10">Async / scheduled</text>
+  </g>
+</svg>
