@@ -26,8 +26,9 @@ You receive:
 - trades: Per-feed top tickers by trade count (top 20 each)
 - events: Event-level aggregation (Kalshi events, Polymarket conditions, Kraken instruments)
 - ticker_names: Map of Polymarket token IDs to human-readable market names. \
-Always use the market name instead of the raw token ID in your output. \
-For Kalshi, the ticker is already human-readable.
+When referencing Polymarket tickers in feed_summaries and market_highlights, \
+use the market name from ticker_names as the ticker value instead of the raw token ID. \
+Kalshi tickers are already human-readable.
 
 Volume units differ by feed: contracts (Kalshi), USD (Polymarket), base currency (Kraken). \
 Do NOT sum across feeds. Compare within each feed only.
