@@ -28,6 +28,7 @@ import { handleKeys } from "./keys.ts";
 import { handleShare } from "./share.ts";
 import { handleAuditEmail } from "./audit-email.ts";
 import { handleDiagnosis } from "./diagnosis.ts";
+import { handleVolume } from "./volume-analysis.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
@@ -164,6 +165,10 @@ export async function run(args: string[]): Promise<void> {
       await handleDiagnosis(subcommand, flags);
       break;
 
+    case "volume":
+      await handleVolume(subcommand, flags);
+      break;
+
     case "funding-rate-consumer": {
       const { runFundingRateConsumer } = await import("./funding-rate-consumer.ts");
       await runFundingRateConsumer(args.slice(1));
@@ -266,6 +271,7 @@ function printHelp(): void {
   console.log("  share             Generate signed URLs for parquet data sharing");
   console.log("  audit-email       Send daily data access audit report email");
   console.log("  diagnosis         AI-powered analysis of health and DQ results");
+  console.log("  volume            AI-powered daily trade volume analysis");
   console.log("  funding-rate-consumer  Consume Kraken Futures funding rates from NATS");
   console.log("  agent             Start interactive agent REPL");
   console.log("");
