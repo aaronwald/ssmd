@@ -422,7 +422,7 @@ async fn process_hour(
             );
         }
 
-        let dropped = messages.len() - batch.num_rows();
+        let dropped = messages.len().saturating_sub(batch.num_rows());
         if dropped > 0 {
             stats.parse_batch_dropped.insert(msg_type.clone(), dropped);
         }

@@ -888,13 +888,14 @@ async function scoreFundingRate(
   const snapshotCount = Number(countRow[0]?.value ?? 0);
   const productCount = Number(productsRow[0]?.value ?? 0);
 
-  // Snapshot recency score
+  // Snapshot recency score — funding rates update every ~8h so be lenient
   let recencyScore = 0;
   if (maxSnapshot) {
     const ageMins = (Date.now() - maxSnapshot.getTime()) / 60000;
-    if (ageMins < 10) recencyScore = 100;
-    else if (ageMins < 30) recencyScore = 75;
-    else if (ageMins < 60) recencyScore = 25;
+    if (ageMins < 30) recencyScore = 100;
+    else if (ageMins < 60) recencyScore = 75;
+    else if (ageMins < 120) recencyScore = 50;
+    else recencyScore = 0;
   }
 
   // Daily snapshot count score (540 = 5min intervals * 24h * ~2 products with headroom)
@@ -927,34 +928,42 @@ async function scoreFundingRate(
   };
 }
 
-const ARCHIVERS = ["archiver-kalshi-crypto", "archiver-kraken-futures", "archiver-polymarket"];
+const ARCHIVE_FEEDS = ["kalshi-crypto", "kraken-futures", "polymarket"];
 
 async function scoreArchiveSync(
   sql: ReturnType<typeof getRawSql>,
 ): Promise<{ score: number; details: Record<string, unknown> }> {
-  const archiverScores: Record<string, { score: number; lastSyncAge: number | null }> = {};
+  // Check GCS archive freshness via dq_daily_scores — if DQ scored a feed
+  // recently, data made it from archiver → GCS → parquet-gen → DQ.
+  const archiverScores: Record<string, { score: number; lastScoreAge: number | null }> = {};
 
-  for (const name of ARCHIVERS) {
+  for (const feed of ARCHIVE_FEEDS) {
     const rows = await sql`
-      SELECT synced_at FROM archiver_sync_log
-      WHERE archiver_name = ${name} AND success = true
-      ORDER BY synced_at DESC LIMIT 1
+      SELECT check_date, updated_at FROM dq_daily_scores
+      WHERE feed = ${feed}
+      ORDER BY check_date DESC LIMIT 1
     `;
 
     if (rows.length === 0) {
-      archiverScores[name] = { score: 0, lastSyncAge: null };
+      archiverScores[feed] = { score: 0, lastScoreAge: null };
       continue;
     }
 
-    const ageHours = (Date.now() - new Date(rows[0].synced_at).getTime()) / (1000 * 60 * 60);
+    const lastDate = rows[0].check_date;
+    const lastUpdated = rows[0].updated_at ? new Date(rows[0].updated_at) : null;
+    const ageHours = lastUpdated
+      ? (Date.now() - lastUpdated.getTime()) / (1000 * 60 * 60)
+      : Infinity;
+
     let score: number;
-    if (ageHours < 5) score = 100;
-    else if (ageHours < 9) score = 75;
-    else if (ageHours < 13) score = 50;
-    else if (ageHours < 24) score = 25;
+    if (ageHours < 28) score = 100;  // DQ runs daily — within ~1 day is good
+    else if (ageHours < 52) score = 50;
     else score = 0;
 
-    archiverScores[name] = { score, lastSyncAge: Math.round(ageHours * 10) / 10 };
+    archiverScores[feed] = {
+      score,
+      lastScoreAge: ageHours === Infinity ? null : Math.round(ageHours * 10) / 10,
+    };
   }
 
   const scores = Object.values(archiverScores);
@@ -1345,7 +1354,7 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     if (funding.details.lastFlushAge != null && (funding.details.lastFlushAge as number) > 3600) {
       issues.push("Funding rate snapshot older than 1h");
     }
-    if (archive.score === 0) issues.push("No archiver has synced to GCS in 24+ hours");
+    if (archive.score === 0) issues.push("No DQ scores found — GCS archive may not be syncing");
 
     // Phase 2 RED overrides
     if (hasPhase2) {
@@ -1482,9 +1491,9 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       console.log(`    Kraken Futures:   ${String(kraken.score).padStart(3)}/100 (${fmtNum(kr.messageCount as number)} msgs, fresh: ${kr.freshnessScore ?? 0})`);
       console.log(`    Polymarket:       ${String(polymarket.score).padStart(3)}/100 (${fmtNum(p.messageCount as number)} msgs, fresh: ${p.freshnessScore ?? 0})`);
       console.log(`    Funding Rate:     ${String(funding.score).padStart(3)}/100 (${f.snapshots ?? 0} snaps, ${f.products ?? 0} products, ${fmtAge(f.lastFlushAge as number | null)})`);
-      const archDetails = archive.details as Record<string, { score: number; lastSyncAge: number | null }>;
+      const archDetails = archive.details as Record<string, { score: number; lastScoreAge: number | null }>;
       const archParts = Object.entries(archDetails)
-        .map(([n, d]) => `${n.replace("archiver-", "")}: ${d.lastSyncAge != null ? d.lastSyncAge + "h" : "never"}`)
+        .map(([n, d]) => `${n}: ${d.lastScoreAge != null ? d.lastScoreAge + "h" : "never"}`)
         .join(", ");
       console.log(`    GCS Archive:      ${String(archive.score).padStart(3)}/100 (${archParts})`);
 
