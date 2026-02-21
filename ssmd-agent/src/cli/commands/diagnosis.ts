@@ -197,8 +197,8 @@ async function callClaude(
       summary: parsed.summary,
       feed_diagnoses: parsed.feed_diagnoses ?? [],
       trends: parsed.trends ?? [],
-      recommendations: (parsed.recommendations ?? []).map((r) =>
-        typeof r === "string" ? r : (r as Record<string, unknown>).action ?? (r as Record<string, unknown>).recommendation ?? JSON.stringify(r)
+      recommendations: (parsed.recommendations ?? []).map((r): string =>
+        typeof r === "string" ? r : String((r as Record<string, unknown>).action ?? (r as Record<string, unknown>).recommendation ?? JSON.stringify(r))
       ),
     };
   } catch (e) {
