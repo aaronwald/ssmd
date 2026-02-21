@@ -129,9 +129,10 @@ ssmd-worker/       # Temporal worker (Node.js, shells out to ssmd CLI)
 
 ```
 ssmd-agent/
-├── src/cli/        # CLI commands (secmaster, backtest, fees, data)
+├── src/cli/        # CLI commands (secmaster, backtest, fees, health, diagnosis)
 ├── src/lib/        # Shared library (db, api, types)
 ├── src/agent/      # LangGraph agent with tools
+├── prompts/        # System prompts (system.md, diagnosis.md)
 └── src/main.ts     # Agent REPL entrypoint
 ```
 
