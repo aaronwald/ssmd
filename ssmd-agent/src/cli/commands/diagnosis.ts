@@ -10,18 +10,22 @@ import { listDailyScores } from "../../lib/db/health.ts";
 import { config } from "../../config.ts";
 import nodemailer from "nodemailer";
 
-// --- Prompt loading ---
+// --- System prompt (inlined — CLI runs as deno compile binary, no filesystem access) ---
 
-async function loadDiagnosisPrompt(): Promise<string> {
-  const promptPath = `${config.promptsPath}/diagnosis.md`;
-  const content = await Deno.readTextFile(promptPath);
-  // Strip frontmatter if present
-  const frontmatterMatch = content.match(/^---\n[\s\S]*?\n---\n/);
-  if (frontmatterMatch) {
-    return content.slice(frontmatterMatch[0].length).trim();
-  }
-  return content.trim();
-}
+const DIAGNOSIS_SYSTEM_PROMPT = `You are an ssmd pipeline health analyst. Given 7 days of health scores, \
+data freshness metrics, and volume data, produce a diagnosis.
+
+Output JSON with:
+- overall_status: "GREEN" | "YELLOW" | "RED"
+- summary: 1-2 sentence executive summary
+- feed_diagnoses: array of { feed, status, issue, likely_cause, action }
+- trends: array of { feed, direction: "improving"|"stable"|"degrading", note }
+- recommendations: array of prioritized action items
+
+Focus on: score drops vs 7-day average, stale feeds (>7h), \
+volume anomalies, coverage gaps. If everything looks healthy, say so concisely.
+
+Output ONLY valid JSON. No markdown, no code fences, no explanation.`;
 
 // --- Types ---
 
@@ -101,10 +105,9 @@ async function runDiagnosisAnalysis(flags: DiagnosisFlags): Promise<void> {
     if (!jsonOutput) console.log("Fetching volume summary...");
     const volume = await apiGet(`${apiUrl}/v1/data/volume?date=${today}`, apiKey);
 
-    // 4. Load prompt and call Claude via data-ts proxy
+    // 4. Call Claude via data-ts proxy
     if (!jsonOutput) console.log("Requesting AI diagnosis...");
-    const systemPrompt = await loadDiagnosisPrompt();
-    const diagnosis = await callClaude(apiUrl, apiKey, systemPrompt, { scores, freshness, volume });
+    const diagnosis = await callClaude(apiUrl, apiKey, DIAGNOSIS_SYSTEM_PROMPT, { scores, freshness, volume });
 
     // 5. Output or send email
     if (jsonOutput) {
