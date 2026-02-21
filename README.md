@@ -1,4 +1,4 @@
-# ssmd - Stupid Simple Market Data
+# ssmd - Vibing Market Data
 
 Market data capture, archival, and signal development platform. Connects to exchange WebSocket APIs, publishes to NATS JetStream, and archives to compressed files.
 
