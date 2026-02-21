@@ -10,7 +10,10 @@ import { listDailyScores } from "../../lib/db/health.ts";
 import { config } from "../../config.ts";
 import nodemailer from "nodemailer";
 
-// --- System prompt (inlined — CLI runs as deno compile binary, no filesystem access) ---
+// --- System prompt ---
+// Inlined because CLI runs as a deno compile binary (no filesystem access).
+// To update: edit below, tag cli-ts-v*, push, bump image tag in
+// clusters/gke-prod/apps/ssmd/cronjobs/diagnosis-daily.yaml
 
 const DIAGNOSIS_SYSTEM_PROMPT = `You are an ssmd pipeline health analyst. Given 7 days of health scores, \
 data freshness metrics, and volume data, produce a diagnosis.

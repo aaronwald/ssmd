@@ -98,6 +98,7 @@ export {
   listApiKeysByUser,
   listAllApiKeys,
   revokeApiKey,
+  updateApiKeyScopes,
   updateLastUsed,
 } from "./apikeys.ts";
 

@@ -20,6 +20,7 @@ import {
   listApiKeysByUser,
   listAllApiKeys,
   revokeApiKey,
+  updateApiKeyScopes,
   getAllSettings,
   upsertSetting,
   listSeries,
@@ -594,6 +595,45 @@ route("DELETE", "/v1/keys/:prefix", async (req, ctx) => {
 
   return json({ revoked });
 }, true, "secmaster:read");
+
+route("PATCH", "/v1/keys/:prefix", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const params = (req as Request & { params: Record<string, string> }).params;
+
+  // Admin only
+  if (!hasScope(auth.scopes, "admin:write")) {
+    return json({ error: "Forbidden" }, 403);
+  }
+
+  const key = await getApiKeyByPrefix(ctx.db, params.prefix);
+  if (!key) {
+    return json({ error: "Key not found" }, 404);
+  }
+
+  const body = await req.json() as { scopes?: string[] };
+
+  if (!body.scopes || !Array.isArray(body.scopes) || body.scopes.length === 0) {
+    return json({ error: "scopes array is required" }, 400);
+  }
+
+  // Validate scopes
+  for (const s of body.scopes) {
+    if (!VALID_SCOPES.includes(s) && s !== "*") {
+      return json({ error: `Invalid scope: ${s}. Valid: ${VALID_SCOPES.join(", ")}, *` }, 400);
+    }
+  }
+
+  const updated = await updateApiKeyScopes(ctx.db, params.prefix, body.scopes);
+  if (updated) {
+    await invalidateKeyCache(params.prefix);
+  }
+
+  return json({
+    prefix: params.prefix,
+    scopes: body.scopes,
+    updated: !!updated,
+  });
+}, true, "admin:write");
 
 // Usage stats endpoint - get rate limit and token usage for all keys
 // Cached for 2 minutes because SCAN on large key sets is slow

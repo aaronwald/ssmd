@@ -47,6 +47,9 @@ export async function handleKeys(subcommand: string, flags: KeysFlags): Promise<
     case "revoke":
       await revokeKey(flags);
       break;
+    case "update":
+      await updateKey(flags);
+      break;
     case "help":
     default:
       printKeysHelp();
@@ -237,6 +240,44 @@ async function revokeKey(flags: KeysFlags): Promise<void> {
   }
 }
 
+async function updateKey(flags: KeysFlags): Promise<void> {
+  const { apiUrl, apiKey } = getApiConfig();
+
+  const prefix = flags._[2] as string;
+  if (!prefix) {
+    console.error("Error: key prefix is required");
+    console.log("Usage: ssmd keys update <prefix> --scopes datasets:read,llm:chat");
+    Deno.exit(1);
+  }
+
+  if (!flags.scopes) {
+    console.error("Error: --scopes is required");
+    console.log("Usage: ssmd keys update <prefix> --scopes datasets:read,llm:chat");
+    Deno.exit(1);
+  }
+
+  const scopes = flags.scopes.split(",").map((s) => s.trim()).filter(Boolean);
+
+  const res = await fetch(`${apiUrl}/v1/keys/${prefix}`, {
+    method: "PATCH",
+    headers: apiHeaders(apiKey),
+    body: JSON.stringify({ scopes }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    console.error(`Error updating key: ${(err as Record<string, string>).error ?? res.statusText}`);
+    Deno.exit(1);
+  }
+
+  const result = await res.json() as { prefix: string; scopes: string[]; updated: boolean };
+  if (result.updated) {
+    console.log(`Key ${result.prefix} updated. Scopes: ${result.scopes.join(", ")}`);
+  } else {
+    console.log(`Key ${prefix} was not found or already revoked.`);
+  }
+}
+
 function printKeysHelp(): void {
   console.log("Usage: ssmd keys <command> [options]");
   console.log();
@@ -245,6 +286,7 @@ function printKeysHelp(): void {
   console.log("COMMANDS:");
   console.log("  create    Create a new API key");
   console.log("  list      List all API keys");
+  console.log("  update    Update scopes on an existing key");
   console.log("  revoke    Revoke an API key by prefix");
   console.log();
   console.log("OPTIONS (create):");
@@ -257,6 +299,9 @@ function printKeysHelp(): void {
   console.log("  --name NAME           Key name/description");
   console.log("  --json                Output JSON format");
   console.log();
+  console.log("OPTIONS (update):");
+  console.log("  --scopes SCOPES       New scopes (required, comma-separated)");
+  console.log();
   console.log("OPTIONS (list):");
   console.log("  --json              Output JSON format");
   console.log();
@@ -267,5 +312,6 @@ function printKeysHelp(): void {
   console.log("EXAMPLES:");
   console.log('  ssmd keys create --email alice@uni.edu --feeds kalshi,polymarket --date-from 2026-01-01 --date-to 2026-06-30 --scopes datasets:read');
   console.log("  ssmd keys list");
+  console.log("  ssmd keys update sk_live_abc --scopes datasets:read,llm:chat");
   console.log("  ssmd keys revoke sk_live_abc123");
 }

@@ -75,6 +75,23 @@ export async function revokeApiKey(
 }
 
 /**
+ * Update scopes for an API key.
+ */
+export async function updateApiKeyScopes(
+  db: Database,
+  prefix: string,
+  scopes: string[],
+): Promise<ApiKey | null> {
+  const result = await db
+    .update(apiKeys)
+    .set({ scopes })
+    .where(and(eq(apiKeys.keyPrefix, prefix), isNull(apiKeys.revokedAt)))
+    .returning();
+
+  return result[0] ?? null;
+}
+
+/**
  * Update last used timestamp (fire and forget).
  */
 export async function updateLastUsed(db: Database, prefix: string): Promise<void> {
