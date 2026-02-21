@@ -197,9 +197,17 @@ async function callClaude(
       summary: parsed.summary,
       feed_diagnoses: parsed.feed_diagnoses ?? [],
       trends: parsed.trends ?? [],
-      recommendations: (parsed.recommendations ?? []).map((r): string =>
-        typeof r === "string" ? r : String((r as Record<string, unknown>).action ?? (r as Record<string, unknown>).recommendation ?? JSON.stringify(r))
-      ),
+      recommendations: (parsed.recommendations ?? []).map((r): string => {
+        if (typeof r === "string") return r;
+        if (r && typeof r === "object") {
+          const obj = r as Record<string, unknown>;
+          for (const key of ["action", "recommendation", "text", "description", "title"]) {
+            if (typeof obj[key] === "string") return obj[key] as string;
+          }
+          return JSON.stringify(r);
+        }
+        return String(r);
+      }),
     };
   } catch (e) {
     console.error(`Failed to parse Claude response: ${e}`);
