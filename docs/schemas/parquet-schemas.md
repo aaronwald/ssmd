@@ -399,12 +399,12 @@ Every schema includes two columns added by the pipeline (not from exchange JSON)
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `_nats_seq` | UInt64, not null | 1-indexed line counter, monotonically increasing within an hour. **Not** a real NATS JetStream sequence number. Each line of JSONL that parses successfully and matches a registered schema increments the counter. |
-| `_received_at` | Timestamp(us, UTC), not null | Set to the hour boundary timestamp (e.g., `2026-02-12T14:00:00Z` for all records in the 14:xx hour). Represents when the hour's data was logically received, not per-message arrival time. |
+| `_nats_seq` | UInt64, not null | Real NATS JetStream sequence number, injected into JSONL by the archiver at write time. For JSONL files written before v0.9.10, falls back to a 1-indexed line counter. |
+| `_received_at` | Timestamp(us, UTC), not null | Per-message receive timestamp (epoch microseconds), injected into JSONL by the archiver at write time. For JSONL files written before v0.9.10, falls back to the hour boundary timestamp (e.g., `2026-02-12T14:00:00Z`). |
 
-**Implementation:** The counter (`line_counter`) increments per successfully-parsed line across all files in the same hour. The `received_at_micros` value is computed from the date + hour key.
+**Implementation:** The archiver injects `_nats_seq` and `_received_at` as JSON fields into each JSONL line via byte-level injection (no serde round-trip). `ssmd-parquet-gen` extracts these from the JSON with backward-compatible fallback for older files.
 
-**Source:** `ssmd-parquet-gen/src/processor.rs:126-193`
+**Source:** Archiver injection: `ssmd-archiver/src/writer.rs`. Parquet extraction: `ssmd-parquet-gen/src/processor.rs`
 
 ---
 
@@ -414,17 +414,17 @@ Current schema versions:
 
 | Schema | Version | Last Changed |
 |--------|---------|-------------|
-| `kalshi_ticker` | 1.1.0 | Added `exchange_clock` column |
-| `kalshi_trade` | 1.1.0 | Added `exchange_seq` column, `yes_price`/`taker_side` aliasing |
+| `kalshi_ticker` | 1.3.0 | Added `_shard_id`, `exchange_clock` columns |
+| `kalshi_trade` | 1.3.0 | Added `_shard_id`, `exchange_seq` columns, `yes_price`/`taker_side` aliasing |
 | `kalshi_lifecycle` | 1.0.0 | Initial |
 | `kraken_ticker` | 1.0.0 | Initial |
 | `kraken_trade` | 1.0.0 | Initial |
 | `kraken_futures_ticker` | 1.0.0 | Initial |
 | `kraken_futures_trade` | 1.0.0 | Initial |
 | `polymarket_book` | 1.0.0 | Initial |
-| `polymarket_trade` | 1.0.0 | Initial |
-| `polymarket_price_change` | 1.0.0 | Initial |
-| `polymarket_best_bid_ask` | 1.0.0 | Initial |
+| `polymarket_trade` | 2.1.0 | Made `size` non-nullable |
+| `polymarket_price_change` | 2.0.0 | Added `best_bid`, `best_ask` columns |
+| `polymarket_best_bid_ask` | 2.0.0 | Added `spread` column |
 
 Versions are embedded in parquet metadata (`ssmd.schema_version`). When a schema changes:
 1. Bump the version in the Rust source

@@ -117,29 +117,6 @@ Message types vary by exchange:
 - **Kraken Futures**: `ticker`, `trade`
 - **Polymarket**: `last_trade_price`, `price_change`, `book`, `best_bid_ask`, `new_market`, `market_resolved`
 
-## Configuration
-
-Connectors are configured via YAML feed and environment files in `exchanges/`:
-
-```
-exchanges/
-├── feeds/           # Exchange WebSocket definitions
-│   ├── kalshi.yaml
-│   ├── kraken.yaml
-│   ├── kraken-futures.yaml
-│   └── polymarket.yaml
-├── environments/    # Transport + storage per deployment
-│   ├── kalshi-dev.yaml
-│   ├── kalshi-lifecycle.yaml
-│   ├── kalshi-local.yaml
-│   ├── kraken-prod.yaml
-│   ├── kraken-futures-prod.yaml
-│   └── polymarket-prod.yaml
-└── schemas/         # Cap'n Proto schema definitions
-    ├── trade.capnp
-    └── trade.yaml
-```
-
 ## Agent Integration
 
 Agents interact with ssmd through three interfaces: the HTTP API, LangGraph tools, and the CLI.
@@ -246,32 +223,13 @@ The agent REPL (`ssmd-agent/src/agent/`) provides LangGraph tools that wrap the 
 | `init` | Initialize exchanges directory |
 | `agent` | Start interactive LangGraph REPL |
 
-## Docker Images
-
-All images are built via GitHub Actions on tag push. Do not use docker/podman directly.
-
-| Workflow | Image | Tag Format |
-|----------|-------|------------|
-| `build-connector.yaml` | `ghcr.io/aaronwald/ssmd-connector` | `v*` |
-| `build-archiver.yaml` | `ghcr.io/aaronwald/ssmd-archiver` | `v*` |
-| `build-operator.yaml` | `ghcr.io/aaronwald/ssmd-operator` | `operator-v*` |
-| `build-cli-ts.yaml` | `ghcr.io/aaronwald/ssmd-cli-ts` | `cli-ts-v*` |
-| `build-data-ts.yaml` | `ghcr.io/aaronwald/ssmd-data-ts` | `data-ts-v*` |
-| `build-signal-runner.yaml` | `ghcr.io/aaronwald/ssmd-signal-runner` | `signal-runner-v*` |
-| `build-momentum.yaml` | `ghcr.io/aaronwald/ssmd-momentum` | `momentum-v*` |
-| `build-backtest.yaml` | `ghcr.io/aaronwald/ssmd-backtest` | `backtest-v*` |
-| `build-agent.yaml` | `ghcr.io/aaronwald/ssmd-agent` | `agent-v*` |
-| `build-lifecycle-consumer.yaml` | `ghcr.io/aaronwald/ssmd-lifecycle-consumer` | `lifecycle-consumer-v*` |
-| `build-ssmd-cdc.yaml` | `ghcr.io/aaronwald/ssmd-cdc` | `ssmd-cdc-v*` |
-| `build-ssmd-cache.yaml` | `ghcr.io/aaronwald/ssmd-cache` | `ssmd-cache-v*` |
-
 ## Documentation
 
 | Doc | Purpose |
 |-----|---------|
 | [CLAUDE.md](CLAUDE.md) | Build commands, detailed architecture, latency design |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Kubernetes deployment |
 | [AGENT.md](AGENT.md) | Signal development agent |
+| [Researcher Quickstart](docs/researcher-quickstart.md) | API access, MCP setup, data download |
 
 ### Data Schemas
 

@@ -187,142 +187,26 @@ The hot path is optimized to avoid syscalls and locks:
 # Build first
 make rust-build
 
-# Run Kalshi connector (requires KALSHI_API_KEY, KALSHI_PRIVATE_KEY, and NATS)
+# Run Kalshi connector (requires feed/env YAML files, KALSHI_API_KEY, KALSHI_PRIVATE_KEY, and NATS)
 ./ssmd-rust/target/debug/ssmd-connector \
-  --feed ./exchanges/feeds/kalshi.yaml \
-  --env ./exchanges/environments/kalshi-local.yaml
+  --feed /path/to/kalshi.yaml \
+  --env /path/to/kalshi-local.yaml
 
 # For demo API, also set KALSHI_USE_DEMO=true
 ```
 
-The connector requires NATS transport. Configure in environment YAML:
-```yaml
-transport:
-  transport_type: nats
-  url: nats://localhost:4222
-```
-
-The `--feed` and `--env` arguments are **file paths**, not names.
-
-## Docker Images
-
-All images are built via GitHub Actions - **do not use docker/podman directly**.
-
-### Build Triggers
-
-Images build automatically on git tag push, or via manual workflow dispatch.
-
-### Triggering a Build
-
-```bash
-# Option 1: Tag and push (use the correct tag format per workflow)
-git tag v0.4.4           # Rust connector/archiver (triggers: v*)
-git tag cli-ts-v0.2.15   # TypeScript CLI (triggers: cli-ts-v*)
-git tag data-ts-v0.1.0   # TypeScript data server (triggers: data-ts-v*)
-git tag agent-v0.1.0     # TypeScript agent (triggers: agent-v*)
-git push origin <tag>
-
-# Option 2: Manual via GitHub CLI
-gh workflow run build-connector.yaml -f tag=0.4.4
-```
-
-### Available Workflows
-
-| Workflow | Image | Tag Format | Dockerfile |
-|----------|-------|------------|------------|
-| `build-connector.yaml` | `ghcr.io/aaronwald/ssmd-connector` | `v*` | `ssmd-rust/Dockerfile` |
-| `build-archiver.yaml` | `ghcr.io/aaronwald/ssmd-archiver` | `v*` | `ssmd-rust/crates/ssmd-archiver/Dockerfile` |
-| `build-operator.yaml` | `ghcr.io/aaronwald/ssmd-operator` | `operator-v*` | `ssmd-operators/Dockerfile` |
-| `build-signal-runner.yaml` | `ghcr.io/aaronwald/ssmd-signal-runner` | `signal-runner-v*` | `ssmd-agent/Dockerfile.signal` |
-| `build-cli-ts.yaml` | `ghcr.io/aaronwald/ssmd-cli-ts` | `cli-ts-v*` | `ssmd-agent/Dockerfile.cli` |
-| `build-data-ts.yaml` | `ghcr.io/aaronwald/ssmd-data-ts` | `data-ts-v*` | `ssmd-agent/Dockerfile.data` |
-| `build-agent.yaml` | `ghcr.io/aaronwald/ssmd-agent` | `agent-v*` | `ssmd-agent/Dockerfile` |
-| `build-momentum.yaml` | `ghcr.io/aaronwald/ssmd-momentum` | `momentum-v*` | `ssmd-agent/Dockerfile.momentum` |
-| `build-backtest.yaml` | `ghcr.io/aaronwald/ssmd-backtest` | `backtest-v*` | `ssmd-agent/Dockerfile.backtest` |
-| `build-worker.yaml` | `ghcr.io/aaronwald/ssmd-worker` | `worker-v*` | `ssmd-worker/Dockerfile` |
-
-## Momentum Backtesting
-
-Backtests replay archived GCS data through the momentum trading engine. All trading logic uses message timestamps (not wall clock). Results are persisted on Longhorn PVCs.
-
-### Infrastructure (in varlab)
-
-| Resource | Path | Notes |
-|----------|------|-------|
-| Cache PVC | `clusters/homelab/apps/ssmd/backtest/pvc-cache.yaml` | 50Gi, caches GCS archive files |
-| Results PVC | `clusters/homelab/apps/ssmd/backtest/pvc-results.yaml` | 5Gi, persists run results |
-| Job template | `clusters/homelab/apps/ssmd/backtest/job-template.yaml` | Reference only, not Flux-managed |
-| ConfigMap | Created per-run via kubectl | Holds momentum.yaml config |
-
-### Running a Backtest on K8s
-
-```bash
-# 1. Create/update the backtest ConfigMap from a config file
-kubectl create configmap ssmd-backtest-config -n ssmd \
-  --from-file=momentum.yaml=path/to/config.yaml \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-# 2. Generate a run ID and submit the Job
-RUN_ID=$(cat /proc/sys/kernel/random/uuid)
-# Apply job-template.yaml with envsubst, or inline:
-#   image: ghcr.io/aaronwald/ssmd-backtest:<tag>
-#   args: --config /config/momentum.yaml --from YYYY-MM-DD --to YYYY-MM-DD
-#         --cache-dir /cache --results-dir /results --run-id $RUN_ID
-
-# 3. Watch logs
-kubectl logs -n ssmd job/backtest-${RUN_ID:0:8} -f
-
-# 4. Read results (via debug pod that mounts the results PVC)
-kubectl exec -n ssmd deploy/ssmd-debug -- cat /results/$RUN_ID/summary.json
-
-# 5. List all backtest runs
-kubectl get jobs -n ssmd -l app=ssmd-backtest -o wide
-```
-
-### Running a Backtest Locally
-
-```bash
-# Requires gcloud CLI authenticated with GCS access
-cd ssmd-agent
-deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
-  src/cli/main.ts momentum backtest \
-  --config experiments/deployed.yaml \
-  --from 2026-01-16 --to 2026-01-31
-```
-
-### Backtest Output
-
-Each run writes to `{resultsDir}/{runId}/`:
-- `summary.json` — run metadata, per-model stats, portfolio state
-- `trades.jsonl` — per-trade detail (model, ticker, side, entry/exit price, P&L, fees)
-
-### Key Design Details
-
-- **Time**: Uses archived message `ts` field (Unix seconds). No wall clock dependency.
-- **Cache**: GCS files downloaded once to `/cache` PVC, reused across runs.
-- **NO-side positions**: Entry cost = `(100 - yesPrice) * contracts`, exit revenue = `(100 - exitYesPrice) * contracts`. P&L uses price delta which is equivalent.
-- **Cooldown**: `cooldownSeconds` (not minutes) — per-ticker cooldown after exit before re-entry.
-- **Image**: `ghcr.io/aaronwald/ssmd-backtest` — Deno + gcloud CLI. Tag: `backtest-v*`.
-
-### Build Trigger
-
-```bash
-git tag backtest-v0.1.0 && git push origin backtest-v0.1.0
-```
+The `--feed` and `--env` arguments are **file paths** to YAML configuration files (managed privately, not in this repo).
 
 ## Kubernetes Operator
 
 The ssmd-operators project manages Kubernetes CRDs for market data components:
 
-### CRDs
-
 | CRD | Purpose |
 |-----|---------|
-| `connectors.ssmd.ssmd.io` | Manages Kalshi WebSocket connectors |
-| `archivers.ssmd.ssmd.io` | Manages NATS → JSONL.gz archivers |
+| `connectors.ssmd.ssmd.io` | Manages WebSocket connector pods |
+| `archivers.ssmd.ssmd.io` | Manages NATS → JSONL.gz archiver pods |
 | `signals.ssmd.ssmd.io` | Manages signal evaluation pods |
-
-### Operator Commands
+| `notifiers.ssmd.ssmd.io` | Manages alert notification pods |
 
 ```bash
 # Generate CRDs after modifying *_types.go
@@ -330,14 +214,7 @@ cd ssmd-operators && make manifests
 
 # Build locally
 make build
-
-# Tag and push to trigger image build
-git tag operator-v0.4.1 && git push origin operator-v0.4.1
 ```
-
-After updating the operator, copy CRDs to varlab:
-`varlab/clusters/homelab/apps/ssmd/operator/crds.yaml`
-
 
 ## Instructions
 

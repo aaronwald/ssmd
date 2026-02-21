@@ -46,6 +46,8 @@ Environment variables can also be passed via the `env` key in .mcp.json.
 |------|-------------|
 | `query_trades` | Trade aggregation by ticker — count, volume, price range. Feeds: kalshi, kraken-futures, polymarket. |
 | `query_prices` | Latest price snapshots per instrument. Kalshi: yes/no bid/ask. Kraken: bid/ask/funding. Polymarket: best bid/ask/spread. |
+| `query_events` | Event-level trade summaries — groups markets by parent event, aggregates volume. |
+| `query_volume` | Cross-feed volume summary — per-feed trade counts, active tickers, top instruments. |
 | `lookup_market` | Market metadata lookup by ID (ticker, product_id, condition_id). Cached per session. |
 | `list_feeds` | List available feeds with catalog info (dates, file counts, schemas). |
 | `check_freshness` | Check data freshness per feed. Flags stale feeds (>7 hours old). |

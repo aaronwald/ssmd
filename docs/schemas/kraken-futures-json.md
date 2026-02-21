@@ -630,11 +630,10 @@ This means:
 | NATS Stream | `PROD_KRAKEN_FUTURES` |
 | Stream Limits | 256 MB max, 48h retention, 2min dedup window |
 | Archiver | `archiver-kraken-futures` writing to GCS |
-| GCS Path | `gs://ssmd-archive/kraken-futures/kraken-futures/` |
 | Archive Start | 2026-02-08 |
 | Data Volume | ~10 MiB/day compressed |
 | Subscribed Products | All available futures (PF_, PI_, FF_, FI_ prefixes) |
-| Feed Config | `exchanges/feeds/kraken-futures.yaml` |
+| Connector Module | `ssmd-rust/crates/connector/src/kraken_futures/` |
 
 ---
 
