@@ -130,11 +130,37 @@ ssmd-worker/       # Temporal worker (Node.js, shells out to ssmd CLI)
 ```
 ssmd-agent/
 ├── src/cli/        # CLI commands (secmaster, backtest, fees, health, diagnosis)
-├── src/lib/        # Shared library (db, api, types)
+├── src/lib/        # Shared library (db, api, types, guardrails)
+├── src/server/     # data-ts HTTP API server (routes, auth, OpenRouter proxy)
 ├── src/agent/      # LangGraph agent with tools
-├── prompts/        # System prompts (system.md, diagnosis.md)
+├── prompts/        # System prompts (system.md)
 └── src/main.ts     # Agent REPL entrypoint
 ```
+
+### Diagnosis Pipeline
+
+Daily AI-powered analysis of health and DQ results. Runs as a CronJob at 08:00 UTC.
+
+```
+┌─────────────┐     ┌───────────┐     ┌──────────┐     ┌─────────┐
+│  PostgreSQL  │────▶│ diagnosis │────▶│ data-ts  │────▶│  Claude  │
+│ dq_daily_   │     │  CLI pod  │     │ (proxy)  │     │ Sonnet   │
+│ scores (7d) │     │           │◀────│          │◀────│ 4.6      │
+└─────────────┘     │           │     └──────────┘     └─────────┘
+                    │           │
+┌─────────────┐     │           │     ┌──────────┐
+│  data-ts    │────▶│           │────▶│  SMTP    │
+│ /freshness  │     │           │     │  email   │
+│ /volume     │     └───────────┘     └──────────┘
+└─────────────┘
+```
+
+- **Input**: 7-day health scores (PostgreSQL), live freshness + volume (data-ts API)
+- **AI**: Single Claude API call via data-ts OpenRouter proxy (`/v1/chat/completions`)
+- **Output**: HTML email with status (GREEN/YELLOW/RED), per-feed diagnosis, trends, recommendations
+- **System prompt**: Inlined in `src/cli/commands/diagnosis.ts` (compiled binary, no filesystem)
+- **Model allowlist**: `src/lib/guardrails/mod.ts` — add models here to allow them through the proxy
+- **Cost**: ~$0.03-0.05/day
 
 ### Latency Optimizations
 
