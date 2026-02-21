@@ -174,7 +174,7 @@ async function callClaude(
         { role: "system", content: systemPrompt },
         { role: "user", content: JSON.stringify(data) },
       ],
-      max_tokens: 1500,
+      max_tokens: 2500,
     }),
     signal: AbortSignal.timeout(60000),
   });
