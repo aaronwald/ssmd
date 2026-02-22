@@ -371,7 +371,7 @@ fn create_kraken_futures_nats_writer(
             "Using default subject prefix"
         );
         ssmd_connector_lib::kraken_futures::KrakenFuturesNatsWriter::new(
-            transport, &env_config.name, &feed.name,
+            transport, env_config.name.as_str(), feed.name.as_str(),
         )
     }
 }
@@ -507,8 +507,8 @@ fn create_polymarket_nats_writer(
         );
         ssmd_connector_lib::polymarket::PolymarketNatsWriter::new(
             transport,
-            &env_config.name,
-            &feed.name,
+            env_config.name.as_str(),
+            feed.name.as_str(),
         )
     }
 }
@@ -538,7 +538,7 @@ fn create_kraken_nats_writer(
             subject_prefix = format!("{}.{}", env_config.name, feed.name),
             "Using default subject prefix"
         );
-        ssmd_connector_lib::kraken::KrakenNatsWriter::new(transport, &env_config.name, &feed.name)
+        ssmd_connector_lib::kraken::KrakenNatsWriter::new(transport, env_config.name.as_str(), feed.name.as_str())
     }
 }
 
@@ -566,7 +566,7 @@ fn create_nats_writer(
             subject_prefix = format!("{}.{}", env_config.name, feed.name),
             "Using default subject prefix"
         );
-        NatsWriter::new(transport, &env_config.name, &feed.name)
+        NatsWriter::new(transport, env_config.name.as_str(), feed.name.as_str())
     };
 
     // Apply series filter if configured
@@ -596,7 +596,7 @@ where
     C: ssmd_connector_lib::traits::Connector,
     W: ssmd_connector_lib::traits::Writer,
 {
-    let mut runner = Runner::new(&feed.name, connector, writer);
+    let mut runner = Runner::new(feed.name.as_str(), connector, writer);
     let connected_handle = runner.connected_handle();
     // Use activity handle (tracks WebSocket ping/pong + data messages) for health checks
     // This prevents false staleness during quiet market periods when pings are succeeding

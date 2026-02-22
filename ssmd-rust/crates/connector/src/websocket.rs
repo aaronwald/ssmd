@@ -19,7 +19,7 @@ pub struct WebSocketConnector {
 
 impl WebSocketConnector {
     pub fn new(url: impl Into<String>, creds: Option<HashMap<String, String>>) -> Self {
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel(1024);
         Self {
             url: url.into(),
             creds,

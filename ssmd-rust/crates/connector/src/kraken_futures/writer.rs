@@ -6,12 +6,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::Deserialize;
 use tracing::{debug, trace, warn};
 
 use ssmd_middleware::{sanitize_subject_token, SubjectBuilder, Transport};
 
 use crate::error::WriterError;
-use crate::kraken_futures::messages::KrakenFuturesWsMessage;
 use crate::message::Message;
 use crate::traits::Writer;
 
@@ -24,8 +24,8 @@ pub struct KrakenFuturesNatsWriter {
 impl KrakenFuturesNatsWriter {
     pub fn new(
         transport: Arc<dyn Transport>,
-        env_name: impl Into<String>,
-        feed_name: impl Into<String>,
+        env_name: impl Into<Arc<str>>,
+        feed_name: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             transport,
@@ -36,8 +36,8 @@ impl KrakenFuturesNatsWriter {
 
     pub fn with_prefix(
         transport: Arc<dyn Transport>,
-        subject_prefix: impl Into<String>,
-        stream_name: impl Into<String>,
+        subject_prefix: impl Into<Arc<str>>,
+        stream_name: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             transport,
@@ -52,10 +52,18 @@ impl KrakenFuturesNatsWriter {
     }
 }
 
+#[derive(Deserialize)]
+struct PartialKrakenFuturesMsg<'a> {
+    feed: Option<&'a str>,
+    product_id: Option<&'a str>,
+}
+
 #[async_trait]
 impl Writer for KrakenFuturesNatsWriter {
     async fn write(&mut self, msg: &Message) -> Result<(), WriterError> {
-        let ws_msg: KrakenFuturesWsMessage = match serde_json::from_slice(&msg.data) {
+        // FAST PATH: Parse just enough to extract feed and product_id using borrowed strings.
+        // Bypasses large struct and untagged enum overhead.
+        let partial: PartialKrakenFuturesMsg = match serde_json::from_slice(&msg.data) {
             Ok(m) => m,
             Err(e) => {
                 let preview: String = String::from_utf8_lossy(&msg.data)
@@ -69,26 +77,23 @@ impl Writer for KrakenFuturesNatsWriter {
             }
         };
 
-        let subject = match &ws_msg {
-            KrakenFuturesWsMessage::DataMessage {
-                feed, product_id, ..
-            } => {
-                let sanitized = sanitize_subject_token(product_id);
-                if sanitized.is_empty() {
-                    warn!(product_id = %product_id, "Empty sanitized product_id, skipping");
+        let subject = if let (Some(feed), Some(product_id)) = (partial.feed, partial.product_id) {
+            let sanitized = sanitize_subject_token(product_id);
+            if sanitized.is_empty() {
+                warn!(product_id = %product_id, "Empty sanitized product_id, skipping");
+                return Ok(());
+            }
+            match feed {
+                "trade" | "trade_snapshot" => self.subjects.json_trade(&sanitized),
+                "ticker" => self.subjects.json_ticker(&sanitized),
+                _ => {
+                    debug!(feed = %feed, "Unknown Kraken Futures feed, skipping");
                     return Ok(());
                 }
-                match feed.as_str() {
-                    "trade" | "trade_snapshot" => self.subjects.json_trade(&sanitized),
-                    "ticker" => self.subjects.json_ticker(&sanitized),
-                    _ => {
-                        debug!(feed = %feed, "Unknown Kraken Futures feed, skipping");
-                        return Ok(());
-                    }
-                }
             }
-            // Skip non-data messages
-            _ => return Ok(()),
+        } else {
+            // Skip non-data messages (heartbeat, subscribed, etc.)
+            return Ok(());
         };
 
         // Publish raw bytes - no transformation

@@ -35,8 +35,27 @@ pub struct RingBuffer {
     #[allow(dead_code)]
     file: File,
     mmap: MmapMut,
-    write_pos: AtomicU64,
-    read_pos: AtomicU64,
+    write_pos: CachePaddedAtomic,
+    read_pos: CachePaddedAtomic,
+}
+
+#[repr(align(64))]
+struct CachePaddedAtomic(AtomicU64);
+
+impl CachePaddedAtomic {
+    fn new(v: u64) -> Self {
+        Self(AtomicU64::new(v))
+    }
+
+    #[inline]
+    fn load(&self, order: Ordering) -> u64 {
+        self.0.load(order)
+    }
+
+    #[inline]
+    fn store(&self, v: u64, order: Ordering) {
+        self.0.store(v, order)
+    }
 }
 
 impl RingBuffer {
@@ -56,8 +75,8 @@ impl RingBuffer {
         Ok(Self {
             file,
             mmap,
-            write_pos: AtomicU64::new(0),
-            read_pos: AtomicU64::new(0),
+            write_pos: CachePaddedAtomic::new(0),
+            read_pos: CachePaddedAtomic::new(0),
         })
     }
 

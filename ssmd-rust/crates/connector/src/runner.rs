@@ -12,7 +12,7 @@ use ssmd_middleware::{now_tsc, CLOCK};
 
 /// Runner orchestrates the data collection pipeline
 pub struct Runner<C: Connector, W: Writer> {
-    feed_name: String,
+    feed_name: Arc<str>,
     connector: C,
     writer: W,
     connected: Arc<AtomicBool>,
@@ -21,7 +21,7 @@ pub struct Runner<C: Connector, W: Writer> {
 }
 
 impl<C: Connector, W: Writer> Runner<C, W> {
-    pub fn new(feed_name: impl Into<String>, connector: C, writer: W) -> Self {
+    pub fn new(feed_name: impl Into<Arc<str>>, connector: C, writer: W) -> Self {
         Self {
             feed_name: feed_name.into(),
             connector,
@@ -87,7 +87,7 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                         Some((ws_tsc, data)) => {
                             // Pass raw bytes through - no JSON parsing in hot path.
                             // Parsing/validation happens at I/O boundary (flusher, gateway).
-                            let message = Message::new(&self.feed_name, data);
+                            let message = Message::new_with_tsc(Arc::clone(&self.feed_name), data, ws_tsc);
                             let write_start = now_tsc();
 
                             if let Err(e) = self.writer.write(&message).await {

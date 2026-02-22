@@ -7,12 +7,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::Deserialize;
 use tracing::{trace, warn};
 
 use ssmd_middleware::{SubjectBuilder, Transport};
 
 use crate::error::WriterError;
-use crate::kalshi::messages::WsMessage;
 use crate::message::Message;
 use crate::traits::Writer;
 
@@ -33,8 +33,8 @@ impl NatsWriter {
     /// Create a new NatsWriter with default subject prefix: {env_name}.{feed_name}
     pub fn new(
         transport: Arc<dyn Transport>,
-        env_name: impl Into<String>,
-        feed_name: impl Into<String>,
+        env_name: impl Into<Arc<str>>,
+        feed_name: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             transport,
@@ -55,8 +55,8 @@ impl NatsWriter {
     /// ```
     pub fn with_prefix(
         transport: Arc<dyn Transport>,
-        subject_prefix: impl Into<String>,
-        stream_name: impl Into<String>,
+        subject_prefix: impl Into<Arc<str>>,
+        stream_name: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             transport,
@@ -92,11 +92,31 @@ impl NatsWriter {
     }
 }
 
+#[derive(Deserialize)]
+struct PartialWsMessage<'a> {
+    #[serde(rename = "type")]
+    msg_type: &'a str,
+    id: Option<u64>,
+    #[serde(borrow)]
+    msg: Option<PartialMsgData<'a>>,
+}
+
+#[derive(Deserialize)]
+struct PartialMsgData<'a> {
+    market_ticker: Option<&'a str>,
+    event_ticker: Option<&'a str>,
+    series_ticker: Option<&'a str>,
+    code: Option<i64>,
+    #[serde(rename = "msg")]
+    error_msg: Option<&'a str>,
+}
+
 #[async_trait]
 impl Writer for NatsWriter {
     async fn write(&mut self, msg: &Message) -> Result<(), WriterError> {
-        // Parse just enough to extract message type and ticker
-        let ws_msg: WsMessage = match serde_json::from_slice(&msg.data) {
+        // FAST PATH: Parse just enough to extract message type and ticker using borrowed strings.
+        // Bypasses full WsMessage enum and serde_json::Value overhead.
+        let partial: PartialWsMessage = match serde_json::from_slice(&msg.data) {
             Ok(m) => m,
             Err(e) => {
                 // Fail loudly on parse errors - indicates a bug in WsMessage enum
@@ -111,26 +131,51 @@ impl Writer for NatsWriter {
             }
         };
 
-        let subject = match &ws_msg {
-            WsMessage::Trade { msg: trade_data } => {
-                self.subjects.json_trade(&trade_data.market_ticker)
+        let subject = match partial.msg_type {
+            "trade" => {
+                let ticker = partial.msg.as_ref().and_then(|m| m.market_ticker).unwrap_or("");
+                if ticker.is_empty() {
+                    warn!(msg_type = %partial.msg_type, "Missing market_ticker, skipping");
+                    return Ok(());
+                }
+                self.subjects.json_trade(ticker)
             }
-            WsMessage::Ticker { msg: ticker_data } => {
-                self.subjects.json_ticker(&ticker_data.market_ticker)
+            "ticker" => {
+                let ticker = partial.msg.as_ref().and_then(|m| m.market_ticker).unwrap_or("");
+                if ticker.is_empty() {
+                    warn!(msg_type = %partial.msg_type, "Missing market_ticker, skipping");
+                    return Ok(());
+                }
+                self.subjects.json_ticker(ticker)
             }
-            WsMessage::OrderbookSnapshot { msg: ob_data } => {
-                self.subjects.json_orderbook(&ob_data.market_ticker)
+            "orderbook_snapshot" => {
+                let ticker = partial.msg.as_ref().and_then(|m| m.market_ticker).unwrap_or("");
+                if ticker.is_empty() {
+                    warn!(msg_type = %partial.msg_type, "Missing market_ticker, skipping");
+                    return Ok(());
+                }
+                self.subjects.json_orderbook(ticker)
             }
-            WsMessage::OrderbookDelta { msg: ob_data } => {
-                self.subjects.json_orderbook(&ob_data.market_ticker)
+            "orderbook_delta" => {
+                let ticker = partial.msg.as_ref().and_then(|m| m.market_ticker).unwrap_or("");
+                if ticker.is_empty() {
+                    warn!(msg_type = %partial.msg_type, "Missing market_ticker, skipping");
+                    return Ok(());
+                }
+                self.subjects.json_orderbook(ticker)
             }
-            WsMessage::MarketLifecycleV2 { msg: lifecycle_data, .. } => {
+            "market_lifecycle_v2" => {
+                let ticker = partial.msg.as_ref().and_then(|m| m.market_ticker).unwrap_or("");
+                if ticker.is_empty() {
+                    warn!(msg_type = %partial.msg_type, "Missing market_ticker, skipping");
+                    return Ok(());
+                }
                 // Apply series filter if configured
                 if let Some(ref filter) = self.series_filter {
-                    let series = Self::extract_series(&lifecycle_data.market_ticker);
+                    let series = Self::extract_series(ticker);
                     if !filter.contains(series) {
                         trace!(
-                            market_ticker = %lifecycle_data.market_ticker,
+                            market_ticker = %ticker,
                             series = %series,
                             "Lifecycle event filtered out (series not in filter)"
                         );
@@ -138,15 +183,20 @@ impl Writer for NatsWriter {
                         return Ok(());
                     }
                 }
-                self.subjects.json_lifecycle(&lifecycle_data.market_ticker)
+                self.subjects.json_lifecycle(ticker)
             }
-            WsMessage::EventLifecycle { msg: event_data, .. } => {
+            "event_lifecycle" => {
+                let ticker = partial.msg.as_ref().and_then(|m| m.event_ticker).unwrap_or("");
+                if ticker.is_empty() {
+                    warn!(msg_type = %partial.msg_type, "Missing event_ticker, skipping");
+                    return Ok(());
+                }
                 // Apply series filter to event lifecycle if configured
                 if let Some(ref filter) = self.series_filter {
-                    if let Some(ref series_ticker) = event_data.series_ticker {
-                        if !filter.contains(series_ticker.as_str()) {
+                    if let Some(series_ticker) = partial.msg.as_ref().and_then(|m| m.series_ticker) {
+                        if !filter.contains(series_ticker) {
                             trace!(
-                                event_ticker = %event_data.event_ticker,
+                                event_ticker = %ticker,
                                 series_ticker = %series_ticker,
                                 "Event lifecycle filtered out (series not in filter)"
                             );
@@ -155,24 +205,20 @@ impl Writer for NatsWriter {
                         }
                     }
                 }
-                self.subjects.json_event_lifecycle(&event_data.event_ticker)
+                self.subjects.json_event_lifecycle(ticker)
             }
-            WsMessage::Subscribed { .. } | WsMessage::Unsubscribed { .. } => {
+            "subscribed" | "unsubscribed" | "ok" => {
                 // Control messages, don't publish
                 return Ok(());
             }
-            WsMessage::Ok { .. } => {
-                // Control message, don't publish
+            "error" => {
+                let code = partial.msg.as_ref().and_then(|m| m.code);
+                let error_msg = partial.msg.as_ref().and_then(|m| m.error_msg);
+                warn!(id = ?partial.id, ?code, ?error_msg, "Error message received from Kalshi");
                 return Ok(());
             }
-            WsMessage::Error { id, msg } => {
-                let code = msg.as_ref().map(|m| m.code);
-                let error_msg = msg.as_ref().map(|m| m.msg.as_str());
-                warn!(?id, ?code, ?error_msg, "Error message received from Kalshi");
-                return Ok(());
-            }
-            WsMessage::Unknown => {
-                warn!("Unknown message type received");
+            _ => {
+                warn!(msg_type = %partial.msg_type, "Unknown message type received");
                 return Ok(());
             }
         };

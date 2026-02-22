@@ -29,8 +29,8 @@ impl PolymarketNatsWriter {
     /// Create a new PolymarketNatsWriter with default subject prefix: {env_name}.{feed_name}
     pub fn new(
         transport: Arc<dyn Transport>,
-        env_name: impl Into<String>,
-        feed_name: impl Into<String>,
+        env_name: impl Into<Arc<str>>,
+        feed_name: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             transport,
@@ -42,8 +42,8 @@ impl PolymarketNatsWriter {
     /// Create a new PolymarketNatsWriter with a custom subject prefix and stream name.
     pub fn with_prefix(
         transport: Arc<dyn Transport>,
-        subject_prefix: impl Into<String>,
-        stream_name: impl Into<String>,
+        subject_prefix: impl Into<Arc<str>>,
+        stream_name: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             transport,

@@ -49,8 +49,8 @@ pub struct Publisher {
 impl Publisher {
     pub fn new(
         transport: Arc<dyn Transport>,
-        env_name: impl Into<String>,
-        feed_name: impl Into<String>,
+        env_name: impl Into<Arc<str>>,
+        feed_name: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             transport,

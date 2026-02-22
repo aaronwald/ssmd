@@ -82,7 +82,7 @@ pub struct SubjectBuilder {
 
 impl SubjectBuilder {
     /// Create a new SubjectBuilder with default prefix: {env}.{feed}
-    pub fn new(env: impl Into<String>, feed: impl Into<String>) -> Self {
+    pub fn new(env: impl Into<Arc<str>>, feed: impl Into<Arc<str>>) -> Self {
         let env = env.into();
         let feed = feed.into();
         let prefix = format!("{}.{}", env, feed);
@@ -98,7 +98,7 @@ impl SubjectBuilder {
     /// let builder = SubjectBuilder::with_prefix("prod.kalshi.main", "PROD_KALSHI");
     /// assert_eq!(builder.json_trade("KXTEST"), "prod.kalshi.main.json.trade.KXTEST");
     /// ```
-    pub fn with_prefix(prefix: impl Into<String>, stream_name: impl Into<String>) -> Self {
+    pub fn with_prefix(prefix: impl Into<Arc<str>>, stream_name: impl Into<Arc<str>>) -> Self {
         let prefix = prefix.into();
         let stream_name = stream_name.into();
 
@@ -111,7 +111,6 @@ impl SubjectBuilder {
         let json_orderbook_prefix: Arc<str> = format!("{}.json.orderbook.", prefix).into();
         let json_lifecycle_prefix: Arc<str> = format!("{}.json.lifecycle.", prefix).into();
         let json_event_lifecycle_prefix: Arc<str> = format!("{}.json.event_lifecycle.", prefix).into();
-        let stream_name: Arc<str> = stream_name.into();
 
         Self {
             trade_prefix,

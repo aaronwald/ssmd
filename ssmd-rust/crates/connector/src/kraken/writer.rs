@@ -6,12 +6,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tracing::trace;
+use serde::Deserialize;
+use tracing::{trace, warn};
 
 use ssmd_middleware::{sanitize_subject_token, SubjectBuilder, Transport};
 
 use crate::error::WriterError;
-use crate::kraken::messages::KrakenWsMessage;
 use crate::message::Message;
 use crate::traits::Writer;
 
@@ -26,8 +26,8 @@ impl KrakenNatsWriter {
     /// Create a new KrakenNatsWriter with default subject prefix: {env_name}.{feed_name}
     pub fn new(
         transport: Arc<dyn Transport>,
-        env_name: impl Into<String>,
-        feed_name: impl Into<String>,
+        env_name: impl Into<Arc<str>>,
+        feed_name: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             transport,
@@ -39,8 +39,8 @@ impl KrakenNatsWriter {
     /// Create a new KrakenNatsWriter with a custom subject prefix and stream name.
     pub fn with_prefix(
         transport: Arc<dyn Transport>,
-        subject_prefix: impl Into<String>,
-        stream_name: impl Into<String>,
+        subject_prefix: impl Into<Arc<str>>,
+        stream_name: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             transport,
@@ -55,10 +55,25 @@ impl KrakenNatsWriter {
     }
 }
 
+#[derive(Deserialize)]
+struct PartialKrakenMsg<'a> {
+    channel: Option<&'a str>,
+    #[serde(borrow)]
+    data: Option<Vec<PartialKrakenData<'a>>>,
+    method: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct PartialKrakenData<'a> {
+    symbol: Option<&'a str>,
+}
+
 #[async_trait]
 impl Writer for KrakenNatsWriter {
     async fn write(&mut self, msg: &Message) -> Result<(), WriterError> {
-        let ws_msg: KrakenWsMessage = match serde_json::from_slice(&msg.data) {
+        // FAST PATH: Parse just enough to extract channel and symbol using borrowed strings.
+        // Bypasses untagged enum and serde_json::Value overhead.
+        let partial: PartialKrakenMsg = match serde_json::from_slice(&msg.data) {
             Ok(m) => m,
             Err(e) => {
                 let preview: String = String::from_utf8_lossy(&msg.data)
@@ -72,32 +87,40 @@ impl Writer for KrakenNatsWriter {
             }
         };
 
-        let subject = match &ws_msg {
-            KrakenWsMessage::ChannelMessage {
-                channel, data, ..
-            } => {
-                // Extract symbol from data[0]
-                let symbol = data
-                    .first()
-                    .and_then(|d| d.get("symbol"))
-                    .and_then(|s| s.as_str())
+        let channel = partial.channel.unwrap_or("");
+
+        let subject = match channel {
+            "trade" => {
+                let symbol = partial.data.as_ref()
+                    .and_then(|d| d.first())
+                    .and_then(|item| item.symbol)
                     .unwrap_or("unknown");
-
                 let sanitized = sanitize_subject_token(symbol);
-
-                match channel.as_str() {
-                    "trade" => self.subjects.json_trade(&sanitized),
-                    "ticker" => self.subjects.json_ticker(&sanitized),
-                    other => {
-                        trace!(channel = %other, "Skipping unknown Kraken channel");
-                        return Ok(());
-                    }
+                if sanitized.is_empty() {
+                    warn!(channel = %channel, "Empty sanitized symbol, skipping");
+                    return Ok(());
                 }
+                self.subjects.json_trade(&sanitized)
             }
-            // Skip non-data messages
-            KrakenWsMessage::Heartbeat { .. }
-            | KrakenWsMessage::Pong { .. }
-            | KrakenWsMessage::SubscriptionResult { .. } => {
+            "ticker" => {
+                let symbol = partial.data.as_ref()
+                    .and_then(|d| d.first())
+                    .and_then(|item| item.symbol)
+                    .unwrap_or("unknown");
+                let sanitized = sanitize_subject_token(symbol);
+                if sanitized.is_empty() {
+                    warn!(channel = %channel, "Empty sanitized symbol, skipping");
+                    return Ok(());
+                }
+                self.subjects.json_ticker(&sanitized)
+            }
+            "heartbeat" => return Ok(()),
+            _ => {
+                // Check for non-channel messages like "pong" or "subscribe" via "method" field
+                if partial.method.is_some() {
+                    return Ok(());
+                }
+                trace!(channel = %channel, "Skipping unknown Kraken channel");
                 return Ok(());
             }
         };
