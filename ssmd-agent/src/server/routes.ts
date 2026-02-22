@@ -72,7 +72,7 @@ import {
   VOLUME_UNITS,
 } from "../lib/duckdb/queries.ts";
 import { VALID_DATA_FEEDS, FEED_PATHS } from "../lib/duckdb/feed-config.ts";
-import { and, inArray, isNull, eq, gte, lt, sql } from "drizzle-orm";
+import { and, inArray, isNull, eq, gte, lt, lte, sql } from "drizzle-orm";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
 const USAGE_CACHE_TTL = 120; // 2 minutes
@@ -985,6 +985,159 @@ route("GET", "/v1/billing/export", async (req, ctx) => {
     },
   });
 }, true, "billing:read");
+
+// Run billing aggregation for a date
+route("POST", "/v1/billing/aggregate", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const body = await req.json().catch(() => ({})) as {
+    date?: string;
+    dry_run?: boolean;
+  };
+
+  // Default: yesterday
+  let targetDate: string;
+  if (body.date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(body.date)) {
+      return json({ error: "date must be YYYY-MM-DD format" }, 400);
+    }
+    targetDate = body.date;
+  } else {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - 1);
+    targetDate = d.toISOString().slice(0, 10);
+  }
+  const dryRun = Boolean(body.dry_run);
+
+  const nextDate = new Date(targetDate + "T00:00:00Z");
+  nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+  const nextDateStr = nextDate.toISOString().slice(0, 10);
+
+  // Query api_request_log for the target date
+  const rows = await ctx.db
+    .select()
+    .from(apiRequestLog)
+    .where(and(
+      gte(apiRequestLog.createdAt, new Date(targetDate + "T00:00:00Z")),
+      lt(apiRequestLog.createdAt, new Date(nextDateStr + "T00:00:00Z")),
+    ));
+
+  if (rows.length === 0) {
+    return json({ date: targetDate, dryRun, message: "No requests to aggregate", groups: 0, totalCostUsd: 0 });
+  }
+
+  // Load current billing rates
+  const rates = await ctx.db
+    .select()
+    .from(billingRates)
+    .where(and(
+      lte(billingRates.effectiveFrom, new Date(nextDateStr + "T00:00:00Z")),
+      isNull(billingRates.effectiveTo),
+    ));
+
+  // Build rate lookup: key-specific first, then global fallback
+  const rateLookup = new Map<string, { perReq: number; perMb: number }>();
+  for (const r of rates) {
+    const key = r.keyPrefix ? `${r.keyPrefix}:${r.endpointTier}` : `_global:${r.endpointTier}`;
+    rateLookup.set(key, { perReq: parseFloat(r.ratePerRequest), perMb: parseFloat(r.ratePerMb) });
+  }
+  function getRate(keyPrefix: string, tier: string): { perReq: number; perMb: number } {
+    return rateLookup.get(`${keyPrefix}:${tier}`) ?? rateLookup.get(`_global:${tier}`) ?? { perReq: 0, perMb: 0 };
+  }
+
+  // Map path to endpoint tier
+  function endpointTier(_method: string, path: string): string {
+    if (path.startsWith("/v1/data/download")) return "data_download";
+    if (path.startsWith("/v1/data/")) return "data_query";
+    if (path.startsWith("/v1/markets/lookup")) return "market_lookup";
+    if (path.startsWith("/v1/events") || path.startsWith("/v1/markets") || path.startsWith("/v1/series") ||
+        path.startsWith("/v1/pairs") || path.startsWith("/v1/conditions") || path.startsWith("/v1/fees")) return "secmaster";
+    if (path.startsWith("/v1/chat/completions")) return "llm_chat";
+    return "data_query";
+  }
+
+  // Group by (key_prefix, endpoint_tier)
+  const groups = new Map<string, { keyPrefix: string; endpoint: string; count: number; bytes: number; errors: number }>();
+  for (const row of rows) {
+    const tier = endpointTier(row.method, row.path);
+    const groupKey = `${row.keyPrefix}:${tier}`;
+    const existing = groups.get(groupKey);
+    if (existing) {
+      existing.count++;
+      existing.bytes += row.responseBytes ?? 0;
+      if (row.statusCode >= 400) existing.errors++;
+    } else {
+      groups.set(groupKey, {
+        keyPrefix: row.keyPrefix, endpoint: tier, count: 1,
+        bytes: row.responseBytes ?? 0, errors: row.statusCode >= 400 ? 1 : 0,
+      });
+    }
+  }
+
+  // Compute costs
+  let totalCost = 0;
+  const details: Array<{ keyPrefix: string; endpoint: string; requests: number; bytes: number; costUsd: number }> = [];
+
+  for (const [, group] of groups) {
+    const rate = getRate(group.keyPrefix, group.endpoint);
+    const costUsd = group.count * rate.perReq + (group.bytes / (1024 * 1024)) * rate.perMb;
+    totalCost += costUsd;
+    details.push({ keyPrefix: group.keyPrefix, endpoint: group.endpoint, requests: group.count, bytes: group.bytes, costUsd: Math.round(costUsd * 1_000_000) / 1_000_000 });
+
+    if (!dryRun) {
+      await ctx.db.insert(billingDailySummary).values({
+        keyPrefix: group.keyPrefix, date: targetDate, endpoint: group.endpoint,
+        requestCount: group.count, responseBytes: group.bytes, errorCount: group.errors,
+        costUsd: costUsd.toFixed(6),
+      }).onConflictDoUpdate({
+        target: [billingDailySummary.keyPrefix, billingDailySummary.date, billingDailySummary.endpoint],
+        set: { requestCount: sql`excluded.request_count`, responseBytes: sql`excluded.response_bytes`, errorCount: sql`excluded.error_count`, costUsd: sql`excluded.cost_usd` },
+      });
+    }
+  }
+
+  // Also aggregate LLM usage costs
+  const llmRows = await ctx.db.select().from(llmUsageDaily).where(eq(llmUsageDaily.date, targetDate));
+  let llmTotalCost = 0;
+  for (const row of llmRows) llmTotalCost += parseFloat(row.costUsd);
+
+  // Insert debit entries for each key's daily total
+  if (!dryRun) {
+    const keyTotals = new Map<string, number>();
+    for (const [, group] of groups) {
+      const rate = getRate(group.keyPrefix, group.endpoint);
+      const cost = group.count * rate.perReq + (group.bytes / (1024 * 1024)) * rate.perMb;
+      keyTotals.set(group.keyPrefix, (keyTotals.get(group.keyPrefix) ?? 0) + cost);
+    }
+    for (const row of llmRows) {
+      const cost = parseFloat(row.costUsd);
+      if (cost > 0) keyTotals.set(row.keyPrefix, (keyTotals.get(row.keyPrefix) ?? 0) + cost);
+    }
+
+    const month = targetDate.slice(0, 7);
+    for (const [keyPrefix, total] of keyTotals) {
+      if (total <= 0) continue;
+      const existing = await ctx.db.select().from(billingLedger).where(and(
+        eq(billingLedger.keyPrefix, keyPrefix),
+        eq(billingLedger.entryType, "debit"),
+        eq(billingLedger.referenceMonth, month),
+        eq(billingLedger.description, `Usage for ${targetDate}`),
+      ));
+      if (existing.length === 0) {
+        await ctx.db.insert(billingLedger).values({
+          keyPrefix, entryType: "debit", amountUsd: total.toFixed(6),
+          description: `Usage for ${targetDate}`, referenceMonth: month, actor: auth.userEmail,
+        });
+      }
+    }
+  }
+
+  return json({
+    date: targetDate, dryRun, requestsProcessed: rows.length,
+    groups: groups.size, totalCostUsd: Math.round(totalCost * 1_000_000) / 1_000_000,
+    llmCostUsd: Math.round(llmTotalCost * 1_000_000) / 1_000_000,
+    details,
+  });
+}, true, "billing:write");
 
 // Issue a billing credit
 route("POST", "/v1/billing/credit", async (req, ctx) => {

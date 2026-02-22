@@ -87,6 +87,7 @@ const AUTH_ENDPOINTS = [
   "GET /v1/billing/balance?key_prefix=sk_test",
   "GET /v1/billing/rates",
   "POST /v1/billing/credit",
+  "POST /v1/billing/aggregate",
 ];
 
 for (const endpoint of AUTH_ENDPOINTS) {
@@ -257,6 +258,32 @@ Deno.test("billing:write implies billing:read", async () => {
   try {
     const res = await router(req);
     assert(res.status !== 403, `billing:write should imply billing:read (got ${res.status})`);
+  } catch (_err) {
+    // Handler threw because mock DB can't query — scope check passed (good)
+  }
+});
+
+Deno.test("billing:read cannot run aggregate", async () => {
+  const router = createTestRouter(mockAuth({ scopes: ["billing:read"] }));
+  const req = makeReq("/v1/billing/aggregate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  const res = await router(req);
+  assertEquals(res.status, 403);
+});
+
+Deno.test("billing:write can run aggregate (scope passes)", async () => {
+  const router = createTestRouter(mockAuth({ scopes: ["billing:write"] }));
+  const req = makeReq("/v1/billing/aggregate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  try {
+    const res = await router(req);
+    assert(res.status !== 403, `billing:write should access aggregate endpoint (got ${res.status})`);
   } catch (_err) {
     // Handler threw because mock DB can't query — scope check passed (good)
   }
@@ -461,6 +488,17 @@ Deno.test("POST /v1/billing/credit with negative amount returns 400", async () =
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ key_prefix: "sk_test", amount_usd: -50 }),
+  });
+  const res = await router(req);
+  assertEquals(res.status, 400);
+});
+
+Deno.test("POST /v1/billing/aggregate with invalid date returns 400", async () => {
+  const router = createTestRouter(mockAuth({ scopes: ["billing:write"] }));
+  const req = makeReq("/v1/billing/aggregate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ date: "bad-date" }),
   });
   const res = await router(req);
   assertEquals(res.status, 400);
