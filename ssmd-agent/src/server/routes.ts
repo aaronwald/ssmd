@@ -671,6 +671,33 @@ route("GET", "/v1/keys/usage", async (_req, ctx) => {
   });
 }, true, "admin:read");
 
+// Per-key API request counts from in-memory Prometheus counter
+route("GET", "/v1/keys/requests", async () => {
+  const entries = apiRequestsTotal.entries();
+
+  // Group by key_prefix
+  const byKey: Record<string, { total: number; endpoints: Record<string, number> }> = {};
+  for (const { labels, value } of entries) {
+    const prefix = labels.key_prefix;
+    if (!byKey[prefix]) {
+      byKey[prefix] = { total: 0, endpoints: {} };
+    }
+    byKey[prefix].total += value;
+    const endpoint = `${labels.method}:${labels.path}`;
+    byKey[prefix].endpoints[endpoint] = (byKey[prefix].endpoints[endpoint] ?? 0) + value;
+  }
+
+  const keys = Object.entries(byKey).map(([keyPrefix, data]) => ({
+    keyPrefix,
+    totalRequests: data.total,
+    endpoints: Object.entries(data.endpoints)
+      .map(([endpoint, count]) => ({ endpoint, count }))
+      .sort((a, b) => b.count - a.count),
+  })).sort((a, b) => b.totalRequests - a.totalRequests);
+
+  return json({ sincePodStart: true, keys });
+}, true, "admin:read");
+
 // Settings endpoints
 route("GET", "/v1/settings", async (_req, ctx) => {
   const allSettings = await getAllSettings(ctx.db);

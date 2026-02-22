@@ -36,6 +36,16 @@ export class Counter implements Metric {
     this.values.set(key, (this.values.get(key) ?? 0) + value);
   }
 
+  /**
+   * Return all label→count entries for programmatic access.
+   */
+  entries(): Array<{ labels: Labels; value: number }> {
+    return Array.from(this.values.entries()).map(([key, value]) => ({
+      labels: JSON.parse(key) as Labels,
+      value,
+    }));
+  }
+
   format(): string {
     const lines: string[] = [];
     lines.push(`# HELP ${this.name} ${this.help}`);
