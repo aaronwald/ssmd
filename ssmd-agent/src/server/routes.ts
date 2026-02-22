@@ -46,7 +46,6 @@ import {
   markets,
   pairs,
   polymarketConditions,
-  billingDailySummary,
   billingRates,
   billingLedger,
   apiKeyEvents,
@@ -72,7 +71,7 @@ import {
   VOLUME_UNITS,
 } from "../lib/duckdb/queries.ts";
 import { VALID_DATA_FEEDS, FEED_PATHS } from "../lib/duckdb/feed-config.ts";
-import { and, inArray, isNull, eq, gte, lt, lte, sql } from "drizzle-orm";
+import { and, inArray, isNull, eq, gte, lt, lte } from "drizzle-orm";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
 const USAGE_CACHE_TTL = 120; // 2 minutes
@@ -783,6 +782,90 @@ route("PUT", "/v1/settings/:key", async (req, ctx) => {
   return json(setting);
 }, true, "admin:write");
 
+// --- Billing helpers ---
+
+// Map path to endpoint tier for billing rate lookup
+function endpointTier(_method: string, path: string): string {
+  if (path.startsWith("/v1/data/download")) return "data_download";
+  if (path.startsWith("/v1/data/")) return "data_query";
+  if (path.startsWith("/v1/markets/lookup")) return "market_lookup";
+  if (path.startsWith("/v1/events") || path.startsWith("/v1/markets") || path.startsWith("/v1/series") ||
+      path.startsWith("/v1/pairs") || path.startsWith("/v1/conditions") || path.startsWith("/v1/fees")) return "secmaster";
+  if (path.startsWith("/v1/chat/completions")) return "llm_chat";
+  return "data_query";
+}
+
+// Compute billing from api_request_log + billing_rates for a date range
+async function computeBillingForPeriod(
+  db: Database,
+  keyPrefix: string | null,
+  from: string,  // YYYY-MM-DD
+  to: string,    // YYYY-MM-DD (exclusive)
+): Promise<Array<{ keyPrefix: string; endpoint: string; requests: number; bytes: number; errors: number; costUsd: number }>> {
+  // Query api_request_log for the period
+  const conditions = [
+    gte(apiRequestLog.createdAt, new Date(from + "T00:00:00Z")),
+    lt(apiRequestLog.createdAt, new Date(to + "T00:00:00Z")),
+  ];
+  if (keyPrefix) {
+    conditions.push(eq(apiRequestLog.keyPrefix, keyPrefix));
+  }
+
+  const rows = await db.select().from(apiRequestLog).where(and(...conditions));
+  if (rows.length === 0) return [];
+
+  // Load current billing rates
+  const rates = await db
+    .select()
+    .from(billingRates)
+    .where(and(
+      lte(billingRates.effectiveFrom, new Date(to + "T00:00:00Z")),
+      isNull(billingRates.effectiveTo),
+    ));
+
+  // Build rate lookup: key-specific first, then global fallback
+  const rateLookup = new Map<string, { perReq: number; perMb: number }>();
+  for (const r of rates) {
+    const key = r.keyPrefix ? `${r.keyPrefix}:${r.endpointTier}` : `_global:${r.endpointTier}`;
+    rateLookup.set(key, { perReq: parseFloat(r.ratePerRequest), perMb: parseFloat(r.ratePerMb) });
+  }
+  function getRate(kp: string, tier: string): { perReq: number; perMb: number } {
+    return rateLookup.get(`${kp}:${tier}`) ?? rateLookup.get(`_global:${tier}`) ?? { perReq: 0, perMb: 0 };
+  }
+
+  // Group by (key_prefix, endpoint_tier)
+  const groups = new Map<string, { keyPrefix: string; endpoint: string; count: number; bytes: number; errors: number }>();
+  for (const row of rows) {
+    const tier = endpointTier(row.method, row.path);
+    const groupKey = `${row.keyPrefix}:${tier}`;
+    const existing = groups.get(groupKey);
+    if (existing) {
+      existing.count++;
+      existing.bytes += row.responseBytes ?? 0;
+      if (row.statusCode >= 400) existing.errors++;
+    } else {
+      groups.set(groupKey, {
+        keyPrefix: row.keyPrefix, endpoint: tier, count: 1,
+        bytes: row.responseBytes ?? 0, errors: row.statusCode >= 400 ? 1 : 0,
+      });
+    }
+  }
+
+  // Compute costs
+  const details: Array<{ keyPrefix: string; endpoint: string; requests: number; bytes: number; errors: number; costUsd: number }> = [];
+  for (const [, group] of groups) {
+    const rate = getRate(group.keyPrefix, group.endpoint);
+    const costUsd = group.count * rate.perReq + (group.bytes / (1024 * 1024)) * rate.perMb;
+    details.push({
+      keyPrefix: group.keyPrefix, endpoint: group.endpoint,
+      requests: group.count, bytes: group.bytes, errors: group.errors,
+      costUsd: Math.round(costUsd * 1_000_000) / 1_000_000,
+    });
+  }
+
+  return details;
+}
+
 // Billing summary for a single key
 route("GET", "/v1/billing/summary", async (req, ctx) => {
   const url = new URL(req.url);
@@ -806,30 +889,23 @@ route("GET", "/v1/billing/summary", async (req, ctx) => {
     ? `${parseInt(year) + 1}-01-01`
     : `${year}-${String(parseInt(mon) + 1).padStart(2, "0")}-01`;
 
-  // Query billing_daily_summary
-  const summaryRows = await ctx.db
-    .select()
-    .from(billingDailySummary)
-    .where(and(
-      eq(billingDailySummary.keyPrefix, keyPrefix),
-      gte(billingDailySummary.date, from),
-      lt(billingDailySummary.date, nextMonth)
-    ));
+  // Compute from api_request_log + billing_rates
+  const computed = await computeBillingForPeriod(ctx.db, keyPrefix, from, nextMonth);
 
   // Aggregate by endpoint
   const byEndpoint: Record<string, { count: number; bytes: number; errors: number }> = {};
   let totalRequests = 0;
   let totalBytes = 0;
   let totalErrors = 0;
-  for (const row of summaryRows) {
+  for (const row of computed) {
     const ep = row.endpoint;
     if (!byEndpoint[ep]) byEndpoint[ep] = { count: 0, bytes: 0, errors: 0 };
-    byEndpoint[ep].count += row.requestCount;
-    byEndpoint[ep].bytes += row.responseBytes;
-    byEndpoint[ep].errors += row.errorCount;
-    totalRequests += row.requestCount;
-    totalBytes += row.responseBytes;
-    totalErrors += row.errorCount;
+    byEndpoint[ep].count += row.requests;
+    byEndpoint[ep].bytes += row.bytes;
+    byEndpoint[ep].errors += row.errors;
+    totalRequests += row.requests;
+    totalBytes += row.bytes;
+    totalErrors += row.errors;
   }
 
   // Query llm_usage_daily
@@ -916,22 +992,16 @@ route("GET", "/v1/billing/report", async (req, ctx) => {
   const allKeys = await listAllApiKeys(ctx.db, true);
   const billableKeys = allKeys.filter((k) => k.billable);
 
-  // Get billing summaries for all billable keys
-  const summaryRows = await ctx.db
-    .select()
-    .from(billingDailySummary)
-    .where(and(
-      gte(billingDailySummary.date, from),
-      lt(billingDailySummary.date, nextMonth)
-    ));
+  // Compute from api_request_log + billing_rates (all keys)
+  const computed = await computeBillingForPeriod(ctx.db, null, from, nextMonth);
 
   // Group by key_prefix
   const byKey: Record<string, { requests: number; bytes: number; errors: number }> = {};
-  for (const row of summaryRows) {
+  for (const row of computed) {
     if (!byKey[row.keyPrefix]) byKey[row.keyPrefix] = { requests: 0, bytes: 0, errors: 0 };
-    byKey[row.keyPrefix].requests += row.requestCount;
-    byKey[row.keyPrefix].bytes += row.responseBytes;
-    byKey[row.keyPrefix].errors += row.errorCount;
+    byKey[row.keyPrefix].requests += row.requests;
+    byKey[row.keyPrefix].bytes += row.bytes;
+    byKey[row.keyPrefix].errors += row.errors;
   }
 
   const report = billableKeys.map((k) => ({
@@ -963,18 +1033,13 @@ route("GET", "/v1/billing/export", async (req, ctx) => {
     ? `${parseInt(year) + 1}-01-01`
     : `${year}-${String(parseInt(mon) + 1).padStart(2, "0")}-01`;
 
-  const rows = await ctx.db
-    .select()
-    .from(billingDailySummary)
-    .where(and(
-      gte(billingDailySummary.date, from),
-      lt(billingDailySummary.date, nextMonth)
-    ));
+  // Compute from api_request_log + billing_rates (all keys)
+  const computed = await computeBillingForPeriod(ctx.db, null, from, nextMonth);
 
   // Build CSV
-  const header = "key_prefix,date,endpoint,request_count,response_bytes,error_count";
-  const lines = rows.map((r) =>
-    `${r.keyPrefix},${r.date},${r.endpoint},${r.requestCount},${r.responseBytes},${r.errorCount}`
+  const header = "key_prefix,endpoint,request_count,response_bytes,error_count,cost_usd";
+  const lines = computed.map((r) =>
+    `${r.keyPrefix},${r.endpoint},${r.requests},${r.bytes},${r.errors},${r.costUsd}`
   );
   const csv = [header, ...lines].join("\n");
 
@@ -986,7 +1051,7 @@ route("GET", "/v1/billing/export", async (req, ctx) => {
   });
 }, true, "billing:read");
 
-// Run billing aggregation for a date
+// Run billing aggregation for a date (writes debit entries to billing_ledger)
 route("POST", "/v1/billing/aggregate", async (req, ctx) => {
   const auth = (req as Request & { auth: AuthInfo }).auth;
   const body = await req.json().catch(() => ({})) as {
@@ -1012,88 +1077,14 @@ route("POST", "/v1/billing/aggregate", async (req, ctx) => {
   nextDate.setUTCDate(nextDate.getUTCDate() + 1);
   const nextDateStr = nextDate.toISOString().slice(0, 10);
 
-  // Query api_request_log for the target date
-  const rows = await ctx.db
-    .select()
-    .from(apiRequestLog)
-    .where(and(
-      gte(apiRequestLog.createdAt, new Date(targetDate + "T00:00:00Z")),
-      lt(apiRequestLog.createdAt, new Date(nextDateStr + "T00:00:00Z")),
-    ));
+  // Compute costs from api_request_log + billing_rates
+  const details = await computeBillingForPeriod(ctx.db, null, targetDate, nextDateStr);
 
-  if (rows.length === 0) {
+  if (details.length === 0) {
     return json({ date: targetDate, dryRun, message: "No requests to aggregate", groups: 0, totalCostUsd: 0 });
   }
 
-  // Load current billing rates
-  const rates = await ctx.db
-    .select()
-    .from(billingRates)
-    .where(and(
-      lte(billingRates.effectiveFrom, new Date(nextDateStr + "T00:00:00Z")),
-      isNull(billingRates.effectiveTo),
-    ));
-
-  // Build rate lookup: key-specific first, then global fallback
-  const rateLookup = new Map<string, { perReq: number; perMb: number }>();
-  for (const r of rates) {
-    const key = r.keyPrefix ? `${r.keyPrefix}:${r.endpointTier}` : `_global:${r.endpointTier}`;
-    rateLookup.set(key, { perReq: parseFloat(r.ratePerRequest), perMb: parseFloat(r.ratePerMb) });
-  }
-  function getRate(keyPrefix: string, tier: string): { perReq: number; perMb: number } {
-    return rateLookup.get(`${keyPrefix}:${tier}`) ?? rateLookup.get(`_global:${tier}`) ?? { perReq: 0, perMb: 0 };
-  }
-
-  // Map path to endpoint tier
-  function endpointTier(_method: string, path: string): string {
-    if (path.startsWith("/v1/data/download")) return "data_download";
-    if (path.startsWith("/v1/data/")) return "data_query";
-    if (path.startsWith("/v1/markets/lookup")) return "market_lookup";
-    if (path.startsWith("/v1/events") || path.startsWith("/v1/markets") || path.startsWith("/v1/series") ||
-        path.startsWith("/v1/pairs") || path.startsWith("/v1/conditions") || path.startsWith("/v1/fees")) return "secmaster";
-    if (path.startsWith("/v1/chat/completions")) return "llm_chat";
-    return "data_query";
-  }
-
-  // Group by (key_prefix, endpoint_tier)
-  const groups = new Map<string, { keyPrefix: string; endpoint: string; count: number; bytes: number; errors: number }>();
-  for (const row of rows) {
-    const tier = endpointTier(row.method, row.path);
-    const groupKey = `${row.keyPrefix}:${tier}`;
-    const existing = groups.get(groupKey);
-    if (existing) {
-      existing.count++;
-      existing.bytes += row.responseBytes ?? 0;
-      if (row.statusCode >= 400) existing.errors++;
-    } else {
-      groups.set(groupKey, {
-        keyPrefix: row.keyPrefix, endpoint: tier, count: 1,
-        bytes: row.responseBytes ?? 0, errors: row.statusCode >= 400 ? 1 : 0,
-      });
-    }
-  }
-
-  // Compute costs
-  let totalCost = 0;
-  const details: Array<{ keyPrefix: string; endpoint: string; requests: number; bytes: number; costUsd: number }> = [];
-
-  for (const [, group] of groups) {
-    const rate = getRate(group.keyPrefix, group.endpoint);
-    const costUsd = group.count * rate.perReq + (group.bytes / (1024 * 1024)) * rate.perMb;
-    totalCost += costUsd;
-    details.push({ keyPrefix: group.keyPrefix, endpoint: group.endpoint, requests: group.count, bytes: group.bytes, costUsd: Math.round(costUsd * 1_000_000) / 1_000_000 });
-
-    if (!dryRun) {
-      await ctx.db.insert(billingDailySummary).values({
-        keyPrefix: group.keyPrefix, date: targetDate, endpoint: group.endpoint,
-        requestCount: group.count, responseBytes: group.bytes, errorCount: group.errors,
-        costUsd: costUsd.toFixed(6),
-      }).onConflictDoUpdate({
-        target: [billingDailySummary.keyPrefix, billingDailySummary.date, billingDailySummary.endpoint],
-        set: { requestCount: sql`excluded.request_count`, responseBytes: sql`excluded.response_bytes`, errorCount: sql`excluded.error_count`, costUsd: sql`excluded.cost_usd` },
-      });
-    }
-  }
+  const totalCost = details.reduce((sum, d) => sum + d.costUsd, 0);
 
   // Also aggregate LLM usage costs
   const llmRows = await ctx.db.select().from(llmUsageDaily).where(eq(llmUsageDaily.date, targetDate));
@@ -1103,10 +1094,8 @@ route("POST", "/v1/billing/aggregate", async (req, ctx) => {
   // Insert debit entries for each key's daily total
   if (!dryRun) {
     const keyTotals = new Map<string, number>();
-    for (const [, group] of groups) {
-      const rate = getRate(group.keyPrefix, group.endpoint);
-      const cost = group.count * rate.perReq + (group.bytes / (1024 * 1024)) * rate.perMb;
-      keyTotals.set(group.keyPrefix, (keyTotals.get(group.keyPrefix) ?? 0) + cost);
+    for (const d of details) {
+      keyTotals.set(d.keyPrefix, (keyTotals.get(d.keyPrefix) ?? 0) + d.costUsd);
     }
     for (const row of llmRows) {
       const cost = parseFloat(row.costUsd);
@@ -1132,8 +1121,8 @@ route("POST", "/v1/billing/aggregate", async (req, ctx) => {
   }
 
   return json({
-    date: targetDate, dryRun, requestsProcessed: rows.length,
-    groups: groups.size, totalCostUsd: Math.round(totalCost * 1_000_000) / 1_000_000,
+    date: targetDate, dryRun, requestsProcessed: details.reduce((sum, d) => sum + d.requests, 0),
+    groups: details.length, totalCostUsd: Math.round(totalCost * 1_000_000) / 1_000_000,
     llmCostUsd: Math.round(llmTotalCost * 1_000_000) / 1_000_000,
     details,
   });

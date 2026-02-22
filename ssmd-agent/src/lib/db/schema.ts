@@ -302,19 +302,6 @@ export const llmUsageDaily = pgTable("llm_usage_daily", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-// Pre-aggregated daily billing summary
-export const billingDailySummary = pgTable("billing_daily_summary", {
-  id: bigserial("id", { mode: "bigint" }).primaryKey(),
-  keyPrefix: varchar("key_prefix", { length: 30 }).notNull(),
-  date: date("date").notNull(),
-  endpoint: varchar("endpoint", { length: 255 }).notNull(),
-  requestCount: integer("request_count").notNull().default(0),
-  responseBytes: bigint("response_bytes", { mode: "number" }).notNull().default(0),
-  errorCount: integer("error_count").notNull().default(0),
-  costUsd: numeric("cost_usd", { precision: 12, scale: 6 }).notNull().default("0"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
 // Billing rates: per-endpoint-tier pricing with effective dates
 export const billingRates = pgTable("billing_rates", {
   id: serial("id").primaryKey(),
@@ -375,8 +362,6 @@ export type ApiKeyEvent = typeof apiKeyEvents.$inferSelect;
 export type NewApiKeyEvent = typeof apiKeyEvents.$inferInsert;
 export type LlmUsageDailyEntry = typeof llmUsageDaily.$inferSelect;
 export type NewLlmUsageDailyEntry = typeof llmUsageDaily.$inferInsert;
-export type BillingDailySummaryEntry = typeof billingDailySummary.$inferSelect;
-export type NewBillingDailySummaryEntry = typeof billingDailySummary.$inferInsert;
 export type BillingRate = typeof billingRates.$inferSelect;
 export type NewBillingRate = typeof billingRates.$inferInsert;
 export type BillingLedgerEntry = typeof billingLedger.$inferSelect;

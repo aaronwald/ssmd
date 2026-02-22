@@ -2,7 +2,7 @@
  * ssmd billing - Billing aggregation and credit management (via API)
  *
  * Subcommands:
- *   aggregate    Aggregate yesterday's API request log into billing_daily_summary
+ *   aggregate    Aggregate yesterday's API request log into billing_ledger debits
  *   credit       Issue a credit to a key
  *   balance      Show balance for a key
  */
