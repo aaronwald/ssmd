@@ -30,6 +30,7 @@ import { handleAuditEmail } from "./audit-email.ts";
 import { handleDiagnosis } from "./diagnosis.ts";
 import { handleVolume } from "./volume-analysis.ts";
 import { handleBilling } from "./billing.ts";
+import { handleSmokeTest } from "./smoke-test.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
@@ -174,6 +175,10 @@ export async function run(args: string[]): Promise<void> {
       await handleBilling(subcommand, flags);
       break;
 
+    case "smoke-test":
+      await handleSmokeTest(flags);
+      break;
+
     case "funding-rate-consumer": {
       const { runFundingRateConsumer } = await import("./funding-rate-consumer.ts");
       await runFundingRateConsumer(args.slice(1));
@@ -278,6 +283,7 @@ function printHelp(): void {
   console.log("  diagnosis         AI-powered analysis of health and DQ results");
   console.log("  volume            AI-powered daily trade volume analysis");
   console.log("  billing           Billing aggregation and credit management");
+  console.log("  smoke-test        Integration smoke test for API endpoints");
   console.log("  funding-rate-consumer  Consume Kraken Futures funding rates from NATS");
   console.log("  agent             Start interactive agent REPL");
   console.log("");
