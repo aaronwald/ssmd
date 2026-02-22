@@ -46,20 +46,38 @@ pub fn sanitize_subject_token_with_max_len(input: &str, max_len: usize) -> Strin
 /// Helper for NATS subject formatting with environment prefix.
 /// Caches formatted subjects to avoid repeated allocations in hot path.
 pub struct SubjectBuilder {
-    /// Pre-computed base prefix: "{env}.{feed}."
-    base_prefix: Arc<str>,
     /// Pre-computed prefix: "{env}.{feed}.trade."
     trade_prefix: Arc<str>,
     /// Pre-computed prefix: "{env}.{feed}.ticker."
     ticker_prefix: Arc<str>,
     /// Pre-computed wildcard subject
     wildcard: Arc<str>,
+    /// Pre-computed prefix: "{env}.{feed}.json.trade."
+    json_trade_prefix: Arc<str>,
+    /// Pre-computed prefix: "{env}.{feed}.json.ticker."
+    json_ticker_prefix: Arc<str>,
+    /// Pre-computed prefix: "{env}.{feed}.json.orderbook."
+    json_orderbook_prefix: Arc<str>,
+    /// Pre-computed prefix: "{env}.{feed}.json.lifecycle."
+    json_lifecycle_prefix: Arc<str>,
+    /// Pre-computed prefix: "{env}.{feed}.json.event_lifecycle."
+    json_event_lifecycle_prefix: Arc<str>,
     /// Pre-computed stream name (uppercase)
     stream_name: Arc<str>,
     /// Cache of ticker -> full trade subject
     trade_cache: DashMap<Arc<str>, Arc<str>>,
     /// Cache of ticker -> full ticker subject
     ticker_cache: DashMap<Arc<str>, Arc<str>>,
+    /// Cache of ticker -> full JSON trade subject
+    json_trade_cache: DashMap<Arc<str>, Arc<str>>,
+    /// Cache of ticker -> full JSON ticker subject
+    json_ticker_cache: DashMap<Arc<str>, Arc<str>>,
+    /// Cache of ticker -> full JSON orderbook subject
+    json_orderbook_cache: DashMap<Arc<str>, Arc<str>>,
+    /// Cache of ticker -> full JSON lifecycle subject
+    json_lifecycle_cache: DashMap<Arc<str>, Arc<str>>,
+    /// Cache of ticker -> full JSON event lifecycle subject
+    json_event_lifecycle_cache: DashMap<Arc<str>, Arc<str>>,
 }
 
 impl SubjectBuilder {
@@ -85,21 +103,50 @@ impl SubjectBuilder {
         let stream_name = stream_name.into();
 
         // Pre-compute static subjects at construction time
-        let base_prefix: Arc<str> = format!("{}.", prefix).into();
         let trade_prefix: Arc<str> = format!("{}.trade.", prefix).into();
         let ticker_prefix: Arc<str> = format!("{}.ticker.", prefix).into();
         let wildcard: Arc<str> = format!("{}.>", prefix).into();
+        let json_trade_prefix: Arc<str> = format!("{}.json.trade.", prefix).into();
+        let json_ticker_prefix: Arc<str> = format!("{}.json.ticker.", prefix).into();
+        let json_orderbook_prefix: Arc<str> = format!("{}.json.orderbook.", prefix).into();
+        let json_lifecycle_prefix: Arc<str> = format!("{}.json.lifecycle.", prefix).into();
+        let json_event_lifecycle_prefix: Arc<str> = format!("{}.json.event_lifecycle.", prefix).into();
         let stream_name: Arc<str> = stream_name.into();
 
         Self {
-            base_prefix,
             trade_prefix,
             ticker_prefix,
             wildcard,
+            json_trade_prefix,
+            json_ticker_prefix,
+            json_orderbook_prefix,
+            json_lifecycle_prefix,
+            json_event_lifecycle_prefix,
             stream_name,
             trade_cache: DashMap::new(),
             ticker_cache: DashMap::new(),
+            json_trade_cache: DashMap::new(),
+            json_ticker_cache: DashMap::new(),
+            json_orderbook_cache: DashMap::new(),
+            json_lifecycle_cache: DashMap::new(),
+            json_event_lifecycle_cache: DashMap::new(),
         }
+    }
+
+    #[inline]
+    fn cached_subject(
+        cache: &DashMap<Arc<str>, Arc<str>>,
+        prefix: &str,
+        ticker: &str,
+    ) -> Arc<str> {
+        if let Some(cached) = cache.get(ticker) {
+            return Arc::clone(cached.value());
+        }
+
+        let ticker_arc: Arc<str> = ticker.into();
+        let subject: Arc<str> = format!("{prefix}{ticker}").into();
+        cache.insert(Arc::clone(&ticker_arc), Arc::clone(&subject));
+        subject
     }
 
     /// Build subject for trade messages: {env}.{feed}.trade.{ticker}
@@ -150,28 +197,32 @@ impl SubjectBuilder {
 
     /// Build subject for JSON trade messages: {env}.{feed}.json.trade.{ticker}
     /// Not cached - allocates each call (acceptable for MVP volume).
-    pub fn json_trade(&self, ticker: &str) -> String {
-        format!("{}json.trade.{}", self.base_prefix, ticker)
+    pub fn json_trade(&self, ticker: &str) -> Arc<str> {
+        Self::cached_subject(&self.json_trade_cache, &self.json_trade_prefix, ticker)
     }
 
     /// Build subject for JSON ticker messages: {env}.{feed}.json.ticker.{ticker}
-    pub fn json_ticker(&self, ticker: &str) -> String {
-        format!("{}json.ticker.{}", self.base_prefix, ticker)
+    pub fn json_ticker(&self, ticker: &str) -> Arc<str> {
+        Self::cached_subject(&self.json_ticker_cache, &self.json_ticker_prefix, ticker)
     }
 
     /// Build subject for JSON orderbook messages: {env}.{feed}.json.orderbook.{ticker}
-    pub fn json_orderbook(&self, ticker: &str) -> String {
-        format!("{}json.orderbook.{}", self.base_prefix, ticker)
+    pub fn json_orderbook(&self, ticker: &str) -> Arc<str> {
+        Self::cached_subject(&self.json_orderbook_cache, &self.json_orderbook_prefix, ticker)
     }
 
     /// Build subject for JSON lifecycle messages: {env}.{feed}.json.lifecycle.{ticker}
-    pub fn json_lifecycle(&self, ticker: &str) -> String {
-        format!("{}json.lifecycle.{}", self.base_prefix, ticker)
+    pub fn json_lifecycle(&self, ticker: &str) -> Arc<str> {
+        Self::cached_subject(&self.json_lifecycle_cache, &self.json_lifecycle_prefix, ticker)
     }
 
     /// Build subject for JSON event lifecycle messages: {env}.{feed}.json.event_lifecycle.{ticker}
-    pub fn json_event_lifecycle(&self, ticker: &str) -> String {
-        format!("{}json.event_lifecycle.{}", self.base_prefix, ticker)
+    pub fn json_event_lifecycle(&self, ticker: &str) -> Arc<str> {
+        Self::cached_subject(
+            &self.json_event_lifecycle_cache,
+            &self.json_event_lifecycle_prefix,
+            ticker,
+        )
     }
 }
 
@@ -224,26 +275,41 @@ mod tests {
     #[test]
     fn test_json_trade_subject() {
         let builder = SubjectBuilder::new("prod", "kalshi");
-        assert_eq!(builder.json_trade("INXD-25001"), "prod.kalshi.json.trade.INXD-25001");
+        assert_eq!(
+            builder.json_trade("INXD-25001").as_ref(),
+            "prod.kalshi.json.trade.INXD-25001"
+        );
     }
 
     #[test]
     fn test_json_ticker_subject() {
         let builder = SubjectBuilder::new("prod", "kalshi");
-        assert_eq!(builder.json_ticker("KXBTC-25001"), "prod.kalshi.json.ticker.KXBTC-25001");
+        assert_eq!(
+            builder.json_ticker("KXBTC-25001").as_ref(),
+            "prod.kalshi.json.ticker.KXBTC-25001"
+        );
     }
 
     #[test]
     fn test_json_orderbook_subject() {
         let builder = SubjectBuilder::new("prod", "kalshi");
-        assert_eq!(builder.json_orderbook("INXD-25001"), "prod.kalshi.json.orderbook.INXD-25001");
+        assert_eq!(
+            builder.json_orderbook("INXD-25001").as_ref(),
+            "prod.kalshi.json.orderbook.INXD-25001"
+        );
     }
 
     #[test]
     fn test_with_prefix() {
         let builder = SubjectBuilder::with_prefix("prod.kalshi.main", "PROD_KALSHI");
-        assert_eq!(builder.json_trade("KXTEST-123"), "prod.kalshi.main.json.trade.KXTEST-123");
-        assert_eq!(builder.json_ticker("KXTEST-123"), "prod.kalshi.main.json.ticker.KXTEST-123");
+        assert_eq!(
+            builder.json_trade("KXTEST-123").as_ref(),
+            "prod.kalshi.main.json.trade.KXTEST-123"
+        );
+        assert_eq!(
+            builder.json_ticker("KXTEST-123").as_ref(),
+            "prod.kalshi.main.json.ticker.KXTEST-123"
+        );
         assert_eq!(builder.all(), "prod.kalshi.main.>");
         assert_eq!(builder.stream_name(), "PROD_KALSHI");
     }
@@ -251,7 +317,10 @@ mod tests {
     #[test]
     fn test_with_prefix_politics() {
         let builder = SubjectBuilder::with_prefix("prod.kalshi.politics", "PROD_KALSHI_POLITICS");
-        assert_eq!(builder.json_trade("KXTRUMP-25"), "prod.kalshi.politics.json.trade.KXTRUMP-25");
+        assert_eq!(
+            builder.json_trade("KXTRUMP-25").as_ref(),
+            "prod.kalshi.politics.json.trade.KXTRUMP-25"
+        );
         assert_eq!(builder.stream_name(), "PROD_KALSHI_POLITICS");
     }
 
@@ -259,7 +328,7 @@ mod tests {
     fn test_json_lifecycle_subject() {
         let builder = SubjectBuilder::new("prod", "kalshi");
         assert_eq!(
-            builder.json_lifecycle("KXBTCD-26JAN2310-T105000"),
+            builder.json_lifecycle("KXBTCD-26JAN2310-T105000").as_ref(),
             "prod.kalshi.json.lifecycle.KXBTCD-26JAN2310-T105000"
         );
     }
@@ -268,7 +337,7 @@ mod tests {
     fn test_json_event_lifecycle_subject() {
         let builder = SubjectBuilder::new("prod", "kalshi");
         assert_eq!(
-            builder.json_event_lifecycle("KXBTCD-26JAN2310"),
+            builder.json_event_lifecycle("KXBTCD-26JAN2310").as_ref(),
             "prod.kalshi.json.event_lifecycle.KXBTCD-26JAN2310"
         );
     }

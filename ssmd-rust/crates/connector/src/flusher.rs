@@ -62,10 +62,10 @@ impl DiskFlusher {
 
     /// Drain up to BATCH_SIZE messages from ring
     fn drain_batch(&mut self) -> usize {
+        let ring = Arc::clone(&self.ring);
         let mut count = 0;
         while count < BATCH_SIZE {
-            if let Some(payload) = self.ring.try_read() {
-                self.write_message(&payload);
+            if ring.try_read_with(|payload| self.write_message(payload)).is_some() {
                 count += 1;
             } else {
                 break;
@@ -76,9 +76,8 @@ impl DiskFlusher {
 
     /// Drain all remaining messages from ring
     fn drain_all(&mut self) {
-        while let Some(payload) = self.ring.try_read() {
-            self.write_message(&payload);
-        }
+        let ring = Arc::clone(&self.ring);
+        while ring.try_read_with(|payload| self.write_message(payload)).is_some() {}
     }
 
     /// Write a single message to the current file

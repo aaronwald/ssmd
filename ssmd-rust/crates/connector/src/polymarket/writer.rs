@@ -57,7 +57,7 @@ impl PolymarketNatsWriter {
         self.message_count
     }
 
-    fn subject_from_element(&self, element: &serde_json::Value) -> Option<String> {
+    fn subject_from_element(&self, element: &serde_json::Value) -> Option<std::sync::Arc<str>> {
         let market = element
             .get("market")
             .and_then(|v| v.as_str())

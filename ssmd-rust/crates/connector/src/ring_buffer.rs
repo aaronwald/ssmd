@@ -133,6 +133,12 @@ impl RingBuffer {
     /// Returns None if ring is empty
     #[inline]
     pub fn try_read(&self) -> Option<Vec<u8>> {
+        self.try_read_with(|payload| payload.to_vec())
+    }
+
+    /// Consumer: read next message and process payload without allocation
+    #[inline]
+    pub fn try_read_with<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
         let read = self.read_pos.load(Ordering::Acquire);
         let write = self.write_pos.load(Ordering::Acquire);
 
@@ -150,11 +156,12 @@ impl RingBuffer {
         // Read payload
         let payload_start = offset + header_size;
         let payload_end = payload_start + header.len as usize;
-        let payload = self.mmap[payload_start..payload_end].to_vec();
+        let payload = &self.mmap[payload_start..payload_end];
+        let result = f(payload);
 
         // Release read position
         self.read_pos.store(read + 1, Ordering::Release);
-        Some(payload)
+        Some(result)
     }
 
     /// Consumer: peek at next message without advancing position

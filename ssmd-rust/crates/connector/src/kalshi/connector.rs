@@ -312,6 +312,7 @@ impl KalshiConnector {
 
             let connected_at = Instant::now();
             let mut message_count: u64 = 0;
+            let shard_suffix = format!(",\"_shard_id\":{}}}", shard_id).into_bytes();
 
             // Track last activity for logging (local Instant for idle_secs calculation)
             let mut last_activity = Instant::now();
@@ -447,17 +448,13 @@ impl KalshiConnector {
                                     continue;
                                 }
 
-                                // Inject _shard_id into the JSON envelope before forwarding
-                                let forwarded = if raw_json.ends_with('}') {
-                                    format!(
-                                        "{},\"_shard_id\":{}}}",
-                                        &raw_json[..raw_json.len() - 1],
-                                        shard_id
-                                    )
-                                } else {
-                                    raw_json
-                                };
-                                if tx.send(forwarded.into_bytes()).await.is_err() {
+                                // Inject _shard_id into the JSON envelope before forwarding.
+                                let mut forwarded = raw_json.into_bytes();
+                                if forwarded.last() == Some(&b'}') {
+                                    forwarded.pop();
+                                    forwarded.extend_from_slice(&shard_suffix);
+                                }
+                                if tx.send(forwarded).await.is_err() {
                                     info!(shard_id, "Channel closed, stopping receiver");
                                     shard_metrics.set_disconnected();
                                     break;

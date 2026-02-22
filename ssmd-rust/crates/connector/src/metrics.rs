@@ -159,7 +159,7 @@ impl ConnectorMetrics {
         ShardMetrics {
             feed: self.feed.clone(),
             category: self.category.clone(),
-            shard_id,
+            shard_label: shard_id.to_string(),
         }
     }
 }
@@ -169,7 +169,7 @@ impl ConnectorMetrics {
 pub struct ShardMetrics {
     feed: String,
     category: String,
-    shard_id: usize,
+    shard_label: String,
 }
 
 impl ShardMetrics {
@@ -179,7 +179,7 @@ impl ShardMetrics {
             .with_label_values(&[
                 &self.feed,
                 &self.category,
-                &self.shard_id.to_string(),
+                &self.shard_label,
                 message_type,
             ])
             .inc();
@@ -213,42 +213,42 @@ impl ShardMetrics {
     /// Update last activity timestamp
     pub fn set_last_activity(&self, epoch_secs: f64) {
         LAST_ACTIVITY_TIMESTAMP
-            .with_label_values(&[&self.feed, &self.category, &self.shard_id.to_string()])
+            .with_label_values(&[&self.feed, &self.category, &self.shard_label])
             .set(epoch_secs);
     }
 
     /// Update idle seconds
     pub fn set_idle_seconds(&self, seconds: f64) {
         IDLE_SECONDS
-            .with_label_values(&[&self.feed, &self.category, &self.shard_id.to_string()])
+            .with_label_values(&[&self.feed, &self.category, &self.shard_label])
             .set(seconds);
     }
 
     /// Mark shard as connected
     pub fn set_connected(&self) {
         WEBSOCKET_CONNECTED
-            .with_label_values(&[&self.feed, &self.category, &self.shard_id.to_string()])
+            .with_label_values(&[&self.feed, &self.category, &self.shard_label])
             .set(1);
     }
 
     /// Mark shard as disconnected
     pub fn set_disconnected(&self) {
         WEBSOCKET_CONNECTED
-            .with_label_values(&[&self.feed, &self.category, &self.shard_id.to_string()])
+            .with_label_values(&[&self.feed, &self.category, &self.shard_label])
             .set(0);
     }
 
     /// Get the current number of markets subscribed for this shard
     pub fn get_markets_subscribed(&self) -> usize {
         MARKETS_SUBSCRIBED
-            .with_label_values(&[&self.feed, &self.category, &self.shard_id.to_string()])
+            .with_label_values(&[&self.feed, &self.category, &self.shard_label])
             .get() as usize
     }
 
     /// Set the number of markets subscribed for this shard
     pub fn set_markets_subscribed(&self, count: usize) {
         MARKETS_SUBSCRIBED
-            .with_label_values(&[&self.feed, &self.category, &self.shard_id.to_string()])
+            .with_label_values(&[&self.feed, &self.category, &self.shard_label])
             .set(count as i64);
     }
 }
