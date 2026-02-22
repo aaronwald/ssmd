@@ -17,6 +17,8 @@ interface KeysFlags {
   feeds?: string;
   "date-from"?: string;
   "date-to"?: string;
+  "rate-limit-tier"?: string;
+  "no-bill"?: boolean;
 }
 
 function getApiConfig(): { apiUrl: string; apiKey: string } {
@@ -119,6 +121,12 @@ async function createKey(flags: KeysFlags): Promise<void> {
   };
   if (expiresInHours !== undefined) {
     body.expiresInHours = expiresInHours;
+  }
+  if (flags["rate-limit-tier"]) {
+    body.rateLimitTier = flags["rate-limit-tier"];
+  }
+  if (flags["no-bill"]) {
+    body.billable = false;
   }
 
   const res = await fetch(`${apiUrl}/v1/keys`, {
