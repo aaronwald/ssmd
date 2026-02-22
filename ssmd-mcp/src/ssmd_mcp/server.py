@@ -17,6 +17,8 @@ from ssmd_mcp.tools import (
     check_freshness,
     query_events,
     query_volume,
+    list_api_keys,
+    query_key_usage,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -183,6 +185,42 @@ TOOLS = [
             },
         },
     ),
+    Tool(
+        name="list_api_keys",
+        description=(
+            "List all API keys with metadata. Shows prefix, name, user email, scopes, "
+            "rate limit tier, allowed feeds, date range, expiration, and last used time. "
+            "Requires admin scope. Never returns key secrets."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "include_revoked": {
+                    "type": "boolean",
+                    "description": "Include revoked keys. Default false.",
+                    "default": False,
+                },
+            },
+        },
+    ),
+    Tool(
+        name="query_key_usage",
+        description=(
+            "Query API key usage statistics. Returns per-key rate limit metrics "
+            "(requests in current window, limit, tier) and LLM token usage "
+            "(prompt/completion tokens, per-model costs, daily breakdown). "
+            "Optionally filter to a specific key by prefix. Requires admin scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "key_prefix": {
+                    "type": "string",
+                    "description": "Optional: filter to a specific key prefix.",
+                },
+            },
+        },
+    ),
 ]
 
 
@@ -227,6 +265,16 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             cfg,
             date_str=arguments.get("date"),
             feed=arguments.get("feed"),
+        )
+    elif name == "list_api_keys":
+        return list_api_keys(
+            cfg,
+            include_revoked=arguments.get("include_revoked", False),
+        )
+    elif name == "query_key_usage":
+        return query_key_usage(
+            cfg,
+            key_prefix=arguments.get("key_prefix"),
         )
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

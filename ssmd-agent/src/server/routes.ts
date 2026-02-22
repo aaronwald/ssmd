@@ -1,5 +1,6 @@
 // HTTP server routes
-import { globalRegistry } from "./metrics.ts";
+import { globalRegistry, apiRequestsTotal } from "./metrics.ts";
+import { normalizePath } from "./middleware.ts";
 import { validateApiKey, hasScope } from "./auth.ts";
 import {
   listEvents,
@@ -1526,7 +1527,21 @@ export function createRouter(ctx: RouteContext): (req: Request) => Promise<Respo
       const params = match.pathname.groups;
       Object.defineProperty(req, "params", { value: params });
 
-      return r.handler(req, ctx);
+      const response = await r.handler(req, ctx);
+
+      // Track per-key API usage in Prometheus (GMP scrapes this)
+      if (r.requiresAuth && (req as Request & { auth?: AuthInfo }).auth) {
+        const auth = (req as Request & { auth: AuthInfo }).auth;
+        const path = normalizePath(url.pathname);
+        apiRequestsTotal.inc({
+          key_prefix: auth.keyPrefix,
+          method: req.method,
+          path,
+          status: String(response.status),
+        });
+      }
+
+      return response;
     }
 
     return json({ error: "Not found" }, 404);

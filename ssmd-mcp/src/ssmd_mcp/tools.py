@@ -76,3 +76,28 @@ def query_volume(cfg: Config, date_str: str | None = None, feed: str | None = No
         params["feed"] = feed
     result = api_get(cfg, "/v1/data/volume", params)
     return json.dumps(result, default=str)
+
+
+# --- Admin tools ---
+
+
+def list_api_keys(cfg: Config, include_revoked: bool = False) -> str:
+    """List all API keys with metadata via ssmd-data-ts API."""
+    result = api_get(cfg, "/v1/keys")
+    if "error" in result:
+        return json.dumps(result, default=str)
+    keys = result.get("keys", [])
+    if not include_revoked:
+        keys = [k for k in keys if not k.get("revokedAt")]
+    return json.dumps({"count": len(keys), "keys": keys}, default=str)
+
+
+def query_key_usage(cfg: Config, key_prefix: str | None = None) -> str:
+    """Query API key usage stats (rate limits + token usage) via ssmd-data-ts API."""
+    result = api_get(cfg, "/v1/keys/usage")
+    if "error" in result:
+        return json.dumps(result, default=str)
+    usage = result.get("usage", [])
+    if key_prefix:
+        usage = [u for u in usage if u.get("keyPrefix") == key_prefix]
+    return json.dumps({"count": len(usage), "usage": usage}, default=str)
