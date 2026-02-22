@@ -17,6 +17,12 @@ from ssmd_mcp.tools import (
     check_freshness,
     query_events,
     query_volume,
+    secmaster_stats,
+    search_markets,
+    search_events,
+    search_pairs,
+    search_conditions,
+    get_fees,
     list_api_keys,
     query_key_usage,
 )
@@ -186,6 +192,201 @@ TOOLS = [
         },
     ),
     Tool(
+        name="secmaster_stats",
+        description=(
+            "Get secmaster database statistics. Returns total counts and status breakdowns "
+            "for events, markets, pairs, and conditions across all exchanges. "
+            "Requires secmaster:read scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        },
+    ),
+    Tool(
+        name="search_markets",
+        description=(
+            "Search Kalshi markets from the secmaster database. Filter by category, series, "
+            "status, event ticker, or closing time. "
+            "Returns market ticker, title, status, close time, volume. "
+            "Requires secmaster:read scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Filter by category (e.g., 'Crypto', 'Economics', 'Politics').",
+                },
+                "series": {
+                    "type": "string",
+                    "description": "Filter by series ticker (e.g., 'KXBTCD').",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "closed", "settled"],
+                    "description": "Filter by status.",
+                },
+                "event": {
+                    "type": "string",
+                    "description": "Filter by parent event ticker.",
+                },
+                "close_within_hours": {
+                    "type": "integer",
+                    "description": "Only markets closing within this many hours from now.",
+                },
+                "closing_after": {
+                    "type": "string",
+                    "description": "ISO datetime lower bound for close time (e.g., '2026-03-01T00:00:00Z').",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": "ISO date for point-in-time query (e.g., '2026-01-15').",
+                },
+                "games_only": {
+                    "type": "boolean",
+                    "description": "Return only game/contest markets.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return. Default 100, max 500.",
+                    "default": 100,
+                },
+            },
+        },
+    ),
+    Tool(
+        name="search_events",
+        description=(
+            "Search Kalshi events from the secmaster database. Filter by category, series, "
+            "or status. Returns event ticker, title, category, status, strike date, "
+            "and market count. Requires secmaster:read scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Filter by category (e.g., 'Crypto', 'Economics').",
+                },
+                "series": {
+                    "type": "string",
+                    "description": "Filter by series ticker.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "closed", "settled"],
+                    "description": "Filter by status.",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": "ISO date for point-in-time query (e.g., '2026-01-15').",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return. Default 100, max 500.",
+                    "default": 100,
+                },
+            },
+        },
+    ),
+    Tool(
+        name="search_pairs",
+        description=(
+            "Search futures pairs from the secmaster database. Filter by exchange, base currency, "
+            "quote currency, market type, or status. "
+            "Returns pair ID, symbol, base, quote, market type, status. "
+            "Requires secmaster:read scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "exchange": {
+                    "type": "string",
+                    "description": "Filter by exchange (e.g., 'kraken').",
+                },
+                "base": {
+                    "type": "string",
+                    "description": "Filter by base currency (e.g., 'BTC', 'ETH').",
+                },
+                "quote": {
+                    "type": "string",
+                    "description": "Filter by quote currency (e.g., 'USD').",
+                },
+                "market_type": {
+                    "type": "string",
+                    "enum": ["perpetual", "fixed_maturity"],
+                    "description": "Filter by market type.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "halted", "delisted"],
+                    "description": "Filter by status.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return. Default 100, max 500.",
+                    "default": 100,
+                },
+            },
+        },
+    ),
+    Tool(
+        name="search_conditions",
+        description=(
+            "Search Polymarket conditions from the secmaster database. Filter by category "
+            "or status. Returns condition ID, question, status, end date, and token count. "
+            "Requires secmaster:read scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Filter by category.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "resolved"],
+                    "description": "Filter by status.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return. Default 100, max 500.",
+                    "default": 100,
+                },
+            },
+        },
+    ),
+    Tool(
+        name="get_fees",
+        description=(
+            "Get fee schedules from the secmaster database. Without a series parameter, "
+            "lists current fees for all series (use limit to control count). "
+            "With a series parameter, returns the fee schedule for that specific series "
+            "(use as_of for historical lookup; limit is ignored). "
+            "Requires secmaster:read scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "series": {
+                    "type": "string",
+                    "description": "Series ticker to get fees for (e.g., 'KXBTCD'). Omit to list all.",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": "ISO date for historical fee schedule. Only used with series.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results when listing all fees. Default 100, max 500.",
+                    "default": 100,
+                },
+            },
+        },
+    ),
+    Tool(
         name="list_api_keys",
         description=(
             "List all API keys with metadata. Shows prefix, name, user email, scopes, "
@@ -265,6 +466,54 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             cfg,
             date_str=arguments.get("date"),
             feed=arguments.get("feed"),
+        )
+    elif name == "secmaster_stats":
+        return secmaster_stats(cfg)
+    elif name == "search_markets":
+        return search_markets(
+            cfg,
+            category=arguments.get("category"),
+            series=arguments.get("series"),
+            status=arguments.get("status"),
+            event=arguments.get("event"),
+            close_within_hours=arguments.get("close_within_hours"),
+            closing_after=arguments.get("closing_after"),
+            as_of=arguments.get("as_of"),
+            games_only=arguments.get("games_only"),
+            limit=arguments.get("limit"),
+        )
+    elif name == "search_events":
+        return search_events(
+            cfg,
+            category=arguments.get("category"),
+            series=arguments.get("series"),
+            status=arguments.get("status"),
+            as_of=arguments.get("as_of"),
+            limit=arguments.get("limit"),
+        )
+    elif name == "search_pairs":
+        return search_pairs(
+            cfg,
+            exchange=arguments.get("exchange"),
+            base=arguments.get("base"),
+            quote=arguments.get("quote"),
+            market_type=arguments.get("market_type"),
+            status=arguments.get("status"),
+            limit=arguments.get("limit"),
+        )
+    elif name == "search_conditions":
+        return search_conditions(
+            cfg,
+            category=arguments.get("category"),
+            status=arguments.get("status"),
+            limit=arguments.get("limit"),
+        )
+    elif name == "get_fees":
+        return get_fees(
+            cfg,
+            series=arguments.get("series"),
+            as_of=arguments.get("as_of"),
+            limit=arguments.get("limit"),
         )
     elif name == "list_api_keys":
         return list_api_keys(

@@ -39,7 +39,7 @@ def api_get(cfg: Config, path: str, params: dict[str, Any] | None = None) -> dic
             return resp.json()
     except httpx.HTTPError as e:
         logger.error("API GET %s failed: %s", path, e)
-        return {"error": str(e)}
+        return {"error": "API request failed"}
 
 
 def api_post(cfg: Config, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -53,7 +53,7 @@ def api_post(cfg: Config, path: str, json_body: dict[str, Any] | None = None) ->
             return resp.json()
     except httpx.HTTPError as e:
         logger.error("API POST %s failed: %s", path, e)
-        return {"error": str(e)}
+        return {"error": "API request failed"}
 
 
 def lookup_markets(cfg: Config, ids: list[str], feed: str | None = None) -> list[dict[str, Any]]:
@@ -91,8 +91,8 @@ def lookup_markets(cfg: Config, ids: list[str], feed: str | None = None) -> list
                     _market_cache[cache_key] = m
                     results.append(m)
         except httpx.HTTPError as e:
-            logger.error("API request failed: %s", e)
-            results.append({"error": str(e)})
+            logger.error("Market lookup failed: %s", e)
+            results.append({"error": "API request failed"})
 
     return results
 
@@ -108,4 +108,4 @@ def get_catalog(cfg: Config) -> dict[str, Any]:
             return resp.json()
     except httpx.HTTPError as e:
         logger.error("Catalog request failed: %s", e)
-        return {"error": str(e)}
+        return {"error": "API request failed"}

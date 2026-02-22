@@ -2,12 +2,16 @@
 
 import json
 import logging
+import re
 from typing import Any
 
 from ssmd_mcp.config import Config
 from ssmd_mcp.api import api_get, lookup_markets
 
 logger = logging.getLogger(__name__)
+
+MAX_LIMIT = 500
+_SERIES_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def query_trades(cfg: Config, feed: str, date_str: str | None = None, limit: int = 20) -> str:
@@ -75,6 +79,154 @@ def query_volume(cfg: Config, date_str: str | None = None, feed: str | None = No
     if feed:
         params["feed"] = feed
     result = api_get(cfg, "/v1/data/volume", params)
+    return json.dumps(result, default=str)
+
+
+# --- Secmaster tools ---
+
+
+def _clamp_limit(limit: int | None) -> int | None:
+    """Clamp limit to MAX_LIMIT."""
+    if limit is not None:
+        return min(max(limit, 1), MAX_LIMIT)
+    return None
+
+
+def secmaster_stats(cfg: Config) -> str:
+    """Get secmaster database statistics (event/market/pair/condition counts)."""
+    result = api_get(cfg, "/v1/secmaster/stats")
+    return json.dumps(result, default=str)
+
+
+def search_markets(
+    cfg: Config,
+    category: str | None = None,
+    series: str | None = None,
+    status: str | None = None,
+    event: str | None = None,
+    close_within_hours: int | None = None,
+    closing_after: str | None = None,
+    as_of: str | None = None,
+    games_only: bool | None = None,
+    limit: int | None = None,
+) -> str:
+    """Search Kalshi markets with filters."""
+    params: dict[str, Any] = {}
+    if category:
+        params["category"] = category
+    if series:
+        params["series"] = series
+    if status:
+        params["status"] = status
+    if event:
+        params["event"] = event
+    if close_within_hours is not None:
+        params["close_within_hours"] = close_within_hours
+    if closing_after:
+        params["closing_after"] = closing_after
+    if as_of:
+        params["as_of"] = as_of
+    if games_only:
+        params["games_only"] = "true"
+    clamped = _clamp_limit(limit)
+    if clamped is not None:
+        params["limit"] = clamped
+    result = api_get(cfg, "/v1/markets", params)
+    return json.dumps(result, default=str)
+
+
+def search_events(
+    cfg: Config,
+    category: str | None = None,
+    series: str | None = None,
+    status: str | None = None,
+    as_of: str | None = None,
+    limit: int | None = None,
+) -> str:
+    """Search Kalshi events with filters."""
+    params: dict[str, Any] = {}
+    if category:
+        params["category"] = category
+    if series:
+        params["series"] = series
+    if status:
+        params["status"] = status
+    if as_of:
+        params["as_of"] = as_of
+    clamped = _clamp_limit(limit)
+    if clamped is not None:
+        params["limit"] = clamped
+    result = api_get(cfg, "/v1/events", params)
+    return json.dumps(result, default=str)
+
+
+def search_pairs(
+    cfg: Config,
+    exchange: str | None = None,
+    base: str | None = None,
+    quote: str | None = None,
+    market_type: str | None = None,
+    status: str | None = None,
+    limit: int | None = None,
+) -> str:
+    """Search futures pairs with filters."""
+    params: dict[str, Any] = {}
+    if exchange:
+        params["exchange"] = exchange
+    if base:
+        params["base"] = base
+    if quote:
+        params["quote"] = quote
+    if market_type:
+        params["market_type"] = market_type
+    if status:
+        params["status"] = status
+    clamped = _clamp_limit(limit)
+    if clamped is not None:
+        params["limit"] = clamped
+    result = api_get(cfg, "/v1/pairs", params)
+    return json.dumps(result, default=str)
+
+
+def search_conditions(
+    cfg: Config,
+    category: str | None = None,
+    status: str | None = None,
+    limit: int | None = None,
+) -> str:
+    """Search Polymarket conditions with filters."""
+    params: dict[str, Any] = {}
+    if category:
+        params["category"] = category
+    if status:
+        params["status"] = status
+    clamped = _clamp_limit(limit)
+    if clamped is not None:
+        params["limit"] = clamped
+    result = api_get(cfg, "/v1/conditions", params)
+    return json.dumps(result, default=str)
+
+
+def get_fees(
+    cfg: Config,
+    series: str | None = None,
+    as_of: str | None = None,
+    limit: int | None = None,
+) -> str:
+    """Get fee schedules, optionally for a specific series."""
+    if series:
+        if not _SERIES_RE.match(series):
+            return json.dumps({"error": "Invalid series format"})
+        params: dict[str, Any] = {}
+        if as_of:
+            params["as_of"] = as_of
+        result = api_get(cfg, f"/v1/fees/{series}", params if params else None)
+    else:
+        params = {}
+        clamped = _clamp_limit(limit)
+        if clamped is not None:
+            params["limit"] = clamped
+        result = api_get(cfg, "/v1/fees", params if params else None)
     return json.dumps(result, default=str)
 
 
