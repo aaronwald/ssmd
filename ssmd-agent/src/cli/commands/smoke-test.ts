@@ -94,8 +94,8 @@ export async function handleSmokeTest(flags: SmokeTestFlags): Promise<void> {
           `${apiUrl}/v1/data/trades?feed=kalshi`,
           apiKey,
         );
-        if (!Array.isArray(data.tickers)) {
-          throw new Error("Expected tickers array in trade response");
+        if (!Array.isArray(data.trades)) {
+          throw new Error("Expected trades array in trade response");
         }
       },
     },
@@ -112,8 +112,10 @@ export async function handleSmokeTest(flags: SmokeTestFlags): Promise<void> {
       name: "secmaster-stats",
       fn: async () => {
         const data = await fetchJson(`${apiUrl}/v1/secmaster/stats`, apiKey);
-        if (typeof data.totalEvents !== "number" && typeof data.totalMarkets !== "number") {
-          throw new Error("Expected numeric counts in secmaster stats");
+        const events = data.events as Record<string, unknown> | undefined;
+        const markets = data.markets as Record<string, unknown> | undefined;
+        if (typeof events?.total !== "number" || typeof markets?.total !== "number") {
+          throw new Error("Expected events.total and markets.total in secmaster stats");
         }
       },
     },
