@@ -2,8 +2,9 @@ import { getRedis } from "../redis/mod.ts";
 import { calculateCost } from "../pricing/mod.ts";
 
 export const RATE_LIMITS = {
-  standard: 120,  // requests per minute
-  elevated: 1200, // requests per minute
+  standard: 120,   // requests per minute
+  elevated: 1200,  // requests per minute
+  internal: 6000,  // service-to-service (connectors, cronjobs)
 } as const;
 
 const WINDOW_SECONDS = 60;
