@@ -2,6 +2,7 @@
 import { globalRegistry, apiRequestsTotal } from "./metrics.ts";
 import { normalizePath } from "./middleware.ts";
 import { validateApiKey, hasScope } from "./auth.ts";
+import { RequestLogBuffer } from "../lib/db/request-log.ts";
 import {
   listEvents,
   getEvent,
@@ -21,6 +22,8 @@ import {
   listApiKeysByUser,
   listAllApiKeys,
   revokeApiKey,
+  disableApiKey,
+  enableApiKey,
   updateApiKeyScopes,
   getAllSettings,
   upsertSetting,
@@ -43,6 +46,13 @@ import {
   markets,
   pairs,
   polymarketConditions,
+  billingDailySummary,
+  billingRates,
+  billingLedger,
+  apiKeyEvents,
+  llmUsageDaily,
+  dataAccessLog,
+  apiRequestLog,
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
@@ -62,7 +72,7 @@ import {
   VOLUME_UNITS,
 } from "../lib/duckdb/queries.ts";
 import { VALID_DATA_FEEDS, FEED_PATHS } from "../lib/duckdb/feed-config.ts";
-import { and, inArray, isNull } from "drizzle-orm";
+import { and, inArray, isNull, eq, gte, lt, sql } from "drizzle-orm";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
 const USAGE_CACHE_TTL = 120; // 2 minutes
@@ -75,6 +85,7 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 export interface RouteContext {
   dataDir: string;
   db: Database;
+  authOverride?: (apiKey: string | null, db: Database) => Promise<import("./auth.ts").AuthResult>;
 }
 
 export interface AuthInfo {
@@ -85,9 +96,11 @@ export interface AuthInfo {
   allowedFeeds: string[];
   dateRangeStart: string;
   dateRangeEnd: string;
+  billable: boolean;
 }
 
 type Handler = (req: Request, ctx: RouteContext) => Promise<Response>;
+type ApiSurface = "public" | "internal";
 
 interface Route {
   method: string;
@@ -95,6 +108,7 @@ interface Route {
   handler: Handler;
   requiresAuth: boolean;
   requiredScope?: string;
+  surface: ApiSurface;
 }
 
 const routes: Route[] = [];
@@ -104,7 +118,8 @@ function route(
   path: string,
   handler: Handler,
   requiresAuth = true,
-  requiredScope?: string
+  requiredScope?: string,
+  surface: ApiSurface = "internal"
 ): void {
   routes.push({
     method,
@@ -112,6 +127,7 @@ function route(
     handler,
     requiresAuth,
     requiredScope,
+    surface,
   });
 }
 
@@ -144,7 +160,7 @@ route("GET", "/datasets", async (req) => {
     status: 301,
     headers: { "Location": target.toString() },
   });
-}, true, "datasets:read");
+}, true, "datasets:read", "public");
 
 // Events endpoints
 route("GET", "/v1/events", async (req, ctx) => {
@@ -157,7 +173,7 @@ route("GET", "/v1/events", async (req, ctx) => {
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   });
   return json({ events });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 route("GET", "/v1/events/:ticker", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;
@@ -166,7 +182,7 @@ route("GET", "/v1/events/:ticker", async (req, ctx) => {
     return json({ error: "Event not found" }, 404);
   }
   return json(event);
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Markets endpoints
 route("GET", "/v1/markets", async (req, ctx) => {
@@ -208,7 +224,7 @@ route("GET", "/v1/markets", async (req, ctx) => {
 
   const markets = await listMarkets(ctx.db, options);
   return json({ markets });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Cross-feed market lookup by IDs (Kalshi tickers, Kraken pair_ids, Polymarket condition/token IDs)
 route("GET", "/v1/markets/lookup", async (req, ctx) => {
@@ -234,7 +250,7 @@ route("GET", "/v1/markets/lookup", async (req, ctx) => {
 
   const markets = await lookupMarketsByIds(ctx.db, ids, feed);
   return json({ markets });
-}, true, "datasets:read");
+}, true, "datasets:read", "public");
 
 route("GET", "/v1/markets/:ticker", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;
@@ -243,7 +259,7 @@ route("GET", "/v1/markets/:ticker", async (req, ctx) => {
     return json({ error: "Market not found" }, 404);
   }
   return json(market);
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Secmaster stats endpoint (combined events + markets + pairs + conditions)
 route("GET", "/v1/secmaster/stats", async (_req, ctx) => {
@@ -259,7 +275,7 @@ route("GET", "/v1/secmaster/stats", async (_req, ctx) => {
     pairs: pairStats,
     conditions: conditionStats,
   });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Market activity timeseries (added/closed per day)
 route("GET", "/v1/secmaster/markets/timeseries", async (req, ctx) => {
@@ -269,7 +285,7 @@ route("GET", "/v1/secmaster/markets/timeseries", async (req, ctx) => {
     : 30;
   const timeseries = await getMarketTimeseries(ctx.db, days);
   return json({ timeseries });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Active markets by category over time
 route("GET", "/v1/secmaster/markets/active-by-category", async (req, ctx) => {
@@ -279,7 +295,7 @@ route("GET", "/v1/secmaster/markets/active-by-category", async (req, ctx) => {
     : 7;
   const timeseries = await getActiveMarketsByCategoryTimeseries(ctx.db, days);
   return json({ timeseries });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Series endpoints
 route("GET", "/v1/series", async (req, ctx) => {
@@ -291,12 +307,12 @@ route("GET", "/v1/series", async (req, ctx) => {
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   });
   return json({ series });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 route("GET", "/v1/series/stats", async (_req, _ctx) => {
   const stats = await getSeriesStats();
   return json({ stats });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Pairs endpoints
 route("GET", "/v1/pairs", async (req, ctx) => {
@@ -310,12 +326,12 @@ route("GET", "/v1/pairs", async (req, ctx) => {
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   });
   return json({ pairs });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 route("GET", "/v1/pairs/stats", async (_req, ctx) => {
   const stats = await getPairStats(ctx.db);
   return json({ stats });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 route("GET", "/v1/pairs/:pairId/snapshots", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;
@@ -326,7 +342,7 @@ route("GET", "/v1/pairs/:pairId/snapshots", async (req, ctx) => {
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   });
   return json({ snapshots });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 route("GET", "/v1/pairs/:pairId", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;
@@ -335,7 +351,7 @@ route("GET", "/v1/pairs/:pairId", async (req, ctx) => {
     return json({ error: "Pair not found" }, 404);
   }
   return json(pair);
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Conditions endpoints (Polymarket)
 route("GET", "/v1/conditions", async (req, ctx) => {
@@ -346,7 +362,7 @@ route("GET", "/v1/conditions", async (req, ctx) => {
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   });
   return json({ conditions });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 route("GET", "/v1/conditions/:conditionId", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;
@@ -355,7 +371,7 @@ route("GET", "/v1/conditions/:conditionId", async (req, ctx) => {
     return json({ error: "Condition not found" }, 404);
   }
   return json(result);
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Polymarket token listing (for connector subscription filtering)
 route("GET", "/v1/polymarket/tokens", async (req, ctx) => {
@@ -382,7 +398,7 @@ route("GET", "/v1/polymarket/tokens", async (req, ctx) => {
     questionKeywords,
   });
   return json({ tokens });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Fees endpoints
 route("GET", "/v1/fees", async (req, ctx) => {
@@ -390,12 +406,12 @@ route("GET", "/v1/fees", async (req, ctx) => {
   const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100;
   const fees = await listCurrentFees(ctx.db, { limit });
   return json({ fees });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 route("GET", "/v1/fees/stats", async (_req, ctx) => {
   const stats = await getFeeStats(ctx.db);
   return json(stats);
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 route("GET", "/v1/fees/:series", async (req, ctx) => {
   const params = (req as Request & { params: Record<string, string> }).params;
@@ -410,7 +426,7 @@ route("GET", "/v1/fees/:series", async (req, ctx) => {
     return json({ error: `No fee schedule found for ${params.series}` }, 404);
   }
   return json(fee);
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Health check endpoints
 route("GET", "/v1/health/daily", async (req, ctx) => {
@@ -422,7 +438,7 @@ route("GET", "/v1/health/daily", async (req, ctx) => {
     limit: url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : undefined,
   });
   return json({ scores });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 route("GET", "/v1/health/sla", async (req, ctx) => {
   const url = new URL(req.url);
@@ -431,7 +447,7 @@ route("GET", "/v1/health/sla", async (req, ctx) => {
     : undefined;
   const metrics = await getSlaMetrics(ctx.db, { windowDays });
   return json({ metrics });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 route("GET", "/v1/health/gaps", async (req, ctx) => {
   const url = new URL(req.url);
@@ -445,12 +461,12 @@ route("GET", "/v1/health/gaps", async (req, ctx) => {
     to: url.searchParams.get("to") ?? undefined,
   });
   return json({ gaps });
-}, true, "secmaster:read");
+}, true, "secmaster:read", "public");
 
 // Key management endpoints
 const VALID_SCOPES = [
   "secmaster:read", "datasets:read", "signals:read", "signals:write",
-  "admin:read", "admin:write", "llm:chat",
+  "admin:read", "admin:write", "llm:chat", "billing:read", "billing:write",
 ];
 
 route("POST", "/v1/keys", async (req, ctx) => {
@@ -465,6 +481,7 @@ route("POST", "/v1/keys", async (req, ctx) => {
     allowedFeeds?: string[];
     dateRangeStart?: string;
     dateRangeEnd?: string;
+    billable?: boolean;
   };
 
   // Validate required fields
@@ -525,6 +542,7 @@ route("POST", "/v1/keys", async (req, ctx) => {
     allowedFeeds: body.allowedFeeds,
     dateRangeStart: body.dateRangeStart,
     dateRangeEnd: body.dateRangeEnd,
+    billable: body.billable ?? true,
   });
 
   // Return full key ONCE
@@ -544,10 +562,12 @@ route("POST", "/v1/keys", async (req, ctx) => {
 
 route("GET", "/v1/keys", async (req, ctx) => {
   const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+  const includeRevoked = url.searchParams.get("include_revoked") === "true";
 
   let keys;
   if (hasScope(auth.scopes, "admin:read")) {
-    keys = await listAllApiKeys(ctx.db);
+    keys = await listAllApiKeys(ctx.db, includeRevoked);
   } else {
     keys = await listApiKeysByUser(ctx.db, auth.userId);
   }
@@ -564,6 +584,9 @@ route("GET", "/v1/keys", async (req, ctx) => {
       lastUsedAt: k.lastUsedAt,
       createdAt: k.createdAt,
       expiresAt: k.expiresAt,
+      revokedAt: k.revokedAt,
+      disabledAt: k.disabledAt,
+      billable: k.billable,
       allowedFeeds: k.allowedFeeds,
       dateRangeStart: k.dateRangeStart,
       dateRangeEnd: k.dateRangeEnd,
@@ -589,7 +612,7 @@ route("DELETE", "/v1/keys/:prefix", async (req, ctx) => {
     return json({ error: "Forbidden" }, 403);
   }
 
-  const revoked = await revokeApiKey(ctx.db, params.prefix);
+  const revoked = await revokeApiKey(ctx.db, params.prefix, auth.userEmail);
   if (revoked) {
     await invalidateKeyCache(params.prefix);
   }
@@ -624,7 +647,7 @@ route("PATCH", "/v1/keys/:prefix", async (req, ctx) => {
     }
   }
 
-  const updated = await updateApiKeyScopes(ctx.db, params.prefix, body.scopes);
+  const updated = await updateApiKeyScopes(ctx.db, params.prefix, body.scopes, auth.userEmail);
   if (updated) {
     await invalidateKeyCache(params.prefix);
   }
@@ -634,6 +657,50 @@ route("PATCH", "/v1/keys/:prefix", async (req, ctx) => {
     scopes: body.scopes,
     updated: !!updated,
   });
+}, true, "admin:write");
+
+// Disable a key (temporary suspension)
+route("POST", "/v1/keys/:prefix/disable", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const params = (req as Request & { params: Record<string, string> }).params;
+
+  const key = await getApiKeyByPrefix(ctx.db, params.prefix);
+  if (!key) {
+    return json({ error: "Key not found" }, 404);
+  }
+
+  if (key.disabledAt) {
+    return json({ error: "Key is already disabled" }, 409);
+  }
+
+  const disabled = await disableApiKey(ctx.db, params.prefix, auth.userEmail);
+  if (disabled) {
+    await invalidateKeyCache(params.prefix);
+  }
+
+  return json({ disabled });
+}, true, "admin:write");
+
+// Enable a previously disabled key
+route("POST", "/v1/keys/:prefix/enable", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const params = (req as Request & { params: Record<string, string> }).params;
+
+  const key = await getApiKeyByPrefix(ctx.db, params.prefix);
+  if (!key) {
+    return json({ error: "Key not found" }, 404);
+  }
+
+  if (!key.disabledAt) {
+    return json({ error: "Key is not disabled" }, 409);
+  }
+
+  const enabled = await enableApiKey(ctx.db, params.prefix, auth.userEmail);
+  if (enabled) {
+    await invalidateKeyCache(params.prefix);
+  }
+
+  return json({ enabled });
 }, true, "admin:write");
 
 // Usage stats endpoint - get rate limit and token usage for all keys
@@ -715,6 +782,297 @@ route("PUT", "/v1/settings/:key", async (req, ctx) => {
   const setting = await upsertSetting(ctx.db, params.key, body.value);
   return json(setting);
 }, true, "admin:write");
+
+// Billing summary for a single key
+route("GET", "/v1/billing/summary", async (req, ctx) => {
+  const url = new URL(req.url);
+  const keyPrefix = url.searchParams.get("key_prefix");
+  if (!keyPrefix) {
+    return json({ error: "key_prefix query parameter is required" }, 400);
+  }
+
+  const monthParam = url.searchParams.get("month");
+  const now = new Date();
+  const month = monthParam ?? `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+
+  // Parse month into date range
+  const monthMatch = month.match(/^(\d{4})-(\d{2})$/);
+  if (!monthMatch) {
+    return json({ error: "month must be YYYY-MM format" }, 400);
+  }
+  const [, year, mon] = monthMatch;
+  const from = `${year}-${mon}-01`;
+  const nextMonth = parseInt(mon) === 12
+    ? `${parseInt(year) + 1}-01-01`
+    : `${year}-${String(parseInt(mon) + 1).padStart(2, "0")}-01`;
+
+  // Query billing_daily_summary
+  const summaryRows = await ctx.db
+    .select()
+    .from(billingDailySummary)
+    .where(and(
+      eq(billingDailySummary.keyPrefix, keyPrefix),
+      gte(billingDailySummary.date, from),
+      lt(billingDailySummary.date, nextMonth)
+    ));
+
+  // Aggregate by endpoint
+  const byEndpoint: Record<string, { count: number; bytes: number; errors: number }> = {};
+  let totalRequests = 0;
+  let totalBytes = 0;
+  let totalErrors = 0;
+  for (const row of summaryRows) {
+    const ep = row.endpoint;
+    if (!byEndpoint[ep]) byEndpoint[ep] = { count: 0, bytes: 0, errors: 0 };
+    byEndpoint[ep].count += row.requestCount;
+    byEndpoint[ep].bytes += row.responseBytes;
+    byEndpoint[ep].errors += row.errorCount;
+    totalRequests += row.requestCount;
+    totalBytes += row.responseBytes;
+    totalErrors += row.errorCount;
+  }
+
+  // Query llm_usage_daily
+  const llmRows = await ctx.db
+    .select()
+    .from(llmUsageDaily)
+    .where(and(
+      eq(llmUsageDaily.keyPrefix, keyPrefix),
+      gte(llmUsageDaily.date, from),
+      lt(llmUsageDaily.date, nextMonth)
+    ));
+
+  const llmByModel: Record<string, { prompt: number; completion: number; requests: number; cost: string }> = {};
+  let llmTotalRequests = 0;
+  let llmTotalTokens = 0;
+  let llmTotalCost = 0;
+  for (const row of llmRows) {
+    if (!llmByModel[row.model]) {
+      llmByModel[row.model] = { prompt: 0, completion: 0, requests: 0, cost: "0" };
+    }
+    llmByModel[row.model].prompt += row.promptTokens;
+    llmByModel[row.model].completion += row.completionTokens;
+    llmByModel[row.model].requests += row.requests;
+    llmByModel[row.model].cost = String(parseFloat(llmByModel[row.model].cost) + parseFloat(row.costUsd));
+    llmTotalRequests += row.requests;
+    llmTotalTokens += row.promptTokens + row.completionTokens;
+    llmTotalCost += parseFloat(row.costUsd);
+  }
+
+  // Query key events
+  const keyEvents = await ctx.db
+    .select()
+    .from(apiKeyEvents)
+    .where(and(
+      eq(apiKeyEvents.keyPrefix, keyPrefix),
+      gte(apiKeyEvents.createdAt, new Date(from)),
+      lt(apiKeyEvents.createdAt, new Date(nextMonth))
+    ));
+
+  return json({
+    keyPrefix,
+    period: { month, from, to: nextMonth },
+    apiRequests: {
+      total: totalRequests,
+      totalBytes,
+      totalErrors,
+      byEndpoint,
+    },
+    llmUsage: {
+      totalRequests: llmTotalRequests,
+      totalTokens: llmTotalTokens,
+      costUsd: Math.round(llmTotalCost * 1_000_000) / 1_000_000,
+      byModel: Object.entries(llmByModel).map(([model, data]) => ({
+        model,
+        ...data,
+      })),
+    },
+    keyEvents: keyEvents.map((e) => ({
+      type: e.eventType,
+      actor: e.actor,
+      at: e.createdAt,
+    })),
+  });
+}, true, "billing:read");
+
+// Billing report for all billable keys
+route("GET", "/v1/billing/report", async (req, ctx) => {
+  const url = new URL(req.url);
+  const monthParam = url.searchParams.get("month");
+  const now = new Date();
+  const month = monthParam ?? `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+
+  const monthMatch = month.match(/^(\d{4})-(\d{2})$/);
+  if (!monthMatch) {
+    return json({ error: "month must be YYYY-MM format" }, 400);
+  }
+  const [, year, mon] = monthMatch;
+  const from = `${year}-${mon}-01`;
+  const nextMonth = parseInt(mon) === 12
+    ? `${parseInt(year) + 1}-01-01`
+    : `${year}-${String(parseInt(mon) + 1).padStart(2, "0")}-01`;
+
+  // Get all billable keys
+  const allKeys = await listAllApiKeys(ctx.db, true);
+  const billableKeys = allKeys.filter((k) => k.billable);
+
+  // Get billing summaries for all billable keys
+  const summaryRows = await ctx.db
+    .select()
+    .from(billingDailySummary)
+    .where(and(
+      gte(billingDailySummary.date, from),
+      lt(billingDailySummary.date, nextMonth)
+    ));
+
+  // Group by key_prefix
+  const byKey: Record<string, { requests: number; bytes: number; errors: number }> = {};
+  for (const row of summaryRows) {
+    if (!byKey[row.keyPrefix]) byKey[row.keyPrefix] = { requests: 0, bytes: 0, errors: 0 };
+    byKey[row.keyPrefix].requests += row.requestCount;
+    byKey[row.keyPrefix].bytes += row.responseBytes;
+    byKey[row.keyPrefix].errors += row.errorCount;
+  }
+
+  const report = billableKeys.map((k) => ({
+    keyPrefix: k.keyPrefix,
+    keyName: k.name,
+    userEmail: k.userEmail,
+    totalRequests: byKey[k.keyPrefix]?.requests ?? 0,
+    totalBytes: byKey[k.keyPrefix]?.bytes ?? 0,
+    totalErrors: byKey[k.keyPrefix]?.errors ?? 0,
+  }));
+
+  return json({ month, from, to: nextMonth, keys: report });
+}, true, "billing:read");
+
+// Billing export as CSV
+route("GET", "/v1/billing/export", async (req, ctx) => {
+  const url = new URL(req.url);
+  const monthParam = url.searchParams.get("month");
+  const now = new Date();
+  const month = monthParam ?? `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+
+  const monthMatch = month.match(/^(\d{4})-(\d{2})$/);
+  if (!monthMatch) {
+    return json({ error: "month must be YYYY-MM format" }, 400);
+  }
+  const [, year, mon] = monthMatch;
+  const from = `${year}-${mon}-01`;
+  const nextMonth = parseInt(mon) === 12
+    ? `${parseInt(year) + 1}-01-01`
+    : `${year}-${String(parseInt(mon) + 1).padStart(2, "0")}-01`;
+
+  const rows = await ctx.db
+    .select()
+    .from(billingDailySummary)
+    .where(and(
+      gte(billingDailySummary.date, from),
+      lt(billingDailySummary.date, nextMonth)
+    ));
+
+  // Build CSV
+  const header = "key_prefix,date,endpoint,request_count,response_bytes,error_count";
+  const lines = rows.map((r) =>
+    `${r.keyPrefix},${r.date},${r.endpoint},${r.requestCount},${r.responseBytes},${r.errorCount}`
+  );
+  const csv = [header, ...lines].join("\n");
+
+  return new Response(csv, {
+    headers: {
+      "Content-Type": "text/csv",
+      "Content-Disposition": `attachment; filename="billing-${month}.csv"`,
+    },
+  });
+}, true, "billing:read");
+
+// Issue a billing credit
+route("POST", "/v1/billing/credit", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const body = await req.json() as {
+    key_prefix: string;
+    amount_usd: number;
+    description?: string;
+  };
+
+  if (!body.key_prefix || !body.amount_usd) {
+    return json({ error: "key_prefix and amount_usd are required" }, 400);
+  }
+  if (body.amount_usd <= 0) {
+    return json({ error: "amount_usd must be positive" }, 400);
+  }
+
+  // Verify the target key exists
+  const targetKey = await getApiKeyByPrefix(ctx.db, body.key_prefix);
+  if (!targetKey) {
+    return json({ error: "Key not found" }, 404);
+  }
+
+  const entry = await ctx.db.insert(billingLedger).values({
+    keyPrefix: body.key_prefix,
+    entryType: "credit",
+    amountUsd: String(body.amount_usd),
+    description: body.description ?? "Manual credit",
+    actor: auth.userEmail,
+  }).returning();
+
+  return json({ credited: true, entry: entry[0] });
+}, true, "billing:write");
+
+// View billing ledger for a key
+route("GET", "/v1/billing/ledger", async (req, ctx) => {
+  const url = new URL(req.url);
+  const keyPrefix = url.searchParams.get("key_prefix");
+  if (!keyPrefix) {
+    return json({ error: "key_prefix query parameter is required" }, 400);
+  }
+
+  const entries = await ctx.db
+    .select()
+    .from(billingLedger)
+    .where(eq(billingLedger.keyPrefix, keyPrefix));
+
+  return json({ keyPrefix, entries });
+}, true, "billing:read");
+
+// View billing balance for a key
+route("GET", "/v1/billing/balance", async (req, ctx) => {
+  const url = new URL(req.url);
+  const keyPrefix = url.searchParams.get("key_prefix");
+  if (!keyPrefix) {
+    return json({ error: "key_prefix query parameter is required" }, 400);
+  }
+
+  const entries = await ctx.db
+    .select()
+    .from(billingLedger)
+    .where(eq(billingLedger.keyPrefix, keyPrefix));
+
+  let credits = 0;
+  let debits = 0;
+  for (const e of entries) {
+    const amt = parseFloat(e.amountUsd);
+    if (e.entryType === "credit") credits += amt;
+    else debits += amt;
+  }
+
+  return json({
+    keyPrefix,
+    credits: Math.round(credits * 1_000_000) / 1_000_000,
+    debits: Math.round(debits * 1_000_000) / 1_000_000,
+    balance: Math.round((credits - debits) * 1_000_000) / 1_000_000,
+  });
+}, true, "billing:read");
+
+// View billing rates
+route("GET", "/v1/billing/rates", async (_req, ctx) => {
+  const rates = await ctx.db
+    .select()
+    .from(billingRates)
+    .where(isNull(billingRates.effectiveTo));
+
+  return json({ rates });
+}, true, "billing:read");
 
 // Data download endpoint - generate signed URLs for parquet files
 route("GET", "/v1/data/download", async (req, ctx) => {
@@ -819,7 +1177,7 @@ route("GET", "/v1/data/download", async (req, ctx) => {
     files: signedFiles,
     expiresIn: `${expiresInHours}h`,
   });
-}, true, "datasets:read");
+}, true, "datasets:read", "public");
 
 // Data feeds listing endpoint — enriched from catalog when available
 route("GET", "/v1/data/feeds", async () => {
@@ -851,7 +1209,7 @@ route("GET", "/v1/data/feeds", async () => {
     messageTypes: info.messageTypes,
   }));
   return json({ feeds });
-}, true, "datasets:read");
+}, true, "datasets:read", "public");
 
 // Data catalog endpoint — discover available feeds and dates
 route("GET", "/v1/data/catalog", async (req) => {
@@ -921,7 +1279,7 @@ route("GET", "/v1/data/catalog", async (req) => {
     feeds: feedOverviews,
     catalogGeneratedAt: catalog.generated_at,
   });
-}, true, "datasets:read");
+}, true, "datasets:read", "public");
 
 // Data schemas endpoint — discover parquet column schemas
 route("GET", "/v1/data/schemas", async (req) => {
@@ -967,7 +1325,7 @@ route("GET", "/v1/data/schemas", async (req) => {
   }
 
   return json({ schemas });
-}, true, "datasets:read");
+}, true, "datasets:read", "public");
 
 // DuckDB parquet query endpoints
 route("GET", "/v1/data/trades", async (req) => {
@@ -1008,7 +1366,7 @@ route("GET", "/v1/data/trades", async (req) => {
     console.error("Trade query failed:", err);
     return json({ error: `Query failed: ${(err as Error).message}` }, 500);
   }
-}, true, "datasets:read");
+}, true, "datasets:read", "public");
 
 route("GET", "/v1/data/prices", async (req) => {
   const auth = (req as Request & { auth: AuthInfo }).auth;
@@ -1049,7 +1407,7 @@ route("GET", "/v1/data/prices", async (req) => {
     console.error("Price query failed:", err);
     return json({ error: `Query failed: ${(err as Error).message}` }, 500);
   }
-}, true, "datasets:read");
+}, true, "datasets:read", "public");
 
 // Event volume aggregation endpoint
 route("GET", "/v1/data/events", async (req, ctx) => {
@@ -1189,7 +1547,7 @@ route("GET", "/v1/data/events", async (req, ctx) => {
     console.error("Event volume query failed:", err);
     return json({ error: `Query failed: ${(err as Error).message}` }, 500);
   }
-}, true, "datasets:read");
+}, true, "datasets:read", "public");
 
 // Volume summary endpoint (per-feed or cross-feed)
 route("GET", "/v1/data/volume", async (req) => {
@@ -1259,7 +1617,7 @@ route("GET", "/v1/data/volume", async (req) => {
   }
 
   return json({ date, feeds: feedSummaries });
-}, true, "datasets:read");
+}, true, "datasets:read", "public");
 
 route("GET", "/v1/data/freshness", async (req) => {
   const url = new URL(req.url);
@@ -1353,7 +1711,7 @@ route("GET", "/v1/data/freshness", async (req) => {
     stale_threshold_hours: staleThresholdHours,
     feeds: results,
   });
-}, true, "datasets:read");
+}, true, "datasets:read", "public");
 
 // Chat completions proxy (OpenRouter)
 route("POST", "/v1/chat/completions", async (req, ctx) => {
@@ -1499,6 +1857,13 @@ function extractApiKey(req: Request): string | null {
 
 // Router function
 export function createRouter(ctx: RouteContext): (req: Request) => Promise<Response> {
+  // Initialize request log buffer for billing (only if real DB provided)
+  let requestLogger: RequestLogBuffer | null = null;
+  if (ctx.db && typeof ctx.db.insert === "function") {
+    requestLogger = new RequestLogBuffer(ctx.db);
+    requestLogger.start();
+  }
+
   return async (req: Request) => {
     const url = new URL(req.url);
 
@@ -1509,8 +1874,10 @@ export function createRouter(ctx: RouteContext): (req: Request) => Promise<Respo
       if (!match) continue;
 
       // Check auth if required
+      let authResult: import("./auth.ts").AuthResult | null = null;
       if (r.requiresAuth) {
-        const authResult = await validateApiKey(
+        const validate = ctx.authOverride ?? validateApiKey;
+        authResult = await validate(
           extractApiKey(req),
           ctx.db
         );
@@ -1546,6 +1913,7 @@ export function createRouter(ctx: RouteContext): (req: Request) => Promise<Respo
             allowedFeeds: authResult.allowedFeeds,
             dateRangeStart: authResult.dateRangeStart,
             dateRangeEnd: authResult.dateRangeEnd,
+            billable: authResult.billable ?? true,
           } as AuthInfo,
         });
       }
@@ -1566,6 +1934,27 @@ export function createRouter(ctx: RouteContext): (req: Request) => Promise<Respo
           path,
           status: String(response.status),
         });
+
+        // Persist billable requests to PostgreSQL for billing
+        if (auth.billable && requestLogger) {
+          requestLogger.push({
+            keyPrefix: auth.keyPrefix,
+            method: req.method,
+            path,
+            statusCode: response.status,
+            responseBytes: null,
+          });
+        }
+      }
+
+      // Add rate limit headers to authenticated responses
+      if (r.requiresAuth && authResult) {
+        const headers = new Headers(response.headers);
+        if (authResult.rateLimitRemaining !== undefined) {
+          headers.set("X-RateLimit-Remaining", authResult.rateLimitRemaining.toString());
+          headers.set("X-RateLimit-Reset", authResult.rateLimitResetAt!.toString());
+        }
+        return new Response(response.body, { status: response.status, headers });
       }
 
       return response;

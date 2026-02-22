@@ -29,10 +29,11 @@ import { handleShare } from "./share.ts";
 import { handleAuditEmail } from "./audit-email.ts";
 import { handleDiagnosis } from "./diagnosis.ts";
 import { handleVolume } from "./volume-analysis.ts";
+import { handleBilling } from "./billing.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
-    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag", "env", "config", "balance", "filter", "cache-dir", "results-dir", "run-id", "image", "bucket", "prefix", "trades-out", "spec", "name", "sort", "min-trades", "ticker", "window", "email", "scopes", "expires"],
+    string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag", "env", "config", "balance", "filter", "cache-dir", "results-dir", "run-id", "image", "bucket", "prefix", "trades-out", "spec", "name", "sort", "min-trades", "ticker", "window", "email", "scopes", "expires", "amount", "description"],
     boolean: ["help", "version", "allow-dirty", "no-wait", "events-only", "markets-only", "no-delete", "dry-run", "console", "wait", "follow", "games-only", "by-series", "json", "csv", "exclude-halted", "detailed", "spot", "perps", "notify-on-failure"],
     alias: { h: "help", v: "version", t: "type", e: "endpoint", f: "follow" },
     default: { wait: true },
@@ -169,6 +170,10 @@ export async function run(args: string[]): Promise<void> {
       await handleVolume(subcommand, flags);
       break;
 
+    case "billing":
+      await handleBilling(subcommand, flags);
+      break;
+
     case "funding-rate-consumer": {
       const { runFundingRateConsumer } = await import("./funding-rate-consumer.ts");
       await runFundingRateConsumer(args.slice(1));
@@ -272,6 +277,7 @@ function printHelp(): void {
   console.log("  audit-email       Send daily data access audit report email");
   console.log("  diagnosis         AI-powered analysis of health and DQ results");
   console.log("  volume            AI-powered daily trade volume analysis");
+  console.log("  billing           Billing aggregation and credit management");
   console.log("  funding-rate-consumer  Consume Kraken Futures funding rates from NATS");
   console.log("  agent             Start interactive agent REPL");
   console.log("");

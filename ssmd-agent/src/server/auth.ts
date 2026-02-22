@@ -26,6 +26,8 @@ export interface AuthResult {
   allowedFeeds?: string[];
   dateRangeStart?: string;
   dateRangeEnd?: string;
+  billable?: boolean;
+  disabledAt?: string | null;
 }
 
 /**
@@ -68,6 +70,8 @@ export async function validateApiKey(
       allowedFeeds: dbKey.allowedFeeds,
       dateRangeStart: dbKey.dateRangeStart,
       dateRangeEnd: dbKey.dateRangeEnd,
+      billable: dbKey.billable,
+      disabledAt: dbKey.disabledAt?.toISOString() ?? null,
     };
 
     // Cache for next time
@@ -77,6 +81,11 @@ export async function validateApiKey(
   // Check if revoked
   if (keyInfo.revoked) {
     return { valid: false, status: 401, error: "API key revoked" };
+  }
+
+  // Check if disabled
+  if (keyInfo.disabledAt) {
+    return { valid: false, status: 403, error: "API key disabled" };
   }
 
   // Check if expired
@@ -116,6 +125,8 @@ export async function validateApiKey(
     allowedFeeds: keyInfo.allowedFeeds,
     dateRangeStart: keyInfo.dateRangeStart,
     dateRangeEnd: keyInfo.dateRangeEnd,
+    billable: keyInfo.billable,
+    disabledAt: keyInfo.disabledAt,
   };
 }
 
@@ -129,6 +140,18 @@ export function hasScope(scopes: string[], required: string): boolean {
   }
   // signals:write implies signals:read
   if (required === "signals:read" && scopes.includes("signals:write")) {
+    return true;
+  }
+  // billing:write implies billing:read
+  if (required === "billing:read" && scopes.includes("billing:write")) {
+    return true;
+  }
+  // admin:read/write implies billing:read (admins can view billing)
+  if (required === "billing:read" && (scopes.includes("admin:read") || scopes.includes("admin:write"))) {
+    return true;
+  }
+  // admin:write implies billing:write (admins can issue credits)
+  if (required === "billing:write" && scopes.includes("admin:write")) {
     return true;
   }
   // Direct match or wildcard

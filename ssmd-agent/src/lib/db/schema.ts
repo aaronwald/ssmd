@@ -10,6 +10,7 @@ import {
   boolean,
   timestamp,
   integer,
+  smallint,
   bigint,
   bigserial,
   serial,
@@ -89,6 +90,8 @@ export const apiKeys = pgTable("api_keys", {
   allowedFeeds: text("allowed_feeds").array().notNull(),
   dateRangeStart: date("date_range_start").notNull(),
   dateRangeEnd: date("date_range_end").notNull(),
+  billable: boolean("billable").notNull().default(true),
+  disabledAt: timestamp("disabled_at", { withTimezone: true }),
 });
 
 // Settings table for key-value configuration (e.g., guardrails)
@@ -263,6 +266,80 @@ export const dataAccessLog = pgTable("data_access_log", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// API request log for billing (only billable keys)
+export const apiRequestLog = pgTable("api_request_log", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  keyPrefix: varchar("key_prefix", { length: 30 }).notNull(),
+  method: varchar("method", { length: 10 }).notNull(),
+  path: varchar("path", { length: 255 }).notNull(),
+  statusCode: smallint("status_code").notNull(),
+  responseBytes: integer("response_bytes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// API key audit trail
+export const apiKeyEvents = pgTable("api_key_events", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  keyPrefix: varchar("key_prefix", { length: 30 }).notNull(),
+  eventType: varchar("event_type", { length: 32 }).notNull(),
+  actor: varchar("actor", { length: 255 }).notNull(),
+  oldValue: jsonb("old_value"),
+  newValue: jsonb("new_value"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Durable daily LLM token usage
+export const llmUsageDaily = pgTable("llm_usage_daily", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  keyPrefix: varchar("key_prefix", { length: 30 }).notNull(),
+  date: date("date").notNull(),
+  model: varchar("model", { length: 128 }).notNull(),
+  promptTokens: bigint("prompt_tokens", { mode: "number" }).notNull().default(0),
+  completionTokens: bigint("completion_tokens", { mode: "number" }).notNull().default(0),
+  requests: integer("requests").notNull().default(0),
+  costUsd: numeric("cost_usd", { precision: 12, scale: 6 }).notNull().default("0"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Pre-aggregated daily billing summary
+export const billingDailySummary = pgTable("billing_daily_summary", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  keyPrefix: varchar("key_prefix", { length: 30 }).notNull(),
+  date: date("date").notNull(),
+  endpoint: varchar("endpoint", { length: 255 }).notNull(),
+  requestCount: integer("request_count").notNull().default(0),
+  responseBytes: bigint("response_bytes", { mode: "number" }).notNull().default(0),
+  errorCount: integer("error_count").notNull().default(0),
+  costUsd: numeric("cost_usd", { precision: 12, scale: 6 }).notNull().default("0"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Billing rates: per-endpoint-tier pricing with effective dates
+export const billingRates = pgTable("billing_rates", {
+  id: serial("id").primaryKey(),
+  keyPrefix: varchar("key_prefix", { length: 30 }),
+  endpointTier: varchar("endpoint_tier", { length: 64 }).notNull(),
+  ratePerRequest: numeric("rate_per_request", { precision: 12, scale: 6 }).notNull().default("0"),
+  ratePerMb: numeric("rate_per_mb", { precision: 12, scale: 6 }).notNull().default("0"),
+  ratePer1kTokens: numeric("rate_per_1k_tokens", { precision: 12, scale: 6 }).notNull().default("0"),
+  effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull(),
+  effectiveTo: timestamp("effective_to", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Billing ledger: credits and debits per key (all USD)
+export const billingLedger = pgTable("billing_ledger", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  keyPrefix: varchar("key_prefix", { length: 30 }).notNull(),
+  entryType: varchar("entry_type", { length: 16 }).notNull(),
+  amountUsd: numeric("amount_usd", { precision: 12, scale: 6 }).notNull(),
+  description: text("description").notNull(),
+  referenceMonth: varchar("reference_month", { length: 7 }),
+  actor: varchar("actor", { length: 255 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Inferred types for select/insert
 export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
@@ -292,3 +369,15 @@ export type DqParquetStat = typeof dqParquetStats.$inferSelect;
 export type NewDqParquetStat = typeof dqParquetStats.$inferInsert;
 export type DataAccessLogEntry = typeof dataAccessLog.$inferSelect;
 export type NewDataAccessLogEntry = typeof dataAccessLog.$inferInsert;
+export type ApiRequestLogEntry = typeof apiRequestLog.$inferSelect;
+export type NewApiRequestLogEntry = typeof apiRequestLog.$inferInsert;
+export type ApiKeyEvent = typeof apiKeyEvents.$inferSelect;
+export type NewApiKeyEvent = typeof apiKeyEvents.$inferInsert;
+export type LlmUsageDailyEntry = typeof llmUsageDaily.$inferSelect;
+export type NewLlmUsageDailyEntry = typeof llmUsageDaily.$inferInsert;
+export type BillingDailySummaryEntry = typeof billingDailySummary.$inferSelect;
+export type NewBillingDailySummaryEntry = typeof billingDailySummary.$inferInsert;
+export type BillingRate = typeof billingRates.$inferSelect;
+export type NewBillingRate = typeof billingRates.$inferInsert;
+export type BillingLedgerEntry = typeof billingLedger.$inferSelect;
+export type NewBillingLedgerEntry = typeof billingLedger.$inferInsert;

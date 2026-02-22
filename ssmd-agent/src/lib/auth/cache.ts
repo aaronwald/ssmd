@@ -13,6 +13,8 @@ export interface CachedKeyInfo {
   allowedFeeds: string[];
   dateRangeStart: string;  // YYYY-MM-DD
   dateRangeEnd: string;    // YYYY-MM-DD
+  billable: boolean;
+  disabledAt: string | null;
 }
 
 /**

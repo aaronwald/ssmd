@@ -19,6 +19,12 @@ export {
   dqDailyScores,
   dqParquetStats,
   dataAccessLog,
+  apiRequestLog,
+  apiKeyEvents,
+  llmUsageDaily,
+  billingDailySummary,
+  billingRates,
+  billingLedger,
   feeTypeEnum,
   type Event,
   type NewEvent,
@@ -48,6 +54,18 @@ export {
   type NewDqParquetStat,
   type DataAccessLogEntry,
   type NewDataAccessLogEntry,
+  type ApiRequestLogEntry,
+  type NewApiRequestLogEntry,
+  type ApiKeyEvent,
+  type NewApiKeyEvent,
+  type LlmUsageDailyEntry,
+  type NewLlmUsageDailyEntry,
+  type BillingDailySummaryEntry,
+  type NewBillingDailySummaryEntry,
+  type BillingRate,
+  type NewBillingRate,
+  type BillingLedgerEntry,
+  type NewBillingLedgerEntry,
 } from "./schema.ts";
 
 // Event operations
@@ -100,7 +118,13 @@ export {
   revokeApiKey,
   updateApiKeyScopes,
   updateLastUsed,
+  disableApiKey,
+  enableApiKey,
+  logKeyEvent,
 } from "./apikeys.ts";
+
+// Request log operations
+export { RequestLogBuffer, type RequestLogEntry } from "./request-log.ts";
 
 // Settings operations
 export {
