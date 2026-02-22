@@ -5,7 +5,10 @@
  *   aggregate    Aggregate yesterday's API request log into billing_ledger debits
  *   credit       Issue a credit to a key
  *   balance      Show balance for a key
+ *   report       Send daily billing report email
  */
+
+import nodemailer from "nodemailer";
 
 interface BillingFlags {
   _: (string | number)[];
@@ -47,6 +50,9 @@ export async function handleBilling(
       break;
     case "balance":
       await showBalance(flags);
+      break;
+    case "report":
+      await sendBillingReport(flags);
       break;
     default:
       printBillingHelp();
@@ -229,6 +235,205 @@ async function showBalance(flags: BillingFlags): Promise<void> {
   }
 }
 
+async function sendBillingReport(_flags: BillingFlags): Promise<void> {
+  const { apiUrl, apiKey } = getApiConfig();
+
+  const now = new Date();
+  const month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  const dateStr = now.toISOString().slice(0, 10);
+
+  console.log(`[billing] Generating report for ${month}...`);
+
+  // Fetch monthly report
+  const reportRes = await fetch(`${apiUrl}/v1/billing/report?month=${month}`, {
+    headers: apiHeaders(apiKey),
+  });
+
+  if (!reportRes.ok) {
+    const err = await reportRes.json().catch(() => ({ error: reportRes.statusText }));
+    console.error(`Error fetching report: ${(err as Record<string, string>).error ?? reportRes.statusText}`);
+    Deno.exit(1);
+  }
+
+  const report = await reportRes.json() as {
+    month: string;
+    keys: Array<{
+      keyPrefix: string;
+      keyName: string;
+      userEmail: string;
+      totalRequests: number;
+      totalBytes: number;
+      totalErrors: number;
+    }>;
+  };
+
+  // Fetch balance for each key
+  const rows: Array<{
+    prefix: string;
+    name: string;
+    email: string;
+    requests: number;
+    bytes: number;
+    errors: number;
+    credits: number;
+    debits: number;
+    balance: number;
+  }> = [];
+
+  for (const k of report.keys) {
+    const balRes = await fetch(`${apiUrl}/v1/billing/balance?key_prefix=${k.keyPrefix}`, {
+      headers: apiHeaders(apiKey),
+    });
+
+    let credits = 0, debits = 0, balance = 0;
+    if (balRes.ok) {
+      const bal = await balRes.json() as { credits: number; debits: number; balance: number };
+      credits = bal.credits;
+      debits = bal.debits;
+      balance = bal.balance;
+    }
+
+    rows.push({
+      prefix: k.keyPrefix,
+      name: k.keyName ?? "",
+      email: k.userEmail,
+      requests: k.totalRequests,
+      bytes: k.totalBytes,
+      errors: k.totalErrors ?? 0,
+      credits,
+      debits,
+      balance,
+    });
+  }
+
+  // Summary
+  const totalKeys = rows.length;
+  const totalRequests = rows.reduce((s, r) => s + r.requests, 0);
+  const totalBytes = rows.reduce((s, r) => s + r.bytes, 0);
+
+  console.log(`[billing] ${totalKeys} billable keys, ${totalRequests} requests, ${totalBytes} bytes`);
+
+  // Build HTML
+  const html = buildBillingEmailHtml(dateStr, month, rows, totalKeys, totalRequests, totalBytes);
+
+  // Send email
+  const host = Deno.env.get("SMTP_HOST") ?? "smtp.gmail.com";
+  const port = Number(Deno.env.get("SMTP_PORT") ?? "587");
+  const user = Deno.env.get("SMTP_USER");
+  const pass = Deno.env.get("SMTP_PASS");
+  const to = Deno.env.get("SMTP_TO");
+
+  if (!user || !pass || !to) {
+    console.error("[billing] SMTP_USER, SMTP_PASS, and SMTP_TO required for email");
+    return;
+  }
+
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure: false,
+    auth: { user, pass },
+  });
+
+  await transporter.sendMail({
+    from: user,
+    to,
+    subject: `[SSMD] Billing Report — ${dateStr}`,
+    html,
+  });
+
+  console.log(`[billing] Report email sent to ${to}`);
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function buildBillingEmailHtml(
+  date: string,
+  month: string,
+  rows: Array<{
+    prefix: string;
+    name: string;
+    email: string;
+    requests: number;
+    bytes: number;
+    errors: number;
+    credits: number;
+    debits: number;
+    balance: number;
+  }>,
+  totalKeys: number,
+  totalRequests: number,
+  totalBytes: number,
+): string {
+  const keyRows = rows.map((r) => {
+    const status = r.balance >= 0 ? "OK" : "DEFICIT";
+    const statusColor = r.balance >= 0 ? "#22c55e" : "#ef4444";
+    return `<tr>
+      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${r.prefix}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${r.name}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${r.email}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">${r.requests.toLocaleString()}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">${formatBytes(r.bytes)}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">${r.errors}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">$${r.balance.toFixed(2)}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: center; color: ${statusColor}; font-weight: bold;">${status}</td>
+    </tr>`;
+  }).join("\n");
+
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; color: #1f2937;">
+  <div style="background: #f9fafb; border-radius: 8px; padding: 24px;">
+    <h1 style="margin: 0 0 4px 0; font-size: 20px;">SSMD Billing Report</h1>
+    <p style="margin: 0 0 20px 0; color: #6b7280;">${date} &mdash; Month: ${month}</p>
+
+    <div style="display: flex; gap: 16px; margin-bottom: 24px;">
+      <div style="background: white; border-radius: 6px; padding: 16px; flex: 1; border: 1px solid #e5e7eb;">
+        <div style="font-size: 24px; font-weight: bold;">${totalKeys}</div>
+        <div style="color: #6b7280; font-size: 13px;">Billable Keys</div>
+      </div>
+      <div style="background: white; border-radius: 6px; padding: 16px; flex: 1; border: 1px solid #e5e7eb;">
+        <div style="font-size: 24px; font-weight: bold;">${totalRequests.toLocaleString()}</div>
+        <div style="color: #6b7280; font-size: 13px;">Total Requests</div>
+      </div>
+      <div style="background: white; border-radius: 6px; padding: 16px; flex: 1; border: 1px solid #e5e7eb;">
+        <div style="font-size: 24px; font-weight: bold;">${formatBytes(totalBytes)}</div>
+        <div style="color: #6b7280; font-size: 13px;">Total Bytes</div>
+      </div>
+    </div>
+
+    <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 6px; border: 1px solid #e5e7eb;">
+      <thead>
+        <tr style="background: #f3f4f6;">
+          <th style="padding: 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Prefix</th>
+          <th style="padding: 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Name</th>
+          <th style="padding: 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Email</th>
+          <th style="padding: 8px; text-align: right; border-bottom: 2px solid #e5e7eb;">Requests</th>
+          <th style="padding: 8px; text-align: right; border-bottom: 2px solid #e5e7eb;">Bytes</th>
+          <th style="padding: 8px; text-align: right; border-bottom: 2px solid #e5e7eb;">Errors</th>
+          <th style="padding: 8px; text-align: right; border-bottom: 2px solid #e5e7eb;">Balance</th>
+          <th style="padding: 8px; text-align: center; border-bottom: 2px solid #e5e7eb;">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${keyRows}
+      </tbody>
+    </table>
+
+    <p style="color: #9ca3af; font-size: 12px; margin-top: 20px;">
+      Generated at ${new Date().toISOString()} by ssmd billing report
+    </p>
+  </div>
+</body>
+</html>`;
+}
+
 function printBillingHelp(): void {
   console.log("Usage: ssmd billing <command> [options]");
   console.log();
@@ -238,6 +443,7 @@ function printBillingHelp(): void {
   console.log("  aggregate    Aggregate API request log into daily billing summaries");
   console.log("  credit       Issue a credit to a key");
   console.log("  balance      Show billing balance for a key (or all billable keys)");
+  console.log("  report       Send daily billing report email");
   console.log();
   console.log("OPTIONS (aggregate):");
   console.log("  --date DATE     Date to aggregate (YYYY-MM-DD, default: yesterday)");
