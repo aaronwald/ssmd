@@ -7,8 +7,9 @@ use crate::error::ConnectorError;
 use crate::kraken::messages::KrakenWsMessage;
 use crate::kraken::websocket::{KrakenWebSocket, KrakenWebSocketError};
 use crate::metrics::ConnectorMetrics;
-use crate::traits::Connector;
+use crate::traits::{Connector, TimestampedMsg};
 use async_trait::async_trait;
+use ssmd_middleware::now_tsc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -19,8 +20,8 @@ pub struct KrakenConnector {
     symbols: Vec<String>,
     /// WebSocket URL override from feed config (None = use default constant)
     ws_url: Option<String>,
-    tx: Option<mpsc::Sender<Vec<u8>>>,
-    rx: Option<mpsc::Receiver<Vec<u8>>>,
+    tx: Option<mpsc::Sender<TimestampedMsg>>,
+    rx: Option<mpsc::Receiver<TimestampedMsg>>,
     /// Last WebSocket activity timestamp (epoch seconds)
     last_ws_activity_epoch_secs: Arc<AtomicU64>,
 }
@@ -41,7 +42,7 @@ impl KrakenConnector {
     /// Spawn the WebSocket receiver task
     fn spawn_receiver_task(
         mut ws: KrakenWebSocket,
-        tx: mpsc::Sender<Vec<u8>>,
+        tx: mpsc::Sender<TimestampedMsg>,
         activity_tracker: Arc<AtomicU64>,
     ) {
         fn update_activity(tracker: &AtomicU64) {
@@ -106,7 +107,7 @@ impl KrakenConnector {
                                 }
 
                                 // Forward raw JSON bytes
-                                if tx.send(raw_json.into_bytes()).await.is_err() {
+                                if tx.send((now_tsc(), raw_json.into_bytes())).await.is_err() {
                                     info!("Channel closed, stopping Kraken receiver");
                                     break;
                                 }
@@ -174,7 +175,7 @@ impl Connector for KrakenConnector {
         Ok(())
     }
 
-    fn messages(&mut self) -> mpsc::Receiver<Vec<u8>> {
+    fn messages(&mut self) -> mpsc::Receiver<TimestampedMsg> {
         self.rx
             .take()
             .expect("messages() called before connect() or called twice")

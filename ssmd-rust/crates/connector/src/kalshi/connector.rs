@@ -28,9 +28,10 @@ use crate::kalshi::websocket::{KalshiWebSocket, WebSocketError, MAX_MARKETS_PER_
 use crate::kalshi::messages::WsMessage;
 use crate::metrics::{ConnectorMetrics, ShardMetrics};
 use crate::secmaster::SecmasterClient;
-use crate::traits::Connector;
+use crate::traits::{Connector, TimestampedMsg};
 use async_trait::async_trait;
 use ssmd_metadata::{CdcConfig, LifecycleConfig, SecmasterConfig, SubscriptionConfig};
+use ssmd_middleware::now_tsc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -60,8 +61,8 @@ pub struct KalshiConnector {
     lifecycle_config: Option<LifecycleConfig>,
     /// NATS URL for CDC (from transport config)
     nats_url: Option<String>,
-    tx: Option<mpsc::Sender<Vec<u8>>>,
-    rx: Option<mpsc::Receiver<Vec<u8>>>,
+    tx: Option<mpsc::Sender<TimestampedMsg>>,
+    rx: Option<mpsc::Receiver<TimestampedMsg>>,
     /// Last WebSocket activity timestamp (epoch seconds) - updated on ping/pong AND data messages
     last_ws_activity_epoch_secs: Arc<AtomicU64>,
 }
@@ -280,7 +281,7 @@ impl KalshiConnector {
     /// Optionally accepts a command receiver for dynamic subscription updates (CDC).
     fn spawn_receiver_task(
         mut ws: KalshiWebSocket,
-        tx: mpsc::Sender<Vec<u8>>,
+        tx: mpsc::Sender<TimestampedMsg>,
         activity_tracker: Arc<AtomicU64>,
         shard_id: usize,
         shard_metrics: ShardMetrics,
@@ -454,7 +455,7 @@ impl KalshiConnector {
                                     forwarded.pop();
                                     forwarded.extend_from_slice(&shard_suffix);
                                 }
-                                if tx.send(forwarded).await.is_err() {
+                                if tx.send((now_tsc(), forwarded)).await.is_err() {
                                     info!(shard_id, "Channel closed, stopping receiver");
                                     shard_metrics.set_disconnected();
                                     break;
@@ -726,7 +727,7 @@ impl Connector for KalshiConnector {
         Ok(())
     }
 
-    fn messages(&mut self) -> mpsc::Receiver<Vec<u8>> {
+    fn messages(&mut self) -> mpsc::Receiver<TimestampedMsg> {
         self.rx.take().expect("messages() called before connect() or called twice")
     }
 

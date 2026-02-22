@@ -6,14 +6,15 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use url::Url;
 
 use crate::error::ConnectorError;
-use crate::traits::Connector;
+use crate::traits::{Connector, TimestampedMsg};
+use ssmd_middleware::now_tsc;
 
 /// WebSocket connector for Kalshi
 pub struct WebSocketConnector {
     url: String,
     creds: Option<HashMap<String, String>>,
-    tx: Option<mpsc::Sender<Vec<u8>>>,
-    rx: Option<mpsc::Receiver<Vec<u8>>>,
+    tx: Option<mpsc::Sender<TimestampedMsg>>,
+    rx: Option<mpsc::Receiver<TimestampedMsg>>,
 }
 
 impl WebSocketConnector {
@@ -64,12 +65,12 @@ impl Connector for WebSocketConnector {
             while let Some(msg) = read.next().await {
                 match msg {
                     Ok(WsMessage::Text(text)) => {
-                        if tx.send(text.into_bytes()).await.is_err() {
+                        if tx.send((now_tsc(), text.into_bytes())).await.is_err() {
                             break;
                         }
                     }
                     Ok(WsMessage::Binary(data)) => {
-                        if tx.send(data).await.is_err() {
+                        if tx.send((now_tsc(), data)).await.is_err() {
                             break;
                         }
                     }
@@ -83,7 +84,7 @@ impl Connector for WebSocketConnector {
         Ok(())
     }
 
-    fn messages(&mut self) -> mpsc::Receiver<Vec<u8>> {
+    fn messages(&mut self) -> mpsc::Receiver<TimestampedMsg> {
         self.rx.take().expect("messages() called twice")
     }
 

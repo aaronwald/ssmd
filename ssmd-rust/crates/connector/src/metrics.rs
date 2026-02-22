@@ -80,7 +80,7 @@ static WS_PROCESS_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
         "ssmd_connector_ws_process_duration_seconds",
         "End-to-end WebSocket message processing duration",
         &[LABEL_FEED],
-        vec![0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
+        vec![0.000001, 0.000005, 0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
     )
     .expect("Failed to register ws_process_duration metric")
 });
@@ -91,7 +91,7 @@ static NATS_PUBLISH_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
         "ssmd_connector_nats_publish_duration_seconds",
         "NATS publish duration",
         &[LABEL_FEED],
-        vec![0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
+        vec![0.000001, 0.000005, 0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
     )
     .expect("Failed to register nats_publish_duration metric")
 });

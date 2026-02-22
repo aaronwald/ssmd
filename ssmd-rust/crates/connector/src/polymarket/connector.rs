@@ -14,9 +14,10 @@ use crate::polymarket::websocket::{
     PolymarketWebSocket, PolymarketWebSocketError, MAX_INSTRUMENTS_PER_CONNECTION,
 };
 use crate::secmaster::SecmasterClient;
-use crate::traits::Connector;
+use crate::traits::{Connector, TimestampedMsg};
 use async_trait::async_trait;
 use ssmd_metadata::SecmasterConfig;
+use ssmd_middleware::now_tsc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -35,8 +36,8 @@ pub struct PolymarketConnector {
     secmaster_config: Option<SecmasterConfig>,
     /// WebSocket URL override from feed config (None = use default constant)
     ws_url: Option<String>,
-    tx: Option<mpsc::Sender<Vec<u8>>>,
-    rx: Option<mpsc::Receiver<Vec<u8>>>,
+    tx: Option<mpsc::Sender<TimestampedMsg>>,
+    rx: Option<mpsc::Receiver<TimestampedMsg>>,
     /// Last WebSocket activity timestamp (epoch seconds)
     last_ws_activity_epoch_secs: Arc<AtomicU64>,
 }
@@ -132,7 +133,7 @@ impl PolymarketConnector {
     fn spawn_shard_receiver(
         shard_id: usize,
         mut ws: PolymarketWebSocket,
-        tx: mpsc::Sender<Vec<u8>>,
+        tx: mpsc::Sender<TimestampedMsg>,
         activity_tracker: Arc<AtomicU64>,
         shard_metrics: ShardMetrics,
     ) {
@@ -208,7 +209,7 @@ impl PolymarketConnector {
                                     other => shard_metrics.inc_message(other),
                                 }
 
-                                if tx.send(raw_json.into_bytes()).await.is_err() {
+                                if tx.send((now_tsc(), raw_json.into_bytes())).await.is_err() {
                                     warn!(shard = shard_id, "Channel closed, stopping receiver");
                                     shard_metrics.set_disconnected();
                                     break;
@@ -354,7 +355,7 @@ impl Connector for PolymarketConnector {
         Ok(())
     }
 
-    fn messages(&mut self) -> mpsc::Receiver<Vec<u8>> {
+    fn messages(&mut self) -> mpsc::Receiver<TimestampedMsg> {
         self.rx
             .take()
             .expect("messages() called before connect() or called twice")

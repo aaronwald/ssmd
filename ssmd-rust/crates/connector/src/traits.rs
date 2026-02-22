@@ -7,14 +7,18 @@ use tokio::sync::mpsc;
 use crate::error::{ConnectorError, ResolverError, WriterError};
 use crate::message::Message;
 
+/// Timestamped message: (tsc, raw_bytes)
+/// TSC is captured at WebSocket receive time for accurate end-to-end latency.
+pub type TimestampedMsg = (u64, Vec<u8>);
+
 /// Connector trait for data sources (WebSocket, REST, etc.)
 #[async_trait]
 pub trait Connector: Send + Sync {
     /// Establish connection to the data source
     async fn connect(&mut self) -> Result<(), ConnectorError>;
 
-    /// Get receiver for incoming messages
-    fn messages(&mut self) -> mpsc::Receiver<Vec<u8>>;
+    /// Get receiver for incoming messages (with TSC timestamp from WS receive)
+    fn messages(&mut self) -> mpsc::Receiver<TimestampedMsg>;
 
     /// Close the connection
     async fn close(&mut self) -> Result<(), ConnectorError>;

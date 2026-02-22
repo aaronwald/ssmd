@@ -84,7 +84,7 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                 }
                 msg = rx.recv() => {
                     match msg {
-                        Some(data) => {
+                        Some((ws_tsc, data)) => {
                             // Pass raw bytes through - no JSON parsing in hot path.
                             // Parsing/validation happens at I/O boundary (flusher, gateway).
                             let message = Message::new(&self.feed_name, data);
@@ -100,9 +100,10 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                                 &self.feed_name,
                                 CLOCK.delta(write_start, write_end).as_secs_f64(),
                             );
+                            // ws_tsc captured at WS receive in connector shard
                             metrics::observe_ws_process_duration(
                                 &self.feed_name,
-                                CLOCK.delta(message.tsc, write_end).as_secs_f64(),
+                                CLOCK.delta(ws_tsc, write_end).as_secs_f64(),
                             );
                             // Update last message time on successful write
                             self.update_last_message_time();
@@ -130,18 +131,19 @@ impl<C: Connector, W: Writer> Runner<C, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::TimestampedMsg;
     use async_trait::async_trait;
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::mpsc;
 
     struct MockConnector {
         #[allow(dead_code)]
-        tx: mpsc::Sender<Vec<u8>>,
-        rx: Option<mpsc::Receiver<Vec<u8>>>,
+        tx: mpsc::Sender<TimestampedMsg>,
+        rx: Option<mpsc::Receiver<TimestampedMsg>>,
     }
 
     impl MockConnector {
-        fn new() -> (Self, mpsc::Sender<Vec<u8>>) {
+        fn new() -> (Self, mpsc::Sender<TimestampedMsg>) {
             let (tx, rx) = mpsc::channel(10);
             let tx_clone = tx.clone();
             (
@@ -159,7 +161,7 @@ mod tests {
         async fn connect(&mut self) -> Result<(), ConnectorError> {
             Ok(())
         }
-        fn messages(&mut self) -> mpsc::Receiver<Vec<u8>> {
+        fn messages(&mut self) -> mpsc::Receiver<TimestampedMsg> {
             self.rx.take().unwrap()
         }
         async fn close(&mut self) -> Result<(), ConnectorError> {
@@ -207,8 +209,8 @@ mod tests {
             runner.run(shutdown_rx).await
         });
 
-        // Send a message
-        msg_tx.send(b"{\"test\":true}".to_vec()).await.unwrap();
+        // Send a message with TSC timestamp
+        msg_tx.send((now_tsc(), b"{\"test\":true}".to_vec())).await.unwrap();
 
         // Wait a bit for processing
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;

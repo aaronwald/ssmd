@@ -17,14 +17,15 @@ use super::messages::KrakenFuturesWsMessage;
 use super::websocket::{KrakenFuturesWebSocket, KrakenFuturesWsError, PING_INTERVAL_SECS};
 use crate::error::ConnectorError;
 use crate::metrics::{ConnectorMetrics, ShardMetrics};
-use crate::traits::Connector;
+use crate::traits::{Connector, TimestampedMsg};
+use ssmd_middleware::now_tsc;
 
 pub struct KrakenFuturesConnector {
     product_ids: Vec<String>,
     /// WebSocket URL override from feed config (None = use default constant)
     ws_url: Option<String>,
-    tx: Option<mpsc::Sender<Vec<u8>>>,
-    rx: Option<mpsc::Receiver<Vec<u8>>>,
+    tx: Option<mpsc::Sender<TimestampedMsg>>,
+    rx: Option<mpsc::Receiver<TimestampedMsg>>,
     last_ws_activity_epoch_secs: Arc<AtomicU64>,
 }
 
@@ -43,7 +44,7 @@ impl KrakenFuturesConnector {
     fn spawn_receiver_task(
         mut ws: KrakenFuturesWebSocket,
         _product_ids: Vec<String>,
-        tx: mpsc::Sender<Vec<u8>>,
+        tx: mpsc::Sender<TimestampedMsg>,
         last_activity: Arc<AtomicU64>,
         shard_metrics: ShardMetrics,
     ) {
@@ -115,7 +116,7 @@ impl KrakenFuturesConnector {
                                             "book" | "book_snapshot" => shard_metrics.inc_orderbook(),
                                             other => shard_metrics.inc_message(other),
                                         }
-                                        if tx.send(raw.into_bytes()).await.is_err() {
+                                        if tx.send((now_tsc(), raw.into_bytes())).await.is_err() {
                                             warn!("Channel closed, exiting receiver");
                                             shard_metrics.set_disconnected();
                                             return;
@@ -200,7 +201,7 @@ impl Connector for KrakenFuturesConnector {
         Ok(())
     }
 
-    fn messages(&mut self) -> mpsc::Receiver<Vec<u8>> {
+    fn messages(&mut self) -> mpsc::Receiver<TimestampedMsg> {
         self.rx
             .take()
             .expect("messages() called before connect() or called twice")
