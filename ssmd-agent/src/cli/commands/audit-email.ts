@@ -16,6 +16,8 @@ export async function handleAuditEmail(): Promise<void> {
   const user = Deno.env.get("SMTP_USER");
   const pass = Deno.env.get("SMTP_PASS");
   const to = Deno.env.get("SMTP_TO");
+  const apiUrl = Deno.env.get("SSMD_API_URL");
+  const apiKey = Deno.env.get("SSMD_API_KEY");
 
   if (!user || !pass || !to) {
     console.error("SMTP_USER, SMTP_PASS, and SMTP_TO are required");
@@ -69,9 +71,18 @@ export async function handleAuditEmail(): Promise<void> {
         ),
       );
 
+    // 4. API usage stats (optional — requires SSMD_API_URL + SSMD_API_KEY with admin:read)
+    let apiUsage: ApiUsageEntry[] = [];
+    if (apiUrl && apiKey) {
+      apiUsage = await fetchApiUsage(apiUrl, apiKey);
+      console.log(`  API usage keys: ${apiUsage.length}`);
+    } else {
+      console.log("  API usage: skipped (SSMD_API_URL or SSMD_API_KEY not set)");
+    }
+
     // Build HTML email
     const dateStr = yesterday.toISOString().slice(0, 10);
-    const html = buildEmailHtml(dateStr, recentAccess, activeFiltered, expiredKeys);
+    const html = buildEmailHtml(dateStr, recentAccess, activeFiltered, expiredKeys, apiUsage);
 
     // Send email
     const transporter = nodemailer.createTransport({
@@ -117,11 +128,67 @@ interface KeyEntry {
   expiresAt: Date | null;
 }
 
+interface ApiUsageEntry {
+  keyPrefix: string;
+  totalRequests: number;
+  totalLlmRequests: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  totalCostUsd: number;
+  rateLimitHits: number;
+  tier: string;
+  topEndpoints: { endpoint: string; count: number }[];
+}
+
+async function fetchApiUsage(apiUrl: string, apiKey: string): Promise<ApiUsageEntry[]> {
+  const headers = { "X-API-Key": apiKey };
+  try {
+    const [usageRes, requestsRes] = await Promise.all([
+      fetch(`${apiUrl}/v1/keys/usage`, { headers, signal: AbortSignal.timeout(15000) }),
+      fetch(`${apiUrl}/v1/keys/requests`, { headers, signal: AbortSignal.timeout(15000) }),
+    ]);
+
+    if (!usageRes.ok || !requestsRes.ok) {
+      console.error(`API stats fetch failed: usage=${usageRes.status} requests=${requestsRes.status}`);
+      return [];
+    }
+
+    const usageData = await usageRes.json();
+    const requestsData = await requestsRes.json();
+
+    // Index request counts by key prefix
+    const requestsByKey: Record<string, { total: number; endpoints: { endpoint: string; count: number }[] }> = {};
+    for (const k of requestsData.keys ?? []) {
+      requestsByKey[k.keyPrefix] = { total: k.totalRequests, endpoints: k.endpoints ?? [] };
+    }
+
+    // Merge usage + request counts
+    return (usageData.usage ?? []).map((u: Record<string, unknown>) => {
+      const reqs = requestsByKey[u.keyPrefix as string];
+      return {
+        keyPrefix: u.keyPrefix as string,
+        totalRequests: reqs?.total ?? 0,
+        totalLlmRequests: (u.totalLlmRequests as number) ?? 0,
+        totalPromptTokens: (u.totalPromptTokens as number) ?? 0,
+        totalCompletionTokens: (u.totalCompletionTokens as number) ?? 0,
+        totalCostUsd: (u.totalCostUsd as number) ?? 0,
+        rateLimitHits: (u.rateLimitHits as number) ?? 0,
+        tier: (u.tier as string) ?? "unknown",
+        topEndpoints: (reqs?.endpoints ?? []).slice(0, 5),
+      };
+    });
+  } catch (e) {
+    console.error(`API stats fetch error: ${e}`);
+    return [];
+  }
+}
+
 function buildEmailHtml(
   dateStr: string,
   downloads: AccessEntry[],
   activeKeys: KeyEntry[],
   expiredKeys: KeyEntry[],
+  apiUsage: ApiUsageEntry[] = [],
 ): string {
   const styles = `
     <style>
@@ -213,12 +280,53 @@ function buildEmailHtml(
     `;
   }
 
+  // API usage section
+  let apiUsageHtml: string;
+  if (apiUsage.length === 0) {
+    apiUsageHtml = '<p class="empty">No API usage data available.</p>';
+  } else {
+    const rows = apiUsage.map((u) => {
+      const totalTokens = u.totalPromptTokens + u.totalCompletionTokens;
+      const topEps = u.topEndpoints
+        .map((ep) => `${escapeHtml(ep.endpoint)} (${ep.count})`)
+        .join(", ");
+      return `
+        <tr>
+          <td>${escapeHtml(u.keyPrefix)}</td>
+          <td>${escapeHtml(u.tier)}</td>
+          <td style="text-align:right">${u.totalRequests.toLocaleString()}</td>
+          <td style="text-align:right">${u.totalLlmRequests.toLocaleString()}</td>
+          <td style="text-align:right">${totalTokens.toLocaleString()}</td>
+          <td style="text-align:right">$${u.totalCostUsd.toFixed(2)}</td>
+          <td style="text-align:right">${u.rateLimitHits}</td>
+          <td style="font-size:11px">${topEps || "—"}</td>
+        </tr>
+      `;
+    }).join("");
+
+    apiUsageHtml = `
+      <table>
+        <tr>
+          <th>Key</th><th>Tier</th><th style="text-align:right">Requests</th>
+          <th style="text-align:right">LLM Calls</th><th style="text-align:right">Tokens</th>
+          <th style="text-align:right">Cost</th><th style="text-align:right">Rate Hits</th>
+          <th>Top Endpoints</th>
+        </tr>
+        ${rows}
+      </table>
+      <p style="font-size:11px;color:#999;margin-top:4px">Request counts are since last pod restart. Token usage and cost are cumulative.</p>
+    `;
+  }
+
   return `<!DOCTYPE html>
 <html>
 <head>${styles}</head>
 <body>
   <div class="container">
     <h1>SSMD Data Access Audit — ${dateStr}</h1>
+
+    <h2>API Usage <span class="badge badge-active">${apiUsage.length} keys</span></h2>
+    ${apiUsageHtml}
 
     <h2>Downloads (last 24h) <span class="badge badge-active">${downloads.length}</span></h2>
     ${downloadsHtml}

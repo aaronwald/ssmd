@@ -170,7 +170,7 @@ async function callClaude(
         { role: "system", content: systemPrompt },
         { role: "user", content: JSON.stringify(data) },
       ],
-      max_tokens: 1500,
+      max_tokens: 2500,
     }),
     signal: AbortSignal.timeout(60000),
   });
@@ -181,10 +181,30 @@ async function callClaude(
   }
 
   const result = await res.json();
-  const content = result.choices?.[0]?.message?.content ?? "";
 
-  // Parse JSON from Claude's response (strip code fences if present)
-  const cleaned = content.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "").trim();
+  // Handle content being string, array of content blocks, or null
+  const rawContent = result.choices?.[0]?.message?.content;
+  let content: string;
+  if (typeof rawContent === "string") {
+    content = rawContent;
+  } else if (Array.isArray(rawContent)) {
+    content = rawContent
+      .filter((block: Record<string, unknown>) => block.type === "text")
+      .map((block: Record<string, unknown>) => block.text)
+      .join("");
+  } else {
+    content = "";
+  }
+
+  // Check for truncation
+  const finishReason = result.choices?.[0]?.finish_reason;
+  if (finishReason === "length") {
+    console.error(`WARN: Claude response truncated (finish_reason=length, max_tokens=2500)`);
+  }
+
+  // Extract JSON from response (strip code fences and surrounding text)
+  const fenceMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  const cleaned = fenceMatch ? fenceMatch[1].trim() : content.trim();
 
   try {
     const parsed = JSON.parse(cleaned) as Diagnosis;
@@ -211,7 +231,10 @@ async function callClaude(
     };
   } catch (e) {
     console.error(`Failed to parse Claude response: ${e}`);
-    console.error(`Raw response: ${cleaned.slice(0, 500)}`);
+    console.error(`Content type: ${typeof rawContent}, isArray: ${Array.isArray(rawContent)}`);
+    console.error(`Finish reason: ${finishReason}`);
+    console.error(`Raw content (first 500): ${JSON.stringify(rawContent).slice(0, 500)}`);
+    console.error(`Cleaned (first 500): ${cleaned.slice(0, 500)}`);
     // Return a fallback diagnosis
     return {
       overall_status: "YELLOW",
