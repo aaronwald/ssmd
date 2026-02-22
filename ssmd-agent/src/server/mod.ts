@@ -1,11 +1,11 @@
 // Server module exports
-export { logger, cors } from "./middleware.ts";
+export { logger, cors, metricsMiddleware } from "./middleware.ts";
 export { createRouter, API_VERSION, type RouteContext, type AuthInfo } from "./routes.ts";
 export { validateApiKey, hasScope } from "./auth.ts";
 export { initDuckDB, closeDuckDB } from "../lib/duckdb/mod.ts";
 
 import { createRouter, type RouteContext } from "./routes.ts";
-import { logger, cors } from "./middleware.ts";
+import { logger, cors, metricsMiddleware } from "./middleware.ts";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "../lib/db/schema.ts";
@@ -35,7 +35,7 @@ export function createServer(options: ServerOptions): Deno.HttpServer<Deno.NetAd
   };
 
   const router = createRouter(ctx);
-  const handler = cors(logger(router));
+  const handler = cors(metricsMiddleware(logger(router)));
 
   console.log(`ssmd-data-ts listening on http://localhost:${options.port}`);
 

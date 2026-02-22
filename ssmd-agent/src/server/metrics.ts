@@ -77,6 +77,22 @@ export class Gauge implements Metric {
     this.values.set(key, value);
   }
 
+  /**
+   * Increment the gauge
+   */
+  inc(labels: Labels = {}, value = 1): void {
+    const key = JSON.stringify(labels);
+    this.values.set(key, (this.values.get(key) ?? 0) + value);
+  }
+
+  /**
+   * Decrement the gauge
+   */
+  dec(labels: Labels = {}, value = 1): void {
+    const key = JSON.stringify(labels);
+    this.values.set(key, (this.values.get(key) ?? 0) - value);
+  }
+
   format(): string {
     const lines: string[] = [];
     lines.push(`# HELP ${this.name} ${this.help}`);
@@ -223,7 +239,7 @@ export const httpRequestDuration = globalRegistry.histogram(
   "ssmd_data_http_request_duration_seconds",
   "HTTP request latency in seconds",
   ["method", "path", "status"],
-  [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5]
+  [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30]
 );
 
 export const httpRequestsTotal = globalRegistry.counter(
@@ -255,6 +271,11 @@ export const apiRateLimitHitsTotal = globalRegistry.counter(
   "ssmd_api_rate_limit_hits_total",
   "Total rate limit hits by key prefix",
   ["key_prefix"]
+);
+
+export const httpInFlight = globalRegistry.gauge(
+  "ssmd_data_http_in_flight_requests",
+  "Number of HTTP requests currently being processed"
 );
 
 export const apiRequestDuration = globalRegistry.histogram(

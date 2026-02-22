@@ -1,5 +1,7 @@
 // HTTP server middleware
 
+import { httpRequestDuration, httpRequestsTotal, httpInFlight } from "./metrics.ts";
+
 /**
  * Request logger middleware
  */
@@ -75,5 +77,65 @@ export function cors(
       headers.set("Access-Control-Allow-Origin", allowedOrigin);
     }
     return new Response(res.body, { status: res.status, headers });
+  };
+}
+
+const PARAM_RESOURCES: Record<string, string> = {
+  events: ":ticker",
+  markets: ":ticker",
+  pairs: ":pairId",
+  conditions: ":conditionId",
+  fees: ":series",
+  keys: ":prefix",
+};
+
+/**
+ * Normalize URL paths to route patterns for metrics labels.
+ * Replaces dynamic segments with param placeholders to avoid
+ * high-cardinality label values.
+ */
+export function normalizePath(pathname: string): string {
+  const segments = pathname.split("/");
+  // Pattern: /v1/<resource>/<id>[/<sub>]
+  if (segments.length >= 4 && segments[1] === "v1") {
+    const resource = segments[2];
+    const param = PARAM_RESOURCES[resource];
+    if (param && segments[3] !== "lookup") {
+      segments[3] = param;
+    }
+  }
+  return segments.join("/");
+}
+
+/**
+ * Prometheus metrics middleware.
+ * Records request duration, total count, and in-flight gauge.
+ */
+export function metricsMiddleware(
+  handler: (req: Request) => Promise<Response>
+): (req: Request) => Promise<Response> {
+  return async (req: Request) => {
+    const pathname = new URL(req.url).pathname;
+    if (pathname === "/metrics") return handler(req);
+
+    const path = normalizePath(pathname);
+    httpInFlight.inc();
+    const start = performance.now();
+    try {
+      const res = await handler(req);
+      const duration = (performance.now() - start) / 1000;
+      const labels = { method: req.method, path, status: String(res.status) };
+      httpRequestDuration.observe(labels, duration);
+      httpRequestsTotal.inc(labels);
+      return res;
+    } catch (err) {
+      const duration = (performance.now() - start) / 1000;
+      const labels = { method: req.method, path, status: "500" };
+      httpRequestDuration.observe(labels, duration);
+      httpRequestsTotal.inc(labels);
+      throw err;
+    } finally {
+      httpInFlight.dec();
+    }
   };
 }

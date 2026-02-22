@@ -4,8 +4,8 @@
 
 use once_cell::sync::Lazy;
 use prometheus::{
-    register_gauge_vec, register_int_counter_vec, register_int_gauge_vec, Encoder, GaugeVec,
-    IntCounterVec, IntGaugeVec, TextEncoder,
+    register_gauge_vec, register_histogram_vec, register_int_counter_vec, register_int_gauge_vec,
+    Encoder, GaugeVec, HistogramVec, IntCounterVec, IntGaugeVec, TextEncoder,
 };
 
 /// Labels used for metrics
@@ -73,6 +73,42 @@ static IDLE_SECONDS: Lazy<GaugeVec> = Lazy::new(|| {
     )
     .expect("Failed to register idle_seconds metric")
 });
+
+/// End-to-end WebSocket message processing duration (WS receive → NATS publish complete)
+static WS_PROCESS_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    register_histogram_vec!(
+        "ssmd_connector_ws_process_duration_seconds",
+        "End-to-end WebSocket message processing duration",
+        &[LABEL_FEED],
+        vec![0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
+    )
+    .expect("Failed to register ws_process_duration metric")
+});
+
+/// NATS publish duration (write start → write complete)
+static NATS_PUBLISH_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    register_histogram_vec!(
+        "ssmd_connector_nats_publish_duration_seconds",
+        "NATS publish duration",
+        &[LABEL_FEED],
+        vec![0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
+    )
+    .expect("Failed to register nats_publish_duration metric")
+});
+
+/// Observe end-to-end WebSocket message processing duration
+pub fn observe_ws_process_duration(feed: &str, secs: f64) {
+    WS_PROCESS_DURATION
+        .with_label_values(&[feed])
+        .observe(secs);
+}
+
+/// Observe NATS publish duration
+pub fn observe_nats_publish_duration(feed: &str, secs: f64) {
+    NATS_PUBLISH_DURATION
+        .with_label_values(&[feed])
+        .observe(secs);
+}
 
 /// Handle for recording metrics for a specific connector instance
 #[derive(Clone)]
@@ -259,5 +295,19 @@ mod tests {
         let output = result.unwrap();
         // Should contain some metric output (may be empty if no metrics recorded yet in this test)
         assert!(output.is_empty() || output.contains("ssmd_connector"));
+    }
+
+    #[test]
+    fn test_ws_process_duration() {
+        observe_ws_process_duration("test-feed", 0.001);
+        let output = encode_metrics().unwrap();
+        assert!(output.contains("ssmd_connector_ws_process_duration_seconds"));
+    }
+
+    #[test]
+    fn test_nats_publish_duration() {
+        observe_nats_publish_duration("test-feed", 0.002);
+        let output = encode_metrics().unwrap();
+        assert!(output.contains("ssmd_connector_nats_publish_duration_seconds"));
     }
 }

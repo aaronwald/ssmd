@@ -15,7 +15,10 @@ _market_cache: dict[str, dict[str, Any]] = {}
 
 def _get_client(cfg: Config) -> httpx.Client:
     """Create an httpx client for ssmd-data-ts."""
-    headers = {}
+    headers = {
+        "User-Agent": "ssmd-mcp/0.1.0",
+        "X-Client-Type": "mcp",
+    }
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
     return httpx.Client(

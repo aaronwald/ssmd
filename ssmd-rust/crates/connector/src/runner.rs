@@ -6,7 +6,9 @@ use tracing::{error, info};
 
 use crate::error::ConnectorError;
 use crate::message::Message;
+use crate::metrics;
 use crate::traits::{Connector, Writer};
+use ssmd_middleware::{now_tsc, CLOCK};
 
 /// Runner orchestrates the data collection pipeline
 pub struct Runner<C: Connector, W: Writer> {
@@ -86,12 +88,22 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                             // Pass raw bytes through - no JSON parsing in hot path.
                             // Parsing/validation happens at I/O boundary (flusher, gateway).
                             let message = Message::new(&self.feed_name, data);
+                            let write_start = now_tsc();
 
                             if let Err(e) = self.writer.write(&message).await {
                                 // Write failures are fatal - indicates parse bug or NATS issue
                                 error!(error = %e, "Failed to write message - exiting to trigger restart");
                                 return Err(ConnectorError::WriteFailed(e.to_string()));
                             }
+                            let write_end = now_tsc();
+                            metrics::observe_nats_publish_duration(
+                                &self.feed_name,
+                                CLOCK.delta(write_start, write_end).as_secs_f64(),
+                            );
+                            metrics::observe_ws_process_duration(
+                                &self.feed_name,
+                                CLOCK.delta(message.tsc, write_end).as_secs_f64(),
+                            );
                             // Update last message time on successful write
                             self.update_last_message_time();
                         }
