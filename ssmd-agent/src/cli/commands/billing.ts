@@ -311,12 +311,26 @@ async function sendBillingReport(_flags: BillingFlags): Promise<void> {
   const totalRequests = rows.reduce((s, r) => s + r.requests, 0);
   const totalBytes = rows.reduce((s, r) => s + r.bytes, 0);
 
-  console.log(`[billing] ${totalKeys} billable keys, ${totalRequests} requests, ${totalBytes} bytes`);
+  // Always print to console
+  console.log(`\n=== SSMD Billing Report — ${dateStr} (${month}) ===\n`);
+  console.log(`  Billable Keys:    ${totalKeys}`);
+  console.log(`  Total Requests:   ${totalRequests.toLocaleString()}`);
+  console.log(`  Total Bytes:      ${formatBytes(totalBytes)}\n`);
 
-  // Build HTML
-  const html = buildBillingEmailHtml(dateStr, month, rows, totalKeys, totalRequests, totalBytes);
+  const col = (s: string, w: number) => s.length > w ? s.slice(0, w - 1) + "…" : s.padEnd(w);
+  console.log(
+    `  ${col("Prefix", 18)}${col("Name", 24)}${col("Email", 28)}${"Reqs".padStart(8)} ${"Bytes".padStart(10)} ${"Errs".padStart(6)} ${"Balance".padStart(12)} Status`,
+  );
+  console.log(`  ${"-".repeat(116)}`);
+  for (const r of rows) {
+    const status = r.balance >= 0 ? "OK" : "DEFICIT";
+    console.log(
+      `  ${col(r.prefix, 18)}${col(r.name, 24)}${col(r.email, 28)}${r.requests.toLocaleString().padStart(8)} ${formatBytes(r.bytes).padStart(10)} ${String(r.errors).padStart(6)} $${r.balance.toFixed(2).padStart(11)} ${status}`,
+    );
+  }
+  console.log();
 
-  // Send email
+  // Send email if SMTP is configured
   const host = Deno.env.get("SMTP_HOST") ?? "smtp.gmail.com";
   const port = Number(Deno.env.get("SMTP_PORT") ?? "587");
   const user = Deno.env.get("SMTP_USER");
@@ -324,9 +338,11 @@ async function sendBillingReport(_flags: BillingFlags): Promise<void> {
   const to = Deno.env.get("SMTP_TO");
 
   if (!user || !pass || !to) {
-    console.error("[billing] SMTP_USER, SMTP_PASS, and SMTP_TO required for email");
+    console.log("[billing] SMTP not configured, skipping email.");
     return;
   }
+
+  const html = buildBillingEmailHtml(dateStr, month, rows, totalKeys, totalRequests, totalBytes);
 
   const transporter = nodemailer.createTransport({
     host,
