@@ -569,7 +569,7 @@ route("GET", "/v1/keys", async (req, ctx) => {
       dateRangeEnd: k.dateRangeEnd,
     })),
   });
-}, true, "secmaster:read");
+}, true, "admin:read");
 
 route("DELETE", "/v1/keys/:prefix", async (req, ctx) => {
   const auth = (req as Request & { auth: AuthInfo }).auth;
@@ -595,7 +595,7 @@ route("DELETE", "/v1/keys/:prefix", async (req, ctx) => {
   }
 
   return json({ revoked });
-}, true, "secmaster:read");
+}, true, "admin:read");
 
 route("PATCH", "/v1/keys/:prefix", async (req, ctx) => {
   const auth = (req as Request & { auth: AuthInfo }).auth;
