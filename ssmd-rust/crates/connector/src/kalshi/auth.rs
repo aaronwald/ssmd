@@ -49,6 +49,25 @@ impl KalshiCredentials {
         Ok((timestamp, signature))
     }
 
+    /// Sign a REST API request for Kalshi authentication
+    ///
+    /// Returns a tuple of (timestamp_ms, signature) where:
+    /// - timestamp_ms: current time in milliseconds as a string
+    /// - signature: base64-encoded RSA-PSS signature
+    ///
+    /// The message format is: `{timestamp_ms}{METHOD}{path}`
+    /// where METHOD is uppercase (GET, POST, DELETE) and path starts with /trade-api/...
+    pub fn sign_rest_request(
+        &self,
+        method: &str,
+        path: &str,
+    ) -> Result<(String, String), AuthError> {
+        let timestamp = chrono::Utc::now().timestamp_millis().to_string();
+        let message = format!("{}{}{}", timestamp, method.to_uppercase(), path);
+        let signature = self.sign_message(&message)?;
+        Ok((timestamp, signature))
+    }
+
     /// Sign a message using RSA-PSS with SHA256
     fn sign_message(&self, message: &str) -> Result<String, AuthError> {
         let signing_key = SigningKey::<Sha256>::new(self.private_key.clone());
@@ -134,6 +153,32 @@ mod tests {
 
         // Verify signature is not empty
         assert!(!signature.is_empty());
+    }
+
+    #[test]
+    fn test_sign_rest_request() {
+        let key = generate_test_key();
+        let pem = key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        let credentials = KalshiCredentials::new("test_api_key".to_string(), pem.as_str()).unwrap();
+
+        let result = credentials.sign_rest_request("POST", "/trade-api/v2/portfolio/orders");
+        assert!(result.is_ok());
+
+        let (timestamp, signature) = result.unwrap();
+        assert!(timestamp.parse::<i64>().is_ok());
+        assert!(BASE64.decode(&signature).is_ok());
+        assert!(!signature.is_empty());
+    }
+
+    #[test]
+    fn test_sign_rest_request_case_insensitive_method() {
+        let key = generate_test_key();
+        let pem = key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        let credentials = KalshiCredentials::new("test_api_key".to_string(), pem.as_str()).unwrap();
+
+        // Should work with lowercase method
+        let result = credentials.sign_rest_request("get", "/trade-api/v2/portfolio/balance");
+        assert!(result.is_ok());
     }
 
     #[test]

@@ -1,0 +1,225 @@
+use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::state::OrderState;
+
+/// Side of an order
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Yes,
+    No,
+}
+
+impl std::fmt::Display for Side {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Side::Yes => write!(f, "yes"),
+            Side::No => write!(f, "no"),
+        }
+    }
+}
+
+/// Order action type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Action {
+    Buy,
+    Sell,
+}
+
+impl std::fmt::Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::Buy => write!(f, "buy"),
+            Action::Sell => write!(f, "sell"),
+        }
+    }
+}
+
+/// Time-in-force for orders
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TimeInForce {
+    /// Good-til-cancelled
+    Gtc,
+    /// Immediate-or-cancel
+    Ioc,
+}
+
+impl std::fmt::Display for TimeInForce {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TimeInForce::Gtc => write!(f, "gtc"),
+            TimeInForce::Ioc => write!(f, "ioc"),
+        }
+    }
+}
+
+/// Reason for order cancellation
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelReason {
+    UserRequested,
+    RiskLimitBreached,
+    Shutdown,
+    Expired,
+    ExchangeCancel,
+}
+
+/// Request to create an order
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderRequest {
+    pub client_order_id: Uuid,
+    pub ticker: String,
+    pub side: Side,
+    pub action: Action,
+    pub quantity: i32,
+    pub price_cents: i32,
+    pub time_in_force: TimeInForce,
+}
+
+impl OrderRequest {
+    /// Compute the notional value of this order in dollars
+    pub fn notional(&self) -> Decimal {
+        let price = Decimal::new(self.price_cents as i64, 2);
+        let qty = Decimal::from(self.quantity);
+        price * qty
+    }
+}
+
+/// An order in the system
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Order {
+    pub id: i64,
+    pub session_id: i64,
+    pub client_order_id: Uuid,
+    pub exchange_order_id: Option<String>,
+    pub ticker: String,
+    pub side: Side,
+    pub action: Action,
+    pub quantity: i32,
+    pub price_cents: i32,
+    pub filled_quantity: i32,
+    pub time_in_force: TimeInForce,
+    pub state: OrderState,
+    pub cancel_reason: Option<CancelReason>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A fill (trade execution) for an order
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Fill {
+    pub id: i64,
+    pub order_id: i64,
+    pub trade_id: String,
+    pub price_cents: i32,
+    pub quantity: i32,
+    pub is_taker: bool,
+    pub filled_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Exchange-side order status for reconciliation
+#[derive(Debug, Clone)]
+pub struct ExchangeOrderStatus {
+    pub exchange_order_id: String,
+    pub status: ExchangeOrderState,
+    pub filled_quantity: i32,
+    pub remaining_quantity: i32,
+}
+
+/// Simplified exchange order state
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExchangeOrderState {
+    Resting,
+    Executed,
+    Cancelled,
+    NotFound,
+}
+
+/// Portfolio position from exchange
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Position {
+    pub ticker: String,
+    pub side: Side,
+    pub quantity: i32,
+    pub market_value_cents: i64,
+}
+
+/// Portfolio balance from exchange
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Balance {
+    pub available_cents: i64,
+    pub total_cents: i64,
+}
+
+/// Exchange fill record
+#[derive(Debug, Clone)]
+pub struct ExchangeFill {
+    pub trade_id: String,
+    pub order_id: String,
+    pub ticker: String,
+    pub side: Side,
+    pub action: Action,
+    pub price_cents: i32,
+    pub quantity: i32,
+    pub is_taker: bool,
+    pub filled_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_order_request_notional() {
+        let req = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            ticker: "KXBTCD-26FEB-T100000".to_string(),
+            side: Side::Yes,
+            action: Action::Buy,
+            quantity: 10,
+            price_cents: 50,
+            time_in_force: TimeInForce::Gtc,
+        };
+        // 10 contracts at $0.50 each = $5.00
+        assert_eq!(req.notional(), Decimal::new(500, 2));
+    }
+
+    #[test]
+    fn test_order_request_notional_high_price() {
+        let req = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            ticker: "KXBTCD-26FEB-T100000".to_string(),
+            side: Side::Yes,
+            action: Action::Buy,
+            quantity: 100,
+            price_cents: 99,
+            time_in_force: TimeInForce::Gtc,
+        };
+        // 100 contracts at $0.99 each = $99.00
+        assert_eq!(req.notional(), Decimal::new(9900, 2));
+    }
+
+    #[test]
+    fn test_side_display() {
+        assert_eq!(Side::Yes.to_string(), "yes");
+        assert_eq!(Side::No.to_string(), "no");
+    }
+
+    #[test]
+    fn test_action_display() {
+        assert_eq!(Action::Buy.to_string(), "buy");
+        assert_eq!(Action::Sell.to_string(), "sell");
+    }
+
+    #[test]
+    fn test_time_in_force_display() {
+        assert_eq!(TimeInForce::Gtc.to_string(), "gtc");
+        assert_eq!(TimeInForce::Ioc.to_string(), "ioc");
+    }
+}

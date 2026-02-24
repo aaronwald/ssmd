@@ -1,0 +1,27 @@
+[package]
+name = "ssmd-harman"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ssmd-harman"
+path = "src/main.rs"
+
+[dependencies]
+harman = { path = "../harman" }
+ssmd-exchange-kalshi = { path = "../ssmd-exchange-kalshi" }
+ssmd-connector-lib = { path = "../connector" }
+axum = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+deadpool-postgres = { workspace = true }
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+rust_decimal = { workspace = true }
+prometheus = { workspace = true }
+tower = { workspace = true }
