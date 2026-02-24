@@ -28,7 +28,7 @@ pub async fn run(state: &Arc<AppState>) -> Result<(), String> {
     verify_positions(state).await?;
 
     // 4. Rebuild risk state (just log it, the real check happens per-order)
-    let risk_state = db::compute_risk_state(&state.pool, 1).await?;
+    let risk_state = db::compute_risk_state(&state.pool, state.session_id).await?;
     info!(
         open_notional = %risk_state.open_notional,
         max_notional = %state.risk_limits.max_notional,
@@ -44,7 +44,7 @@ pub async fn run(state: &Arc<AppState>) -> Result<(), String> {
 
 /// Resolve orders in submitted or pending_cancel state
 async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
-    let ambiguous = db::get_ambiguous_orders(&state.pool).await?;
+    let ambiguous = db::get_ambiguous_orders(&state.pool, state.session_id).await?;
 
     if ambiguous.is_empty() {
         info!("no ambiguous orders to recover");
@@ -196,7 +196,7 @@ async fn discover_missing_fills(state: &Arc<AppState>) -> Result<(), String> {
 
     info!(count = fills.len(), "fetched exchange fills for recovery");
 
-    let orders = db::list_orders(&state.pool, None).await?;
+    let orders = db::list_orders(&state.pool, state.session_id, None).await?;
     let mut recorded = 0;
 
     for fill in &fills {

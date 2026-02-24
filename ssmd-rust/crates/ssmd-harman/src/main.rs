@@ -37,6 +37,14 @@ struct Args {
         default_value = "https://demo-api.kalshi.co"
     )]
     kalshi_base_url: String,
+
+    /// Bearer token for order endpoints (/v1/orders/*)
+    #[arg(long, env = "HARMAN_API_TOKEN")]
+    api_token: String,
+
+    /// Bearer token for admin endpoints (/v1/admin/*, mass-cancel)
+    #[arg(long, env = "HARMAN_ADMIN_TOKEN")]
+    admin_token: String,
 }
 
 /// Metrics for prometheus
@@ -93,6 +101,9 @@ pub struct AppState {
     pub risk_limits: RiskLimits,
     pub shutting_down: AtomicBool,
     pub metrics: Metrics,
+    pub session_id: i64,
+    pub api_token: String,
+    pub admin_token: String,
 }
 
 #[tokio::main]
@@ -147,12 +158,21 @@ async fn main() {
             .unwrap_or(rust_decimal::Decimal::new(100, 0)),
     };
 
+    // Get or create session
+    let session_id = harman::db::get_or_create_session(&pool, "kalshi")
+        .await
+        .expect("failed to get or create session");
+    info!(session_id, "session initialized");
+
     let state = Arc::new(AppState {
         pool,
         exchange,
         risk_limits,
         shutting_down: AtomicBool::new(false),
         metrics: Metrics::new(),
+        session_id,
+        api_token: args.api_token,
+        admin_token: args.admin_token,
     });
 
     // Run recovery before starting API server

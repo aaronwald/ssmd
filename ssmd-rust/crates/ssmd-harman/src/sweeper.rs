@@ -39,7 +39,7 @@ pub async fn pump(state: &AppState) -> PumpResult {
             break;
         }
 
-        match db::dequeue_order(&state.pool).await {
+        match db::dequeue_order(&state.pool, state.session_id).await {
             Ok(Some(item)) => {
                 state.metrics.orders_dequeued.inc();
                 result.processed += 1;

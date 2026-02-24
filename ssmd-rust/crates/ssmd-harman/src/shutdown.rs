@@ -25,7 +25,7 @@ pub async fn wait_for_shutdown(state: Arc<AppState>) {
 
     // Drain queue - directly remove items and reject orders without going through
     // dequeue_order (which would unnecessarily transition them to Submitted first).
-    match harman::db::drain_queue_for_shutdown(&state.pool).await {
+    match harman::db::drain_queue_for_shutdown(&state.pool, state.session_id).await {
         Ok(count) => {
             if count > 0 {
                 warn!(count, "drained queue items during shutdown");

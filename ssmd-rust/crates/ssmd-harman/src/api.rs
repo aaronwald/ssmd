@@ -1,7 +1,8 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::StatusCode,
-    response::IntoResponse,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
@@ -16,21 +17,65 @@ use harman::types::{Action, Order, OrderRequest, Side, TimeInForce};
 
 use crate::AppState;
 
-/// Build the axum router
+/// Extract bearer token from Authorization header
+fn extract_bearer(req: &Request) -> Option<&str> {
+    req.headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+}
+
+/// Middleware: require valid API token
+async fn require_api_token(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    match extract_bearer(&req) {
+        Some(t) if t == state.api_token => Ok(next.run(req).await),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
+}
+
+/// Middleware: require valid admin token
+async fn require_admin_token(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    match extract_bearer(&req) {
+        Some(t) if t == state.admin_token => Ok(next.run(req).await),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
+}
+
+/// Build the axum router with auth middleware
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let public = Router::new()
+        .route("/health", get(health))
+        .route("/metrics", get(metrics));
+
+    let api = Router::new()
         .route("/v1/orders", post(create_order))
         .route("/v1/orders", get(list_orders))
-        // mass-cancel must be registered before :id to avoid being shadowed
-        .route("/v1/orders/mass-cancel", post(mass_cancel))
         .route("/v1/orders/:id", get(get_order))
         .route("/v1/orders/:id", delete(cancel_order))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_api_token,
+        ));
+
+    let admin = Router::new()
+        .route("/v1/orders/mass-cancel", post(mass_cancel))
         .route("/v1/admin/pump", post(pump_handler))
         .route("/v1/admin/reconcile", post(reconcile_handler))
         .route("/v1/admin/risk", get(risk_handler))
-        .route("/health", get(health))
-        .route("/metrics", get(metrics))
-        .with_state(state)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_token,
+        ));
+
+    public.merge(api).merge(admin).with_state(state)
 }
 
 /// POST /v1/orders
@@ -88,7 +133,7 @@ async fn create_order(
         time_in_force: req.time_in_force,
     };
 
-    match db::enqueue_order(&state.pool, &order_req, 1, &state.risk_limits).await {
+    match db::enqueue_order(&state.pool, &order_req, state.session_id, &state.risk_limits).await {
         Ok(order) => (
             StatusCode::CREATED,
             Json(serde_json::json!({
@@ -142,7 +187,7 @@ async fn list_orders(
         _ => None,
     });
 
-    match db::list_orders(&state.pool, state_filter).await {
+    match db::list_orders(&state.pool, state.session_id, state_filter).await {
         Ok(orders) => {
             let response: Vec<serde_json::Value> = orders.iter().map(order_to_json).collect();
             (StatusCode::OK, Json(serde_json::json!({"orders": response}))).into_response()
@@ -163,7 +208,7 @@ async fn get_order(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    match db::get_order(&state.pool, id).await {
+    match db::get_order(&state.pool, id, state.session_id).await {
         Ok(Some(order)) => (StatusCode::OK, Json(order_to_json(&order))).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -192,6 +237,7 @@ async fn cancel_order(
     match db::atomic_cancel_order(
         &state.pool,
         id,
+        state.session_id,
         &harman::types::CancelReason::UserRequested,
     )
     .await
@@ -223,7 +269,23 @@ async fn cancel_order(
 }
 
 /// POST /v1/orders/mass-cancel
-async fn mass_cancel(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+#[derive(Debug, Deserialize)]
+struct MassCancelRequest {
+    confirm: bool,
+}
+
+async fn mass_cancel(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MassCancelRequest>,
+) -> impl IntoResponse {
+    if !body.confirm {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "must set confirm: true"})),
+        )
+            .into_response();
+    }
+
     match state.exchange.cancel_all_orders().await {
         Ok(count) => (
             StatusCode::OK,
@@ -288,7 +350,7 @@ async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 ///
 /// Return current risk limits and open notional exposure.
 async fn risk_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match db::compute_risk_state(&state.pool, 1).await {
+    match db::compute_risk_state(&state.pool, state.session_id).await {
         Ok(risk_state) => (
             StatusCode::OK,
             Json(serde_json::json!({

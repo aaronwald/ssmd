@@ -65,7 +65,7 @@ async fn discover_fills(state: &AppState) -> Result<u64, String> {
 
     debug!(count = fills.len(), "fetched exchange fills");
 
-    let orders = db::list_orders(&state.pool, None).await?;
+    let orders = db::list_orders(&state.pool, state.session_id, None).await?;
 
     let mut count = 0u64;
     for fill in &fills {
@@ -101,7 +101,7 @@ async fn discover_fills(state: &AppState) -> Result<u64, String> {
 
 /// Find and resolve orders stuck in ambiguous states.
 async fn resolve_stale_orders(state: &AppState) -> Result<u64, String> {
-    let ambiguous = db::get_ambiguous_orders(&state.pool).await?;
+    let ambiguous = db::get_ambiguous_orders(&state.pool, state.session_id).await?;
 
     let now = chrono::Utc::now();
     let mut count = 0u64;

@@ -191,11 +191,11 @@ pub struct QueueItem {
     pub order: Order,
 }
 
-/// Dequeue the next order for processing.
+/// Dequeue the next order for processing, scoped to a session.
 ///
 /// Uses SELECT FOR UPDATE SKIP LOCKED for concurrent sweeper safety.
 /// Marks the queue item as processing, then transitions the order to submitted state.
-pub async fn dequeue_order(pool: &Pool) -> Result<Option<QueueItem>, String> {
+pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueItem>, String> {
     let mut client = pool
         .get()
         .await
@@ -206,7 +206,7 @@ pub async fn dequeue_order(pool: &Pool) -> Result<Option<QueueItem>, String> {
         .await
         .map_err(|e| format!("begin tx: {}", e))?;
 
-    // Dequeue with SKIP LOCKED
+    // Dequeue with SKIP LOCKED, filtered by session
     let row = tx
         .query_opt(
             "SELECT q.id as queue_id, q.order_id, q.action, \
@@ -216,11 +216,11 @@ pub async fn dequeue_order(pool: &Pool) -> Result<Option<QueueItem>, String> {
                     o.created_at, o.updated_at \
              FROM order_queue q \
              JOIN prediction_orders o ON o.id = q.order_id \
-             WHERE NOT q.processing \
+             WHERE NOT q.processing AND o.session_id = $1 \
              ORDER BY q.id \
              LIMIT 1 \
              FOR UPDATE OF q SKIP LOCKED",
-            &[],
+            &[&session_id],
         )
         .await
         .map_err(|e| format!("dequeue query: {}", e))?;
@@ -432,8 +432,46 @@ pub async fn record_fill(
     Ok(result > 0)
 }
 
+/// Get or create a session for the given exchange.
+///
+/// Returns the ID of an open (not closed) session, or creates a new one.
+pub async fn get_or_create_session(pool: &Pool, exchange: &str) -> Result<i64, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    // Look for an existing open session
+    let row = client
+        .query_opt(
+            "SELECT id FROM sessions WHERE exchange = $1 AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
+            &[&exchange],
+        )
+        .await
+        .map_err(|e| format!("query session: {}", e))?;
+
+    if let Some(row) = row {
+        let id: i64 = row.get("id");
+        info!(session_id = id, exchange, "using existing session");
+        return Ok(id);
+    }
+
+    // Create a new session
+    let row = client
+        .query_one(
+            "INSERT INTO sessions (exchange) VALUES ($1) RETURNING id",
+            &[&exchange],
+        )
+        .await
+        .map_err(|e| format!("create session: {}", e))?;
+
+    let id: i64 = row.get("id");
+    info!(session_id = id, exchange, "created new session");
+    Ok(id)
+}
+
 /// Find orders in ambiguous states (for recovery)
-pub async fn get_ambiguous_orders(pool: &Pool) -> Result<Vec<Order>, String> {
+pub async fn get_ambiguous_orders(pool: &Pool, session_id: i64) -> Result<Vec<Order>, String> {
     let client = pool
         .get()
         .await
@@ -446,9 +484,9 @@ pub async fn get_ambiguous_orders(pool: &Pool) -> Result<Vec<Order>, String> {
                     filled_quantity, time_in_force, state, cancel_reason, \
                     created_at, updated_at \
              FROM prediction_orders \
-             WHERE state IN ('submitted', 'pending_cancel') \
+             WHERE session_id = $1 AND state IN ('submitted', 'pending_cancel') \
              ORDER BY id",
-            &[],
+            &[&session_id],
         )
         .await
         .map_err(|e| format!("query ambiguous: {}", e))?;
@@ -456,8 +494,8 @@ pub async fn get_ambiguous_orders(pool: &Pool) -> Result<Vec<Order>, String> {
     Ok(rows.iter().map(row_to_order).collect())
 }
 
-/// Get an order by ID
-pub async fn get_order(pool: &Pool, order_id: i64) -> Result<Option<Order>, String> {
+/// Get an order by ID, scoped to a session
+pub async fn get_order(pool: &Pool, order_id: i64, session_id: i64) -> Result<Option<Order>, String> {
     let client = pool
         .get()
         .await
@@ -469,8 +507,8 @@ pub async fn get_order(pool: &Pool, order_id: i64) -> Result<Option<Order>, Stri
                     ticker, side, action, quantity, price_cents, \
                     filled_quantity, time_in_force, state, cancel_reason, \
                     created_at, updated_at \
-             FROM prediction_orders WHERE id = $1",
-            &[&order_id],
+             FROM prediction_orders WHERE id = $1 AND session_id = $2",
+            &[&order_id, &session_id],
         )
         .await
         .map_err(|e| format!("get order: {}", e))?;
@@ -503,9 +541,10 @@ pub async fn get_order_by_client_id(
     Ok(row.as_ref().map(row_to_order))
 }
 
-/// List orders with optional state filter
+/// List orders with optional state filter, scoped to a session
 pub async fn list_orders(
     pool: &Pool,
+    session_id: i64,
     state_filter: Option<OrderState>,
 ) -> Result<Vec<Order>, String> {
     let client = pool
@@ -520,8 +559,8 @@ pub async fn list_orders(
                         ticker, side, action, quantity, price_cents, \
                         filled_quantity, time_in_force, state, cancel_reason, \
                         created_at, updated_at \
-                 FROM prediction_orders WHERE state = $1 ORDER BY id",
-                &[&state.to_string()],
+                 FROM prediction_orders WHERE session_id = $1 AND state = $2 ORDER BY id",
+                &[&session_id, &state.to_string()],
             )
             .await
     } else {
@@ -531,8 +570,8 @@ pub async fn list_orders(
                         ticker, side, action, quantity, price_cents, \
                         filled_quantity, time_in_force, state, cancel_reason, \
                         created_at, updated_at \
-                 FROM prediction_orders ORDER BY id",
-                &[],
+                 FROM prediction_orders WHERE session_id = $1 ORDER BY id",
+                &[&session_id],
             )
             .await
     }
@@ -588,6 +627,7 @@ pub async fn enqueue_cancel(pool: &Pool, order_id: i64, actor: &str) -> Result<(
 pub async fn atomic_cancel_order(
     pool: &Pool,
     order_id: i64,
+    session_id: i64,
     cancel_reason: &CancelReason,
 ) -> Result<(), String> {
     let mut client = pool
@@ -600,11 +640,11 @@ pub async fn atomic_cancel_order(
         .await
         .map_err(|e| format!("begin tx: {}", e))?;
 
-    // Lock the order row and get current state
+    // Lock the order row and get current state (scoped to session)
     let row = tx
         .query_opt(
-            "SELECT state FROM prediction_orders WHERE id = $1 FOR UPDATE",
-            &[&order_id],
+            "SELECT state FROM prediction_orders WHERE id = $1 AND session_id = $2 FOR UPDATE",
+            &[&order_id, &session_id],
         )
         .await
         .map_err(|e| format!("get order: {}", e))?;
@@ -667,8 +707,8 @@ pub async fn atomic_cancel_order(
 
 /// Drain queue items during shutdown without transitioning orders through Submitted.
 ///
-/// Directly deletes queue items and marks their orders as Rejected.
-pub async fn drain_queue_for_shutdown(pool: &Pool) -> Result<u64, String> {
+/// Directly deletes queue items for the given session and marks their orders as Rejected.
+pub async fn drain_queue_for_shutdown(pool: &Pool, session_id: i64) -> Result<u64, String> {
     let mut client = pool
         .get()
         .await
@@ -679,11 +719,13 @@ pub async fn drain_queue_for_shutdown(pool: &Pool) -> Result<u64, String> {
         .await
         .map_err(|e| format!("begin tx: {}", e))?;
 
-    // Get all pending queue items
+    // Get queue items for this session's orders
     let rows = tx
         .query(
-            "DELETE FROM order_queue RETURNING order_id",
-            &[],
+            "DELETE FROM order_queue WHERE order_id IN \
+             (SELECT id FROM prediction_orders WHERE session_id = $1) \
+             RETURNING order_id",
+            &[&session_id],
         )
         .await
         .map_err(|e| format!("drain queue: {}", e))?;
