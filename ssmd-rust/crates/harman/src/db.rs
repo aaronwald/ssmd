@@ -89,7 +89,7 @@ pub async fn enqueue_order(
     let risk_rows = tx
         .query(
             "SELECT COALESCE(SUM((price_cents::NUMERIC / 100) * (quantity - filled_quantity)), 0) as open_notional \
-             FROM orders \
+             FROM prediction_orders \
              WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel') \
              FOR UPDATE",
             &[&session_id],
@@ -112,7 +112,7 @@ pub async fn enqueue_order(
     // Insert order
     let row = tx
         .query_one(
-            "INSERT INTO orders (session_id, client_order_id, ticker, side, action, quantity, price_cents, time_in_force, state) \
+            "INSERT INTO prediction_orders (session_id, client_order_id, ticker, side, action, quantity, price_cents, time_in_force, state) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') \
              RETURNING id, created_at, updated_at",
             &[
@@ -143,7 +143,7 @@ pub async fn enqueue_order(
 
     // Insert into order queue
     tx.execute(
-        "INSERT INTO order_queue (order_id, action) VALUES ($1, 'submit')",
+        "INSERT INTO order_queue (order_id, action, actor) VALUES ($1, 'submit', 'api')",
         &[&order_id],
     )
     .await
@@ -215,7 +215,7 @@ pub async fn dequeue_order(pool: &Pool) -> Result<Option<QueueItem>, String> {
                     o.filled_quantity, o.time_in_force, o.state, o.cancel_reason, \
                     o.created_at, o.updated_at \
              FROM order_queue q \
-             JOIN orders o ON o.id = q.order_id \
+             JOIN prediction_orders o ON o.id = q.order_id \
              WHERE NOT q.processing \
              ORDER BY q.id \
              LIMIT 1 \
@@ -246,7 +246,7 @@ pub async fn dequeue_order(pool: &Pool) -> Result<Option<QueueItem>, String> {
     if action == "submit" {
         let from_state: String = row.get("state");
         tx.execute(
-            "UPDATE orders SET state = 'submitted' WHERE id = $1",
+            "UPDATE prediction_orders SET state = 'submitted' WHERE id = $1",
             &[&order_id],
         )
         .await
@@ -322,7 +322,7 @@ pub async fn update_order_state(
     // Lock the order row and get current state for audit
     let row = tx
         .query_one(
-            "SELECT state FROM orders WHERE id = $1 FOR UPDATE",
+            "SELECT state FROM prediction_orders WHERE id = $1 FOR UPDATE",
             &[&order_id],
         )
         .await
@@ -339,7 +339,7 @@ pub async fn update_order_state(
     });
 
     tx.execute(
-        "UPDATE orders SET state = $1, exchange_order_id = COALESCE($2, exchange_order_id), \
+        "UPDATE prediction_orders SET state = $1, exchange_order_id = COALESCE($2, exchange_order_id), \
          filled_quantity = COALESCE($3, filled_quantity), cancel_reason = COALESCE($4, cancel_reason) \
          WHERE id = $5",
         &[
@@ -445,7 +445,7 @@ pub async fn get_ambiguous_orders(pool: &Pool) -> Result<Vec<Order>, String> {
                     ticker, side, action, quantity, price_cents, \
                     filled_quantity, time_in_force, state, cancel_reason, \
                     created_at, updated_at \
-             FROM orders \
+             FROM prediction_orders \
              WHERE state IN ('submitted', 'pending_cancel') \
              ORDER BY id",
             &[],
@@ -469,7 +469,7 @@ pub async fn get_order(pool: &Pool, order_id: i64) -> Result<Option<Order>, Stri
                     ticker, side, action, quantity, price_cents, \
                     filled_quantity, time_in_force, state, cancel_reason, \
                     created_at, updated_at \
-             FROM orders WHERE id = $1",
+             FROM prediction_orders WHERE id = $1",
             &[&order_id],
         )
         .await
@@ -494,7 +494,7 @@ pub async fn get_order_by_client_id(
                     ticker, side, action, quantity, price_cents, \
                     filled_quantity, time_in_force, state, cancel_reason, \
                     created_at, updated_at \
-             FROM orders WHERE client_order_id = $1",
+             FROM prediction_orders WHERE client_order_id = $1",
             &[&client_order_id],
         )
         .await
@@ -520,7 +520,7 @@ pub async fn list_orders(
                         ticker, side, action, quantity, price_cents, \
                         filled_quantity, time_in_force, state, cancel_reason, \
                         created_at, updated_at \
-                 FROM orders WHERE state = $1 ORDER BY id",
+                 FROM prediction_orders WHERE state = $1 ORDER BY id",
                 &[&state.to_string()],
             )
             .await
@@ -531,7 +531,7 @@ pub async fn list_orders(
                         ticker, side, action, quantity, price_cents, \
                         filled_quantity, time_in_force, state, cancel_reason, \
                         created_at, updated_at \
-                 FROM orders ORDER BY id",
+                 FROM prediction_orders ORDER BY id",
                 &[],
             )
             .await
@@ -551,7 +551,7 @@ pub async fn compute_risk_state(pool: &Pool, session_id: i64) -> Result<RiskStat
     let row = client
         .query_one(
             "SELECT COALESCE(SUM((price_cents::NUMERIC / 100) * (quantity - filled_quantity)), 0) as open_notional \
-             FROM orders \
+             FROM prediction_orders \
              WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel')",
             &[&session_id],
         )
@@ -564,7 +564,7 @@ pub async fn compute_risk_state(pool: &Pool, session_id: i64) -> Result<RiskStat
 }
 
 /// Enqueue a cancel action for an order
-pub async fn enqueue_cancel(pool: &Pool, order_id: i64) -> Result<(), String> {
+pub async fn enqueue_cancel(pool: &Pool, order_id: i64, actor: &str) -> Result<(), String> {
     let client = pool
         .get()
         .await
@@ -572,8 +572,8 @@ pub async fn enqueue_cancel(pool: &Pool, order_id: i64) -> Result<(), String> {
 
     client
         .execute(
-            "INSERT INTO order_queue (order_id, action) VALUES ($1, 'cancel')",
-            &[&order_id],
+            "INSERT INTO order_queue (order_id, action, actor) VALUES ($1, 'cancel', $2)",
+            &[&order_id, &actor],
         )
         .await
         .map_err(|e| format!("enqueue cancel: {}", e))?;
@@ -603,7 +603,7 @@ pub async fn atomic_cancel_order(
     // Lock the order row and get current state
     let row = tx
         .query_opt(
-            "SELECT state FROM orders WHERE id = $1 FOR UPDATE",
+            "SELECT state FROM prediction_orders WHERE id = $1 FOR UPDATE",
             &[&order_id],
         )
         .await
@@ -634,7 +634,7 @@ pub async fn atomic_cancel_order(
 
     // Update state to PendingCancel
     tx.execute(
-        "UPDATE orders SET state = 'pending_cancel', cancel_reason = $1 WHERE id = $2",
+        "UPDATE prediction_orders SET state = 'pending_cancel', cancel_reason = $1 WHERE id = $2",
         &[&cancel_str, &order_id],
     )
     .await
@@ -642,7 +642,7 @@ pub async fn atomic_cancel_order(
 
     // Enqueue cancel
     tx.execute(
-        "INSERT INTO order_queue (order_id, action) VALUES ($1, 'cancel')",
+        "INSERT INTO order_queue (order_id, action, actor) VALUES ($1, 'cancel', 'api')",
         &[&order_id],
     )
     .await
@@ -694,7 +694,7 @@ pub async fn drain_queue_for_shutdown(pool: &Pool) -> Result<u64, String> {
     for row in &rows {
         let order_id: i64 = row.get("order_id");
         tx.execute(
-            "UPDATE orders SET state = 'rejected', cancel_reason = 'shutdown' \
+            "UPDATE prediction_orders SET state = 'rejected', cancel_reason = 'shutdown' \
              WHERE id = $1 AND state NOT IN ('filled', 'cancelled', 'rejected', 'expired')",
             &[&order_id],
         )

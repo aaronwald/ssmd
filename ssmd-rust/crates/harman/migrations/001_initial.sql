@@ -17,7 +17,7 @@ INSERT INTO sessions (id, exchange) VALUES (1, 'kalshi') ON CONFLICT (id) DO NOT
 -- Orders
 -- NOTE: side CHECK ('yes'/'no') is prediction-market-specific.
 -- This table is intentionally scoped to prediction markets (Kalshi), not a generalized order table.
-CREATE TABLE IF NOT EXISTS orders (
+CREATE TABLE IF NOT EXISTS prediction_orders (
     id BIGSERIAL PRIMARY KEY,
     session_id BIGINT NOT NULL REFERENCES sessions(id),
     client_order_id UUID NOT NULL UNIQUE,
@@ -41,16 +41,17 @@ CREATE TABLE IF NOT EXISTS orders (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_orders_state ON orders(state) WHERE state NOT IN ('filled', 'cancelled', 'rejected', 'expired');
-CREATE INDEX IF NOT EXISTS idx_orders_session ON orders(session_id);
+CREATE INDEX IF NOT EXISTS idx_prediction_orders_state ON prediction_orders(state) WHERE state NOT IN ('filled', 'cancelled', 'rejected', 'expired');
+CREATE INDEX IF NOT EXISTS idx_prediction_orders_session ON prediction_orders(session_id);
 
 -- Order queue (transactional outbox)
 -- Orders are inserted here atomically with the order itself.
 -- The sweeper dequeues from here using SELECT FOR UPDATE SKIP LOCKED.
 CREATE TABLE IF NOT EXISTS order_queue (
     id BIGSERIAL PRIMARY KEY,
-    order_id BIGINT NOT NULL REFERENCES orders(id),
+    order_id BIGINT NOT NULL REFERENCES prediction_orders(id),
     action TEXT NOT NULL CHECK (action IN ('submit', 'cancel')),
+    actor TEXT NOT NULL DEFAULT 'system',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     processing BOOLEAN NOT NULL DEFAULT FALSE
 );
@@ -60,7 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_order_queue_pending ON order_queue(id) WHERE NOT 
 -- Fills (trade executions)
 CREATE TABLE IF NOT EXISTS fills (
     id BIGSERIAL PRIMARY KEY,
-    order_id BIGINT NOT NULL REFERENCES orders(id),
+    order_id BIGINT NOT NULL REFERENCES prediction_orders(id),
     trade_id TEXT NOT NULL UNIQUE,
     price_cents INT NOT NULL,
     quantity INT NOT NULL CHECK (quantity > 0),
@@ -75,7 +76,7 @@ CREATE INDEX IF NOT EXISTS idx_fills_order ON fills(order_id);
 -- Audit log for state transitions
 CREATE TABLE IF NOT EXISTS audit_log (
     id BIGSERIAL PRIMARY KEY,
-    order_id BIGINT NOT NULL REFERENCES orders(id),
+    order_id BIGINT NOT NULL REFERENCES prediction_orders(id),
     from_state TEXT NOT NULL,
     to_state TEXT NOT NULL,
     event TEXT NOT NULL,
@@ -86,8 +87,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_order ON audit_log(order_id);
 
--- Trigger to auto-update updated_at on orders
-CREATE OR REPLACE FUNCTION update_orders_updated_at()
+-- Trigger to auto-update updated_at on prediction_orders
+CREATE OR REPLACE FUNCTION update_prediction_orders_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = NOW();
@@ -96,11 +97,11 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Drop and recreate trigger (CREATE OR REPLACE not available for triggers)
-DROP TRIGGER IF EXISTS orders_updated_at ON orders;
-CREATE TRIGGER orders_updated_at
-    BEFORE UPDATE ON orders
+DROP TRIGGER IF EXISTS prediction_orders_updated_at ON prediction_orders;
+CREATE TRIGGER prediction_orders_updated_at
+    BEFORE UPDATE ON prediction_orders
     FOR EACH ROW
-    EXECUTE FUNCTION update_orders_updated_at();
+    EXECUTE FUNCTION update_prediction_orders_updated_at();
 
 -- NOTIFY trigger for order queue (future optimization, not used in MVP polling)
 CREATE OR REPLACE FUNCTION notify_order_queue()
