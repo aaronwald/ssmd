@@ -118,15 +118,27 @@ async fn run_snap_inner(
 }
 
 /// Extract the market_ticker (Kalshi), pair_id (Kraken), or token_id (Polymarket)
-/// from a JSON payload. Tries known field names in order.
+/// from a JSON payload. Tries known field names at top level and inside "msg" wrapper.
 fn extract_ticker(payload: &[u8]) -> Option<String> {
     let v: serde_json::Value = serde_json::from_slice(payload).ok()?;
     let obj = v.as_object()?;
 
     // Try in order: market_ticker (Kalshi), pair_id (Kraken), token_id (Polymarket)
-    for key in &["market_ticker", "pair_id", "token_id"] {
+    let keys = &["market_ticker", "pair_id", "token_id"];
+
+    // Check top-level fields
+    for key in keys {
         if let Some(val) = obj.get(*key).and_then(|v| v.as_str()) {
             return Some(val.to_string());
+        }
+    }
+
+    // Check inside "msg" wrapper (Kalshi connector wraps ticker data)
+    if let Some(msg) = obj.get("msg").and_then(|v| v.as_object()) {
+        for key in keys {
+            if let Some(val) = msg.get(*key).and_then(|v| v.as_str()) {
+                return Some(val.to_string());
+            }
         }
     }
 
@@ -153,6 +165,12 @@ mod tests {
     fn test_extract_polymarket_ticker() {
         let payload = br#"{"token_id":"abc123","best_bid":0.55}"#;
         assert_eq!(extract_ticker(payload), Some("abc123".into()));
+    }
+
+    #[test]
+    fn test_extract_kalshi_nested_msg() {
+        let payload = br#"{"type":"ticker","sid":1,"msg":{"market_ticker":"KXBTCD-26FEB21-T100250","yes_bid":50}}"#;
+        assert_eq!(extract_ticker(payload), Some("KXBTCD-26FEB21-T100250".into()));
     }
 
     #[test]
