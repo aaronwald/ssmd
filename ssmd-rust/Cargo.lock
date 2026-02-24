@@ -3583,6 +3583,7 @@ dependencies = [
  "serde_json",
  "ssmd-connector-lib",
  "ssmd-exchange-kalshi",
+ "subtle",
  "tokio",
  "tokio-postgres",
  "tower",

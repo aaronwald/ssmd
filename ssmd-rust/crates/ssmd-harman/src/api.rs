@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, Request, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use harman::db;
@@ -32,7 +33,9 @@ async fn require_api_token(
     next: Next,
 ) -> Result<Response, StatusCode> {
     match extract_bearer(&req) {
-        Some(t) if t == state.api_token => Ok(next.run(req).await),
+        Some(t) if bool::from(t.as_bytes().ct_eq(state.api_token.as_bytes())) => {
+            Ok(next.run(req).await)
+        }
         _ => Err(StatusCode::UNAUTHORIZED),
     }
 }
@@ -44,7 +47,9 @@ async fn require_admin_token(
     next: Next,
 ) -> Result<Response, StatusCode> {
     match extract_bearer(&req) {
-        Some(t) if t == state.admin_token => Ok(next.run(req).await),
+        Some(t) if bool::from(t.as_bytes().ct_eq(state.admin_token.as_bytes())) => {
+            Ok(next.run(req).await)
+        }
         _ => Err(StatusCode::UNAUTHORIZED),
     }
 }
@@ -143,11 +148,25 @@ async fn create_order(
             })),
         )
             .into_response(),
-        Err(EnqueueError::DuplicateClientOrderId(_)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": "duplicate client_order_id"})),
-        )
-            .into_response(),
+        Err(EnqueueError::DuplicateClientOrderId(cid)) => {
+            // Idempotency replay: if the order exists in this session and is beyond Pending,
+            // return 200 with the order and X-Idempotent-Replay header.
+            match db::get_order_by_client_id(&state.pool, cid, state.session_id).await {
+                Ok(Some(order)) if order.state != OrderState::Pending => {
+                    let mut headers = HeaderMap::new();
+                    headers.insert("x-idempotent-replay", "true".parse().unwrap());
+                    (StatusCode::OK, headers, Json(order_to_json(&order))).into_response()
+                }
+                _ => {
+                    // Still pending (in-flight), not in this session, or lookup failed → 409
+                    (
+                        StatusCode::CONFLICT,
+                        Json(serde_json::json!({"error": "duplicate client_order_id"})),
+                    )
+                        .into_response()
+                }
+            }
+        }
         Err(EnqueueError::RiskCheck(e)) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(serde_json::json!({"error": e.to_string()})),

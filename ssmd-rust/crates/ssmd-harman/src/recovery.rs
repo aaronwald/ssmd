@@ -114,6 +114,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
                     if let Err(e) = db::update_order_state(
                         &state.pool,
                         order.id,
+                        state.session_id,
                         new_state,
                         Some(&exchange_status.exchange_order_id),
                         Some(exchange_status.filled_quantity),
@@ -139,6 +140,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
                     let _ = db::update_order_state(
                         &state.pool,
                         order.id,
+                        state.session_id,
                         OrderState::Rejected,
                         None,
                         None,
@@ -154,6 +156,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
                     let _ = db::update_order_state(
                         &state.pool,
                         order.id,
+                        state.session_id,
                         OrderState::Cancelled,
                         None,
                         None,
@@ -207,6 +210,7 @@ async fn discover_missing_fills(state: &Arc<AppState>) -> Result<(), String> {
             let inserted = db::record_fill(
                 &state.pool,
                 order.id,
+                state.session_id,
                 &fill.trade_id,
                 fill.price_cents,
                 fill.quantity,
