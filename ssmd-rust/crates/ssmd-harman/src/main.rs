@@ -142,8 +142,8 @@ async fn main() {
     // Check balance on startup
     match exchange.get_balance().await {
         Ok(balance) => info!(
-            available_cents = balance.available_cents,
-            total_cents = balance.total_cents,
+            available_dollars = %balance.available_dollars,
+            total_dollars = %balance.total_dollars,
             "connected to exchange"
         ),
         Err(e) => {

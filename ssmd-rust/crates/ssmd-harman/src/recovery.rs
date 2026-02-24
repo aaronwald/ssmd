@@ -212,7 +212,7 @@ async fn discover_missing_fills(state: &Arc<AppState>) -> Result<(), String> {
                 order.id,
                 state.session_id,
                 &fill.trade_id,
-                fill.price_cents,
+                fill.price_dollars,
                 fill.quantity,
                 fill.is_taker,
                 fill.filled_at,
@@ -250,7 +250,7 @@ async fn verify_positions(state: &Arc<AppState>) -> Result<(), String> {
     for pos in &exchange_positions {
         info!(
             ticker = %pos.ticker,
-            quantity = pos.quantity,
+            quantity = %pos.quantity,
             side = ?pos.side,
             "exchange position"
         );

@@ -62,7 +62,7 @@ parquet = { version = "57", default-features = false, features = ["arrow", "snap
 object_store = { version = "0.13", features = ["gcp"] }
 deadpool-postgres = "0.14"
 uuid = { version = "1", features = ["v4", "serde"] }
-rust_decimal = { version = "1", features = ["serde", "db-tokio-postgres"] }
+rust_decimal = { version = "1", features = ["serde", "serde-with-str", "db-tokio-postgres"] }
 subtle = "2"
 reqwest = { version = "0.12", features = ["json"] }
 wiremock = "0.6"

@@ -78,7 +78,7 @@ async fn discover_fills(state: &AppState) -> Result<u64, String> {
                 order.id,
                 state.session_id,
                 &fill.trade_id,
-                fill.price_cents,
+                fill.price_dollars,
                 fill.quantity,
                 fill.is_taker,
                 fill.filled_at,

@@ -9,7 +9,7 @@ pub struct KalshiOrderRequest {
     pub action: String,
     #[serde(rename = "type")]
     pub order_type: String,
-    pub count: i32,
+    pub count_fp: f64,
     pub yes_price: i32,
     pub time_in_force: String,
     pub subaccount: i32,

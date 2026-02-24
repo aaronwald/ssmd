@@ -56,12 +56,41 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         .await
         .map_err(|e| format!("failed to get connection: {}", e))?;
 
-    let migration_sql = include_str!("../migrations/001_initial.sql");
-
+    // Always run 001 (idempotent via IF NOT EXISTS)
+    let migration_001 = include_str!("../migrations/001_initial.sql");
     client
-        .batch_execute(migration_sql)
+        .batch_execute(migration_001)
         .await
-        .map_err(|e| format!("migration failed: {}", e))?;
+        .map_err(|e| format!("migration 001 failed: {}", e))?;
+
+    // Create schema_migrations table (idempotent)
+    client
+        .batch_execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )"
+        )
+        .await
+        .map_err(|e| format!("create schema_migrations failed: {}", e))?;
+
+    // Check if 002 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '002_decimal_migration'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 002: {}", e))?;
+
+    if row.is_none() {
+        let migration_002 = include_str!("../migrations/002_decimal_migration.sql");
+        client
+            .batch_execute(migration_002)
+            .await
+            .map_err(|e| format!("migration 002 failed: {}", e))?;
+        info!("migration 002_decimal_migration applied");
+    }
 
     info!("database migrations applied successfully");
     Ok(())
@@ -91,7 +120,7 @@ pub async fn enqueue_order(
     // Uses (quantity - filled_quantity) to account for partially-filled orders
     let risk_rows = tx
         .query(
-            "SELECT COALESCE(SUM((price_cents::NUMERIC / 100) * (quantity - filled_quantity)), 0) as open_notional \
+            "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
              FROM prediction_orders \
              WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel') \
              FOR UPDATE",
@@ -115,7 +144,7 @@ pub async fn enqueue_order(
     // Insert order
     let row = tx
         .query_one(
-            "INSERT INTO prediction_orders (session_id, client_order_id, ticker, side, action, quantity, price_cents, time_in_force, state) \
+            "INSERT INTO prediction_orders (session_id, client_order_id, ticker, side, action, quantity, price_dollars, time_in_force, state) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') \
              RETURNING id, created_at, updated_at",
             &[
@@ -125,7 +154,7 @@ pub async fn enqueue_order(
                 &request.side.to_string(),
                 &request.action.to_string(),
                 &request.quantity,
-                &request.price_cents,
+                &request.price_dollars,
                 &request.time_in_force.to_string(),
             ],
         )
@@ -175,8 +204,8 @@ pub async fn enqueue_order(
         side: request.side,
         action: request.action,
         quantity: request.quantity,
-        price_cents: request.price_cents,
-        filled_quantity: 0,
+        price_dollars: request.price_dollars,
+        filled_quantity: Decimal::ZERO,
         time_in_force: request.time_in_force,
         state: OrderState::Pending,
         cancel_reason: None,
@@ -214,7 +243,7 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
         .query_opt(
             "SELECT q.id as queue_id, q.order_id, q.action, \
                     o.id, o.session_id, o.client_order_id, o.exchange_order_id, \
-                    o.ticker, o.side, o.action as order_action, o.quantity, o.price_cents, \
+                    o.ticker, o.side, o.action as order_action, o.quantity, o.price_dollars, \
                     o.filled_quantity, o.time_in_force, o.state, o.cancel_reason, \
                     o.created_at, o.updated_at \
              FROM order_queue q \
@@ -276,7 +305,7 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
         side: parse_side(row.get("side")),
         action: parse_action(row.get("order_action")),
         quantity: row.get("quantity"),
-        price_cents: row.get("price_cents"),
+        price_dollars: row.get("price_dollars"),
         filled_quantity: row.get("filled_quantity"),
         time_in_force: parse_tif(row.get("time_in_force")),
         state: if action == "submit" {
@@ -310,7 +339,7 @@ pub async fn update_order_state(
     session_id: i64,
     new_state: OrderState,
     exchange_order_id: Option<&str>,
-    filled_quantity: Option<i32>,
+    filled_quantity: Option<Decimal>,
     cancel_reason: Option<&CancelReason>,
     actor: &str,
 ) -> Result<(), String> {
@@ -418,8 +447,8 @@ pub async fn record_fill(
     order_id: i64,
     session_id: i64,
     trade_id: &str,
-    price_cents: i32,
-    quantity: i32,
+    price_dollars: Decimal,
+    quantity: Decimal,
     is_taker: bool,
     filled_at: DateTime<Utc>,
 ) -> Result<bool, String> {
@@ -430,11 +459,11 @@ pub async fn record_fill(
 
     let result = client
         .execute(
-            "INSERT INTO fills (order_id, trade_id, price_cents, quantity, is_taker, filled_at) \
+            "INSERT INTO fills (order_id, trade_id, price_dollars, quantity, is_taker, filled_at) \
              SELECT $1, $2, $3, $4, $5, $6 \
              WHERE EXISTS (SELECT 1 FROM prediction_orders WHERE id = $1 AND session_id = $7) \
              ON CONFLICT (trade_id) DO NOTHING",
-            &[&order_id, &trade_id, &price_cents, &quantity, &is_taker, &filled_at, &session_id],
+            &[&order_id, &trade_id, &price_dollars, &quantity, &is_taker, &filled_at, &session_id],
         )
         .await
         .map_err(|e| format!("insert fill: {}", e))?;
@@ -490,7 +519,7 @@ pub async fn get_ambiguous_orders(pool: &Pool, session_id: i64) -> Result<Vec<Or
     let rows = client
         .query(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
-                    ticker, side, action, quantity, price_cents, \
+                    ticker, side, action, quantity, price_dollars, \
                     filled_quantity, time_in_force, state, cancel_reason, \
                     created_at, updated_at \
              FROM prediction_orders \
@@ -514,7 +543,7 @@ pub async fn get_order(pool: &Pool, order_id: i64, session_id: i64) -> Result<Op
     let row = client
         .query_opt(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
-                    ticker, side, action, quantity, price_cents, \
+                    ticker, side, action, quantity, price_dollars, \
                     filled_quantity, time_in_force, state, cancel_reason, \
                     created_at, updated_at \
              FROM prediction_orders WHERE id = $1 AND session_id = $2",
@@ -540,7 +569,7 @@ pub async fn get_order_by_client_id(
     let row = client
         .query_opt(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
-                    ticker, side, action, quantity, price_cents, \
+                    ticker, side, action, quantity, price_dollars, \
                     filled_quantity, time_in_force, state, cancel_reason, \
                     created_at, updated_at \
              FROM prediction_orders WHERE client_order_id = $1 AND session_id = $2",
@@ -567,7 +596,7 @@ pub async fn list_orders(
         client
             .query(
                 "SELECT id, session_id, client_order_id, exchange_order_id, \
-                        ticker, side, action, quantity, price_cents, \
+                        ticker, side, action, quantity, price_dollars, \
                         filled_quantity, time_in_force, state, cancel_reason, \
                         created_at, updated_at \
                  FROM prediction_orders WHERE session_id = $1 AND state = $2 ORDER BY id",
@@ -578,7 +607,7 @@ pub async fn list_orders(
         client
             .query(
                 "SELECT id, session_id, client_order_id, exchange_order_id, \
-                        ticker, side, action, quantity, price_cents, \
+                        ticker, side, action, quantity, price_dollars, \
                         filled_quantity, time_in_force, state, cancel_reason, \
                         created_at, updated_at \
                  FROM prediction_orders WHERE session_id = $1 ORDER BY id",
@@ -600,7 +629,7 @@ pub async fn compute_risk_state(pool: &Pool, session_id: i64) -> Result<RiskStat
 
     let row = client
         .query_one(
-            "SELECT COALESCE(SUM((price_cents::NUMERIC / 100) * (quantity - filled_quantity)), 0) as open_notional \
+            "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
              FROM prediction_orders \
              WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel')",
             &[&session_id],
@@ -774,7 +803,7 @@ fn row_to_order(row: &tokio_postgres::Row) -> Order {
         side: parse_side(row.get("side")),
         action: parse_action(row.get("action")),
         quantity: row.get("quantity"),
-        price_cents: row.get("price_cents"),
+        price_dollars: row.get("price_dollars"),
         filled_quantity: row.get("filled_quantity"),
         time_in_force: parse_tif(row.get("time_in_force")),
         state: parse_state(row.get("state")),

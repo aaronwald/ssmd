@@ -61,13 +61,13 @@ mod tests {
     use crate::types::{Action, Side, TimeInForce};
     use uuid::Uuid;
 
-    fn make_order(quantity: i32, price_cents: i32) -> OrderRequest {
-        make_order_with_side_action(quantity, price_cents, Side::Yes, Action::Buy)
+    fn make_order(quantity: Decimal, price_dollars: Decimal) -> OrderRequest {
+        make_order_with_side_action(quantity, price_dollars, Side::Yes, Action::Buy)
     }
 
     fn make_order_with_side_action(
-        quantity: i32,
-        price_cents: i32,
+        quantity: Decimal,
+        price_dollars: Decimal,
         side: Side,
         action: Action,
     ) -> OrderRequest {
@@ -77,7 +77,7 @@ mod tests {
             side,
             action,
             quantity,
-            price_cents,
+            price_dollars,
             time_in_force: TimeInForce::Gtc,
         }
     }
@@ -90,7 +90,7 @@ mod tests {
     fn test_order_passes_risk_check() {
         let state = RiskState::default();
         let limits = RiskLimits::default(); // $100
-        let order = make_order(10, 50); // $5.00
+        let order = make_order(Decimal::from(10), Decimal::new(50, 2)); // $5.00
         assert!(state.check_order(&order, &limits).is_ok());
     }
 
@@ -98,7 +98,7 @@ mod tests {
     fn test_order_exactly_at_limit() {
         let state = RiskState::default();
         let limits = RiskLimits::default(); // $100
-        let order = make_order(100, 100); // $100.00
+        let order = make_order(Decimal::from(100), Decimal::new(100, 2)); // $100.00
         assert!(state.check_order(&order, &limits).is_ok());
     }
 
@@ -106,7 +106,7 @@ mod tests {
     fn test_order_exceeds_limit() {
         let state = RiskState::default();
         let limits = RiskLimits::default(); // $100
-        let order = make_order(101, 100); // $101.00
+        let order = make_order(Decimal::from(101), Decimal::new(100, 2)); // $101.00
         let err = state.check_order(&order, &limits).unwrap_err();
         match err {
             RiskCheckError::MaxNotionalExceeded {
@@ -130,7 +130,7 @@ mod tests {
         // Smallest possible order: 1 contract at 1 cent = $0.01
         let state = RiskState::default();
         let limits = RiskLimits::default();
-        let order = make_order(1, 1);
+        let order = make_order(Decimal::from(1), Decimal::new(1, 2));
         assert!(state.check_order(&order, &limits).is_ok());
         assert_eq!(order.notional(), Decimal::new(1, 2)); // $0.01
     }
@@ -140,7 +140,7 @@ mod tests {
         // Kalshi max: 99 cents per contract
         let state = RiskState::default();
         let limits = RiskLimits::default();
-        let order = make_order(1, 99); // $0.99
+        let order = make_order(Decimal::from(1), Decimal::new(99, 2)); // $0.99
         assert!(state.check_order(&order, &limits).is_ok());
         assert_eq!(order.notional(), Decimal::new(99, 2));
     }
@@ -152,7 +152,7 @@ mod tests {
             open_notional: Decimal::new(9999, 2), // $99.99
         };
         let limits = RiskLimits::default();
-        let order = make_order(1, 2); // $0.02
+        let order = make_order(Decimal::from(1), Decimal::new(2, 2)); // $0.02
         assert!(state.check_order(&order, &limits).is_err());
     }
 
@@ -163,7 +163,7 @@ mod tests {
             open_notional: Decimal::new(9999, 2), // $99.99
         };
         let limits = RiskLimits::default();
-        let order = make_order(1, 1); // $0.01
+        let order = make_order(Decimal::from(1), Decimal::new(1, 2)); // $0.01
         assert!(state.check_order(&order, &limits).is_ok());
     }
 
@@ -174,28 +174,28 @@ mod tests {
 
         // Start at $0
         let state = RiskState::default();
-        let order1 = make_order(50, 50); // $25.00
+        let order1 = make_order(Decimal::from(50), Decimal::new(50, 2)); // $25.00
         assert!(state.check_order(&order1, &limits).is_ok());
 
         // Now at $25
         let state = RiskState {
             open_notional: Decimal::new(25, 0),
         };
-        let order2 = make_order(50, 50); // $25.00
+        let order2 = make_order(Decimal::from(50), Decimal::new(50, 2)); // $25.00
         assert!(state.check_order(&order2, &limits).is_ok());
 
         // Now at $50
         let state = RiskState {
             open_notional: Decimal::new(50, 0),
         };
-        let order3 = make_order(100, 50); // $50.00 → total $100 = limit
+        let order3 = make_order(Decimal::from(100), Decimal::new(50, 2)); // $50.00 → total $100 = limit
         assert!(state.check_order(&order3, &limits).is_ok());
 
         // Now at $100 — any additional should fail
         let state = RiskState {
             open_notional: Decimal::new(100, 0),
         };
-        let order4 = make_order(1, 1); // $0.01
+        let order4 = make_order(Decimal::from(1), Decimal::new(1, 2)); // $0.01
         assert!(state.check_order(&order4, &limits).is_err());
     }
 
@@ -205,9 +205,9 @@ mod tests {
         let state = RiskState::default();
         let limits = RiskLimits::default();
 
-        let a = make_order(10, 100); // 10 contracts * $1.00 = $10
-        let b = make_order(100, 10); // 100 contracts * $0.10 = $10
-        let c = make_order(20, 50); // 20 contracts * $0.50 = $10
+        let a = make_order(Decimal::from(10), Decimal::new(100, 2)); // 10 contracts * $1.00 = $10
+        let b = make_order(Decimal::from(100), Decimal::new(10, 2)); // 100 contracts * $0.10 = $10
+        let c = make_order(Decimal::from(20), Decimal::new(50, 2)); // 20 contracts * $0.50 = $10
 
         assert_eq!(a.notional(), b.notional());
         assert_eq!(b.notional(), c.notional());
@@ -220,7 +220,7 @@ mod tests {
     fn test_zero_quantity_order() {
         let state = RiskState::default();
         let limits = RiskLimits::default();
-        let order = make_order(0, 50); // 0 contracts = $0
+        let order = make_order(Decimal::from(0), Decimal::new(50, 2)); // 0 contracts = $0
         assert!(state.check_order(&order, &limits).is_ok());
     }
 
@@ -231,7 +231,7 @@ mod tests {
             max_notional: Decimal::ZERO,
         };
         // Even the smallest order should fail
-        let order = make_order(1, 1); // $0.01
+        let order = make_order(Decimal::from(1), Decimal::new(1, 2)); // $0.01
         assert!(state.check_order(&order, &limits).is_err());
     }
 
@@ -241,7 +241,7 @@ mod tests {
         let limits = RiskLimits {
             max_notional: Decimal::ZERO,
         };
-        let order = make_order(0, 50); // $0.00
+        let order = make_order(Decimal::from(0), Decimal::new(50, 2)); // $0.00
         assert!(state.check_order(&order, &limits).is_ok());
     }
 
@@ -254,7 +254,7 @@ mod tests {
         // No-side orders contribute same notional as yes-side
         let state = RiskState::default();
         let limits = RiskLimits::default();
-        let order = make_order_with_side_action(10, 50, Side::No, Action::Buy);
+        let order = make_order_with_side_action(Decimal::from(10), Decimal::new(50, 2), Side::No, Action::Buy);
         assert_eq!(order.notional(), Decimal::new(500, 2)); // $5.00
         assert!(state.check_order(&order, &limits).is_ok());
     }
@@ -264,7 +264,7 @@ mod tests {
         // Sell orders also consume risk
         let state = RiskState::default();
         let limits = RiskLimits::default();
-        let order = make_order_with_side_action(10, 50, Side::Yes, Action::Sell);
+        let order = make_order_with_side_action(Decimal::from(10), Decimal::new(50, 2), Side::Yes, Action::Sell);
         assert_eq!(order.notional(), Decimal::new(500, 2)); // $5.00
         assert!(state.check_order(&order, &limits).is_ok());
     }
@@ -275,7 +275,7 @@ mod tests {
             open_notional: Decimal::new(96, 0), // $96
         };
         let limits = RiskLimits::default();
-        let order = make_order_with_side_action(10, 50, Side::No, Action::Sell); // $5
+        let order = make_order_with_side_action(Decimal::from(10), Decimal::new(50, 2), Side::No, Action::Sell); // $5
         assert!(state.check_order(&order, &limits).is_err());
     }
 
@@ -291,11 +291,11 @@ mod tests {
         let limits = RiskLimits::default(); // $100
 
         // $4 should pass (95 + 4 = 99)
-        let small_order = make_order(8, 50); // $4.00
+        let small_order = make_order(Decimal::from(8), Decimal::new(50, 2)); // $4.00
         assert!(state.check_order(&small_order, &limits).is_ok());
 
         // $6 should fail (95 + 6 = 101)
-        let big_order = make_order(12, 50); // $6.00
+        let big_order = make_order(Decimal::from(12), Decimal::new(50, 2)); // $6.00
         assert!(state.check_order(&big_order, &limits).is_err());
     }
 
@@ -305,7 +305,7 @@ mod tests {
         let limits = RiskLimits {
             max_notional: Decimal::new(50, 0), // $50
         };
-        let order = make_order(100, 51); // $51.00
+        let order = make_order(Decimal::from(100), Decimal::new(51, 2)); // $51.00
         assert!(state.check_order(&order, &limits).is_err());
     }
 
@@ -317,11 +317,11 @@ mod tests {
         let limits = RiskLimits::default(); // $100
 
         // $1.00 should pass (99 + 1 = 100)
-        let order = make_order(1, 100); // $1.00
+        let order = make_order(Decimal::from(1), Decimal::new(100, 2)); // $1.00
         assert!(state.check_order(&order, &limits).is_ok());
 
         // $1.01 should fail (99 + 1.01 = 100.01)
-        let order2 = make_order(1, 101); // $1.01
+        let order2 = make_order(Decimal::from(1), Decimal::new(101, 2)); // $1.01
         assert!(state.check_order(&order2, &limits).is_err());
     }
 
@@ -330,7 +330,7 @@ mod tests {
         // 1000 contracts at 1 cent = $10
         let state = RiskState::default();
         let limits = RiskLimits::default();
-        let order = make_order(1000, 1);
+        let order = make_order(Decimal::from(1000), Decimal::new(1, 2));
         assert_eq!(order.notional(), Decimal::new(10, 0)); // $10
         assert!(state.check_order(&order, &limits).is_ok());
     }
@@ -340,7 +340,7 @@ mod tests {
         // 10001 contracts at 1 cent = $100.01 → exceeds $100 limit
         let state = RiskState::default();
         let limits = RiskLimits::default();
-        let order = make_order(10001, 1);
+        let order = make_order(Decimal::from(10001), Decimal::new(1, 2));
         assert!(state.check_order(&order, &limits).is_err());
     }
 
@@ -356,7 +356,7 @@ mod tests {
         let limits = RiskLimits {
             max_notional: Decimal::new(90, 0), // $90
         };
-        let order = make_order(20, 60); // $12.00 → $80 + $12 = $92 > $90
+        let order = make_order(Decimal::from(20), Decimal::new(60, 2)); // $12.00 → $80 + $12 = $92 > $90
 
         let err = state.check_order(&order, &limits).unwrap_err();
         match err {

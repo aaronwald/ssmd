@@ -6,6 +6,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
@@ -90,8 +91,10 @@ pub struct CreateOrderRequest {
     pub ticker: String,
     pub side: Side,
     pub action: Action,
-    pub quantity: i32,
-    pub price_cents: i32,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub quantity: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub price_dollars: Decimal,
     #[serde(default = "default_tif")]
     pub time_in_force: TimeInForce,
 }
@@ -113,17 +116,17 @@ async fn create_order(
     }
 
     // Validate
-    if req.quantity <= 0 {
+    if req.quantity <= Decimal::ZERO {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(serde_json::json!({"error": "quantity must be positive"})),
         )
             .into_response();
     }
-    if req.price_cents <= 0 || req.price_cents >= 100 {
+    if req.price_dollars <= Decimal::ZERO || req.price_dollars >= Decimal::ONE {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": "price_cents must be between 1 and 99"})),
+            Json(serde_json::json!({"error": "price_dollars must be between 0 and 1 exclusive"})),
         )
             .into_response();
     }
@@ -134,7 +137,7 @@ async fn create_order(
         side: req.side,
         action: req.action,
         quantity: req.quantity,
-        price_cents: req.price_cents,
+        price_dollars: req.price_dollars,
         time_in_force: req.time_in_force,
     };
 
@@ -425,9 +428,9 @@ fn order_to_json(order: &Order) -> serde_json::Value {
         "ticker": order.ticker,
         "side": order.side,
         "action": order.action,
-        "quantity": order.quantity,
-        "price_cents": order.price_cents,
-        "filled_quantity": order.filled_quantity,
+        "quantity": order.quantity.to_string(),
+        "price_dollars": order.price_dollars.to_string(),
+        "filled_quantity": order.filled_quantity.to_string(),
         "time_in_force": order.time_in_force,
         "state": order.state.to_string(),
         "cancel_reason": order.cancel_reason,

@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use chrono::DateTime;
 use reqwest::Client;
+use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
 use std::time::Duration;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -217,15 +219,17 @@ impl ExchangeAdapter for KalshiClient {
     async fn submit_order(&self, order: &OrderRequest) -> Result<String, ExchangeError> {
         // Kalshi API always uses yes_price for both Yes and No side orders.
         // For No-side orders, the exchange interprets yes_price as the complement
-        // (i.e., no_price = 100 - yes_price). We pass our price_cents directly.
+        // (i.e., no_price = 100 - yes_price). We pass our price_dollars converted to cents.
         let body = KalshiOrderRequest {
             ticker: order.ticker.clone(),
             client_order_id: order.client_order_id.to_string(),
             side: order.side.to_string(),
             action: order.action.to_string(),
             order_type: "limit".to_string(),
-            count: order.quantity,
-            yes_price: order.price_cents,
+            count_fp: order.quantity.to_f64().unwrap_or(0.0),
+            yes_price: (order.price_dollars * Decimal::from(100))
+                .to_i32()
+                .unwrap_or(0),
             time_in_force: order.time_in_force.to_string(),
             subaccount: 0,
         };
@@ -326,8 +330,8 @@ impl ExchangeAdapter for KalshiClient {
         Ok(ExchangeOrderStatus {
             exchange_order_id: order.order_id.clone(),
             status: Self::map_order_status(&order),
-            filled_quantity: filled,
-            remaining_quantity: remaining,
+            filled_quantity: Decimal::from(filled),
+            remaining_quantity: Decimal::from(remaining),
         })
     }
 
@@ -360,8 +364,8 @@ impl ExchangeAdapter for KalshiClient {
                 } else {
                     Side::No
                 },
-                quantity: p.position.unsigned_abs() as i32,
-                market_value_cents: p.market_exposure,
+                quantity: Decimal::from(p.position.unsigned_abs()),
+                market_value_dollars: Decimal::new(p.market_exposure, 2),
             })
             .collect())
     }
@@ -397,8 +401,8 @@ impl ExchangeAdapter for KalshiClient {
                     ticker: f.ticker,
                     side: Self::parse_side(&f.side),
                     action: Self::parse_action(&f.action),
-                    price_cents: f.yes_price as i32,
-                    quantity: f.count as i32,
+                    price_dollars: Decimal::new(f.yes_price, 2),
+                    quantity: Decimal::from(f.count),
                     is_taker: f.is_taker,
                     filled_at,
                 }
@@ -426,8 +430,11 @@ impl ExchangeAdapter for KalshiClient {
             .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
 
         Ok(Balance {
-            available_cents: balance_resp.balance.balance,
-            total_cents: balance_resp.balance.balance + balance_resp.balance.payout,
+            available_dollars: Decimal::new(balance_resp.balance.balance, 2),
+            total_dollars: Decimal::new(
+                balance_resp.balance.balance + balance_resp.balance.payout,
+                2,
+            ),
         })
     }
 }
@@ -469,8 +476,8 @@ mod tests {
             ticker: "KXBTCD-26FEB-T100000".to_string(),
             side: Side::Yes,
             action: Action::Buy,
-            quantity: 10,
-            price_cents: 50,
+            quantity: Decimal::from(10),
+            price_dollars: Decimal::new(50, 2),
             time_in_force: harman::types::TimeInForce::Gtc,
         }
     }
@@ -622,8 +629,8 @@ mod tests {
         let result = client.get_order_by_client_id(cid).await.unwrap();
         assert_eq!(result.exchange_order_id, "exch-order-123");
         assert_eq!(result.status, ExchangeOrderState::Resting);
-        assert_eq!(result.filled_quantity, 3);
-        assert_eq!(result.remaining_quantity, 7);
+        assert_eq!(result.filled_quantity, Decimal::from(3));
+        assert_eq!(result.remaining_quantity, Decimal::from(7));
     }
 
     #[tokio::test]
@@ -640,8 +647,8 @@ mod tests {
             .await;
 
         let result = client.get_balance().await.unwrap();
-        assert_eq!(result.available_cents, 10000);
-        assert_eq!(result.total_cents, 10500);
+        assert_eq!(result.available_dollars, Decimal::new(10000, 2));
+        assert_eq!(result.total_dollars, Decimal::new(10500, 2));
     }
 
     #[tokio::test]
@@ -669,7 +676,8 @@ mod tests {
         let fills = client.get_fills().await.unwrap();
         assert_eq!(fills.len(), 1);
         assert_eq!(fills[0].trade_id, "trade-001");
-        assert_eq!(fills[0].quantity, 5);
+        assert_eq!(fills[0].price_dollars, Decimal::new(50, 2));
+        assert_eq!(fills[0].quantity, Decimal::from(5));
         assert!(fills[0].is_taker);
     }
 
@@ -695,7 +703,7 @@ mod tests {
         let positions = client.get_positions().await.unwrap();
         assert_eq!(positions.len(), 1);
         assert_eq!(positions[0].ticker, "KXBTCD-26FEB-T100000");
-        assert_eq!(positions[0].quantity, 10);
-        assert_eq!(positions[0].market_value_cents, 500);
+        assert_eq!(positions[0].quantity, Decimal::from(10));
+        assert_eq!(positions[0].market_value_dollars, Decimal::new(500, 2));
     }
 }

@@ -76,17 +76,17 @@ pub struct OrderRequest {
     pub ticker: String,
     pub side: Side,
     pub action: Action,
-    pub quantity: i32,
-    pub price_cents: i32,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub quantity: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub price_dollars: Decimal,
     pub time_in_force: TimeInForce,
 }
 
 impl OrderRequest {
     /// Compute the notional value of this order in dollars
     pub fn notional(&self) -> Decimal {
-        let price = Decimal::new(self.price_cents as i64, 2);
-        let qty = Decimal::from(self.quantity);
-        price * qty
+        self.price_dollars * self.quantity
     }
 }
 
@@ -100,9 +100,12 @@ pub struct Order {
     pub ticker: String,
     pub side: Side,
     pub action: Action,
-    pub quantity: i32,
-    pub price_cents: i32,
-    pub filled_quantity: i32,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub quantity: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub price_dollars: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub filled_quantity: Decimal,
     pub time_in_force: TimeInForce,
     pub state: OrderState,
     pub cancel_reason: Option<CancelReason>,
@@ -116,8 +119,10 @@ pub struct Fill {
     pub id: i64,
     pub order_id: i64,
     pub trade_id: String,
-    pub price_cents: i32,
-    pub quantity: i32,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub price_dollars: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub quantity: Decimal,
     pub is_taker: bool,
     pub filled_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
@@ -128,8 +133,8 @@ pub struct Fill {
 pub struct ExchangeOrderStatus {
     pub exchange_order_id: String,
     pub status: ExchangeOrderState,
-    pub filled_quantity: i32,
-    pub remaining_quantity: i32,
+    pub filled_quantity: Decimal,
+    pub remaining_quantity: Decimal,
 }
 
 /// Simplified exchange order state
@@ -146,15 +151,19 @@ pub enum ExchangeOrderState {
 pub struct Position {
     pub ticker: String,
     pub side: Side,
-    pub quantity: i32,
-    pub market_value_cents: i64,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub quantity: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub market_value_dollars: Decimal,
 }
 
 /// Portfolio balance from exchange
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Balance {
-    pub available_cents: i64,
-    pub total_cents: i64,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub available_dollars: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub total_dollars: Decimal,
 }
 
 /// Exchange fill record
@@ -165,8 +174,8 @@ pub struct ExchangeFill {
     pub ticker: String,
     pub side: Side,
     pub action: Action,
-    pub price_cents: i32,
-    pub quantity: i32,
+    pub price_dollars: Decimal,
+    pub quantity: Decimal,
     pub is_taker: bool,
     pub filled_at: DateTime<Utc>,
 }
@@ -182,8 +191,8 @@ mod tests {
             ticker: "KXBTCD-26FEB-T100000".to_string(),
             side: Side::Yes,
             action: Action::Buy,
-            quantity: 10,
-            price_cents: 50,
+            quantity: Decimal::from(10),
+            price_dollars: Decimal::new(50, 2),
             time_in_force: TimeInForce::Gtc,
         };
         // 10 contracts at $0.50 each = $5.00
@@ -197,8 +206,8 @@ mod tests {
             ticker: "KXBTCD-26FEB-T100000".to_string(),
             side: Side::Yes,
             action: Action::Buy,
-            quantity: 100,
-            price_cents: 99,
+            quantity: Decimal::from(100),
+            price_dollars: Decimal::new(99, 2),
             time_in_force: TimeInForce::Gtc,
         };
         // 100 contracts at $0.99 each = $99.00
