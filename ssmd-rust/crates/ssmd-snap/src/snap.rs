@@ -56,7 +56,7 @@ async fn run_snap_inner(
     let consumer = stream
         .create_consumer(ConsumerConfig {
             filter_subject: stream_config.filter_subject.clone(),
-            deliver_policy: jetstream::consumer::DeliverPolicy::Last,
+            deliver_policy: jetstream::consumer::DeliverPolicy::LastPerSubject,
             ack_policy: jetstream::consumer::AckPolicy::None,
             ..Default::default()
         })
