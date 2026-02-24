@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::error::TransitionError;
@@ -78,9 +79,9 @@ pub enum OrderEvent {
     /// Exchange rejected the order
     Reject { reason: String },
     /// Partial fill received
-    PartialFill { filled_qty: i32 },
+    PartialFill { filled_qty: Decimal },
     /// Complete fill received
-    Fill { filled_qty: i32 },
+    Fill { filled_qty: Decimal },
     /// Cancel requested by user or system
     CancelRequest,
     /// Cancel confirmed by exchange
@@ -197,7 +198,7 @@ mod tests {
     #[test]
     fn test_fill_accepted_from_pending() {
         // Fill before ack — exchange filled before we even got acknowledgement
-        let result = apply_event(OrderState::Pending, &OrderEvent::Fill { filled_qty: 10 });
+        let result = apply_event(OrderState::Pending, &OrderEvent::Fill { filled_qty: Decimal::from(10) });
         assert_eq!(result.unwrap(), OrderState::Filled);
     }
 
@@ -205,7 +206,7 @@ mod tests {
     fn test_fill_accepted_from_submitted() {
         let result = apply_event(
             OrderState::Submitted,
-            &OrderEvent::Fill { filled_qty: 10 },
+            &OrderEvent::Fill { filled_qty: Decimal::from(10) },
         );
         assert_eq!(result.unwrap(), OrderState::Filled);
     }
@@ -214,7 +215,7 @@ mod tests {
     fn test_fill_accepted_from_acknowledged() {
         let result = apply_event(
             OrderState::Acknowledged,
-            &OrderEvent::Fill { filled_qty: 10 },
+            &OrderEvent::Fill { filled_qty: Decimal::from(10) },
         );
         assert_eq!(result.unwrap(), OrderState::Filled);
     }
@@ -223,7 +224,7 @@ mod tests {
     fn test_fill_accepted_from_partially_filled() {
         let result = apply_event(
             OrderState::PartiallyFilled,
-            &OrderEvent::Fill { filled_qty: 5 },
+            &OrderEvent::Fill { filled_qty: Decimal::from(5) },
         );
         assert_eq!(result.unwrap(), OrderState::Filled);
     }
@@ -233,7 +234,7 @@ mod tests {
         // Fill wins the race against cancel
         let result = apply_event(
             OrderState::PendingCancel,
-            &OrderEvent::Fill { filled_qty: 10 },
+            &OrderEvent::Fill { filled_qty: Decimal::from(10) },
         );
         assert_eq!(result.unwrap(), OrderState::Filled);
     }
@@ -249,7 +250,7 @@ mod tests {
             OrderState::PendingCancel,
         ];
         for state in non_terminal {
-            let result = apply_event(state, &OrderEvent::Fill { filled_qty: 1 });
+            let result = apply_event(state, &OrderEvent::Fill { filled_qty: Decimal::from(1) });
             assert_eq!(
                 result.unwrap(),
                 OrderState::Filled,
@@ -269,7 +270,7 @@ mod tests {
         // Partial fill before ack
         let result = apply_event(
             OrderState::Pending,
-            &OrderEvent::PartialFill { filled_qty: 3 },
+            &OrderEvent::PartialFill { filled_qty: Decimal::from(3) },
         );
         assert_eq!(result.unwrap(), OrderState::PartiallyFilled);
     }
@@ -278,7 +279,7 @@ mod tests {
     fn test_partial_fill_from_submitted() {
         let result = apply_event(
             OrderState::Submitted,
-            &OrderEvent::PartialFill { filled_qty: 5 },
+            &OrderEvent::PartialFill { filled_qty: Decimal::from(5) },
         );
         assert_eq!(result.unwrap(), OrderState::PartiallyFilled);
     }
@@ -287,7 +288,7 @@ mod tests {
     fn test_partial_fill_from_acknowledged() {
         let result = apply_event(
             OrderState::Acknowledged,
-            &OrderEvent::PartialFill { filled_qty: 5 },
+            &OrderEvent::PartialFill { filled_qty: Decimal::from(5) },
         );
         assert_eq!(result.unwrap(), OrderState::PartiallyFilled);
     }
@@ -296,7 +297,7 @@ mod tests {
     fn test_partial_fill_from_partially_filled() {
         let result = apply_event(
             OrderState::PartiallyFilled,
-            &OrderEvent::PartialFill { filled_qty: 3 },
+            &OrderEvent::PartialFill { filled_qty: Decimal::from(3) },
         );
         assert_eq!(result.unwrap(), OrderState::PartiallyFilled);
     }
@@ -306,7 +307,7 @@ mod tests {
         // Partial fill during PendingCancel: stay PendingCancel to preserve cancel intent
         let result = apply_event(
             OrderState::PendingCancel,
-            &OrderEvent::PartialFill { filled_qty: 3 },
+            &OrderEvent::PartialFill { filled_qty: Decimal::from(3) },
         );
         assert_eq!(result.unwrap(), OrderState::PendingCancel);
     }
@@ -322,7 +323,7 @@ mod tests {
             OrderState::PendingCancel,
         ];
         for state in non_terminal {
-            let result = apply_event(state, &OrderEvent::PartialFill { filled_qty: 1 });
+            let result = apply_event(state, &OrderEvent::PartialFill { filled_qty: Decimal::from(1) });
             assert!(
                 result.is_ok(),
                 "PartialFill must be accepted from {:?}",
@@ -414,8 +415,8 @@ mod tests {
             OrderEvent::Submit,
             OrderEvent::Acknowledge { exchange_order_id: "x".into() },
             OrderEvent::Reject { reason: "r".into() },
-            OrderEvent::PartialFill { filled_qty: 1 },
-            OrderEvent::Fill { filled_qty: 1 },
+            OrderEvent::PartialFill { filled_qty: Decimal::from(1) },
+            OrderEvent::Fill { filled_qty: Decimal::from(1) },
             OrderEvent::CancelRequest,
             OrderEvent::CancelConfirm,
             OrderEvent::Expire,
@@ -435,8 +436,8 @@ mod tests {
             OrderEvent::Submit,
             OrderEvent::Acknowledge { exchange_order_id: "x".into() },
             OrderEvent::Reject { reason: "r".into() },
-            OrderEvent::PartialFill { filled_qty: 1 },
-            OrderEvent::Fill { filled_qty: 1 },
+            OrderEvent::PartialFill { filled_qty: Decimal::from(1) },
+            OrderEvent::Fill { filled_qty: Decimal::from(1) },
             OrderEvent::CancelRequest,
             OrderEvent::CancelConfirm,
             OrderEvent::Expire,
@@ -456,8 +457,8 @@ mod tests {
             OrderEvent::Submit,
             OrderEvent::Acknowledge { exchange_order_id: "x".into() },
             OrderEvent::Reject { reason: "r".into() },
-            OrderEvent::PartialFill { filled_qty: 1 },
-            OrderEvent::Fill { filled_qty: 1 },
+            OrderEvent::PartialFill { filled_qty: Decimal::from(1) },
+            OrderEvent::Fill { filled_qty: Decimal::from(1) },
             OrderEvent::CancelRequest,
             OrderEvent::CancelConfirm,
             OrderEvent::Expire,
@@ -477,8 +478,8 @@ mod tests {
             OrderEvent::Submit,
             OrderEvent::Acknowledge { exchange_order_id: "x".into() },
             OrderEvent::Reject { reason: "r".into() },
-            OrderEvent::PartialFill { filled_qty: 1 },
-            OrderEvent::Fill { filled_qty: 1 },
+            OrderEvent::PartialFill { filled_qty: Decimal::from(1) },
+            OrderEvent::Fill { filled_qty: Decimal::from(1) },
             OrderEvent::CancelRequest,
             OrderEvent::CancelConfirm,
             OrderEvent::Expire,
@@ -566,7 +567,7 @@ mod tests {
         assert_eq!(s, OrderState::Submitted);
         let s = apply_event(s, &OrderEvent::Acknowledge { exchange_order_id: "e1".into() }).unwrap();
         assert_eq!(s, OrderState::Acknowledged);
-        let s = apply_event(s, &OrderEvent::Fill { filled_qty: 10 }).unwrap();
+        let s = apply_event(s, &OrderEvent::Fill { filled_qty: Decimal::from(10) }).unwrap();
         assert_eq!(s, OrderState::Filled);
     }
 
@@ -575,11 +576,11 @@ mod tests {
         // Pending → Submitted → Acknowledged → PartiallyFilled → PartiallyFilled → Filled
         let s = apply_event(OrderState::Pending, &OrderEvent::Submit).unwrap();
         let s = apply_event(s, &OrderEvent::Acknowledge { exchange_order_id: "e1".into() }).unwrap();
-        let s = apply_event(s, &OrderEvent::PartialFill { filled_qty: 3 }).unwrap();
+        let s = apply_event(s, &OrderEvent::PartialFill { filled_qty: Decimal::from(3) }).unwrap();
         assert_eq!(s, OrderState::PartiallyFilled);
-        let s = apply_event(s, &OrderEvent::PartialFill { filled_qty: 4 }).unwrap();
+        let s = apply_event(s, &OrderEvent::PartialFill { filled_qty: Decimal::from(4) }).unwrap();
         assert_eq!(s, OrderState::PartiallyFilled);
-        let s = apply_event(s, &OrderEvent::Fill { filled_qty: 3 }).unwrap();
+        let s = apply_event(s, &OrderEvent::Fill { filled_qty: Decimal::from(3) }).unwrap();
         assert_eq!(s, OrderState::Filled);
     }
 
@@ -598,12 +599,12 @@ mod tests {
     fn test_lifecycle_cancel_with_partial_fill_then_full_fill() {
         // Acknowledged → PartiallyFilled → PendingCancel → (partial fill) → (full fill wins)
         let s = OrderState::Acknowledged;
-        let s = apply_event(s, &OrderEvent::PartialFill { filled_qty: 3 }).unwrap();
+        let s = apply_event(s, &OrderEvent::PartialFill { filled_qty: Decimal::from(3) }).unwrap();
         let s = apply_event(s, &OrderEvent::CancelRequest).unwrap();
         assert_eq!(s, OrderState::PendingCancel);
-        let s = apply_event(s, &OrderEvent::PartialFill { filled_qty: 2 }).unwrap();
+        let s = apply_event(s, &OrderEvent::PartialFill { filled_qty: Decimal::from(2) }).unwrap();
         assert_eq!(s, OrderState::PendingCancel); // cancel intent preserved
-        let s = apply_event(s, &OrderEvent::Fill { filled_qty: 5 }).unwrap();
+        let s = apply_event(s, &OrderEvent::Fill { filled_qty: Decimal::from(5) }).unwrap();
         assert_eq!(s, OrderState::Filled); // fill wins the race
     }
 
@@ -611,14 +612,14 @@ mod tests {
     fn test_lifecycle_fill_before_ack() {
         // Pending → Submitted → Filled (exchange filled before ack arrived)
         let s = apply_event(OrderState::Pending, &OrderEvent::Submit).unwrap();
-        let s = apply_event(s, &OrderEvent::Fill { filled_qty: 10 }).unwrap();
+        let s = apply_event(s, &OrderEvent::Fill { filled_qty: Decimal::from(10) }).unwrap();
         assert_eq!(s, OrderState::Filled);
     }
 
     #[test]
     fn test_lifecycle_fill_while_pending() {
         // Pending → Filled (extreme out-of-order: fill before we even submitted)
-        let s = apply_event(OrderState::Pending, &OrderEvent::Fill { filled_qty: 10 }).unwrap();
+        let s = apply_event(OrderState::Pending, &OrderEvent::Fill { filled_qty: Decimal::from(10) }).unwrap();
         assert_eq!(s, OrderState::Filled);
     }
 
@@ -626,9 +627,9 @@ mod tests {
     fn test_lifecycle_partial_fill_before_ack() {
         // Pending → Submitted → PartiallyFilled → Filled
         let s = apply_event(OrderState::Pending, &OrderEvent::Submit).unwrap();
-        let s = apply_event(s, &OrderEvent::PartialFill { filled_qty: 3 }).unwrap();
+        let s = apply_event(s, &OrderEvent::PartialFill { filled_qty: Decimal::from(3) }).unwrap();
         assert_eq!(s, OrderState::PartiallyFilled);
-        let s = apply_event(s, &OrderEvent::Fill { filled_qty: 7 }).unwrap();
+        let s = apply_event(s, &OrderEvent::Fill { filled_qty: Decimal::from(7) }).unwrap();
         assert_eq!(s, OrderState::Filled);
     }
 

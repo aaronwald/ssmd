@@ -141,7 +141,7 @@ async fn handle_submit(state: &AppState, item: &db::QueueItem) -> SubmitOutcome 
             side: item.order.side,
             action: item.order.action,
             quantity: item.order.quantity,
-            price_cents: item.order.price_cents,
+            price_dollars: item.order.price_dollars,
             time_in_force: item.order.time_in_force,
         })
         .await
