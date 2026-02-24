@@ -52,8 +52,10 @@ rules:
   resources:
   - archivers
   - connectors
+  - harmans
   - notifiers
   - signals
+  - snaps
   verbs:
   - create
   - delete
@@ -67,8 +69,10 @@ rules:
   resources:
   - archivers/finalizers
   - connectors/finalizers
+  - harmans/finalizers
   - notifiers/finalizers
   - signals/finalizers
+  - snaps/finalizers
   verbs:
   - update
 - apiGroups:
@@ -76,8 +80,10 @@ rules:
   resources:
   - archivers/status
   - connectors/status
+  - harmans/status
   - notifiers/status
   - signals/status
+  - snaps/status
   verbs:
   - get
   - patch

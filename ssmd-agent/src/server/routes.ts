@@ -1855,6 +1855,100 @@ route("GET", "/v1/data/freshness", async (req) => {
   });
 }, true, "datasets:read", "public");
 
+// Live price snapshots from Redis (populated by ssmd-snap)
+route("GET", "/v1/data/snap", async (req) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+
+  const feed = url.searchParams.get("feed");
+  if (!feed || !VALID_DATA_FEEDS.includes(feed)) {
+    return json({ error: `Invalid or missing feed. Valid: ${VALID_DATA_FEEDS.join(", ")}` }, 400);
+  }
+
+  if (!auth.allowedFeeds.includes(feed)) {
+    return json({ error: `Key not authorized for feed: ${feed}` }, 403);
+  }
+
+  const redis = await getRedis();
+  const tickersParam = url.searchParams.get("tickers");
+
+  // deno-lint-ignore no-explicit-any
+  let rawEntries: Array<{ key: string; value: string | null }> = [];
+
+  if (tickersParam) {
+    // MGET specific tickers
+    const tickers = tickersParam.split(",").map((t) => t.trim()).filter(Boolean);
+    if (tickers.length === 0) {
+      return json({ error: "tickers must not be empty when provided" }, 400);
+    }
+    if (tickers.length > 500) {
+      return json({ error: "Maximum 500 tickers per request" }, 400);
+    }
+
+    const keys = tickers.map((t) => `snap:${feed}:${t}`);
+    const values = await redis.mget(...keys);
+    for (let i = 0; i < keys.length; i++) {
+      rawEntries.push({ key: tickers[i], value: values[i] ?? null });
+    }
+  } else {
+    // SCAN for all keys matching this feed (limit 500)
+    const pattern = `snap:${feed}:*`;
+    const prefix = `snap:${feed}:`;
+    let cursor = "0";
+    const seen = new Set<string>();
+
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, { pattern, count: 100 });
+      cursor = nextCursor;
+      for (const key of keys) {
+        if (!seen.has(key) && seen.size < 500) {
+          seen.add(key);
+        }
+      }
+    } while (cursor !== "0" && seen.size < 500);
+
+    if (seen.size > 0) {
+      const keyArray = [...seen];
+      const values = await redis.mget(...keyArray);
+      for (let i = 0; i < keyArray.length; i++) {
+        const ticker = keyArray[i].slice(prefix.length);
+        rawEntries.push({ key: ticker, value: values[i] ?? null });
+      }
+    }
+  }
+
+  // Parse JSON values and convert Kalshi prices from cents to dollars
+  const isKalshi = feed === "kalshi";
+  const priceFields = ["yes_bid", "yes_ask", "no_bid", "no_ask", "last_price"];
+
+  // deno-lint-ignore no-explicit-any
+  const snapshots: any[] = [];
+  for (const entry of rawEntries) {
+    if (!entry.value) continue;
+    try {
+      const parsed = JSON.parse(entry.value);
+      if (isKalshi) {
+        for (const field of priceFields) {
+          if (typeof parsed[field] === "number") {
+            parsed[field] = parsed[field] / 100;
+          }
+        }
+      }
+      // Use the ticker from the key, not the payload, for consistency
+      parsed._ticker = entry.key;
+      snapshots.push(parsed);
+    } catch {
+      // Skip unparseable entries
+    }
+  }
+
+  return json({
+    feed,
+    snapshots,
+    count: snapshots.length,
+  });
+}, true, "datasets:read", "public");
+
 // Chat completions proxy (OpenRouter)
 route("POST", "/v1/chat/completions", async (req, ctx) => {
   if (!OPENROUTER_API_KEY) {

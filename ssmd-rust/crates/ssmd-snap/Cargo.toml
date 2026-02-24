@@ -1,0 +1,25 @@
+[package]
+name = "ssmd-snap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "NATS ticker stream to Redis snapshot service for SSMD"
+
+[[bin]]
+name = "ssmd-snap"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+async-nats = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+futures-util = { workspace = true }
+chrono = { workspace = true }
+axum = { workspace = true }
+prometheus = { workspace = true }
