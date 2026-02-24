@@ -25,6 +25,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/orders/mass-cancel", post(mass_cancel))
         .route("/v1/orders/:id", get(get_order))
         .route("/v1/orders/:id", delete(cancel_order))
+        .route("/v1/admin/pump", post(pump_handler))
+        .route("/v1/admin/reconcile", post(reconcile_handler))
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .with_state(state)
@@ -279,6 +281,33 @@ async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         )
             .into_response(),
     }
+}
+
+/// POST /v1/admin/pump
+///
+/// Drain all pending queue items, submit/cancel to exchange, return results.
+async fn pump_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "shutting down"})),
+        )
+            .into_response();
+    }
+
+    let result = crate::sweeper::pump(&state).await;
+    (StatusCode::OK, Json(result)).into_response()
+}
+
+/// POST /v1/admin/reconcile
+///
+/// Discover fills, resolve stale orders, return results.
+async fn reconcile_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let result = crate::reconciliation::reconcile(&state).await;
+    (StatusCode::OK, Json(result)).into_response()
 }
 
 fn order_to_json(order: &Order) -> serde_json::Value {

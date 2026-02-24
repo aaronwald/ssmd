@@ -1,5 +1,4 @@
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use serde::Serialize;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
@@ -9,45 +8,55 @@ use harman::types::ExchangeOrderState;
 
 use crate::AppState;
 
-const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
 const STALE_THRESHOLD: Duration = Duration::from_secs(30);
 
-/// Run the reconciliation loop.
+#[derive(Debug, Serialize)]
+pub struct ReconcileResult {
+    pub fills_discovered: u64,
+    pub orders_resolved: u64,
+    pub errors: Vec<String>,
+}
+
+/// Run one full reconciliation cycle: discover fills, then resolve stale orders.
 ///
-/// Periodically:
-/// 1. Discovers missing fills from exchange
-/// 2. Resolves stale submitted/pending_cancel orders
-pub async fn run(state: Arc<AppState>) {
-    info!("reconciliation poller started");
+/// Called explicitly via `POST /v1/admin/reconcile` — no background polling.
+pub async fn reconcile(state: &AppState) -> ReconcileResult {
+    let mut result = ReconcileResult {
+        fills_discovered: 0,
+        orders_resolved: 0,
+        errors: vec![],
+    };
 
-    loop {
-        if state.shutting_down.load(Ordering::Relaxed) {
-            info!("reconciliation shutting down");
-            break;
-        }
-
-        tokio::time::sleep(RECONCILIATION_INTERVAL).await;
-
-        if state.shutting_down.load(Ordering::Relaxed) {
-            break;
-        }
-
-        // 1. Discover fills
-        if let Err(e) = discover_fills(&state).await {
+    match discover_fills(state).await {
+        Ok(count) => result.fills_discovered = count,
+        Err(e) => {
             error!(error = %e, "fill discovery failed");
-        }
-
-        // 2. Resolve stale orders
-        if let Err(e) = resolve_stale_orders(&state).await {
-            error!(error = %e, "stale order resolution failed");
+            result.errors.push(format!("fill discovery: {}", e));
         }
     }
+
+    match resolve_stale_orders(state).await {
+        Ok(count) => result.orders_resolved = count,
+        Err(e) => {
+            error!(error = %e, "stale order resolution failed");
+            result.errors.push(format!("stale resolution: {}", e));
+        }
+    }
+
+    info!(
+        fills_discovered = result.fills_discovered,
+        orders_resolved = result.orders_resolved,
+        errors = result.errors.len(),
+        "reconciliation complete"
+    );
+
+    result
 }
 
 /// Fetch recent fills from exchange and record any missing ones.
 ///
 /// Loads all orders once and builds a lookup to avoid N+1 queries.
-async fn discover_fills(state: &Arc<AppState>) -> Result<(), String> {
+async fn discover_fills(state: &AppState) -> Result<u64, String> {
     let fills = state
         .exchange
         .get_fills()
@@ -56,9 +65,9 @@ async fn discover_fills(state: &Arc<AppState>) -> Result<(), String> {
 
     debug!(count = fills.len(), "fetched exchange fills");
 
-    // Load orders once for the entire fill batch (fixes N+1 query)
     let orders = db::list_orders(&state.pool, None).await?;
 
+    let mut count = 0u64;
     for fill in &fills {
         if let Some(order) = orders
             .iter()
@@ -82,22 +91,27 @@ async fn discover_fills(state: &Arc<AppState>) -> Result<(), String> {
                     "recorded missing fill"
                 );
                 state.metrics.fills_recorded.inc();
+                count += 1;
             }
         }
     }
 
-    Ok(())
+    Ok(count)
 }
 
-/// Find and resolve orders stuck in ambiguous states
-async fn resolve_stale_orders(state: &Arc<AppState>) -> Result<(), String> {
+/// Find and resolve orders stuck in ambiguous states.
+async fn resolve_stale_orders(state: &AppState) -> Result<u64, String> {
     let ambiguous = db::get_ambiguous_orders(&state.pool).await?;
 
     let now = chrono::Utc::now();
+    let mut count = 0u64;
 
     for order in &ambiguous {
         let age = now - order.updated_at;
-        if age < chrono::Duration::from_std(STALE_THRESHOLD).unwrap_or(chrono::Duration::seconds(30)) {
+        if age
+            < chrono::Duration::from_std(STALE_THRESHOLD)
+                .unwrap_or(chrono::Duration::seconds(30))
+        {
             continue; // Not stale yet
         }
 
@@ -114,29 +128,29 @@ async fn resolve_stale_orders(state: &Arc<AppState>) -> Result<(), String> {
             .await
         {
             Ok(exchange_status) => {
-                // Use shared resolution logic
-                let new_state = match state::resolve_exchange_state(&order.state, &exchange_status.status) {
-                    Some(s) => Some(s),
-                    None => {
-                        // Special case: PendingCancel + Resting → re-send cancel
-                        if order.state == OrderState::PendingCancel
-                            && exchange_status.status == ExchangeOrderState::Resting
-                        {
-                            if let Some(eid) = &order.exchange_order_id {
-                                warn!(order_id = order.id, "re-sending cancel");
-                                let _ = state.exchange.cancel_order(eid).await;
+                let new_state =
+                    match state::resolve_exchange_state(&order.state, &exchange_status.status) {
+                        Some(s) => Some(s),
+                        None => {
+                            // Special case: PendingCancel + Resting → re-send cancel
+                            if order.state == OrderState::PendingCancel
+                                && exchange_status.status == ExchangeOrderState::Resting
+                            {
+                                if let Some(eid) = &order.exchange_order_id {
+                                    warn!(order_id = order.id, "re-sending cancel");
+                                    let _ = state.exchange.cancel_order(eid).await;
+                                }
+                            } else {
+                                warn!(
+                                    order_id = order.id,
+                                    local_state = %order.state,
+                                    exchange_state = ?exchange_status.status,
+                                    "unhandled reconciliation case"
+                                );
                             }
-                        } else {
-                            warn!(
-                                order_id = order.id,
-                                local_state = %order.state,
-                                exchange_state = ?exchange_status.status,
-                                "unhandled reconciliation case"
-                            );
+                            None
                         }
-                        None
-                    }
-                };
+                    };
 
                 if let Some(new_state) = new_state {
                     info!(
@@ -158,17 +172,18 @@ async fn resolve_stale_orders(state: &Arc<AppState>) -> Result<(), String> {
                     .await
                     {
                         error!(error = %e, "failed to update reconciled state");
+                    } else {
+                        count += 1;
                     }
                 }
             }
             Err(harman::error::ExchangeError::NotFound(_)) => {
-                // Order not found on exchange
                 if order.state == OrderState::Submitted {
                     info!(
                         order_id = order.id,
                         "submitted order not found on exchange, marking rejected"
                     );
-                    let _ = db::update_order_state(
+                    if let Err(e) = db::update_order_state(
                         &state.pool,
                         order.id,
                         OrderState::Rejected,
@@ -177,7 +192,12 @@ async fn resolve_stale_orders(state: &Arc<AppState>) -> Result<(), String> {
                         None,
                         "reconciliation",
                     )
-                    .await;
+                    .await
+                    {
+                        error!(error = %e, "failed to update rejected state");
+                    } else {
+                        count += 1;
+                    }
                 }
             }
             Err(e) => {
@@ -190,5 +210,5 @@ async fn resolve_stale_orders(state: &Arc<AppState>) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    Ok(count)
 }

@@ -1,6 +1,5 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::{error, info, warn};
 
 use crate::AppState;
@@ -8,11 +7,10 @@ use crate::AppState;
 /// Wait for shutdown signal (SIGTERM or ctrl-c) and initiate graceful shutdown.
 ///
 /// Sequence:
-/// 1. Set shutting_down flag (API returns 503)
+/// 1. Set shutting_down flag (API returns 503, pump returns early)
 /// 2. Mass cancel all open orders on exchange
 /// 3. Drain remaining queue items (reject them without transitioning to Submitted)
-/// 4. Wait for sweeper/reconciler to stop
-/// 5. Exit
+/// 4. Exit
 pub async fn wait_for_shutdown(state: Arc<AppState>) {
     shutdown_signal().await;
 
@@ -36,9 +34,6 @@ pub async fn wait_for_shutdown(state: Arc<AppState>) {
         Err(e) => error!(error = %e, "drain queue failed"),
     }
 
-    // Give sweeper/reconciler time to notice the flag
-    info!("waiting for tasks to complete...");
-    tokio::time::sleep(Duration::from_secs(2)).await;
     info!("shutdown complete");
 }
 

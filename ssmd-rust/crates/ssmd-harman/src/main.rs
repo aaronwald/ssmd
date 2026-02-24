@@ -155,23 +155,11 @@ async fn main() {
         metrics: Metrics::new(),
     });
 
-    // Run recovery BEFORE starting sweeper
+    // Run recovery before starting API server
     if let Err(e) = recovery::run(&state).await {
         error!(error = %e, "recovery failed, exiting");
         std::process::exit(1);
     }
-
-    // Spawn sweeper
-    let sweeper_state = state.clone();
-    let sweeper_handle = tokio::spawn(async move {
-        sweeper::run(sweeper_state).await;
-    });
-
-    // Spawn reconciliation
-    let recon_state = state.clone();
-    let recon_handle = tokio::spawn(async move {
-        reconciliation::run(recon_state).await;
-    });
 
     // Spawn shutdown handler
     let shutdown_state = state.clone();
@@ -192,10 +180,6 @@ async fn main() {
         })
         .await
         .expect("server error");
-
-    // Wait for background tasks
-    sweeper_handle.abort();
-    recon_handle.abort();
 
     info!("ssmd-harman stopped");
 }

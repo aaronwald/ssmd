@@ -1,6 +1,5 @@
+use serde::Serialize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use harman::db;
@@ -10,24 +9,40 @@ use harman::types::CancelReason;
 
 use crate::AppState;
 
-const POLL_INTERVAL: Duration = Duration::from_millis(500);
+#[derive(Debug, Serialize)]
+pub struct PumpResult {
+    pub processed: u64,
+    pub submitted: u64,
+    pub rejected: u64,
+    pub cancelled: u64,
+    pub requeued: u64,
+    pub errors: Vec<String>,
+}
 
-/// Run the sweeper loop.
+/// Drain all pending queue items, submit/cancel to exchange, return results.
 ///
-/// Dequeues orders from the queue, submits them to the exchange,
-/// and updates state based on the response.
-pub async fn run(state: Arc<AppState>) {
-    info!("sweeper started");
+/// Processes items until the queue is empty or a rate limit is hit.
+/// Called explicitly via `POST /v1/admin/pump` — no background polling.
+pub async fn pump(state: &AppState) -> PumpResult {
+    let mut result = PumpResult {
+        processed: 0,
+        submitted: 0,
+        rejected: 0,
+        cancelled: 0,
+        requeued: 0,
+        errors: vec![],
+    };
 
     loop {
         if state.shutting_down.load(Ordering::Relaxed) {
-            info!("sweeper shutting down");
+            result.errors.push("shutting down".into());
             break;
         }
 
         match db::dequeue_order(&state.pool).await {
             Ok(Some(item)) => {
                 state.metrics.orders_dequeued.inc();
+                result.processed += 1;
                 debug!(
                     queue_id = item.queue_id,
                     order_id = item.order_id,
@@ -36,36 +51,101 @@ pub async fn run(state: Arc<AppState>) {
                 );
 
                 match item.action.as_str() {
-                    "submit" => handle_submit(&state, &item).await,
-                    "cancel" => handle_cancel(&state, &item).await,
+                    "submit" => {
+                        let outcome = handle_submit(state, &item).await;
+                        match outcome {
+                            SubmitOutcome::Submitted => result.submitted += 1,
+                            SubmitOutcome::Rejected => result.rejected += 1,
+                            SubmitOutcome::Timeout => {
+                                result.errors.push(format!(
+                                    "order {} timed out, left for reconciliation",
+                                    item.order_id
+                                ));
+                            }
+                            SubmitOutcome::Requeued(reason) => {
+                                result.requeued += 1;
+                                result.errors.push(reason);
+                            }
+                            SubmitOutcome::RateLimited => {
+                                result.requeued += 1;
+                                result
+                                    .errors
+                                    .push("rate limited, stopping early".into());
+                                break;
+                            }
+                        }
+                    }
+                    "cancel" => {
+                        let outcome = handle_cancel(state, &item).await;
+                        match outcome {
+                            CancelOutcome::Cancelled | CancelOutcome::NotFound => {
+                                result.cancelled += 1;
+                            }
+                            CancelOutcome::Skipped => {}
+                            CancelOutcome::Requeued(reason) => {
+                                result.requeued += 1;
+                                result.errors.push(reason);
+                            }
+                            CancelOutcome::RateLimited => {
+                                result.requeued += 1;
+                                result
+                                    .errors
+                                    .push("rate limited on cancel, stopping early".into());
+                                break;
+                            }
+                        }
+                    }
                     other => {
                         warn!(action = other, "unknown queue action, removing");
                         let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
                     }
                 }
             }
-            Ok(None) => {
-                // No items in queue, sleep
-                tokio::time::sleep(POLL_INTERVAL).await;
-            }
+            Ok(None) => break,
             Err(e) => {
+                let msg = format!("dequeue failed: {}", e);
                 error!(error = %e, "dequeue failed");
-                tokio::time::sleep(POLL_INTERVAL).await;
+                result.errors.push(msg);
+                break;
             }
         }
     }
+
+    info!(
+        processed = result.processed,
+        submitted = result.submitted,
+        rejected = result.rejected,
+        cancelled = result.cancelled,
+        requeued = result.requeued,
+        errors = result.errors.len(),
+        "pump complete"
+    );
+
+    result
 }
 
-async fn handle_submit(state: &Arc<AppState>, item: &db::QueueItem) {
-    match state.exchange.submit_order(&harman::types::OrderRequest {
-        client_order_id: item.order.client_order_id,
-        ticker: item.order.ticker.clone(),
-        side: item.order.side,
-        action: item.order.action,
-        quantity: item.order.quantity,
-        price_cents: item.order.price_cents,
-        time_in_force: item.order.time_in_force,
-    }).await {
+enum SubmitOutcome {
+    Submitted,
+    Rejected,
+    Timeout,
+    Requeued(String),
+    RateLimited,
+}
+
+async fn handle_submit(state: &AppState, item: &db::QueueItem) -> SubmitOutcome {
+    match state
+        .exchange
+        .submit_order(&harman::types::OrderRequest {
+            client_order_id: item.order.client_order_id,
+            ticker: item.order.ticker.clone(),
+            side: item.order.side,
+            action: item.order.action,
+            quantity: item.order.quantity,
+            price_cents: item.order.price_cents,
+            time_in_force: item.order.time_in_force,
+        })
+        .await
+    {
         Ok(exchange_order_id) => {
             info!(
                 order_id = item.order_id,
@@ -89,6 +169,7 @@ async fn handle_submit(state: &Arc<AppState>, item: &db::QueueItem) {
             }
 
             let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            SubmitOutcome::Submitted
         }
         Err(ExchangeError::Rejected { reason }) => {
             warn!(
@@ -113,29 +194,24 @@ async fn handle_submit(state: &Arc<AppState>, item: &db::QueueItem) {
             }
 
             let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            SubmitOutcome::Rejected
         }
-        Err(ExchangeError::RateLimited { retry_after_ms }) => {
-            warn!(
-                order_id = item.order_id,
-                retry_after_ms,
-                "rate limited, requeueing"
-            );
+        Err(ExchangeError::RateLimited { retry_after_ms: _ }) => {
+            warn!(order_id = item.order_id, "rate limited, requeueing");
 
-            // Requeue for retry
             if let Err(e) = db::requeue_item(&state.pool, item.queue_id).await {
                 error!(error = %e, "failed to requeue");
             }
 
-            // Sleep to respect rate limit
-            tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
+            SubmitOutcome::RateLimited
         }
         Err(ExchangeError::Timeout { .. }) => {
             warn!(
                 order_id = item.order_id,
                 "exchange timeout, leaving as submitted for reconciliation"
             );
-            // Don't requeue - reconciliation will handle it
             let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            SubmitOutcome::Timeout
         }
         Err(e) => {
             error!(
@@ -148,12 +224,20 @@ async fn handle_submit(state: &Arc<AppState>, item: &db::QueueItem) {
                 error!(error = %e, "failed to requeue");
             }
 
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            SubmitOutcome::Requeued(format!("order {}: {}", item.order_id, e))
         }
     }
 }
 
-async fn handle_cancel(state: &Arc<AppState>, item: &db::QueueItem) {
+enum CancelOutcome {
+    Cancelled,
+    NotFound,
+    Skipped,
+    Requeued(String),
+    RateLimited,
+}
+
+async fn handle_cancel(state: &AppState, item: &db::QueueItem) -> CancelOutcome {
     let exchange_order_id = match &item.order.exchange_order_id {
         Some(id) => id.clone(),
         None => {
@@ -162,7 +246,7 @@ async fn handle_cancel(state: &Arc<AppState>, item: &db::QueueItem) {
                 "cancel requested but no exchange_order_id, skipping"
             );
             let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
-            return;
+            return CancelOutcome::Skipped;
         }
     };
 
@@ -186,20 +270,21 @@ async fn handle_cancel(state: &Arc<AppState>, item: &db::QueueItem) {
             }
 
             let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            CancelOutcome::Cancelled
         }
         Err(ExchangeError::NotFound(_)) => {
-            // Order already gone - might have been filled
             warn!(
                 order_id = item.order_id,
                 "cancel target not found on exchange, reconciliation will resolve"
             );
             let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            CancelOutcome::NotFound
         }
-        Err(ExchangeError::RateLimited { retry_after_ms }) => {
+        Err(ExchangeError::RateLimited { retry_after_ms: _ }) => {
             if let Err(e) = db::requeue_item(&state.pool, item.queue_id).await {
                 error!(error = %e, "failed to requeue cancel");
             }
-            tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
+            CancelOutcome::RateLimited
         }
         Err(e) => {
             error!(
@@ -210,7 +295,7 @@ async fn handle_cancel(state: &Arc<AppState>, item: &db::QueueItem) {
             if let Err(e) = db::requeue_item(&state.pool, item.queue_id).await {
                 error!(error = %e, "failed to requeue cancel");
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            CancelOutcome::Requeued(format!("cancel order {}: {}", item.order_id, e))
         }
     }
 }
