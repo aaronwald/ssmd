@@ -59,7 +59,7 @@ anyhow = "1"
 lru = "0.12"
 prometheus = "0.13"
 arrow = { version = "57", default-features = false, features = ["chrono-tz"] }
-parquet = { version = "57", default-features = false, features = ["arrow", "snap", "zstd"] }
+parquet = { version = "58", default-features = false, features = ["arrow", "snap", "zstd"] }
 object_store = { version = "0.13", features = ["gcp"] }
 deadpool-postgres = "0.14"
 uuid = { version = "1", features = ["v4", "serde"] }
