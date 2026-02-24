@@ -8,13 +8,13 @@ use harman::types::ExchangeOrderState;
 
 use crate::AppState;
 
-/// Run recovery before starting the sweeper.
+/// Run recovery before starting the API server.
 ///
 /// Resolves orders in ambiguous states (submitted, pending_cancel)
 /// by querying the exchange for their true state.
 ///
-/// This MUST complete before the sweeper starts to prevent
-/// duplicate submissions.
+/// This MUST complete before the API server starts to prevent
+/// duplicate submissions or stale risk state.
 pub async fn run(state: &Arc<AppState>) -> Result<(), String> {
     info!("starting recovery coordinator");
 
