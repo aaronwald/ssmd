@@ -386,7 +386,7 @@ async fn pump_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .into_response();
     }
 
-    let result = crate::sweeper::pump(&state).await;
+    let result = crate::pump::pump(&state).await;
     (StatusCode::OK, Json(result)).into_response()
 }
 

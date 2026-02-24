@@ -182,7 +182,7 @@ pub async fn enqueue_order(
     })
 }
 
-/// Queued order item for the sweeper
+/// Queued order item for the pump
 #[derive(Debug)]
 pub struct QueueItem {
     pub queue_id: i64,
@@ -193,7 +193,7 @@ pub struct QueueItem {
 
 /// Dequeue the next order for processing, scoped to a session.
 ///
-/// Uses SELECT FOR UPDATE SKIP LOCKED for concurrent sweeper safety.
+/// Uses SELECT FOR UPDATE SKIP LOCKED for concurrent safety.
 /// Marks the queue item as processing, then transitions the order to submitted state.
 pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueItem>, String> {
     let mut client = pool
@@ -253,7 +253,7 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
         .map_err(|e| format!("update state: {}", e))?;
 
         tx.execute(
-            "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, 'submitted', 'submit', 'sweeper')",
+            "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, 'submitted', 'submit', 'pump')",
             &[&order_id, &from_state],
         )
         .await

@@ -2,7 +2,7 @@ mod api;
 mod reconciliation;
 mod recovery;
 mod shutdown;
-mod sweeper;
+mod pump;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
