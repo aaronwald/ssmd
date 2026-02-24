@@ -1,5 +1,5 @@
 # ssmd-data-ts: TypeScript data server for market data
-FROM denoland/deno:bin-2.6.5 AS deno_bin
+FROM denoland/deno:bin-2.6.10 AS deno_bin
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
