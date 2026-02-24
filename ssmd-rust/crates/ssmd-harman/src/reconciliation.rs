@@ -153,6 +153,7 @@ async fn resolve_stale_orders(state: &Arc<AppState>) -> Result<(), String> {
                         Some(&exchange_status.exchange_order_id),
                         Some(exchange_status.filled_quantity),
                         None,
+                        "reconciliation",
                     )
                     .await
                     {
@@ -174,6 +175,7 @@ async fn resolve_stale_orders(state: &Arc<AppState>) -> Result<(), String> {
                         None,
                         None,
                         None,
+                        "reconciliation",
                     )
                     .await;
                 }

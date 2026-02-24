@@ -81,6 +81,7 @@ async fn handle_submit(state: &Arc<AppState>, item: &db::QueueItem) {
                 Some(&exchange_order_id),
                 None,
                 None,
+                "sweeper",
             )
             .await
             {
@@ -104,6 +105,7 @@ async fn handle_submit(state: &Arc<AppState>, item: &db::QueueItem) {
                 None,
                 None,
                 None,
+                "sweeper",
             )
             .await
             {
@@ -176,6 +178,7 @@ async fn handle_cancel(state: &Arc<AppState>, item: &db::QueueItem) {
                 None,
                 None,
                 Some(&CancelReason::UserRequested),
+                "sweeper",
             )
             .await
             {

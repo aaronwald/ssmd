@@ -5,7 +5,8 @@
 -- Sessions (hardcoded to 1 for MVP)
 CREATE TABLE IF NOT EXISTS sessions (
     id BIGSERIAL PRIMARY KEY,
-    exchange TEXT NOT NULL DEFAULT 'kalshi',
+    exchange TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'system',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     closed_at TIMESTAMPTZ
 );
@@ -14,6 +15,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 INSERT INTO sessions (id, exchange) VALUES (1, 'kalshi') ON CONFLICT (id) DO NOTHING;
 
 -- Orders
+-- NOTE: side CHECK ('yes'/'no') is prediction-market-specific.
+-- This table is intentionally scoped to prediction markets (Kalshi), not a generalized order table.
 CREATE TABLE IF NOT EXISTS orders (
     id BIGSERIAL PRIMARY KEY,
     session_id BIGINT NOT NULL REFERENCES sessions(id),
@@ -33,6 +36,7 @@ CREATE TABLE IF NOT EXISTS orders (
     cancel_reason TEXT CHECK (cancel_reason IN (
         'user_requested', 'risk_limit_breached', 'shutdown', 'expired', 'exchange_cancel'
     )),
+    actor TEXT NOT NULL DEFAULT 'system',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -61,6 +65,7 @@ CREATE TABLE IF NOT EXISTS fills (
     price_cents INT NOT NULL,
     quantity INT NOT NULL CHECK (quantity > 0),
     is_taker BOOLEAN NOT NULL DEFAULT FALSE,
+    actor TEXT NOT NULL DEFAULT 'system',
     filled_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -74,6 +79,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     from_state TEXT NOT NULL,
     to_state TEXT NOT NULL,
     event TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'system',
     details JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

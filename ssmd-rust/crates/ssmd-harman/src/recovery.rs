@@ -118,6 +118,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
                         Some(&exchange_status.exchange_order_id),
                         Some(exchange_status.filled_quantity),
                         None,
+                        "recovery",
                     )
                     .await
                     {
@@ -142,6 +143,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
                         None,
                         None,
                         None,
+                        "recovery",
                     )
                     .await;
                 } else {
@@ -156,6 +158,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
                         None,
                         None,
                         None,
+                        "recovery",
                     )
                     .await;
                 }

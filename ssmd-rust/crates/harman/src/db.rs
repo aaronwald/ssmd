@@ -151,7 +151,7 @@ pub async fn enqueue_order(
 
     // Insert audit log
     tx.execute(
-        "INSERT INTO audit_log (order_id, from_state, to_state, event) VALUES ($1, 'none', 'pending', 'created')",
+        "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, 'none', 'pending', 'created', 'api')",
         &[&order_id],
     )
     .await
@@ -253,7 +253,7 @@ pub async fn dequeue_order(pool: &Pool) -> Result<Option<QueueItem>, String> {
         .map_err(|e| format!("update state: {}", e))?;
 
         tx.execute(
-            "INSERT INTO audit_log (order_id, from_state, to_state, event) VALUES ($1, $2, 'submitted', 'submit')",
+            "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, 'submitted', 'submit', 'sweeper')",
             &[&order_id, &from_state],
         )
         .await
@@ -307,6 +307,7 @@ pub async fn update_order_state(
     exchange_order_id: Option<&str>,
     filled_quantity: Option<i32>,
     cancel_reason: Option<&CancelReason>,
+    actor: &str,
 ) -> Result<(), String> {
     let mut client = pool
         .get()
@@ -354,8 +355,8 @@ pub async fn update_order_state(
 
     // Audit log
     tx.execute(
-        "INSERT INTO audit_log (order_id, from_state, to_state, event) VALUES ($1, $2, $3, $4)",
-        &[&order_id, &from_state, &state_str, &state_str],
+        "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, $3, $4, $5)",
+        &[&order_id, &from_state, &state_str, &state_str, &actor],
     )
     .await
     .map_err(|e| format!("insert audit: {}", e))?;
@@ -649,7 +650,7 @@ pub async fn atomic_cancel_order(
 
     // Audit log
     tx.execute(
-        "INSERT INTO audit_log (order_id, from_state, to_state, event) VALUES ($1, $2, 'pending_cancel', 'cancel_request')",
+        "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, 'pending_cancel', 'cancel_request', 'api')",
         &[&order_id, &current_state_str],
     )
     .await
