@@ -42,6 +42,9 @@ pub fn create_pool(database_url: &str) -> Result<Pool, String> {
         cfg.dbname = Some(dbname.to_string());
     }
 
+    // NoTls is safe here: in GKE, Cloud SQL Proxy handles TLS termination
+    // via a local Unix socket / TCP loopback. Direct TLS would be needed
+    // only if connecting to Postgres without the proxy.
     cfg.create_pool(Some(Runtime::Tokio1), NoTls)
         .map_err(|e| format!("failed to create pool: {}", e))
 }
@@ -300,9 +303,11 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
 ///
 /// Wraps the read + update + audit in a single transaction to prevent
 /// race conditions between concurrent state updates.
+#[allow(clippy::too_many_arguments)]
 pub async fn update_order_state(
     pool: &Pool,
     order_id: i64,
+    session_id: i64,
     new_state: OrderState,
     exchange_order_id: Option<&str>,
     filled_quantity: Option<i32>,
@@ -319,11 +324,11 @@ pub async fn update_order_state(
         .await
         .map_err(|e| format!("begin tx: {}", e))?;
 
-    // Lock the order row and get current state for audit
+    // Lock the order row and get current state for audit (scoped to session)
     let row = tx
         .query_one(
-            "SELECT state FROM prediction_orders WHERE id = $1 FOR UPDATE",
-            &[&order_id],
+            "SELECT state FROM prediction_orders WHERE id = $1 AND session_id = $2 FOR UPDATE",
+            &[&order_id, &session_id],
         )
         .await
         .map_err(|e| format!("get state: {}", e))?;
@@ -341,13 +346,14 @@ pub async fn update_order_state(
     tx.execute(
         "UPDATE prediction_orders SET state = $1, exchange_order_id = COALESCE($2, exchange_order_id), \
          filled_quantity = COALESCE($3, filled_quantity), cancel_reason = COALESCE($4, cancel_reason) \
-         WHERE id = $5",
+         WHERE id = $5 AND session_id = $6",
         &[
             &state_str,
             &exchange_order_id,
             &filled_quantity,
             &cancel_str,
             &order_id,
+            &session_id,
         ],
     )
     .await
@@ -401,13 +407,16 @@ pub async fn requeue_item(pool: &Pool, queue_id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Record a fill (trade execution)
+/// Record a fill (trade execution), validating the order belongs to the session.
 ///
+/// Uses INSERT ... SELECT to atomically verify order ownership.
 /// trade_id UNIQUE constraint handles deduplication.
-/// Returns Ok(true) if inserted, Ok(false) if duplicate.
+/// Returns Ok(true) if inserted, Ok(false) if duplicate or order not in session.
+#[allow(clippy::too_many_arguments)]
 pub async fn record_fill(
     pool: &Pool,
     order_id: i64,
+    session_id: i64,
     trade_id: &str,
     price_cents: i32,
     quantity: i32,
@@ -422,9 +431,10 @@ pub async fn record_fill(
     let result = client
         .execute(
             "INSERT INTO fills (order_id, trade_id, price_cents, quantity, is_taker, filled_at) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+             SELECT $1, $2, $3, $4, $5, $6 \
+             WHERE EXISTS (SELECT 1 FROM prediction_orders WHERE id = $1 AND session_id = $7) \
              ON CONFLICT (trade_id) DO NOTHING",
-            &[&order_id, &trade_id, &price_cents, &quantity, &is_taker, &filled_at],
+            &[&order_id, &trade_id, &price_cents, &quantity, &is_taker, &filled_at, &session_id],
         )
         .await
         .map_err(|e| format!("insert fill: {}", e))?;
@@ -516,10 +526,11 @@ pub async fn get_order(pool: &Pool, order_id: i64, session_id: i64) -> Result<Op
     Ok(row.as_ref().map(row_to_order))
 }
 
-/// Get an order by client_order_id
+/// Get an order by client_order_id, scoped to a session
 pub async fn get_order_by_client_id(
     pool: &Pool,
     client_order_id: Uuid,
+    session_id: i64,
 ) -> Result<Option<Order>, String> {
     let client = pool
         .get()
@@ -532,8 +543,8 @@ pub async fn get_order_by_client_id(
                     ticker, side, action, quantity, price_cents, \
                     filled_quantity, time_in_force, state, cancel_reason, \
                     created_at, updated_at \
-             FROM prediction_orders WHERE client_order_id = $1",
-            &[&client_order_id],
+             FROM prediction_orders WHERE client_order_id = $1 AND session_id = $2",
+            &[&client_order_id, &session_id],
         )
         .await
         .map_err(|e| format!("get order by cid: {}", e))?;

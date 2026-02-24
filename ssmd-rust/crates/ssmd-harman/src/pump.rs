@@ -157,6 +157,7 @@ async fn handle_submit(state: &AppState, item: &db::QueueItem) -> SubmitOutcome 
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
+                state.session_id,
                 OrderState::Acknowledged,
                 Some(&exchange_order_id),
                 None,
@@ -182,6 +183,7 @@ async fn handle_submit(state: &AppState, item: &db::QueueItem) -> SubmitOutcome 
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
+                state.session_id,
                 OrderState::Rejected,
                 None,
                 None,
@@ -258,6 +260,7 @@ async fn handle_cancel(state: &AppState, item: &db::QueueItem) -> CancelOutcome 
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
+                state.session_id,
                 OrderState::Cancelled,
                 None,
                 None,

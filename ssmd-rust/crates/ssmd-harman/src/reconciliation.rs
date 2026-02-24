@@ -76,6 +76,7 @@ async fn discover_fills(state: &AppState) -> Result<u64, String> {
             let inserted = db::record_fill(
                 &state.pool,
                 order.id,
+                state.session_id,
                 &fill.trade_id,
                 fill.price_cents,
                 fill.quantity,
@@ -163,6 +164,7 @@ async fn resolve_stale_orders(state: &AppState) -> Result<u64, String> {
                     if let Err(e) = db::update_order_state(
                         &state.pool,
                         order.id,
+                        state.session_id,
                         new_state,
                         Some(&exchange_status.exchange_order_id),
                         Some(exchange_status.filled_quantity),
@@ -186,6 +188,7 @@ async fn resolve_stale_orders(state: &AppState) -> Result<u64, String> {
                     if let Err(e) = db::update_order_state(
                         &state.pool,
                         order.id,
+                        state.session_id,
                         OrderState::Rejected,
                         None,
                         None,

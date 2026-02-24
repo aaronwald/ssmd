@@ -37,14 +37,6 @@ struct Args {
         default_value = "https://demo-api.kalshi.co"
     )]
     kalshi_base_url: String,
-
-    /// Bearer token for order endpoints (/v1/orders/*)
-    #[arg(long, env = "HARMAN_API_TOKEN")]
-    api_token: String,
-
-    /// Bearer token for admin endpoints (/v1/admin/*, mass-cancel)
-    #[arg(long, env = "HARMAN_ADMIN_TOKEN")]
-    admin_token: String,
 }
 
 /// Metrics for prometheus
@@ -118,6 +110,13 @@ async fn main() {
         .init();
 
     let args = Args::parse();
+
+    // Load tokens from environment only — not CLI args — to avoid /proc/PID/cmdline exposure
+    let api_token = std::env::var("HARMAN_API_TOKEN")
+        .expect("HARMAN_API_TOKEN must be set");
+    let admin_token = std::env::var("HARMAN_ADMIN_TOKEN")
+        .expect("HARMAN_ADMIN_TOKEN must be set");
+
     info!(listen_addr = %args.listen_addr, "ssmd-harman starting");
 
     // Create DB pool
@@ -171,8 +170,8 @@ async fn main() {
         shutting_down: AtomicBool::new(false),
         metrics: Metrics::new(),
         session_id,
-        api_token: args.api_token,
-        admin_token: args.admin_token,
+        api_token,
+        admin_token,
     });
 
     // Run recovery before starting API server
