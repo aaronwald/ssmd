@@ -27,6 +27,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/orders/:id", delete(cancel_order))
         .route("/v1/admin/pump", post(pump_handler))
         .route("/v1/admin/reconcile", post(reconcile_handler))
+        .route("/v1/admin/risk", get(risk_handler))
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .with_state(state)
@@ -280,6 +281,31 @@ async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             format!("metrics encoding error: {}", e),
         )
             .into_response(),
+    }
+}
+
+/// GET /v1/admin/risk
+///
+/// Return current risk limits and open notional exposure.
+async fn risk_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match db::compute_risk_state(&state.pool, 1).await {
+        Ok(risk_state) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "max_notional": state.risk_limits.max_notional.to_string(),
+                "open_notional": risk_state.open_notional.to_string(),
+                "available_notional": (state.risk_limits.max_notional - risk_state.open_notional).to_string(),
+            })),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "risk state query failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
     }
 }
 
