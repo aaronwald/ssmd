@@ -243,12 +243,26 @@ async fn handle_cancel(state: &AppState, item: &db::QueueItem) -> CancelOutcome 
     let exchange_order_id = match &item.order.exchange_order_id {
         Some(id) => id.clone(),
         None => {
-            warn!(
+            info!(
                 order_id = item.order_id,
-                "cancel requested but no exchange_order_id, skipping"
+                "cancel requested but never sent to exchange, cancelling locally"
             );
+            if let Err(e) = db::update_order_state(
+                &state.pool,
+                item.order_id,
+                state.session_id,
+                OrderState::Cancelled,
+                None,
+                None,
+                Some(&CancelReason::UserRequested),
+                "pump",
+            )
+            .await
+            {
+                error!(error = %e, "failed to update cancelled state");
+            }
             let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
-            return CancelOutcome::Skipped;
+            return CancelOutcome::Cancelled;
         }
     };
 

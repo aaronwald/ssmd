@@ -179,6 +179,18 @@ pub struct HealthResponse {
     pub status: String,
 }
 
+/// Request body for POST /v1/orders
+#[derive(Debug, serde::Serialize)]
+pub struct CreateOrderRequest {
+    pub client_order_id: Uuid,
+    pub ticker: String,
+    pub side: String,
+    pub action: String,
+    pub quantity: String,
+    pub price_dollars: String,
+    pub time_in_force: String,
+}
+
 /// Raw response from data-ts GET /v1/data/snap.
 /// Snapshots are raw JSON values — structure varies by feed.
 #[derive(Debug, Deserialize)]

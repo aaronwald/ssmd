@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 
 use crate::types::{
-    HealthResponse, MassCancelResult, Order, OrdersResponse, PumpResult, ReconcileResult, RiskInfo,
-    Snapshot, SnapResponse,
+    CreateOrderRequest, HealthResponse, MassCancelResult, Order, OrdersResponse, PumpResult,
+    ReconcileResult, RiskInfo, Snapshot, SnapResponse,
 };
 
 /// HTTP client for the harman order management API.
@@ -42,6 +42,25 @@ impl HarmanClient {
         }
         let body: OrdersResponse = resp.json().await.context("list_orders: parse response")?;
         Ok(body.orders)
+    }
+
+    /// POST /v1/orders
+    pub async fn create_order(&self, req: &CreateOrderRequest) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/orders", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(req)
+            .send()
+            .await
+            .context("create_order request failed")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("create_order: {} {}", status, body);
+        }
+        resp.json().await.context("create_order: parse response")
     }
 
     /// GET /v1/orders/:id

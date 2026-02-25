@@ -701,7 +701,7 @@ pub async fn atomic_cancel_order(
     // Only cancel if in cancellable state
     if !matches!(
         current_state,
-        OrderState::Acknowledged | OrderState::PartiallyFilled
+        OrderState::Pending | OrderState::Submitted | OrderState::Acknowledged | OrderState::PartiallyFilled
     ) {
         return Err(format!(
             "cannot cancel order in {} state",

@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 
+use uuid::Uuid;
+
 use crate::client::{DataClient, HarmanClient};
-use crate::types::{Order, OrderState, RiskInfo, Snapshot};
+use crate::types::{CreateOrderRequest, Order, OrderState, RiskInfo, Snapshot};
 
 /// Active tab in the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +15,134 @@ pub enum Tab {
 }
 
 const FEEDS: [&str; 3] = ["kalshi", "kraken-futures", "polymarket"];
+
+/// Fields in the new order form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderField {
+    Ticker,
+    Side,
+    Action,
+    Quantity,
+    Price,
+}
+
+const ORDER_FIELDS: [OrderField; 5] = [
+    OrderField::Ticker,
+    OrderField::Side,
+    OrderField::Action,
+    OrderField::Quantity,
+    OrderField::Price,
+];
+
+/// New order form state.
+pub struct OrderForm {
+    pub active_field: OrderField,
+    pub ticker: String,
+    pub side: String,    // "yes" or "no"
+    pub action: String,  // "buy" or "sell"
+    pub quantity: String,
+    pub price: String,
+    pub suggestions: Vec<String>,
+    pub suggestion_idx: usize,
+}
+
+impl OrderForm {
+    pub fn new() -> Self {
+        Self {
+            active_field: OrderField::Ticker,
+            ticker: String::new(),
+            side: "yes".to_string(),
+            action: "buy".to_string(),
+            quantity: "1".to_string(),
+            price: String::new(),
+            suggestions: Vec::new(),
+            suggestion_idx: 0,
+        }
+    }
+
+    pub fn next_field(&mut self) {
+        let idx = ORDER_FIELDS.iter().position(|f| *f == self.active_field).unwrap_or(0);
+        self.active_field = ORDER_FIELDS[(idx + 1) % ORDER_FIELDS.len()];
+    }
+
+    pub fn prev_field(&mut self) {
+        let idx = ORDER_FIELDS.iter().position(|f| *f == self.active_field).unwrap_or(0);
+        self.active_field = if idx == 0 { ORDER_FIELDS[ORDER_FIELDS.len() - 1] } else { ORDER_FIELDS[idx - 1] };
+    }
+
+    pub fn toggle_side(&mut self) {
+        self.side = if self.side == "yes" { "no".to_string() } else { "yes".to_string() };
+    }
+
+    pub fn toggle_action(&mut self) {
+        self.action = if self.action == "buy" { "sell".to_string() } else { "buy".to_string() };
+    }
+
+    pub fn active_input(&mut self) -> Option<&mut String> {
+        match self.active_field {
+            OrderField::Ticker => Some(&mut self.ticker),
+            OrderField::Quantity => Some(&mut self.quantity),
+            OrderField::Price => Some(&mut self.price),
+            _ => None,
+        }
+    }
+
+    /// Update suggestions from known tickers based on current prefix.
+    pub fn update_suggestions(&mut self, known_tickers: &[String]) {
+        if self.ticker.is_empty() {
+            self.suggestions.clear();
+            self.suggestion_idx = 0;
+            return;
+        }
+        let prefix = self.ticker.to_uppercase();
+        self.suggestions = known_tickers
+            .iter()
+            .filter(|t| t.starts_with(&prefix))
+            .take(8)
+            .cloned()
+            .collect();
+        self.suggestion_idx = 0;
+    }
+
+    /// Accept the current suggestion into the ticker field.
+    pub fn accept_suggestion(&mut self) {
+        if let Some(s) = self.suggestions.get(self.suggestion_idx) {
+            self.ticker = s.clone();
+            self.suggestions.clear();
+            self.suggestion_idx = 0;
+        }
+    }
+
+    /// Cycle to next suggestion.
+    pub fn next_suggestion(&mut self) {
+        if !self.suggestions.is_empty() {
+            self.suggestion_idx = (self.suggestion_idx + 1) % self.suggestions.len();
+        }
+    }
+
+    /// Cycle to previous suggestion.
+    pub fn prev_suggestion(&mut self) {
+        if !self.suggestions.is_empty() {
+            self.suggestion_idx = if self.suggestion_idx == 0 {
+                self.suggestions.len() - 1
+            } else {
+                self.suggestion_idx - 1
+            };
+        }
+    }
+
+    pub fn to_request(&self) -> CreateOrderRequest {
+        CreateOrderRequest {
+            client_order_id: Uuid::new_v4(),
+            ticker: self.ticker.clone(),
+            side: self.side.clone(),
+            action: self.action.clone(),
+            quantity: self.quantity.clone(),
+            price_dollars: self.price.clone(),
+            time_in_force: "gtc".to_string(),
+        }
+    }
+}
 
 /// All filter options, including "All" (no filter).
 const FILTERS: [Option<OrderState>; 5] = [
@@ -36,11 +166,15 @@ pub struct App {
     pub poll_interval: Duration,
     pub last_action_result: Option<String>,
     pub running: bool,
+    // New order form
+    pub order_form: Option<OrderForm>,
     // Market data
     pub data_client: Option<DataClient>,
     pub snapshots: Vec<Snapshot>,
     pub market_feed: String,
     pub snap_selected: usize,
+    // Sorted ticker list for autocomplete (built from snapshots)
+    pub known_tickers: Vec<String>,
 }
 
 impl App {
@@ -58,10 +192,12 @@ impl App {
             poll_interval,
             last_action_result: None,
             running: true,
+            order_form: None,
             data_client,
             snapshots: Vec::new(),
             market_feed: "kalshi".to_string(),
             snap_selected: 0,
+            known_tickers: Vec::new(),
         }
     }
 
@@ -71,6 +207,16 @@ impl App {
             Ok(orders) => {
                 self.orders = orders;
                 self.last_error = None;
+                // Collect unique tickers from orders into known_tickers
+                let mut order_tickers: Vec<String> = self.orders.iter().map(|o| o.ticker.clone()).collect();
+                order_tickers.sort();
+                order_tickers.dedup();
+                // Merge with existing known_tickers (from snapshots)
+                for t in order_tickers {
+                    if let Err(pos) = self.known_tickers.binary_search(&t) {
+                        self.known_tickers.insert(pos, t);
+                    }
+                }
             }
             Err(e) => {
                 self.last_error = Some(format!("orders: {}", e));
@@ -98,6 +244,11 @@ impl App {
         if let Some(ref dc) = self.data_client {
             match dc.snap(&self.market_feed, None).await {
                 Ok(snaps) => {
+                    // Rebuild ticker list for autocomplete
+                    let mut tickers: Vec<String> = snaps.iter().map(|s| s.ticker.clone()).collect();
+                    tickers.sort();
+                    tickers.dedup();
+                    self.known_tickers = tickers;
                     self.snapshots = snaps;
                 }
                 Err(e) => {
@@ -207,6 +358,12 @@ impl App {
         if self.snap_selected > 0 {
             self.snap_selected -= 1;
         }
+    }
+
+    /// Return the order ID of the currently selected row (if any).
+    pub fn selected_order_id(&self) -> Option<i64> {
+        let filtered = self.filtered_orders();
+        filtered.get(self.selected_index).map(|o| o.id)
     }
 
     /// Whether the market data tab is available.

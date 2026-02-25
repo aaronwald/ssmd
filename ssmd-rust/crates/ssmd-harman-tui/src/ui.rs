@@ -7,7 +7,7 @@ use ratatui::{
 };
 use rust_decimal::Decimal;
 
-use crate::app::{App, Tab};
+use crate::app::{App, OrderField, Tab};
 use crate::types::OrderState;
 
 /// Render the full TUI frame.
@@ -32,8 +32,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_hints(f, app, chunks[2]);
 
-    // Confirmation dialog overlay
-    if app.show_confirmation {
+    // Overlay dialogs
+    if app.order_form.is_some() {
+        draw_order_form(f, app);
+    } else if app.show_confirmation {
         draw_confirmation(f);
     }
 }
@@ -247,6 +249,8 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         Row::new(vec!["?", "Toggle help"]),
         Row::new(vec!["p", "Trigger pump"]),
         Row::new(vec!["r", "Trigger reconcile"]),
+        Row::new(vec!["n", "New order"]),
+        Row::new(vec!["c", "Cancel selected order"]),
         Row::new(vec!["x", "Mass cancel (with confirmation)"]),
         Row::new(vec!["1", "Filter: All"]),
         Row::new(vec!["2", "Filter: Pending"]),
@@ -393,7 +397,7 @@ fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
         " y: confirm mass cancel | n/Esc: dismiss "
     } else {
         match app.active_tab {
-            Tab::Orders => " q:quit  j/k:nav  p:pump  r:reconcile  x:mass-cancel  1-5:filter  Tab:switch  ?:help ",
+            Tab::Orders => " q:quit  j/k:nav  n:new  c:cancel  p:pump  r:reconcile  x:mass-cancel  1-5:filter  Tab:switch ",
             Tab::Risk => " q:quit  Tab:switch  ?:help ",
             Tab::MarketData => " q:quit  j/k:nav  f:cycle-feed  Tab:switch  ?:help ",
             Tab::Help => " q:quit  Tab:switch  ?:help ",
@@ -403,6 +407,75 @@ fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
     let hint_line = Paragraph::new(hints)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));
     f.render_widget(hint_line, area);
+}
+
+fn draw_order_form(f: &mut Frame, app: &App) {
+    let form = match &app.order_form {
+        Some(f) => f,
+        None => return,
+    };
+
+    let area = f.area();
+    let suggestion_lines = form.suggestions.len().min(5);
+    let popup_width: u16 = 50;
+    let popup_height: u16 = 12 + suggestion_lines as u16;
+    let x = area.width.saturating_sub(popup_width) / 2;
+    let y = area.height.saturating_sub(popup_height) / 2;
+    let popup_area = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
+
+    f.render_widget(Clear, popup_area);
+
+    let active = form.active_field;
+    let highlight = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let normal = Style::default().fg(Color::White);
+    let label_style = Style::default().fg(Color::Cyan);
+
+    let field_line = |label: &str, value: &str, field: OrderField| -> Line {
+        let style = if active == field { highlight } else { normal };
+        let cursor = if active == field { "_" } else { "" };
+        Line::from(vec![
+            Span::styled(format!("  {:<10}", label), label_style),
+            Span::styled(format!("{}{}", value, cursor), style),
+        ])
+    };
+
+    let mut text = vec![
+        Line::from(""),
+        field_line("Ticker:", &form.ticker, OrderField::Ticker),
+    ];
+
+    // Show suggestions below ticker field
+    if active == OrderField::Ticker && !form.suggestions.is_empty() {
+        for (i, s) in form.suggestions.iter().take(5).enumerate() {
+            let style = if i == form.suggestion_idx {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            text.push(Line::from(Span::styled(format!("            {}", s), style)));
+        }
+    }
+
+    text.push(field_line("Side:", &form.side, OrderField::Side));
+    text.push(field_line("Action:", &form.action, OrderField::Action));
+    text.push(field_line("Quantity:", &form.quantity, OrderField::Quantity));
+    text.push(field_line("Price:", &form.price, OrderField::Price));
+    text.push(Line::from(""));
+
+    let hint = if active == OrderField::Ticker && !form.suggestions.is_empty() {
+        "  Up/Dn:browse  Tab/Enter:accept  Esc:cancel"
+    } else {
+        "  Tab:next  Enter:submit/toggle  Esc:cancel"
+    };
+    text.push(Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray))));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" New Order ")
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let paragraph = Paragraph::new(text).block(block);
+    f.render_widget(paragraph, popup_area);
 }
 
 fn draw_confirmation(f: &mut Frame) {
