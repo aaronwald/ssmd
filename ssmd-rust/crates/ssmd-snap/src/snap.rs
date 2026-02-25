@@ -129,8 +129,11 @@ fn extract_ticker(payload: &[u8]) -> Option<String> {
     let v: serde_json::Value = serde_json::from_slice(payload).ok()?;
     let obj = v.as_object()?;
 
-    // Try in order: market_ticker (Kalshi), pair_id (Kraken), token_id (Polymarket)
-    let keys = &["market_ticker", "pair_id", "token_id"];
+    // Try known identifier fields across exchanges:
+    //   Kalshi:     market_ticker
+    //   Kraken:     product_id
+    //   Polymarket: market (condition_id hex)
+    let keys = &["market_ticker", "product_id", "market"];
 
     // Check top-level fields
     for key in keys {
@@ -163,14 +166,14 @@ mod tests {
 
     #[test]
     fn test_extract_kraken_ticker() {
-        let payload = br#"{"pair_id":"PI_XBTUSD","bid":45000}"#;
-        assert_eq!(extract_ticker(payload), Some("PI_XBTUSD".into()));
+        let payload = br#"{"product_id":"PF_XBTUSD","bid":63990.0,"ask":63991.0}"#;
+        assert_eq!(extract_ticker(payload), Some("PF_XBTUSD".into()));
     }
 
     #[test]
     fn test_extract_polymarket_ticker() {
-        let payload = br#"{"token_id":"abc123","best_bid":0.55}"#;
-        assert_eq!(extract_ticker(payload), Some("abc123".into()));
+        let payload = br#"{"market":"0x713e73c0e77492732924655dea2ad9ac12f47c0635ae013712b3da250583992e","event_type":"price_change"}"#;
+        assert_eq!(extract_ticker(payload), Some("0x713e73c0e77492732924655dea2ad9ac12f47c0635ae013712b3da250583992e".into()));
     }
 
     #[test]
