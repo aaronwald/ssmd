@@ -199,6 +199,28 @@ async function resolvePolymarketNames(
   return names;
 }
 
+/**
+ * Extract JSON from Claude response using multiple strategies:
+ * 1. Code fence extraction (```json ... ```)
+ * 2. First { to last } brace matching
+ * 3. Raw content as-is
+ */
+function extractJson(content: string): string {
+  // Strategy 1: code fences
+  const fenceMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (fenceMatch) return fenceMatch[1].trim();
+
+  // Strategy 2: find outermost { ... } braces
+  const firstBrace = content.indexOf("{");
+  const lastBrace = content.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    return content.slice(firstBrace, lastBrace + 1).trim();
+  }
+
+  // Strategy 3: raw content
+  return content.trim();
+}
+
 async function callClaude(
   apiUrl: string,
   apiKey: string,
@@ -249,9 +271,8 @@ async function callClaude(
     console.error(`WARN: Claude response truncated (finish_reason=length, max_tokens=2500)`);
   }
 
-  // Extract JSON from response (strip code fences and surrounding text)
-  const fenceMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
-  const cleaned = fenceMatch ? fenceMatch[1].trim() : content.trim();
+  // Extract JSON from response — try multiple strategies
+  const cleaned = extractJson(content);
 
   try {
     const parsed = JSON.parse(cleaned) as VolumeAnalysis;
