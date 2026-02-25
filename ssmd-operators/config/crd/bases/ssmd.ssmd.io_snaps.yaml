@@ -15,8 +15,8 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.streams
-      name: Streams
+    - jsonPath: .spec.subscriptions[*].feed
+      name: Feeds
       type: string
     - jsonPath: .status.phase
       name: Phase
@@ -119,11 +119,26 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
-              streams:
-                description: Streams is the list of NATS stream names to subscribe
-                  to
+              subscriptions:
+                description: Subscriptions is the list of NATS stream subscriptions
                 items:
-                  type: string
+                  description: SnapSubscription defines a single NATS stream subscription
+                  properties:
+                    feed:
+                      description: Feed is the logical feed name (used as Redis key
+                        prefix)
+                      type: string
+                    stream:
+                      description: Stream is the NATS JetStream stream name
+                      type: string
+                    subject:
+                      description: Subject is the NATS subject filter for ticker messages
+                      type: string
+                  required:
+                  - feed
+                  - stream
+                  - subject
+                  type: object
                 minItems: 1
                 type: array
               ttlSecs:
@@ -133,7 +148,7 @@ spec:
                 type: integer
             required:
             - image
-            - streams
+            - subscriptions
             type: object
           status:
             description: status defines the observed state of Snap

@@ -3,8 +3,14 @@ use futures_util::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::StreamConfig;
 use crate::metrics::Metrics;
+
+/// Configuration for a single stream subscription.
+pub struct StreamConfig {
+    pub stream_name: String,
+    pub feed: String,
+    pub filter_subject: String,
+}
 
 /// Run the snap loop for a single stream: subscribe to NATS ticker subjects
 /// and write each message to Redis with a TTL.

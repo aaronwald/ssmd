@@ -21,16 +21,31 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// SnapSubscription defines a single NATS stream subscription
+type SnapSubscription struct {
+	// Stream is the NATS JetStream stream name
+	// +kubebuilder:validation:Required
+	Stream string `json:"stream"`
+
+	// Feed is the logical feed name (used as Redis key prefix)
+	// +kubebuilder:validation:Required
+	Feed string `json:"feed"`
+
+	// Subject is the NATS subject filter for ticker messages
+	// +kubebuilder:validation:Required
+	Subject string `json:"subject"`
+}
+
 // SnapSpec defines the desired state of Snap
 type SnapSpec struct {
 	// Image is the container image to use
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
 
-	// Streams is the list of NATS stream names to subscribe to
+	// Subscriptions is the list of NATS stream subscriptions
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
-	Streams []string `json:"streams"`
+	Subscriptions []SnapSubscription `json:"subscriptions"`
 
 	// NatsURL is the NATS server URL
 	// +kubebuilder:default="nats://nats.nats.svc.cluster.local:4222"
@@ -81,7 +96,7 @@ type SnapStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Streams",type="string",JSONPath=".spec.streams"
+// +kubebuilder:printcolumn:name="Feeds",type="string",JSONPath=".spec.subscriptions[*].feed"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

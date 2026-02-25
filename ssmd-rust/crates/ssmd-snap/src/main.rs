@@ -8,8 +8,9 @@ use axum::{extract::State, routing::get, Router};
 use clap::Parser;
 use tracing::info;
 
-use config::{parse_stream, Config};
+use config::{parse_subscriptions, Config};
 use metrics::Metrics;
+use snap::StreamConfig;
 
 #[tokio::main]
 async fn main() {
@@ -22,12 +23,12 @@ async fn main() {
         .init();
 
     let config = Config::parse();
-    let streams: Vec<&str> = config.streams.split(',').map(|s| s.trim()).collect();
+    let subscriptions = parse_subscriptions(&config.subscriptions);
 
     info!(
         nats_url = %config.nats_url,
         redis_url = %config.redis_url,
-        streams = ?streams,
+        subscriptions = ?subscriptions.iter().map(|s| &s.feed).collect::<Vec<_>>(),
         ttl_secs = config.ttl_secs,
         "ssmd-snap starting"
     );
@@ -56,15 +57,20 @@ async fn main() {
 
     let metrics = Arc::new(Metrics::new());
 
-    // Spawn a snap task per stream
-    for stream_name in &streams {
-        let stream_config = parse_stream(stream_name);
+    // Spawn a snap task per subscription
+    for sub in subscriptions {
         info!(
-            stream = %stream_config.stream_name,
-            feed = %stream_config.feed,
-            filter = %stream_config.filter_subject,
+            stream = %sub.stream,
+            feed = %sub.feed,
+            subject = %sub.subject,
             "spawning snap consumer"
         );
+
+        let stream_config = StreamConfig {
+            stream_name: sub.stream,
+            feed: sub.feed,
+            filter_subject: sub.subject,
+        };
 
         let js = js.clone();
         let redis_conn = redis_conn.clone();

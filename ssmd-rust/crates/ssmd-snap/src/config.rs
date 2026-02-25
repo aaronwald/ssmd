@@ -12,9 +12,9 @@ pub struct Config {
     #[arg(long, env = "REDIS_URL", default_value = "redis://localhost:6379")]
     pub redis_url: String,
 
-    /// Comma-separated NATS stream names (e.g. PROD_KALSHI_CRYPTO,PROD_KRAKEN_FUTURES,PROD_POLYMARKET)
-    #[arg(long, env = "SNAP_STREAMS")]
-    pub streams: String,
+    /// JSON array of subscriptions: [{"stream":"...","feed":"...","subject":"..."}]
+    #[arg(long, env = "SNAP_SUBSCRIPTIONS")]
+    pub subscriptions: String,
 
     /// Redis key TTL in seconds
     #[arg(long, env = "SNAP_TTL_SECS", default_value = "300")]
@@ -25,47 +25,17 @@ pub struct Config {
     pub listen_addr: String,
 }
 
-/// Derived feed config from a stream name.
-pub struct StreamConfig {
-    pub stream_name: String,
+/// A single stream subscription parsed from JSON.
+#[derive(Debug, serde::Deserialize)]
+pub struct Subscription {
+    pub stream: String,
     pub feed: String,
-    pub filter_subject: String,
+    pub subject: String,
 }
 
-/// Map known stream names to feed and NATS subject filter.
-///
-/// Stream naming convention: PROD_{EXCHANGE}[_{CATEGORY}]
-/// Feed names must match the data-ts API feed identifiers.
-///
-/// | Stream               | Feed             | Filter Subject                              |
-/// |----------------------|------------------|---------------------------------------------|
-/// | PROD_KALSHI_CRYPTO   | kalshi           | prod.kalshi.crypto.json.ticker.>            |
-/// | PROD_KRAKEN_FUTURES  | kraken-futures   | prod.kraken.futures.json.ticker.>           |
-/// | PROD_POLYMARKET      | polymarket       | prod.polymarket.clob.json.ticker.>          |
-pub fn parse_stream(stream_name: &str) -> StreamConfig {
-    let parts: Vec<&str> = stream_name.split('_').collect();
-    let segments: Vec<String> = parts.iter().skip(1).map(|s| s.to_lowercase()).collect();
-
-    // Build subject prefix from all segments after PROD
-    let subject_segments = segments.join(".");
-    let filter_subject = match segments.first().map(|s| s.as_str()) {
-        Some("polymarket") => format!("prod.{}.clob.json.ticker.>", subject_segments),
-        _ => format!("prod.{}.json.ticker.>", subject_segments),
-    };
-
-    // Map exchange name (first segment) to canonical feed name
-    let feed = match segments.first().map(|s| s.as_str()) {
-        Some("kalshi") => "kalshi".to_string(),
-        Some("kraken") => "kraken-futures".to_string(),
-        Some("polymarket") => "polymarket".to_string(),
-        _ => segments.join("-"),
-    };
-
-    StreamConfig {
-        stream_name: stream_name.to_string(),
-        feed,
-        filter_subject,
-    }
+/// Parse the subscriptions JSON string into a list of Subscription structs.
+pub fn parse_subscriptions(json_str: &str) -> Vec<Subscription> {
+    serde_json::from_str(json_str).expect("failed to parse SNAP_SUBSCRIPTIONS JSON")
 }
 
 #[cfg(test)]
@@ -73,23 +43,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_kalshi() {
-        let sc = parse_stream("PROD_KALSHI_CRYPTO");
-        assert_eq!(sc.feed, "kalshi");
-        assert_eq!(sc.filter_subject, "prod.kalshi.crypto.json.ticker.>");
-    }
-
-    #[test]
-    fn test_parse_kraken() {
-        let sc = parse_stream("PROD_KRAKEN_FUTURES");
-        assert_eq!(sc.feed, "kraken-futures");
-        assert_eq!(sc.filter_subject, "prod.kraken.futures.json.ticker.>");
-    }
-
-    #[test]
-    fn test_parse_polymarket() {
-        let sc = parse_stream("PROD_POLYMARKET");
-        assert_eq!(sc.feed, "polymarket");
-        assert_eq!(sc.filter_subject, "prod.polymarket.clob.json.ticker.>");
+    fn test_parse_subscriptions() {
+        let json = r#"[
+            {"stream":"PROD_KALSHI_CRYPTO","feed":"kalshi","subject":"prod.kalshi.crypto.json.ticker.>"},
+            {"stream":"PROD_KRAKEN_FUTURES","feed":"kraken-futures","subject":"prod.kraken-futures.json.ticker.>"}
+        ]"#;
+        let subs = parse_subscriptions(json);
+        assert_eq!(subs.len(), 2);
+        assert_eq!(subs[0].stream, "PROD_KALSHI_CRYPTO");
+        assert_eq!(subs[0].feed, "kalshi");
+        assert_eq!(subs[0].subject, "prod.kalshi.crypto.json.ticker.>");
+        assert_eq!(subs[1].feed, "kraken-futures");
+        assert_eq!(subs[1].subject, "prod.kraken-futures.json.ticker.>");
     }
 }

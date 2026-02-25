@@ -18,9 +18,9 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -182,10 +182,13 @@ func (r *SnapReconciler) constructDeployment(snap *ssmdv1alpha1.Snap) *appsv1.De
 		ttlSecs = 300
 	}
 
+	// Serialize subscriptions as JSON for the snap binary
+	subsJSON, _ := json.Marshal(snap.Spec.Subscriptions)
+
 	env := []corev1.EnvVar{
 		{Name: "NATS_URL", Value: natsURL},
 		{Name: "REDIS_URL", Value: redisURL},
-		{Name: "SNAP_STREAMS", Value: strings.Join(snap.Spec.Streams, ",")},
+		{Name: "SNAP_SUBSCRIPTIONS", Value: string(subsJSON)},
 		{Name: "SNAP_TTL_SECS", Value: fmt.Sprintf("%d", ttlSecs)},
 		{Name: "SNAP_LISTEN_ADDR", Value: "0.0.0.0:9090"},
 	}
@@ -329,7 +332,7 @@ func (r *SnapReconciler) updateStatus(ctx context.Context, snap *ssmdv1alpha1.Sn
 		if deployment.Status.ReadyReplicas > 0 && deployment.Status.ReadyReplicas == deployment.Status.Replicas {
 			condition.Status = metav1.ConditionTrue
 			condition.Reason = "DeploymentReady"
-			condition.Message = fmt.Sprintf("Snap running with %d streams", len(snap.Spec.Streams))
+			condition.Message = fmt.Sprintf("Snap running with %d subscriptions", len(snap.Spec.Subscriptions))
 		}
 		meta.SetStatusCondition(&snap.Status.Conditions, condition)
 	}
