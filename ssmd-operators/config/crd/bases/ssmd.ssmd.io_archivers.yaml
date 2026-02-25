@@ -191,6 +191,11 @@ spec:
                     consumer:
                       description: Consumer is the durable consumer name
                       type: string
+                    feed:
+                      description: |-
+                        Feed is the per-source feed name for directory structure (e.g., "kalshi", "kraken-futures")
+                        Falls back to spec.feed if not specified
+                      type: string
                     filter:
                       description: Filter is the NATS subject filter pattern
                       type: string
