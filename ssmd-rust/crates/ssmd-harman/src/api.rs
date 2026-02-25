@@ -27,14 +27,17 @@ fn extract_bearer(req: &Request) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
 }
 
-/// Middleware: require valid API token
+/// Middleware: require valid API or admin token
 async fn require_api_token(
     State(state): State<Arc<AppState>>,
     req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     match extract_bearer(&req) {
-        Some(t) if bool::from(t.as_bytes().ct_eq(state.api_token.as_bytes())) => {
+        Some(t)
+            if bool::from(t.as_bytes().ct_eq(state.api_token.as_bytes()))
+                || bool::from(t.as_bytes().ct_eq(state.admin_token.as_bytes())) =>
+        {
             Ok(next.run(req).await)
         }
         _ => Err(StatusCode::UNAUTHORIZED),
