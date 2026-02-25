@@ -115,24 +115,29 @@ pub async fn enqueue_order(
         .await
         .map_err(|e| EnqueueError::Database(format!("begin tx: {}", e)))?;
 
-    // Lock and compute risk state from open orders
-    // SELECT FOR UPDATE locks the rows so concurrent enqueues serialize
-    // Uses (quantity - filled_quantity) to account for partially-filled orders
-    let risk_rows = tx
-        .query(
+    // Lock open order rows to serialize concurrent enqueues, then compute risk.
+    // FOR UPDATE cannot be combined with aggregate functions in PostgreSQL,
+    // so we lock first, then aggregate in a separate query within the same tx.
+    tx.query(
+        "SELECT id FROM prediction_orders \
+         WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel') \
+         FOR UPDATE",
+        &[&session_id],
+    )
+    .await
+    .map_err(|e| EnqueueError::Database(format!("risk lock: {}", e)))?;
+
+    let risk_row = tx
+        .query_one(
             "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
              FROM prediction_orders \
-             WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel') \
-             FOR UPDATE",
+             WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel')",
             &[&session_id],
         )
         .await
         .map_err(|e| EnqueueError::Database(format!("risk query: {}", e)))?;
 
-    let open_notional: Decimal = risk_rows
-        .first()
-        .map(|r| r.get::<_, Decimal>("open_notional"))
-        .unwrap_or(Decimal::ZERO);
+    let open_notional: Decimal = risk_row.get::<_, Decimal>("open_notional");
 
     let risk_state = RiskState { open_notional };
 
