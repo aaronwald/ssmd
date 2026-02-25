@@ -25,12 +25,16 @@ pub struct StreamConfig {
     pub consumer: String,
     /// Subject filter pattern
     pub filter: String,
+    /// Per-stream feed name (falls back to storage.feed if empty)
+    #[serde(default)]
+    pub feed: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct StorageConfig {
     pub path: PathBuf,
-    /// Feed name for directory structure
+    /// Global feed name (used as fallback when per-stream feed is not set)
+    #[serde(default)]
     pub feed: String,
 }
 
@@ -43,6 +47,16 @@ impl Config {
     pub fn load(path: &std::path::Path) -> Result<Self, crate::ArchiverError> {
         let content = std::fs::read_to_string(path)?;
         serde_yaml::from_str(&content).map_err(|e| crate::ArchiverError::Config(e.to_string()))
+    }
+
+    /// Fill empty per-stream feed names from the global storage.feed value.
+    pub fn resolve_feeds(&mut self) {
+        let global_feed = &self.storage.feed;
+        for stream in &mut self.nats.streams {
+            if stream.feed.is_empty() {
+                stream.feed = global_feed.clone();
+            }
+        }
     }
 }
 
@@ -209,5 +223,99 @@ rotation:
 
         let config = Config::load(file.path()).unwrap();
         assert_eq!(config.storage.feed, "kalshi");
+    }
+
+    #[test]
+    fn test_load_per_stream_feed_config() {
+        let yaml = r#"
+nats:
+  url: nats://localhost:4222
+  streams:
+    - name: crypto
+      stream: PROD_KALSHI_CRYPTO
+      consumer: archiver-kalshi
+      filter: "prod.kalshi.json.>"
+      feed: kalshi
+    - name: futures
+      stream: PROD_KRAKEN_FUTURES
+      consumer: archiver-kraken
+      filter: "prod.kraken-futures.json.>"
+      feed: kraken-futures
+
+storage:
+  path: /data/ssmd
+
+rotation:
+  interval: 15m
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(yaml.as_bytes()).unwrap();
+
+        let config = Config::load(file.path()).unwrap();
+        assert_eq!(config.nats.streams.len(), 2);
+        assert_eq!(config.nats.streams[0].feed, "kalshi");
+        assert_eq!(config.nats.streams[1].feed, "kraken-futures");
+        assert!(config.storage.feed.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_feeds_fallback() {
+        let yaml = r#"
+nats:
+  url: nats://localhost:4222
+  streams:
+    - name: main
+      stream: MARKETDATA
+      consumer: archiver-kalshi
+      filter: "prod.kalshi.json.>"
+
+storage:
+  path: /data/ssmd
+  feed: kalshi
+
+rotation:
+  interval: 15m
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(yaml.as_bytes()).unwrap();
+
+        let mut config = Config::load(file.path()).unwrap();
+        assert!(config.nats.streams[0].feed.is_empty());
+        config.resolve_feeds();
+        assert_eq!(config.nats.streams[0].feed, "kalshi");
+    }
+
+    #[test]
+    fn test_resolve_feeds_no_override() {
+        let yaml = r#"
+nats:
+  url: nats://localhost:4222
+  streams:
+    - name: crypto
+      stream: PROD_KALSHI_CRYPTO
+      consumer: archiver-kalshi
+      filter: "prod.kalshi.json.>"
+      feed: kalshi
+    - name: futures
+      stream: PROD_KRAKEN_FUTURES
+      consumer: archiver-kraken
+      filter: "prod.kraken-futures.json.>"
+      feed: kraken-futures
+
+storage:
+  path: /data/ssmd
+  feed: fallback
+
+rotation:
+  interval: 15m
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(yaml.as_bytes()).unwrap();
+
+        let mut config = Config::load(file.path()).unwrap();
+        config.resolve_feeds();
+        // Per-stream feeds should not be overridden by the global fallback
+        assert_eq!(config.nats.streams[0].feed, "kalshi");
+        assert_eq!(config.nats.streams[1].feed, "kraken-futures");
     }
 }

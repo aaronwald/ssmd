@@ -53,10 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Load configuration
-    let config = Config::load(&args.config).map_err(|e| {
+    let mut config = Config::load(&args.config).map_err(|e| {
         error!(error = %e, "Failed to load config");
         e
     })?;
+    config.resolve_feeds();
 
     let rotation_duration = config.rotation.parse_interval()?;
 
@@ -72,18 +73,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = CancellationToken::new();
     let nats_url = Arc::new(config.nats.url.clone());
     let base_path = Arc::new(config.storage.path.clone());
-    let feed = Arc::new(config.storage.feed.clone());
     let rotation_interval = Arc::new(config.rotation.interval.clone());
     let connected = Arc::new(AtomicBool::new(false));
     let last_message_epoch_secs = Arc::new(AtomicU64::new(0));
 
-    // Create metrics
-    let archiver_metrics = ArchiverMetrics::new(config.storage.feed.as_str());
-    archiver_metrics.set_active_streams(config.nats.streams.len());
+    // Set global active-streams gauge
+    ArchiverMetrics::new("").set_active_streams(config.nats.streams.len());
+
+    // Build feed label for health endpoint
+    let feed_names: Vec<String> = config.nats.streams.iter().map(|s| s.feed.clone()).collect();
+    let server_feed = if feed_names.len() == 1 {
+        feed_names[0].clone()
+    } else {
+        feed_names.join(",")
+    };
 
     // Spawn HTTP health/metrics server
     let server_state = ServerState::new(
-        config.storage.feed.as_str(),
+        &server_feed,
         connected.clone(),
         last_message_epoch_secs.clone(),
     );
@@ -102,10 +109,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let shutdown = shutdown.clone();
         let nats_url = Arc::clone(&nats_url);
         let base_path = Arc::clone(&base_path);
-        let feed = Arc::clone(&feed);
+        let feed = stream_config.feed.clone();
         let rotation_interval = Arc::clone(&rotation_interval);
         let connected = connected.clone();
         let last_message_epoch_secs = last_message_epoch_secs.clone();
+        let archiver_metrics = ArchiverMetrics::new(&feed);
         let metrics = archiver_metrics.for_stream(&stream_config.name);
 
         info!(

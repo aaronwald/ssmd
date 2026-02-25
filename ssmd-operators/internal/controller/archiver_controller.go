@@ -314,11 +314,21 @@ func (r *ArchiverReconciler) constructConfigMap(archiver *ssmdv1alpha1.Archiver)
 
 	if len(archiver.Spec.Sources) > 0 {
 		// New multi-stream format
+		// Determine fallback feed from spec-level feed
+		globalFeed := archiver.Spec.Feed
+		if globalFeed == "" {
+			globalFeed = "kalshi" // backward compat default
+		}
 		for _, source := range archiver.Spec.Sources {
 			archiverYAML.WriteString(fmt.Sprintf("    - name: %s\n", source.Name))
 			archiverYAML.WriteString(fmt.Sprintf("      stream: %s\n", source.Stream))
 			archiverYAML.WriteString(fmt.Sprintf("      consumer: %s\n", source.Consumer))
 			archiverYAML.WriteString(fmt.Sprintf("      filter: %s\n", source.Filter))
+			feed := source.Feed
+			if feed == "" {
+				feed = globalFeed
+			}
+			archiverYAML.WriteString(fmt.Sprintf("      feed: %s\n", feed))
 		}
 	} else if archiver.Spec.Source != nil {
 		// Legacy single-source format - convert to streams array
@@ -338,6 +348,11 @@ func (r *ArchiverReconciler) constructConfigMap(archiver *ssmdv1alpha1.Archiver)
 		archiverYAML.WriteString(fmt.Sprintf("      stream: %s\n", archiver.Spec.Source.Stream))
 		archiverYAML.WriteString(fmt.Sprintf("      consumer: %s\n", consumer))
 		archiverYAML.WriteString(fmt.Sprintf("      filter: %s\n", archiver.Spec.Source.Filter))
+		legacyFeed := archiver.Spec.Feed
+		if legacyFeed == "" {
+			legacyFeed = "kalshi"
+		}
+		archiverYAML.WriteString(fmt.Sprintf("      feed: %s\n", legacyFeed))
 	}
 
 	// Storage config with feed

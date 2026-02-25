@@ -119,6 +119,11 @@ type SourceConfig struct {
 	// Filter is the NATS subject filter pattern
 	// +kubebuilder:validation:Required
 	Filter string `json:"filter"`
+
+	// Feed is the per-source feed name for directory structure (e.g., "kalshi", "kraken-futures")
+	// Falls back to spec.feed if not specified
+	// +optional
+	Feed string `json:"feed,omitempty"`
 }
 
 // StorageConfig defines local and remote storage settings
