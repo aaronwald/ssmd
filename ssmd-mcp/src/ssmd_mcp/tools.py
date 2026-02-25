@@ -36,6 +36,15 @@ def query_prices(cfg: Config, feed: str, date_str: str | None = None, hour: str 
     return json.dumps(result, default=str)
 
 
+def query_snap(cfg: Config, feed: str, tickers: str | None = None) -> str:
+    """Query live ticker snapshots from Redis via ssmd-data-ts API."""
+    params: dict[str, Any] = {"feed": feed}
+    if tickers:
+        params["tickers"] = tickers
+    result = api_get(cfg, "/v1/data/snap", params)
+    return json.dumps(result, default=str)
+
+
 def lookup_market(cfg: Config, ids: list[str], feed: str | None = None) -> str:
     """Look up market metadata via ssmd-data-ts API."""
     results = lookup_markets(cfg, ids, feed)

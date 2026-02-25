@@ -12,6 +12,7 @@ from ssmd_mcp.config import load_config, Config
 from ssmd_mcp.tools import (
     query_trades,
     query_prices,
+    query_snap,
     lookup_market,
     list_feeds,
     check_freshness,
@@ -83,6 +84,31 @@ TOOLS = [
                 "hour": {
                     "type": "string",
                     "description": "Hour in HHMM format (e.g., '1400'). Defaults to most recent.",
+                },
+            },
+            "required": ["feed"],
+        },
+    ),
+    Tool(
+        name="query_snap",
+        description=(
+            "Get live ticker snapshots from Redis. Returns the most recent NATS message "
+            "per ticker, stored by the snap service with a 5-minute TTL. "
+            "Kalshi: yes/no bid/ask/last_price (converted to dollars). "
+            "Kraken: bid/ask/last/funding_rate. Polymarket: best_bid/best_ask/spread. "
+            "Use without tickers to scan all available snapshots for a feed (max 500)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "feed": {
+                    "type": "string",
+                    "description": "Feed name: kalshi, kraken-futures, or polymarket",
+                    "enum": ["kalshi", "kraken-futures", "polymarket"],
+                },
+                "tickers": {
+                    "type": "string",
+                    "description": "Comma-separated ticker symbols. Omit to scan all.",
                 },
             },
             "required": ["feed"],
@@ -440,6 +466,12 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             feed=arguments["feed"],
             date_str=arguments.get("date"),
             hour=arguments.get("hour"),
+        )
+    elif name == "query_snap":
+        return query_snap(
+            cfg,
+            feed=arguments["feed"],
+            tickers=arguments.get("tickers"),
         )
     elif name == "lookup_market":
         return lookup_market(
