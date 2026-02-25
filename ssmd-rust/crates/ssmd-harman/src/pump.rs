@@ -290,10 +290,24 @@ async fn handle_cancel(state: &AppState, item: &db::QueueItem) -> CancelOutcome 
             CancelOutcome::Cancelled
         }
         Err(ExchangeError::NotFound(_)) => {
-            warn!(
+            info!(
                 order_id = item.order_id,
-                "cancel target not found on exchange, reconciliation will resolve"
+                "cancel target not found on exchange, marking cancelled"
             );
+            if let Err(e) = db::update_order_state(
+                &state.pool,
+                item.order_id,
+                state.session_id,
+                OrderState::Cancelled,
+                None,
+                None,
+                Some(&CancelReason::UserRequested),
+                "pump",
+            )
+            .await
+            {
+                error!(error = %e, "failed to update cancelled state for not-found order");
+            }
             let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
             CancelOutcome::NotFound
         }
