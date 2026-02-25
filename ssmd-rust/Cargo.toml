@@ -15,6 +15,8 @@ members = [
     "crates/ssmd-exchange-kalshi",
     "crates/ssmd-harman",
     "crates/ssmd-snap",
+    "crates/ssmd-harman-tui",
+    "crates/harman-test-exchange",
 ]
 
 [workspace.package]
