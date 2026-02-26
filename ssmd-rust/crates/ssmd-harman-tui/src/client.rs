@@ -99,6 +99,58 @@ impl HarmanClient {
         Ok(())
     }
 
+    /// POST /v1/orders/:id/amend
+    pub async fn amend_order(
+        &self,
+        id: i64,
+        new_price: Option<&str>,
+        new_qty: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/orders/{}/amend", self.base_url, id);
+        let body = crate::types::AmendOrderRequest {
+            new_price_dollars: new_price.map(|s| s.to_string()),
+            new_quantity: new_qty.map(|s| s.to_string()),
+        };
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .context("amend_order request failed")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("amend_order: {} {}", status, body);
+        }
+        resp.json().await.context("amend_order: parse response")
+    }
+
+    /// POST /v1/orders/:id/decrease
+    pub async fn decrease_order(&self, id: i64, reduce_by: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/orders/{}/decrease", self.base_url, id);
+        let body = crate::types::DecreaseOrderRequest {
+            reduce_by: reduce_by.to_string(),
+        };
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .context("decrease_order request failed")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("decrease_order: {} {}", status, body);
+        }
+        resp.json()
+            .await
+            .context("decrease_order: parse response")
+    }
+
     /// POST /v1/orders/mass-cancel with {"confirm": true}
     pub async fn mass_cancel(&self) -> Result<MassCancelResult> {
         let url = format!("{}/v1/orders/mass-cancel", self.base_url);

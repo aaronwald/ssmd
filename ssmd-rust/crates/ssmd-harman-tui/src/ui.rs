@@ -112,7 +112,7 @@ fn state_color(state: OrderState) -> Color {
     match state {
         OrderState::Filled => Color::Green,
         OrderState::Rejected | OrderState::Cancelled => Color::Red,
-        OrderState::Pending | OrderState::PendingCancel => Color::Yellow,
+        OrderState::Pending | OrderState::PendingCancel | OrderState::PendingAmend | OrderState::PendingDecrease => Color::Yellow,
         OrderState::Acknowledged | OrderState::Submitted => Color::Blue,
         OrderState::PartiallyFilled => Color::Magenta,
         OrderState::Expired => Color::DarkGray,

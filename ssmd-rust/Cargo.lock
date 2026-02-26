@@ -3782,6 +3782,7 @@ dependencies = [
  "deadpool-postgres",
  "harman",
  "prometheus",
+ "reqwest 0.12.28",
  "rust_decimal",
  "serde",
  "serde_json",

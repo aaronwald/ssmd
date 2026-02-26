@@ -14,6 +14,8 @@ pub enum OrderState {
     PartiallyFilled,
     Filled,
     PendingCancel,
+    PendingAmend,
+    PendingDecrease,
     Cancelled,
     Rejected,
     Expired,
@@ -28,6 +30,8 @@ impl std::fmt::Display for OrderState {
             OrderState::PartiallyFilled => "partially_filled",
             OrderState::Filled => "filled",
             OrderState::PendingCancel => "pending_cancel",
+            OrderState::PendingAmend => "pending_amend",
+            OrderState::PendingDecrease => "pending_decrease",
             OrderState::Cancelled => "cancelled",
             OrderState::Rejected => "rejected",
             OrderState::Expired => "expired",
@@ -40,7 +44,10 @@ impl OrderState {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            OrderState::Filled | OrderState::Cancelled | OrderState::Rejected | OrderState::Expired
+            OrderState::Filled
+                | OrderState::Cancelled
+                | OrderState::Rejected
+                | OrderState::Expired
         )
     }
 }
@@ -155,6 +162,10 @@ pub struct PumpResult {
     pub submitted: u64,
     pub rejected: u64,
     pub cancelled: u64,
+    #[serde(default)]
+    pub amended: u64,
+    #[serde(default)]
+    pub decreased: u64,
     pub requeued: u64,
     pub errors: Vec<String>,
 }
@@ -189,6 +200,21 @@ pub struct CreateOrderRequest {
     pub quantity: String,
     pub price_dollars: String,
     pub time_in_force: String,
+}
+
+/// Request body for POST /v1/orders/:id/amend
+#[derive(Debug, serde::Serialize)]
+pub struct AmendOrderRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_price_dollars: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_quantity: Option<String>,
+}
+
+/// Request body for POST /v1/orders/:id/decrease
+#[derive(Debug, serde::Serialize)]
+pub struct DecreaseOrderRequest {
+    pub reduce_by: String,
 }
 
 /// Raw response from data-ts GET /v1/data/snap.

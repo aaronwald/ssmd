@@ -69,6 +69,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/orders", get(list_orders))
         .route("/v1/orders/:id", get(get_order))
         .route("/v1/orders/:id", delete(cancel_order))
+        .route("/v1/orders/:id/amend", post(amend_order))
+        .route("/v1/orders/:id/decrease", post(decrease_order))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_token,
@@ -215,6 +217,8 @@ async fn list_orders(
         "partially_filled" => Some(OrderState::PartiallyFilled),
         "filled" => Some(OrderState::Filled),
         "pending_cancel" => Some(OrderState::PendingCancel),
+        "pending_amend" => Some(OrderState::PendingAmend),
+        "pending_decrease" => Some(OrderState::PendingDecrease),
         "cancelled" => Some(OrderState::Cancelled),
         "rejected" => Some(OrderState::Rejected),
         "expired" => Some(OrderState::Expired),
@@ -293,6 +297,154 @@ async fn cancel_order(
             .into_response(),
         Err(e) => {
             tracing::error!(error = %e, "cancel order failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /v1/orders/:id/amend
+#[derive(Debug, Deserialize)]
+pub struct AmendOrderRequest {
+    #[serde(default)]
+    pub new_price_dollars: Option<String>,
+    #[serde(default)]
+    pub new_quantity: Option<String>,
+}
+
+async fn amend_order(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Json(body): Json<AmendOrderRequest>,
+) -> impl IntoResponse {
+    // At least one field required
+    if body.new_price_dollars.is_none() && body.new_quantity.is_none() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": "at least one of new_price_dollars or new_quantity required"})),
+        )
+            .into_response();
+    }
+
+    let new_price: Option<Decimal> = match &body.new_price_dollars {
+        Some(s) => match s.parse::<Decimal>() {
+            Ok(d) if d > Decimal::ZERO && d < Decimal::ONE => Some(d),
+            Ok(_) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(serde_json::json!({"error": "new_price_dollars must be between 0 and 1 exclusive"})),
+                )
+                    .into_response();
+            }
+            Err(_) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(serde_json::json!({"error": "invalid new_price_dollars"})),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+
+    let new_qty: Option<Decimal> = match &body.new_quantity {
+        Some(s) => match s.parse::<Decimal>() {
+            Ok(d) if d > Decimal::ZERO => Some(d),
+            Ok(_) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(serde_json::json!({"error": "new_quantity must be positive"})),
+                )
+                    .into_response();
+            }
+            Err(_) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(serde_json::json!({"error": "invalid new_quantity"})),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+
+    match db::atomic_amend_order(&state.pool, id, state.session_id, new_price, new_qty).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "pending_amend"})),
+        )
+            .into_response(),
+        Err(e) if e.contains("not found") => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "order not found"})),
+        )
+            .into_response(),
+        Err(e) if e.contains("cannot amend") => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "amend order failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /v1/orders/:id/decrease
+#[derive(Debug, Deserialize)]
+pub struct DecreaseOrderRequest {
+    pub reduce_by: String,
+}
+
+async fn decrease_order(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Json(body): Json<DecreaseOrderRequest>,
+) -> impl IntoResponse {
+    let reduce_by = match body.reduce_by.parse::<Decimal>() {
+        Ok(d) if d > Decimal::ZERO => d,
+        Ok(_) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"error": "reduce_by must be positive"})),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"error": "invalid reduce_by"})),
+            )
+                .into_response();
+        }
+    };
+
+    match db::atomic_decrease_order(&state.pool, id, state.session_id, reduce_by).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "pending_decrease"})),
+        )
+            .into_response(),
+        Err(e) if e.contains("not found") => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "order not found"})),
+        )
+            .into_response(),
+        Err(e) if e.contains("cannot decrease") || e.contains("reduce_by") => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "decrease order failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal error"})),

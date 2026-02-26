@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::{Config, Pool, Runtime};
 use rust_decimal::Decimal;
+use serde_json;
 use tokio_postgres::NoTls;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -92,6 +93,24 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 002_decimal_migration applied");
     }
 
+    // Check if 003 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '003_amend_decrease'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 003: {}", e))?;
+
+    if row.is_none() {
+        let migration_003 = include_str!("../migrations/003_amend_decrease.sql");
+        client
+            .batch_execute(migration_003)
+            .await
+            .map_err(|e| format!("migration 003 failed: {}", e))?;
+        info!("migration 003_amend_decrease applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
@@ -120,7 +139,7 @@ pub async fn enqueue_order(
     // so we lock first, then aggregate in a separate query within the same tx.
     tx.query(
         "SELECT id FROM prediction_orders \
-         WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel') \
+         WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease') \
          FOR UPDATE",
         &[&session_id],
     )
@@ -131,7 +150,7 @@ pub async fn enqueue_order(
         .query_one(
             "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
              FROM prediction_orders \
-             WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel')",
+             WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
             &[&session_id],
         )
         .await
@@ -226,6 +245,7 @@ pub struct QueueItem {
     pub order_id: i64,
     pub action: String,
     pub order: Order,
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// Dequeue the next order for processing, scoped to a session.
@@ -246,7 +266,7 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
     // Dequeue with SKIP LOCKED, filtered by session
     let row = tx
         .query_opt(
-            "SELECT q.id as queue_id, q.order_id, q.action, \
+            "SELECT q.id as queue_id, q.order_id, q.action, q.metadata, \
                     o.id, o.session_id, o.client_order_id, o.exchange_order_id, \
                     o.ticker, o.side, o.action as order_action, o.quantity, o.price_dollars, \
                     o.filled_quantity, o.time_in_force, o.state, o.cancel_reason, \
@@ -325,11 +345,14 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
         updated_at: row.get("updated_at"),
     };
 
+    let metadata: Option<serde_json::Value> = row.get("metadata");
+
     Ok(Some(QueueItem {
         queue_id,
         order_id,
         action,
         order,
+        metadata,
     }))
 }
 
@@ -528,7 +551,7 @@ pub async fn get_ambiguous_orders(pool: &Pool, session_id: i64) -> Result<Vec<Or
                     filled_quantity, time_in_force, state, cancel_reason, \
                     created_at, updated_at \
              FROM prediction_orders \
-             WHERE session_id = $1 AND state IN ('submitted', 'pending_cancel') \
+             WHERE session_id = $1 AND state IN ('submitted', 'pending_cancel', 'pending_amend', 'pending_decrease') \
              ORDER BY id",
             &[&session_id],
         )
@@ -636,7 +659,7 @@ pub async fn compute_risk_state(pool: &Pool, session_id: i64) -> Result<RiskStat
         .query_one(
             "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
              FROM prediction_orders \
-             WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel')",
+             WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
             &[&session_id],
         )
         .await
@@ -746,6 +769,191 @@ pub async fn atomic_cancel_order(
         .map_err(|e| format!("commit: {}", e))?;
 
     debug!(order_id, "order cancel enqueued atomically");
+
+    Ok(())
+}
+
+/// Atomically amend an order: lock row, verify amendable state, update to PendingAmend,
+/// enqueue amend with metadata — all in one transaction.
+///
+/// At least one of new_price_dollars or new_quantity must be provided.
+pub async fn atomic_amend_order(
+    pool: &Pool,
+    order_id: i64,
+    session_id: i64,
+    new_price_dollars: Option<Decimal>,
+    new_quantity: Option<Decimal>,
+) -> Result<(), String> {
+    if new_price_dollars.is_none() && new_quantity.is_none() {
+        return Err("at least one of new_price_dollars or new_quantity required".to_string());
+    }
+
+    let mut client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("begin tx: {}", e))?;
+
+    // Lock the order row and get current state (scoped to session)
+    let row = tx
+        .query_opt(
+            "SELECT state FROM prediction_orders WHERE id = $1 AND session_id = $2 FOR UPDATE",
+            &[&order_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("get order: {}", e))?;
+
+    let row = row.ok_or_else(|| "order not found".to_string())?;
+    let current_state_str: String = row.get("state");
+    let current_state = parse_state(&current_state_str);
+
+    // Only amend if in amendable state
+    if !matches!(
+        current_state,
+        OrderState::Acknowledged | OrderState::PartiallyFilled
+    ) {
+        return Err(format!(
+            "cannot amend order in {} state",
+            current_state
+        ));
+    }
+
+    // Build metadata
+    let mut metadata = serde_json::Map::new();
+    if let Some(price) = new_price_dollars {
+        metadata.insert("new_price_dollars".to_string(), serde_json::json!(price.to_string()));
+    }
+    if let Some(qty) = new_quantity {
+        metadata.insert("new_quantity".to_string(), serde_json::json!(qty.to_string()));
+    }
+    let metadata_json = serde_json::Value::Object(metadata);
+
+    // Update state to PendingAmend
+    tx.execute(
+        "UPDATE prediction_orders SET state = 'pending_amend' WHERE id = $1",
+        &[&order_id],
+    )
+    .await
+    .map_err(|e| format!("update state: {}", e))?;
+
+    // Enqueue amend with metadata
+    tx.execute(
+        "INSERT INTO order_queue (order_id, action, actor, metadata) VALUES ($1, 'amend', 'api', $2)",
+        &[&order_id, &metadata_json],
+    )
+    .await
+    .map_err(|e| format!("enqueue amend: {}", e))?;
+
+    // Audit log
+    tx.execute(
+        "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, 'pending_amend', 'amend_request', 'api')",
+        &[&order_id, &current_state_str],
+    )
+    .await
+    .map_err(|e| format!("insert audit: {}", e))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit: {}", e))?;
+
+    debug!(order_id, "order amend enqueued atomically");
+
+    Ok(())
+}
+
+/// Atomically decrease an order's quantity: lock row, verify state, update to PendingDecrease,
+/// enqueue decrease with metadata — all in one transaction.
+pub async fn atomic_decrease_order(
+    pool: &Pool,
+    order_id: i64,
+    session_id: i64,
+    reduce_by: Decimal,
+) -> Result<(), String> {
+    if reduce_by <= Decimal::ZERO {
+        return Err("reduce_by must be positive".to_string());
+    }
+
+    let mut client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("begin tx: {}", e))?;
+
+    // Lock the order row and get current state (scoped to session)
+    let row = tx
+        .query_opt(
+            "SELECT state, quantity, filled_quantity FROM prediction_orders WHERE id = $1 AND session_id = $2 FOR UPDATE",
+            &[&order_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("get order: {}", e))?;
+
+    let row = row.ok_or_else(|| "order not found".to_string())?;
+    let current_state_str: String = row.get("state");
+    let current_state = parse_state(&current_state_str);
+    let quantity: Decimal = row.get("quantity");
+    let filled_quantity: Decimal = row.get("filled_quantity");
+
+    // Only decrease if in decreasable state
+    if !matches!(
+        current_state,
+        OrderState::Acknowledged | OrderState::PartiallyFilled
+    ) {
+        return Err(format!(
+            "cannot decrease order in {} state",
+            current_state
+        ));
+    }
+
+    // Validate reduce_by doesn't exceed remaining quantity
+    let remaining = quantity - filled_quantity;
+    if reduce_by >= remaining {
+        return Err(format!(
+            "reduce_by ({}) must be less than remaining quantity ({})",
+            reduce_by, remaining
+        ));
+    }
+
+    // Build metadata
+    let metadata_json = serde_json::json!({"reduce_by": reduce_by.to_string()});
+
+    // Update state to PendingDecrease
+    tx.execute(
+        "UPDATE prediction_orders SET state = 'pending_decrease' WHERE id = $1",
+        &[&order_id],
+    )
+    .await
+    .map_err(|e| format!("update state: {}", e))?;
+
+    // Enqueue decrease with metadata
+    tx.execute(
+        "INSERT INTO order_queue (order_id, action, actor, metadata) VALUES ($1, 'decrease', 'api', $2)",
+        &[&order_id, &metadata_json],
+    )
+    .await
+    .map_err(|e| format!("enqueue decrease: {}", e))?;
+
+    // Audit log
+    tx.execute(
+        "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, 'pending_decrease', 'decrease_request', 'api')",
+        &[&order_id, &current_state_str],
+    )
+    .await
+    .map_err(|e| format!("insert audit: {}", e))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit: {}", e))?;
+
+    debug!(order_id, "order decrease enqueued atomically");
 
     Ok(())
 }
@@ -861,6 +1069,8 @@ fn parse_state(s: &str) -> OrderState {
         "partially_filled" => OrderState::PartiallyFilled,
         "filled" => OrderState::Filled,
         "pending_cancel" => OrderState::PendingCancel,
+        "pending_amend" => OrderState::PendingAmend,
+        "pending_decrease" => OrderState::PendingDecrease,
         "cancelled" => OrderState::Cancelled,
         "rejected" => OrderState::Rejected,
         "expired" => OrderState::Expired,

@@ -2,10 +2,12 @@ use serde::Serialize;
 use std::sync::atomic::Ordering;
 use tracing::{debug, error, info, warn};
 
+use rust_decimal::Decimal;
+
 use harman::db;
 use harman::error::ExchangeError;
 use harman::state::OrderState;
-use harman::types::CancelReason;
+use harman::types::{AmendRequest, CancelReason};
 
 use crate::AppState;
 
@@ -15,6 +17,8 @@ pub struct PumpResult {
     pub submitted: u64,
     pub rejected: u64,
     pub cancelled: u64,
+    pub amended: u64,
+    pub decreased: u64,
     pub requeued: u64,
     pub errors: Vec<String>,
 }
@@ -29,6 +33,8 @@ pub async fn pump(state: &AppState) -> PumpResult {
         submitted: 0,
         rejected: 0,
         cancelled: 0,
+        amended: 0,
+        decreased: 0,
         requeued: 0,
         errors: vec![],
     };
@@ -95,6 +101,40 @@ pub async fn pump(state: &AppState) -> PumpResult {
                             }
                         }
                     }
+                    "amend" => {
+                        let outcome = handle_amend(state, &item).await;
+                        match outcome {
+                            AmendOutcome::Amended => result.amended += 1,
+                            AmendOutcome::Requeued(reason) => {
+                                result.requeued += 1;
+                                result.errors.push(reason);
+                            }
+                            AmendOutcome::RateLimited => {
+                                result.requeued += 1;
+                                result
+                                    .errors
+                                    .push("rate limited on amend, stopping early".into());
+                                break;
+                            }
+                        }
+                    }
+                    "decrease" => {
+                        let outcome = handle_decrease(state, &item).await;
+                        match outcome {
+                            DecreaseOutcome::Decreased => result.decreased += 1,
+                            DecreaseOutcome::Requeued(reason) => {
+                                result.requeued += 1;
+                                result.errors.push(reason);
+                            }
+                            DecreaseOutcome::RateLimited => {
+                                result.requeued += 1;
+                                result
+                                    .errors
+                                    .push("rate limited on decrease, stopping early".into());
+                                break;
+                            }
+                        }
+                    }
                     other => {
                         warn!(action = other, "unknown queue action, removing");
                         let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
@@ -116,6 +156,8 @@ pub async fn pump(state: &AppState) -> PumpResult {
         submitted = result.submitted,
         rejected = result.rejected,
         cancelled = result.cancelled,
+        amended = result.amended,
+        decreased = result.decreased,
         requeued = result.requeued,
         errors = result.errors.len(),
         "pump complete"
@@ -327,6 +369,343 @@ async fn handle_cancel(state: &AppState, item: &db::QueueItem) -> CancelOutcome 
                 error!(error = %e, "failed to requeue cancel");
             }
             CancelOutcome::Requeued(format!("cancel order {}: {}", item.order_id, e))
+        }
+    }
+}
+
+enum AmendOutcome {
+    Amended,
+    Requeued(String),
+    RateLimited,
+}
+
+async fn handle_amend(state: &AppState, item: &db::QueueItem) -> AmendOutcome {
+    let exchange_order_id = match &item.order.exchange_order_id {
+        Some(id) => id.clone(),
+        None => {
+            error!(
+                order_id = item.order_id,
+                "amend requested but no exchange_order_id, reverting state"
+            );
+            if let Err(e) = db::update_order_state(
+                &state.pool,
+                item.order_id,
+                state.session_id,
+                OrderState::Acknowledged,
+                None,
+                None,
+                None,
+                "pump",
+            )
+            .await
+            {
+                error!(error = %e, "failed to revert amend state");
+            }
+            let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            return AmendOutcome::Requeued(format!(
+                "order {} has no exchange_order_id for amend",
+                item.order_id
+            ));
+        }
+    };
+
+    // Read amend params from metadata
+    let metadata = match &item.metadata {
+        Some(m) => m,
+        None => {
+            error!(order_id = item.order_id, "amend queue item missing metadata");
+            if let Err(e) = db::update_order_state(
+                &state.pool,
+                item.order_id,
+                state.session_id,
+                OrderState::Acknowledged,
+                None,
+                None,
+                None,
+                "pump",
+            )
+            .await
+            {
+                error!(error = %e, "failed to revert amend state");
+            }
+            let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            return AmendOutcome::Requeued(format!(
+                "order {} amend missing metadata",
+                item.order_id
+            ));
+        }
+    };
+
+    let new_price_dollars: Option<Decimal> = metadata
+        .get("new_price_dollars")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok());
+    let new_quantity: Option<Decimal> = metadata
+        .get("new_quantity")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok());
+
+    let request = AmendRequest {
+        exchange_order_id: exchange_order_id.clone(),
+        ticker: item.order.ticker.clone(),
+        side: item.order.side,
+        action: item.order.action,
+        new_price_dollars,
+        new_quantity,
+    };
+
+    match state.exchange.amend_order(&request).await {
+        Ok(result) => {
+            info!(
+                order_id = item.order_id,
+                new_exchange_order_id = %result.exchange_order_id,
+                new_price = %result.new_price_dollars,
+                new_quantity = %result.new_quantity,
+                "order amended on exchange"
+            );
+
+            // Update order with new values from exchange
+            let client = match state.pool.get().await {
+                Ok(c) => c,
+                Err(e) => {
+                    error!(error = %e, "pool error updating amended order");
+                    let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+                    return AmendOutcome::Amended;
+                }
+            };
+
+            if let Err(e) = client
+                .execute(
+                    "UPDATE prediction_orders SET state = 'acknowledged', \
+                     exchange_order_id = $1, price_dollars = $2, quantity = $3 \
+                     WHERE id = $4 AND session_id = $5",
+                    &[
+                        &result.exchange_order_id,
+                        &result.new_price_dollars,
+                        &result.new_quantity,
+                        &item.order_id,
+                        &state.session_id,
+                    ],
+                )
+                .await
+            {
+                error!(error = %e, "failed to update amended order");
+            }
+
+            // Audit log
+            if let Err(e) = client
+                .execute(
+                    "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+                     VALUES ($1, 'pending_amend', 'acknowledged', 'amend_confirm', 'pump')",
+                    &[&item.order_id],
+                )
+                .await
+            {
+                error!(error = %e, "failed to insert amend audit");
+            }
+
+            let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            AmendOutcome::Amended
+        }
+        Err(ExchangeError::RateLimited { retry_after_ms: _ }) => {
+            warn!(order_id = item.order_id, "rate limited on amend, requeueing");
+            if let Err(e) = db::requeue_item(&state.pool, item.queue_id).await {
+                error!(error = %e, "failed to requeue amend");
+            }
+            AmendOutcome::RateLimited
+        }
+        Err(e) => {
+            error!(
+                error = %e,
+                order_id = item.order_id,
+                "amend exchange error, reverting state"
+            );
+            // Revert to acknowledged on failure
+            if let Err(e) = db::update_order_state(
+                &state.pool,
+                item.order_id,
+                state.session_id,
+                OrderState::Acknowledged,
+                None,
+                None,
+                None,
+                "pump",
+            )
+            .await
+            {
+                error!(error = %e, "failed to revert amend state");
+            }
+            let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            AmendOutcome::Requeued(format!("amend order {}: {}", item.order_id, e))
+        }
+    }
+}
+
+enum DecreaseOutcome {
+    Decreased,
+    Requeued(String),
+    RateLimited,
+}
+
+async fn handle_decrease(state: &AppState, item: &db::QueueItem) -> DecreaseOutcome {
+    let exchange_order_id = match &item.order.exchange_order_id {
+        Some(id) => id.clone(),
+        None => {
+            error!(
+                order_id = item.order_id,
+                "decrease requested but no exchange_order_id, reverting state"
+            );
+            if let Err(e) = db::update_order_state(
+                &state.pool,
+                item.order_id,
+                state.session_id,
+                OrderState::Acknowledged,
+                None,
+                None,
+                None,
+                "pump",
+            )
+            .await
+            {
+                error!(error = %e, "failed to revert decrease state");
+            }
+            let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            return DecreaseOutcome::Requeued(format!(
+                "order {} has no exchange_order_id for decrease",
+                item.order_id
+            ));
+        }
+    };
+
+    // Read reduce_by from metadata
+    let reduce_by: Decimal = match &item.metadata {
+        Some(m) => match m.get("reduce_by").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()) {
+            Some(d) => d,
+            None => {
+                error!(order_id = item.order_id, "decrease metadata missing reduce_by");
+                if let Err(e) = db::update_order_state(
+                    &state.pool,
+                    item.order_id,
+                    state.session_id,
+                    OrderState::Acknowledged,
+                    None,
+                    None,
+                    None,
+                    "pump",
+                )
+                .await
+                {
+                    error!(error = %e, "failed to revert decrease state");
+                }
+                let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+                return DecreaseOutcome::Requeued(format!(
+                    "order {} decrease missing reduce_by",
+                    item.order_id
+                ));
+            }
+        },
+        None => {
+            error!(order_id = item.order_id, "decrease queue item missing metadata");
+            if let Err(e) = db::update_order_state(
+                &state.pool,
+                item.order_id,
+                state.session_id,
+                OrderState::Acknowledged,
+                None,
+                None,
+                None,
+                "pump",
+            )
+            .await
+            {
+                error!(error = %e, "failed to revert decrease state");
+            }
+            let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            return DecreaseOutcome::Requeued(format!(
+                "order {} decrease missing metadata",
+                item.order_id
+            ));
+        }
+    };
+
+    match state
+        .exchange
+        .decrease_order(&exchange_order_id, reduce_by)
+        .await
+    {
+        Ok(()) => {
+            info!(
+                order_id = item.order_id,
+                reduce_by = %reduce_by,
+                "order decreased on exchange"
+            );
+
+            // Update quantity in DB
+            let client = match state.pool.get().await {
+                Ok(c) => c,
+                Err(e) => {
+                    error!(error = %e, "pool error updating decreased order");
+                    let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+                    return DecreaseOutcome::Decreased;
+                }
+            };
+
+            if let Err(e) = client
+                .execute(
+                    "UPDATE prediction_orders SET state = 'acknowledged', \
+                     quantity = quantity - $1 \
+                     WHERE id = $2 AND session_id = $3",
+                    &[&reduce_by, &item.order_id, &state.session_id],
+                )
+                .await
+            {
+                error!(error = %e, "failed to update decreased order");
+            }
+
+            // Audit log
+            if let Err(e) = client
+                .execute(
+                    "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+                     VALUES ($1, 'pending_decrease', 'acknowledged', 'decrease_confirm', 'pump')",
+                    &[&item.order_id],
+                )
+                .await
+            {
+                error!(error = %e, "failed to insert decrease audit");
+            }
+
+            let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            DecreaseOutcome::Decreased
+        }
+        Err(ExchangeError::RateLimited { retry_after_ms: _ }) => {
+            warn!(order_id = item.order_id, "rate limited on decrease, requeueing");
+            if let Err(e) = db::requeue_item(&state.pool, item.queue_id).await {
+                error!(error = %e, "failed to requeue decrease");
+            }
+            DecreaseOutcome::RateLimited
+        }
+        Err(e) => {
+            error!(
+                error = %e,
+                order_id = item.order_id,
+                "decrease exchange error, reverting state"
+            );
+            if let Err(e) = db::update_order_state(
+                &state.pool,
+                item.order_id,
+                state.session_id,
+                OrderState::Acknowledged,
+                None,
+                None,
+                None,
+                "pump",
+            )
+            .await
+            {
+                error!(error = %e, "failed to revert decrease state");
+            }
+            let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            DecreaseOutcome::Requeued(format!("decrease order {}: {}", item.order_id, e))
         }
     }
 }

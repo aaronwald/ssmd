@@ -19,6 +19,10 @@ pub enum OrderState {
     Filled,
     /// Cancel request sent
     PendingCancel,
+    /// Amend request sent (price and/or quantity change)
+    PendingAmend,
+    /// Decrease request sent (quantity reduction, preserves queue priority)
+    PendingDecrease,
     /// Successfully cancelled (terminal)
     Cancelled,
     /// Rejected by exchange or risk check (terminal)
@@ -48,6 +52,8 @@ impl OrderState {
                 | OrderState::Acknowledged
                 | OrderState::PartiallyFilled
                 | OrderState::PendingCancel
+                | OrderState::PendingAmend
+                | OrderState::PendingDecrease
         )
     }
 }
@@ -61,6 +67,8 @@ impl std::fmt::Display for OrderState {
             OrderState::PartiallyFilled => "partially_filled",
             OrderState::Filled => "filled",
             OrderState::PendingCancel => "pending_cancel",
+            OrderState::PendingAmend => "pending_amend",
+            OrderState::PendingDecrease => "pending_decrease",
             OrderState::Cancelled => "cancelled",
             OrderState::Rejected => "rejected",
             OrderState::Expired => "expired",
@@ -86,6 +94,14 @@ pub enum OrderEvent {
     CancelRequest,
     /// Cancel confirmed by exchange
     CancelConfirm,
+    /// Amend requested by user or system
+    AmendRequest,
+    /// Amend confirmed by exchange
+    AmendConfirm,
+    /// Decrease requested by user or system
+    DecreaseRequest,
+    /// Decrease confirmed by exchange
+    DecreaseConfirm,
     /// Order expired
     Expire,
 }
@@ -100,6 +116,10 @@ impl std::fmt::Display for OrderEvent {
             OrderEvent::Fill { .. } => write!(f, "fill"),
             OrderEvent::CancelRequest => write!(f, "cancel_request"),
             OrderEvent::CancelConfirm => write!(f, "cancel_confirm"),
+            OrderEvent::AmendRequest => write!(f, "amend_request"),
+            OrderEvent::AmendConfirm => write!(f, "amend_confirm"),
+            OrderEvent::DecreaseRequest => write!(f, "decrease_request"),
+            OrderEvent::DecreaseConfirm => write!(f, "decrease_confirm"),
             OrderEvent::Expire => write!(f, "expire"),
         }
     }
@@ -131,6 +151,14 @@ pub fn apply_event(
             // The filled_quantity is updated in the DB, but the cancel request remains active.
             Ok(OrderState::PendingCancel)
         }
+        (OrderState::PendingAmend, OrderEvent::PartialFill { .. }) => {
+            // Partial fill while amend is pending: stay in PendingAmend to preserve amend intent.
+            Ok(OrderState::PendingAmend)
+        }
+        (OrderState::PendingDecrease, OrderEvent::PartialFill { .. }) => {
+            // Partial fill while decrease is pending: stay in PendingDecrease to preserve intent.
+            Ok(OrderState::PendingDecrease)
+        }
         (_, OrderEvent::PartialFill { .. }) => Ok(OrderState::PartiallyFilled),
 
         // Pending transitions
@@ -144,15 +172,31 @@ pub fn apply_event(
 
         // Acknowledged transitions
         (OrderState::Acknowledged, OrderEvent::CancelRequest) => Ok(OrderState::PendingCancel),
+        (OrderState::Acknowledged, OrderEvent::AmendRequest) => Ok(OrderState::PendingAmend),
+        (OrderState::Acknowledged, OrderEvent::DecreaseRequest) => Ok(OrderState::PendingDecrease),
         (OrderState::Acknowledged, OrderEvent::Expire) => Ok(OrderState::Expired),
 
         // PartiallyFilled transitions
         (OrderState::PartiallyFilled, OrderEvent::CancelRequest) => {
             Ok(OrderState::PendingCancel)
         }
+        (OrderState::PartiallyFilled, OrderEvent::AmendRequest) => {
+            Ok(OrderState::PendingAmend)
+        }
+        (OrderState::PartiallyFilled, OrderEvent::DecreaseRequest) => {
+            Ok(OrderState::PendingDecrease)
+        }
 
         // PendingCancel transitions
         (OrderState::PendingCancel, OrderEvent::CancelConfirm) => Ok(OrderState::Cancelled),
+
+        // PendingAmend transitions
+        (OrderState::PendingAmend, OrderEvent::AmendConfirm) => Ok(OrderState::Acknowledged),
+        (OrderState::PendingAmend, OrderEvent::CancelRequest) => Ok(OrderState::PendingCancel),
+
+        // PendingDecrease transitions
+        (OrderState::PendingDecrease, OrderEvent::DecreaseConfirm) => Ok(OrderState::Acknowledged),
+        (OrderState::PendingDecrease, OrderEvent::CancelRequest) => Ok(OrderState::PendingCancel),
 
         // All other transitions are invalid
         (state, evt) => Err(TransitionError::InvalidTransition {
@@ -181,6 +225,13 @@ pub fn resolve_exchange_state(
         (OrderState::PendingCancel, ExchangeOrderState::Cancelled) => Some(OrderState::Cancelled),
         (OrderState::PendingCancel, ExchangeOrderState::Executed) => Some(OrderState::Filled),
         (OrderState::PendingCancel, ExchangeOrderState::NotFound) => Some(OrderState::Cancelled),
+        // PendingAmend/PendingDecrease: exchange says it's done → Acknowledged
+        (OrderState::PendingAmend, ExchangeOrderState::Resting) => Some(OrderState::Acknowledged),
+        (OrderState::PendingAmend, ExchangeOrderState::Executed) => Some(OrderState::Filled),
+        (OrderState::PendingAmend, ExchangeOrderState::Cancelled) => Some(OrderState::Cancelled),
+        (OrderState::PendingDecrease, ExchangeOrderState::Resting) => Some(OrderState::Acknowledged),
+        (OrderState::PendingDecrease, ExchangeOrderState::Executed) => Some(OrderState::Filled),
+        (OrderState::PendingDecrease, ExchangeOrderState::Cancelled) => Some(OrderState::Cancelled),
         // PendingCancel + Resting: needs special handling (re-send cancel)
         _ => None,
     }
@@ -248,6 +299,8 @@ mod tests {
             OrderState::Acknowledged,
             OrderState::PartiallyFilled,
             OrderState::PendingCancel,
+            OrderState::PendingAmend,
+            OrderState::PendingDecrease,
         ];
         for state in non_terminal {
             let result = apply_event(state, &OrderEvent::Fill { filled_qty: Decimal::from(1) });
@@ -321,6 +374,8 @@ mod tests {
             OrderState::Acknowledged,
             OrderState::PartiallyFilled,
             OrderState::PendingCancel,
+            OrderState::PendingAmend,
+            OrderState::PendingDecrease,
         ];
         for state in non_terminal {
             let result = apply_event(state, &OrderEvent::PartialFill { filled_qty: Decimal::from(1) });
@@ -666,6 +721,8 @@ mod tests {
         assert!(!OrderState::Acknowledged.is_terminal());
         assert!(!OrderState::PartiallyFilled.is_terminal());
         assert!(!OrderState::PendingCancel.is_terminal());
+        assert!(!OrderState::PendingAmend.is_terminal());
+        assert!(!OrderState::PendingDecrease.is_terminal());
     }
 
     #[test]
@@ -675,6 +732,8 @@ mod tests {
         assert!(OrderState::Acknowledged.is_open());
         assert!(OrderState::PartiallyFilled.is_open());
         assert!(OrderState::PendingCancel.is_open());
+        assert!(OrderState::PendingAmend.is_open());
+        assert!(OrderState::PendingDecrease.is_open());
 
         assert!(!OrderState::Filled.is_open());
         assert!(!OrderState::Cancelled.is_open());
@@ -771,5 +830,254 @@ mod tests {
             &crate::types::ExchangeOrderState::NotFound,
         );
         assert_eq!(result, None);
+    }
+
+    // ======================================================================
+    // Amend transitions
+    // ======================================================================
+
+    #[test]
+    fn test_acknowledged_to_pending_amend() {
+        let result = apply_event(OrderState::Acknowledged, &OrderEvent::AmendRequest);
+        assert_eq!(result.unwrap(), OrderState::PendingAmend);
+    }
+
+    #[test]
+    fn test_partially_filled_to_pending_amend() {
+        let result = apply_event(OrderState::PartiallyFilled, &OrderEvent::AmendRequest);
+        assert_eq!(result.unwrap(), OrderState::PendingAmend);
+    }
+
+    #[test]
+    fn test_pending_amend_to_acknowledged_on_confirm() {
+        let result = apply_event(OrderState::PendingAmend, &OrderEvent::AmendConfirm);
+        assert_eq!(result.unwrap(), OrderState::Acknowledged);
+    }
+
+    #[test]
+    fn test_pending_amend_fill_wins() {
+        let result = apply_event(
+            OrderState::PendingAmend,
+            &OrderEvent::Fill { filled_qty: Decimal::from(10) },
+        );
+        assert_eq!(result.unwrap(), OrderState::Filled);
+    }
+
+    #[test]
+    fn test_pending_amend_partial_fill_preserves_amend() {
+        let result = apply_event(
+            OrderState::PendingAmend,
+            &OrderEvent::PartialFill { filled_qty: Decimal::from(3) },
+        );
+        assert_eq!(result.unwrap(), OrderState::PendingAmend);
+    }
+
+    #[test]
+    fn test_pending_amend_cancel_request() {
+        let result = apply_event(OrderState::PendingAmend, &OrderEvent::CancelRequest);
+        assert_eq!(result.unwrap(), OrderState::PendingCancel);
+    }
+
+    #[test]
+    fn test_pending_rejects_amend_request() {
+        assert!(apply_event(OrderState::Pending, &OrderEvent::AmendRequest).is_err());
+    }
+
+    #[test]
+    fn test_submitted_rejects_amend_request() {
+        assert!(apply_event(OrderState::Submitted, &OrderEvent::AmendRequest).is_err());
+    }
+
+    // ======================================================================
+    // Decrease transitions
+    // ======================================================================
+
+    #[test]
+    fn test_acknowledged_to_pending_decrease() {
+        let result = apply_event(OrderState::Acknowledged, &OrderEvent::DecreaseRequest);
+        assert_eq!(result.unwrap(), OrderState::PendingDecrease);
+    }
+
+    #[test]
+    fn test_partially_filled_to_pending_decrease() {
+        let result = apply_event(OrderState::PartiallyFilled, &OrderEvent::DecreaseRequest);
+        assert_eq!(result.unwrap(), OrderState::PendingDecrease);
+    }
+
+    #[test]
+    fn test_pending_decrease_to_acknowledged_on_confirm() {
+        let result = apply_event(OrderState::PendingDecrease, &OrderEvent::DecreaseConfirm);
+        assert_eq!(result.unwrap(), OrderState::Acknowledged);
+    }
+
+    #[test]
+    fn test_pending_decrease_fill_wins() {
+        let result = apply_event(
+            OrderState::PendingDecrease,
+            &OrderEvent::Fill { filled_qty: Decimal::from(10) },
+        );
+        assert_eq!(result.unwrap(), OrderState::Filled);
+    }
+
+    #[test]
+    fn test_pending_decrease_partial_fill_preserves_decrease() {
+        let result = apply_event(
+            OrderState::PendingDecrease,
+            &OrderEvent::PartialFill { filled_qty: Decimal::from(3) },
+        );
+        assert_eq!(result.unwrap(), OrderState::PendingDecrease);
+    }
+
+    #[test]
+    fn test_pending_decrease_cancel_request() {
+        let result = apply_event(OrderState::PendingDecrease, &OrderEvent::CancelRequest);
+        assert_eq!(result.unwrap(), OrderState::PendingCancel);
+    }
+
+    #[test]
+    fn test_pending_rejects_decrease_request() {
+        assert!(apply_event(OrderState::Pending, &OrderEvent::DecreaseRequest).is_err());
+    }
+
+    #[test]
+    fn test_submitted_rejects_decrease_request() {
+        assert!(apply_event(OrderState::Submitted, &OrderEvent::DecreaseRequest).is_err());
+    }
+
+    // ======================================================================
+    // Fill acceptance from new states (exhaustive update)
+    // ======================================================================
+
+    #[test]
+    fn test_fill_accepted_from_pending_amend() {
+        let result = apply_event(
+            OrderState::PendingAmend,
+            &OrderEvent::Fill { filled_qty: Decimal::from(10) },
+        );
+        assert_eq!(result.unwrap(), OrderState::Filled);
+    }
+
+    #[test]
+    fn test_fill_accepted_from_pending_decrease() {
+        let result = apply_event(
+            OrderState::PendingDecrease,
+            &OrderEvent::Fill { filled_qty: Decimal::from(10) },
+        );
+        assert_eq!(result.unwrap(), OrderState::Filled);
+    }
+
+    // ======================================================================
+    // State properties for new states
+    // ======================================================================
+
+    #[test]
+    fn test_pending_amend_is_open_not_terminal() {
+        assert!(OrderState::PendingAmend.is_open());
+        assert!(!OrderState::PendingAmend.is_terminal());
+    }
+
+    #[test]
+    fn test_pending_decrease_is_open_not_terminal() {
+        assert!(OrderState::PendingDecrease.is_open());
+        assert!(!OrderState::PendingDecrease.is_terminal());
+    }
+
+    #[test]
+    fn test_pending_amend_display() {
+        assert_eq!(OrderState::PendingAmend.to_string(), "pending_amend");
+    }
+
+    #[test]
+    fn test_pending_decrease_display() {
+        assert_eq!(OrderState::PendingDecrease.to_string(), "pending_decrease");
+    }
+
+    // ======================================================================
+    // Lifecycle: amend path
+    // ======================================================================
+
+    #[test]
+    fn test_lifecycle_amend_happy_path() {
+        let s = OrderState::Acknowledged;
+        let s = apply_event(s, &OrderEvent::AmendRequest).unwrap();
+        assert_eq!(s, OrderState::PendingAmend);
+        let s = apply_event(s, &OrderEvent::AmendConfirm).unwrap();
+        assert_eq!(s, OrderState::Acknowledged);
+    }
+
+    #[test]
+    fn test_lifecycle_decrease_happy_path() {
+        let s = OrderState::Acknowledged;
+        let s = apply_event(s, &OrderEvent::DecreaseRequest).unwrap();
+        assert_eq!(s, OrderState::PendingDecrease);
+        let s = apply_event(s, &OrderEvent::DecreaseConfirm).unwrap();
+        assert_eq!(s, OrderState::Acknowledged);
+    }
+
+    #[test]
+    fn test_lifecycle_amend_then_cancel() {
+        let s = OrderState::PendingAmend;
+        let s = apply_event(s, &OrderEvent::CancelRequest).unwrap();
+        assert_eq!(s, OrderState::PendingCancel);
+        let s = apply_event(s, &OrderEvent::CancelConfirm).unwrap();
+        assert_eq!(s, OrderState::Cancelled);
+    }
+
+    // ======================================================================
+    // resolve_exchange_state for new states
+    // ======================================================================
+
+    #[test]
+    fn test_resolve_pending_amend_resting() {
+        let result = resolve_exchange_state(
+            &OrderState::PendingAmend,
+            &crate::types::ExchangeOrderState::Resting,
+        );
+        assert_eq!(result, Some(OrderState::Acknowledged));
+    }
+
+    #[test]
+    fn test_resolve_pending_amend_executed() {
+        let result = resolve_exchange_state(
+            &OrderState::PendingAmend,
+            &crate::types::ExchangeOrderState::Executed,
+        );
+        assert_eq!(result, Some(OrderState::Filled));
+    }
+
+    #[test]
+    fn test_resolve_pending_amend_cancelled() {
+        let result = resolve_exchange_state(
+            &OrderState::PendingAmend,
+            &crate::types::ExchangeOrderState::Cancelled,
+        );
+        assert_eq!(result, Some(OrderState::Cancelled));
+    }
+
+    #[test]
+    fn test_resolve_pending_decrease_resting() {
+        let result = resolve_exchange_state(
+            &OrderState::PendingDecrease,
+            &crate::types::ExchangeOrderState::Resting,
+        );
+        assert_eq!(result, Some(OrderState::Acknowledged));
+    }
+
+    #[test]
+    fn test_resolve_pending_decrease_executed() {
+        let result = resolve_exchange_state(
+            &OrderState::PendingDecrease,
+            &crate::types::ExchangeOrderState::Executed,
+        );
+        assert_eq!(result, Some(OrderState::Filled));
+    }
+
+    #[test]
+    fn test_resolve_pending_decrease_cancelled() {
+        let result = resolve_exchange_state(
+            &OrderState::PendingDecrease,
+            &crate::types::ExchangeOrderState::Cancelled,
+        );
+        assert_eq!(result, Some(OrderState::Cancelled));
     }
 }

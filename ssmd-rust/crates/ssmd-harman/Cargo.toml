@@ -33,3 +33,7 @@ tower = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+rust_decimal = { workspace = true }
