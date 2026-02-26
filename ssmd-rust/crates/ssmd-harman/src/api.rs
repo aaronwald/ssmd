@@ -128,7 +128,10 @@ async fn auth_middleware(
             if cached.cached_at.elapsed() < Duration::from_secs(30) {
                 let session_id = resolve_session(&state, &cached.key_prefix)
                     .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    .map_err(|e| {
+                        tracing::error!(error = %e, key_prefix = %cached.key_prefix, "resolve_session failed (cached)");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
                 req.extensions_mut().insert(SessionContext {
                     session_id,
                     scopes: cached.scopes.clone(),
@@ -147,13 +150,20 @@ async fn auth_middleware(
         .timeout(Duration::from_secs(5))
         .send()
         .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "auth validation HTTP request failed");
+            StatusCode::BAD_GATEWAY
+        })?;
 
     if !resp.status().is_success() {
+        tracing::warn!(status = %resp.status(), "auth validation rejected by data-ts");
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    let body: ValidateResponse = resp.json().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let body: ValidateResponse = resp.json().await.map_err(|e| {
+        tracing::error!(error = %e, "auth validation response parse failed");
+        StatusCode::BAD_GATEWAY
+    })?;
 
     if !body.valid {
         return Err(StatusCode::UNAUTHORIZED);
@@ -174,7 +184,10 @@ async fn auth_middleware(
 
     let session_id = resolve_session(&state, &body.key_prefix)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, key_prefix = %body.key_prefix, "resolve_session failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     req.extensions_mut().insert(SessionContext {
         session_id,
