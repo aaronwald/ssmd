@@ -44,6 +44,8 @@ pub struct Metrics {
     pub reconciliation_duration: prometheus::Histogram,
     pub reconciliation_last_success: prometheus::IntGauge,
     pub reconciliation_fills_discovered: prometheus::IntCounter,
+    pub orders_amended: prometheus::IntCounter,
+    pub orders_decreased: prometheus::IntCounter,
 }
 
 impl Metrics {
@@ -91,6 +93,14 @@ impl Metrics {
             "Fills discovered during reconciliation",
         )
         .unwrap();
+        let orders_amended =
+            prometheus::IntCounter::new("harman_orders_amended_total", "Orders amended on exchange")
+                .unwrap();
+        let orders_decreased = prometheus::IntCounter::new(
+            "harman_orders_decreased_total",
+            "Orders decreased on exchange",
+        )
+        .unwrap();
 
         registry.register(Box::new(orders_dequeued.clone())).unwrap();
         registry.register(Box::new(orders_submitted.clone())).unwrap();
@@ -102,6 +112,8 @@ impl Metrics {
         registry.register(Box::new(reconciliation_duration.clone())).unwrap();
         registry.register(Box::new(reconciliation_last_success.clone())).unwrap();
         registry.register(Box::new(reconciliation_fills_discovered.clone())).unwrap();
+        registry.register(Box::new(orders_amended.clone())).unwrap();
+        registry.register(Box::new(orders_decreased.clone())).unwrap();
 
         Self {
             registry,
@@ -115,6 +127,8 @@ impl Metrics {
             reconciliation_duration,
             reconciliation_last_success,
             reconciliation_fills_discovered,
+            orders_amended,
+            orders_decreased,
         }
     }
 }

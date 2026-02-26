@@ -43,9 +43,9 @@ pub fn create_pool(database_url: &str) -> Result<Pool, String> {
         cfg.dbname = Some(dbname.to_string());
     }
 
-    // NoTls is safe here: in GKE, Cloud SQL Proxy handles TLS termination
-    // via a local Unix socket / TCP loopback. Direct TLS would be needed
-    // only if connecting to Postgres without the proxy.
+    // NoTls is acceptable here: harman connects to ssmd-postgres within the same
+    // K8s namespace. Network policies restrict access to port 5432. For external
+    // Postgres connections, replace with tokio-postgres-rustls and sslmode=require.
     cfg.create_pool(Some(Runtime::Tokio1), NoTls)
         .map_err(|e| format!("failed to create pool: {}", e))
 }

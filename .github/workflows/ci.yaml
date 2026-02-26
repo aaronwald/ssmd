@@ -9,6 +9,16 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: harman_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -26,6 +36,11 @@ jobs:
 
       - name: Rust test
         run: make rust-test
+
+      - name: Run crash recovery tests
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/harman_test
+        run: cargo test -p ssmd-harman --test crash_tests -- --ignored --nocapture
 
       - name: Rust build
         run: make rust-build

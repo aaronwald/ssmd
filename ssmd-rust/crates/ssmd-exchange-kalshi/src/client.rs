@@ -20,12 +20,14 @@ use crate::types::*;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const MIN_REQUEST_GAP: Duration = Duration::from_millis(200);
+const DEFAULT_PATH_PREFIX: &str = "/trade-api/v2";
 
 /// Kalshi REST trading client
 pub struct KalshiClient {
     http: Client,
     credentials: KalshiCredentials,
     base_url: String,
+    path_prefix: String,
     last_request: tokio::sync::Mutex<tokio::time::Instant>,
 }
 
@@ -45,8 +47,15 @@ impl KalshiClient {
             http,
             credentials,
             base_url,
+            path_prefix: DEFAULT_PATH_PREFIX.to_string(),
             last_request: tokio::sync::Mutex::new(tokio::time::Instant::now()),
         }
+    }
+
+    /// Override the default API path prefix (`/trade-api/v2`).
+    pub fn with_path_prefix(mut self, prefix: String) -> Self {
+        self.path_prefix = prefix;
+        self
     }
 
     /// Enforce minimum gap between requests (rate limiting)
@@ -252,9 +261,8 @@ impl ExchangeAdapter for KalshiClient {
             subaccount: 0,
         };
 
-        let resp = self
-            .post("/trade-api/v2/portfolio/orders", &body)
-            .await?;
+        let path = format!("{}/portfolio/orders", self.path_prefix);
+        let resp = self.post(&path, &body).await?;
 
         let status = resp.status();
         if status.is_success() {
@@ -272,7 +280,7 @@ impl ExchangeAdapter for KalshiClient {
     }
 
     async fn cancel_order(&self, exchange_order_id: &str) -> Result<(), ExchangeError> {
-        let path = format!("/trade-api/v2/portfolio/orders/{}", exchange_order_id);
+        let path = format!("{}/portfolio/orders/{}", self.path_prefix, exchange_order_id);
         let resp = self.delete(&path).await?;
 
         let status = resp.status();
@@ -290,9 +298,8 @@ impl ExchangeAdapter for KalshiClient {
 
     async fn cancel_all_orders(&self) -> Result<i32, ExchangeError> {
         // List open orders first
-        let resp = self
-            .get("/trade-api/v2/portfolio/orders?status=resting")
-            .await?;
+        let list_path = format!("{}/portfolio/orders?status=resting", self.path_prefix);
+        let resp = self.get(&list_path).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -319,8 +326,9 @@ impl ExchangeAdapter for KalshiClient {
             .collect();
 
         let body = serde_json::json!({"orders": order_ids});
+        let batch_path = format!("{}/portfolio/orders/batched", self.path_prefix);
         let resp = self
-            .delete_with_body("/trade-api/v2/portfolio/orders/batched", Some(&body))
+            .delete_with_body(&batch_path, Some(&body))
             .await?;
 
         let status = resp.status();
@@ -343,8 +351,8 @@ impl ExchangeAdapter for KalshiClient {
         client_order_id: Uuid,
     ) -> Result<ExchangeOrderStatus, ExchangeError> {
         let path = format!(
-            "/trade-api/v2/portfolio/orders?client_order_id={}",
-            client_order_id
+            "{}/portfolio/orders?client_order_id={}",
+            self.path_prefix, client_order_id
         );
         let resp = self.get(&path).await?;
 
@@ -384,9 +392,8 @@ impl ExchangeAdapter for KalshiClient {
     }
 
     async fn get_positions(&self) -> Result<Vec<Position>, ExchangeError> {
-        let resp = self
-            .get("/trade-api/v2/portfolio/positions")
-            .await?;
+        let path = format!("{}/portfolio/positions", self.path_prefix);
+        let resp = self.get(&path).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -419,7 +426,8 @@ impl ExchangeAdapter for KalshiClient {
     }
 
     async fn get_fills(&self) -> Result<Vec<ExchangeFill>, ExchangeError> {
-        let resp = self.get("/trade-api/v2/portfolio/fills").await?;
+        let fills_path = format!("{}/portfolio/fills", self.path_prefix);
+        let resp = self.get(&fills_path).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -459,9 +467,8 @@ impl ExchangeAdapter for KalshiClient {
     }
 
     async fn get_balance(&self) -> Result<Balance, ExchangeError> {
-        let resp = self
-            .get("/trade-api/v2/portfolio/balance")
-            .await?;
+        let balance_path = format!("{}/portfolio/balance", self.path_prefix);
+        let resp = self.get(&balance_path).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -505,8 +512,8 @@ impl ExchangeAdapter for KalshiClient {
         };
 
         let path = format!(
-            "/trade-api/v2/portfolio/orders/{}/amend",
-            request.exchange_order_id
+            "{}/portfolio/orders/{}/amend",
+            self.path_prefix, request.exchange_order_id
         );
         let resp = self.post(&path, &body).await?;
 
@@ -552,8 +559,8 @@ impl ExchangeAdapter for KalshiClient {
         };
 
         let path = format!(
-            "/trade-api/v2/portfolio/orders/{}/decrease",
-            exchange_order_id
+            "{}/portfolio/orders/{}/decrease",
+            self.path_prefix, exchange_order_id
         );
         let resp = self.post(&path, &body).await?;
 

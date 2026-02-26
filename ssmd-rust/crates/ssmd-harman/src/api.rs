@@ -777,6 +777,8 @@ async fn pump_handler(
     };
 
     let result = crate::pump::pump(&state, ctx.session_id).await;
+    state.metrics.orders_amended.inc_by(result.amended);
+    state.metrics.orders_decreased.inc_by(result.decreased);
     (StatusCode::OK, Json(result)).into_response()
 }
 
