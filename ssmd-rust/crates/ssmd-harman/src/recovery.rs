@@ -5,6 +5,7 @@ use harman::db;
 use harman::error::ExchangeError;
 use harman::state::{self, OrderState};
 use harman::types::ExchangeOrderState;
+use rust_decimal::Decimal;
 
 use crate::AppState;
 
@@ -136,38 +137,51 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
                 }
             }
             Err(ExchangeError::NotFound(_)) => {
-                if order.state == OrderState::Submitted {
-                    info!(
-                        order_id = order.id,
-                        "recovery: submitted order not found on exchange → rejected"
-                    );
-                    let _ = db::update_order_state(
-                        &state.pool,
-                        order.id,
-                        session_id,
-                        OrderState::Rejected,
-                        None,
-                        None,
-                        None,
-                        "recovery",
-                    )
-                    .await;
-                } else {
-                    info!(
-                        order_id = order.id,
-                        "recovery: pending_cancel order not found → cancelled"
-                    );
-                    let _ = db::update_order_state(
-                        &state.pool,
-                        order.id,
-                        session_id,
-                        OrderState::Cancelled,
-                        None,
-                        None,
-                        None,
-                        "recovery",
-                    )
-                    .await;
+                match order.state {
+                    OrderState::Submitted => {
+                        info!(
+                            order_id = order.id,
+                            "recovery: submitted order not found on exchange → rejected"
+                        );
+                        let _ = db::update_order_state(
+                            &state.pool,
+                            order.id,
+                            session_id,
+                            OrderState::Rejected,
+                            None,
+                            None,
+                            None,
+                            "recovery",
+                        )
+                        .await;
+                    }
+                    OrderState::PendingCancel => {
+                        info!(
+                            order_id = order.id,
+                            "recovery: pending_cancel order not found → cancelled"
+                        );
+                        let _ = db::update_order_state(
+                            &state.pool,
+                            order.id,
+                            session_id,
+                            OrderState::Cancelled,
+                            None,
+                            None,
+                            None,
+                            "recovery",
+                        )
+                        .await;
+                    }
+                    _ => {
+                        // Acknowledged/PartiallyFilled/PendingAmend/PendingDecrease not found
+                        // on exchange is unusual — log warning but don't auto-cancel
+                        warn!(
+                            order_id = order.id,
+                            state = %order.state,
+                            "recovery: order in {} state not found on exchange, leaving for manual review",
+                            order.state
+                        );
+                    }
                 }
             }
             Err(ExchangeError::Connection(_) | ExchangeError::Timeout { .. }) => {
@@ -192,6 +206,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
 }
 
 /// Fetch fills from exchange and record any missing ones.
+/// Also updates order state when fills bring an order to Filled/PartiallyFilled.
 async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Result<(), String> {
     let fills = state
         .exchange
@@ -203,6 +218,8 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
 
     let orders = db::list_orders(&state.pool, session_id, None).await?;
     let mut recorded = 0;
+    let mut orders_with_new_fills: std::collections::HashSet<i64> =
+        std::collections::HashSet::new();
 
     for fill in &fills {
         if let Some(order) = orders
@@ -223,12 +240,57 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
 
             if inserted {
                 recorded += 1;
+                orders_with_new_fills.insert(order.id);
             }
         }
     }
 
     if recorded > 0 {
         info!(count = recorded, "recorded missing fills during recovery");
+    }
+
+    // Update order states for orders that received new fills
+    for order_id in &orders_with_new_fills {
+        if let Some(order) = orders.iter().find(|o| o.id == *order_id) {
+            if order.state.is_terminal() {
+                continue;
+            }
+            let filled_qty = db::get_filled_quantity(&state.pool, *order_id).await?;
+            let new_state = if filled_qty >= order.quantity {
+                OrderState::Filled
+            } else if filled_qty > Decimal::ZERO {
+                OrderState::PartiallyFilled
+            } else {
+                continue;
+            };
+            if new_state != order.state {
+                info!(
+                    order_id = order.id,
+                    from = %order.state,
+                    to = %new_state,
+                    filled_qty = %filled_qty,
+                    "recovery: updated order state from fills"
+                );
+                if let Err(e) = db::update_order_state(
+                    &state.pool,
+                    *order_id,
+                    session_id,
+                    new_state,
+                    None,
+                    Some(filled_qty),
+                    None,
+                    "recovery",
+                )
+                .await
+                {
+                    error!(
+                        error = %e,
+                        order_id = order.id,
+                        "failed to update order state from recovery fills"
+                    );
+                }
+            }
+        }
     }
 
     Ok(())
