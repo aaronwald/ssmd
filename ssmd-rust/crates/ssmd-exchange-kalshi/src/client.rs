@@ -248,7 +248,7 @@ impl ExchangeAdapter for KalshiClient {
             yes_price: (order.price_dollars * Decimal::from(100))
                 .to_i32()
                 .unwrap_or(0),
-            time_in_force: order.time_in_force.to_string(),
+            time_in_force: order.time_in_force.to_kalshi_str().to_string(),
             subaccount: 0,
         };
 

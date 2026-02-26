@@ -87,7 +87,6 @@ pub async fn pump(state: &AppState) -> PumpResult {
                             CancelOutcome::Cancelled | CancelOutcome::NotFound => {
                                 result.cancelled += 1;
                             }
-                            CancelOutcome::Skipped => {}
                             CancelOutcome::Requeued(reason) => {
                                 result.requeued += 1;
                                 result.errors.push(reason);
@@ -276,7 +275,6 @@ async fn handle_submit(state: &AppState, item: &db::QueueItem) -> SubmitOutcome 
 enum CancelOutcome {
     Cancelled,
     NotFound,
-    Skipped,
     Requeued(String),
     RateLimited,
 }

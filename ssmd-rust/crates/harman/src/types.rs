@@ -52,8 +52,18 @@ pub enum TimeInForce {
 impl std::fmt::Display for TimeInForce {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TimeInForce::Gtc => write!(f, "good_till_canceled"),
-            TimeInForce::Ioc => write!(f, "immediate_or_cancel"),
+            TimeInForce::Gtc => write!(f, "gtc"),
+            TimeInForce::Ioc => write!(f, "ioc"),
+        }
+    }
+}
+
+impl TimeInForce {
+    /// Returns the Kalshi API string representation.
+    pub fn to_kalshi_str(&self) -> &'static str {
+        match self {
+            TimeInForce::Gtc => "good_till_canceled",
+            TimeInForce::Ioc => "immediate_or_cancel",
         }
     }
 }
@@ -251,7 +261,13 @@ mod tests {
 
     #[test]
     fn test_time_in_force_display() {
-        assert_eq!(TimeInForce::Gtc.to_string(), "good_till_canceled");
-        assert_eq!(TimeInForce::Ioc.to_string(), "immediate_or_cancel");
+        assert_eq!(TimeInForce::Gtc.to_string(), "gtc");
+        assert_eq!(TimeInForce::Ioc.to_string(), "ioc");
+    }
+
+    #[test]
+    fn test_time_in_force_kalshi_str() {
+        assert_eq!(TimeInForce::Gtc.to_kalshi_str(), "good_till_canceled");
+        assert_eq!(TimeInForce::Ioc.to_kalshi_str(), "immediate_or_cancel");
     }
 }
