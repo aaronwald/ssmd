@@ -163,6 +163,8 @@ func (r *HarmanReconciler) constructDeployment(harman *ssmdv1alpha1.Harman) *app
 		"app.kubernetes.io/name":       "ssmd-harman",
 		"app.kubernetes.io/instance":   harman.Name,
 		"app.kubernetes.io/managed-by": "ssmd-operator",
+		"ssmd.io/exchange":             string(harman.Spec.Exchange.Type),
+		"ssmd.io/environment":          string(harman.Spec.Exchange.Environment),
 	}
 
 	replicas := int32(1)
@@ -172,53 +174,36 @@ func (r *HarmanReconciler) constructDeployment(harman *ssmdv1alpha1.Harman) *app
 	if listenAddr == "" {
 		listenAddr = "0.0.0.0:8080"
 	}
-	maxNotional := harman.Spec.MaxNotional
-	if maxNotional == "" {
-		maxNotional = "100"
+	maxNotional := "100"
+	if harman.Spec.Risk != nil && harman.Spec.Risk.MaxNotional != "" {
+		maxNotional = harman.Spec.Risk.MaxNotional
 	}
-	kalshiBaseURL := harman.Spec.KalshiBaseURL
-	if kalshiBaseURL == "" {
-		kalshiBaseURL = "https://demo-api.kalshi.co"
+	baseURL := harman.Spec.Exchange.BaseURL
+	if baseURL == "" {
+		baseURL = "https://demo-api.kalshi.co"
 	}
 
 	env := []corev1.EnvVar{
 		{Name: "LISTEN_ADDR", Value: listenAddr},
 		{Name: "MAX_NOTIONAL", Value: maxNotional},
-		{Name: "KALSHI_BASE_URL", Value: kalshiBaseURL},
+		{Name: "KALSHI_BASE_URL", Value: baseURL},
 		{Name: "RUST_LOG", Value: "ssmd_harman=info,harman=info"},
-		// Secrets
+		// Database secret
 		{
 			Name: "DATABASE_URL",
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: harman.Spec.DbSecretRef,
+					LocalObjectReference: harman.Spec.Database.SecretRef,
 					Key:                  "database-url",
 				},
 			},
 		},
-		{
-			Name: "KALSHI_API_KEY",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: harman.Spec.KalshiSecretRef,
-					Key:                  "api-key",
-				},
-			},
-		},
-		{
-			Name: "KALSHI_PRIVATE_KEY",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: harman.Spec.KalshiSecretRef,
-					Key:                  "private-key",
-				},
-			},
-		},
+		// Auth secrets
 		{
 			Name: "HARMAN_API_TOKEN",
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: harman.Spec.TokenSecretRef,
+					LocalObjectReference: harman.Spec.Auth.SecretRef,
 					Key:                  "api-token",
 				},
 			},
@@ -227,11 +212,16 @@ func (r *HarmanReconciler) constructDeployment(harman *ssmdv1alpha1.Harman) *app
 			Name: "HARMAN_ADMIN_TOKEN",
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: harman.Spec.TokenSecretRef,
+					LocalObjectReference: harman.Spec.Auth.SecretRef,
 					Key:                  "admin-token",
 				},
 			},
 		},
+	}
+
+	// Append exchange-specific credential env vars
+	if exchangeEnv := r.exchangeEnvVars(harman); exchangeEnv != nil {
+		env = append(env, exchangeEnv...)
 	}
 
 	// Recreate strategy for single instance
@@ -312,6 +302,86 @@ func (r *HarmanReconciler) constructDeployment(harman *ssmdv1alpha1.Harman) *app
 				},
 			},
 		},
+	}
+}
+
+// exchangeEnvVars returns exchange-specific credential environment variables
+// based on the exchange type. Returns nil if no secret ref is configured.
+func (r *HarmanReconciler) exchangeEnvVars(harman *ssmdv1alpha1.Harman) []corev1.EnvVar {
+	if harman.Spec.Exchange.SecretRef == nil {
+		return nil
+	}
+
+	secretRef := *harman.Spec.Exchange.SecretRef
+
+	switch harman.Spec.Exchange.Type {
+	case ssmdv1alpha1.ExchangeTypeKalshi:
+		return []corev1.EnvVar{
+			{
+				Name: "KALSHI_API_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: secretRef,
+						Key:                  "api-key",
+					},
+				},
+			},
+			{
+				Name: "KALSHI_PRIVATE_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: secretRef,
+						Key:                  "private-key",
+					},
+				},
+			},
+		}
+	case ssmdv1alpha1.ExchangeTypeKraken:
+		return []corev1.EnvVar{
+			{
+				Name: "KRAKEN_API_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: secretRef,
+						Key:                  "api-key",
+					},
+				},
+			},
+			{
+				Name: "KRAKEN_API_SECRET",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: secretRef,
+						Key:                  "api-secret",
+					},
+				},
+			},
+		}
+	case ssmdv1alpha1.ExchangeTypePolymarket:
+		return []corev1.EnvVar{
+			{
+				Name: "POLYMARKET_API_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: secretRef,
+						Key:                  "api-key",
+					},
+				},
+			},
+			{
+				Name: "POLYMARKET_SECRET",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: secretRef,
+						Key:                  "secret",
+					},
+				},
+			},
+		}
+	case ssmdv1alpha1.ExchangeTypeTest:
+		return nil
+	default:
+		return nil
 	}
 }
 

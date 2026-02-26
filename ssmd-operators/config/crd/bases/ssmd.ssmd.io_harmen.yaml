@@ -15,6 +15,12 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.exchange.type
+      name: Exchange
+      type: string
+    - jsonPath: .spec.exchange.environment
+      name: Env
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -46,49 +52,96 @@ spec:
           spec:
             description: spec defines the desired state of Harman
             properties:
-              dbSecretRef:
-                description: DbSecretRef references the secret containing database-url
+              auth:
+                description: Auth defines the authentication settings
                 properties:
-                  name:
-                    default: ""
-                    description: |-
-                      Name of the referent.
-                      This field is effectively required, but due to backwards compatibility is
-                      allowed to be empty. Instances of this type with an empty value here are
-                      almost certainly wrong.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                    type: string
+                  secretRef:
+                    description: SecretRef references the secret containing api-token
+                      and admin-token
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                required:
+                - secretRef
                 type: object
-                x-kubernetes-map-type: atomic
+              database:
+                description: Database defines the database connection settings
+                properties:
+                  secretRef:
+                    description: SecretRef references the secret containing database-url
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                required:
+                - secretRef
+                type: object
+              exchange:
+                description: Exchange defines the exchange connection settings
+                properties:
+                  baseURL:
+                    default: https://demo-api.kalshi.co
+                    description: BaseURL is the exchange API base URL
+                    type: string
+                  environment:
+                    description: Environment is the exchange environment (demo, prod,
+                      test)
+                    enum:
+                    - demo
+                    - prod
+                    - test
+                    type: string
+                  secretRef:
+                    description: |-
+                      SecretRef references the secret containing exchange API credentials.
+                      Optional for test exchange.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  type:
+                    description: Type is the exchange backend
+                    enum:
+                    - kalshi
+                    - kraken
+                    - polymarket
+                    - test
+                    type: string
+                required:
+                - environment
+                - type
+                type: object
               image:
                 description: Image is the container image to use
                 type: string
-              kalshiBaseURL:
-                default: https://demo-api.kalshi.co
-                description: KalshiBaseURL is the Kalshi API base URL
-                type: string
-              kalshiSecretRef:
-                description: KalshiSecretRef references the secret containing api-key
-                  and private-key
-                properties:
-                  name:
-                    default: ""
-                    description: |-
-                      Name of the referent.
-                      This field is effectively required, but due to backwards compatibility is
-                      allowed to be empty. Instances of this type with an empty value here are
-                      almost certainly wrong.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                    type: string
-                type: object
-                x-kubernetes-map-type: atomic
               listenAddr:
                 default: 0.0.0.0:8080
                 description: ListenAddr is the HTTP listen address
-                type: string
-              maxNotional:
-                default: "100"
-                description: MaxNotional is the maximum notional value for orders
                 type: string
               resources:
                 description: Resources configures CPU/memory for the harman pod
@@ -149,26 +202,19 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
-              tokenSecretRef:
-                description: TokenSecretRef references the secret containing api-token
-                  and admin-token
+              risk:
+                description: Risk defines risk management settings
                 properties:
-                  name:
-                    default: ""
-                    description: |-
-                      Name of the referent.
-                      This field is effectively required, but due to backwards compatibility is
-                      allowed to be empty. Instances of this type with an empty value here are
-                      almost certainly wrong.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                  maxNotional:
+                    default: "100"
+                    description: MaxNotional is the maximum notional value for orders
                     type: string
                 type: object
-                x-kubernetes-map-type: atomic
             required:
-            - dbSecretRef
+            - auth
+            - database
+            - exchange
             - image
-            - kalshiSecretRef
-            - tokenSecretRef
             type: object
           status:
             description: status defines the observed state of Harman
