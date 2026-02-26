@@ -80,7 +80,10 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 
         KeyCode::Char('n') => {
             if app.active_tab == Tab::Orders {
-                app.order_form = Some(OrderForm::new());
+                let mut form = OrderForm::new(&app.market_feed);
+                // Pre-populate feed tickers from current known_tickers
+                form.feed_tickers = app.known_tickers.clone();
+                app.order_form = Some(form);
             }
         }
 
@@ -166,7 +169,6 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 async fn handle_order_form(app: &mut App, key: KeyEvent) {
-    let known_tickers = app.known_tickers.clone();
     let form = match app.order_form.as_mut() {
         Some(f) => f,
         None => return,
@@ -204,6 +206,20 @@ async fn handle_order_form(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Enter => {
             match form.active_field {
+                OrderField::Feed => {
+                    form.cycle_feed();
+                    // Fetch tickers for the new feed
+                    if let Some(ref dc) = app.data_client {
+                        if let Ok(snaps) = dc.snap(&form.feed, None).await {
+                            let mut tickers: Vec<String> = snaps.iter().map(|s| s.ticker.clone()).collect();
+                            tickers.sort();
+                            tickers.dedup();
+                            if let Some(f) = app.order_form.as_mut() {
+                                f.feed_tickers = tickers;
+                            }
+                        }
+                    }
+                }
                 OrderField::Side => form.toggle_side(),
                 OrderField::Action => form.toggle_action(),
                 OrderField::Ticker if !form.suggestions.is_empty() => {
@@ -227,6 +243,19 @@ async fn handle_order_form(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char(' ') => {
             match form.active_field {
+                OrderField::Feed => {
+                    form.cycle_feed();
+                    if let Some(ref dc) = app.data_client {
+                        if let Ok(snaps) = dc.snap(&form.feed, None).await {
+                            let mut tickers: Vec<String> = snaps.iter().map(|s| s.ticker.clone()).collect();
+                            tickers.sort();
+                            tickers.dedup();
+                            if let Some(f) = app.order_form.as_mut() {
+                                f.feed_tickers = tickers;
+                            }
+                        }
+                    }
+                }
                 OrderField::Side => form.toggle_side(),
                 OrderField::Action => form.toggle_action(),
                 _ => {
@@ -241,7 +270,7 @@ async fn handle_order_form(app: &mut App, key: KeyEvent) {
                 input.pop();
             }
             if form.active_field == OrderField::Ticker {
-                form.update_suggestions(&known_tickers);
+                form.update_suggestions();
             }
         }
         KeyCode::Char(c) => {
@@ -249,7 +278,7 @@ async fn handle_order_form(app: &mut App, key: KeyEvent) {
                 input.push(c);
             }
             if form.active_field == OrderField::Ticker {
-                form.update_suggestions(&known_tickers);
+                form.update_suggestions();
             }
         }
         _ => {}

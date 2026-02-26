@@ -19,6 +19,7 @@ const FEEDS: [&str; 3] = ["kalshi", "kraken-futures", "polymarket"];
 /// Fields in the new order form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderField {
+    Feed,
     Ticker,
     Side,
     Action,
@@ -26,7 +27,8 @@ pub enum OrderField {
     Price,
 }
 
-const ORDER_FIELDS: [OrderField; 5] = [
+const ORDER_FIELDS: [OrderField; 6] = [
+    OrderField::Feed,
     OrderField::Ticker,
     OrderField::Side,
     OrderField::Action,
@@ -37,6 +39,7 @@ const ORDER_FIELDS: [OrderField; 5] = [
 /// New order form state.
 pub struct OrderForm {
     pub active_field: OrderField,
+    pub feed: String,
     pub ticker: String,
     pub side: String,    // "yes" or "no"
     pub action: String,  // "buy" or "sell"
@@ -44,12 +47,15 @@ pub struct OrderForm {
     pub price: String,
     pub suggestions: Vec<String>,
     pub suggestion_idx: usize,
+    /// Tickers available for the selected feed (populated on feed change).
+    pub feed_tickers: Vec<String>,
 }
 
 impl OrderForm {
-    pub fn new() -> Self {
+    pub fn new(feed: &str) -> Self {
         Self {
-            active_field: OrderField::Ticker,
+            active_field: OrderField::Feed,
+            feed: feed.to_string(),
             ticker: String::new(),
             side: "yes".to_string(),
             action: "buy".to_string(),
@@ -57,7 +63,19 @@ impl OrderForm {
             price: String::new(),
             suggestions: Vec::new(),
             suggestion_idx: 0,
+            feed_tickers: Vec::new(),
         }
+    }
+
+    pub fn cycle_feed(&mut self) {
+        let current_idx = FEEDS.iter().position(|f| *f == self.feed).unwrap_or(0);
+        let next_idx = (current_idx + 1) % FEEDS.len();
+        self.feed = FEEDS[next_idx].to_string();
+        // Clear ticker and suggestions when feed changes
+        self.ticker.clear();
+        self.suggestions.clear();
+        self.suggestion_idx = 0;
+        self.feed_tickers.clear();
     }
 
     pub fn next_field(&mut self) {
@@ -87,15 +105,15 @@ impl OrderForm {
         }
     }
 
-    /// Update suggestions from known tickers based on current prefix.
-    pub fn update_suggestions(&mut self, known_tickers: &[String]) {
+    /// Update suggestions from feed tickers based on current prefix.
+    pub fn update_suggestions(&mut self) {
         if self.ticker.is_empty() {
             self.suggestions.clear();
             self.suggestion_idx = 0;
             return;
         }
         let prefix = self.ticker.to_uppercase();
-        self.suggestions = known_tickers
+        self.suggestions = self.feed_tickers
             .iter()
             .filter(|t| t.starts_with(&prefix))
             .take(8)

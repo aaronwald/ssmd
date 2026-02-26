@@ -418,7 +418,7 @@ fn draw_order_form(f: &mut Frame, app: &App) {
     let area = f.area();
     let suggestion_lines = form.suggestions.len().min(5);
     let popup_width: u16 = 50;
-    let popup_height: u16 = 12 + suggestion_lines as u16;
+    let popup_height: u16 = 13 + suggestion_lines as u16;
     let x = area.width.saturating_sub(popup_width) / 2;
     let y = area.height.saturating_sub(popup_height) / 2;
     let popup_area = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
@@ -441,6 +441,7 @@ fn draw_order_form(f: &mut Frame, app: &App) {
 
     let mut text = vec![
         Line::from(""),
+        field_line("Feed:", &form.feed, OrderField::Feed),
         field_line("Ticker:", &form.ticker, OrderField::Ticker),
     ];
 
@@ -462,7 +463,9 @@ fn draw_order_form(f: &mut Frame, app: &App) {
     text.push(field_line("Price:", &form.price, OrderField::Price));
     text.push(Line::from(""));
 
-    let hint = if active == OrderField::Ticker && !form.suggestions.is_empty() {
+    let hint = if active == OrderField::Feed {
+        "  Enter/Space:cycle feed  Tab:next  Esc:cancel"
+    } else if active == OrderField::Ticker && !form.suggestions.is_empty() {
         "  Up/Dn:browse  Tab/Enter:accept  Esc:cancel"
     } else {
         "  Tab:next  Enter:submit/toggle  Esc:cancel"
