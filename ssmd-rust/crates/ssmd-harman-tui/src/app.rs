@@ -222,7 +222,9 @@ impl App {
     /// Poll orders and risk from the API. Called on each tick interval.
     pub async fn tick(&mut self) {
         match self.client.list_orders(None).await {
-            Ok(orders) => {
+            Ok(mut orders) => {
+                // Newest orders first
+                orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
                 self.orders = orders;
                 self.last_error = None;
                 // Collect unique tickers from orders into known_tickers

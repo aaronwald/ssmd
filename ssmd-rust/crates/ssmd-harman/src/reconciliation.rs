@@ -106,6 +106,7 @@ pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
 }
 
 /// Fetch recent fills from exchange and record any missing ones.
+/// After recording fills, update order states (Acknowledged → Filled/PartiallyFilled).
 ///
 /// Loads all orders once and builds a lookup to avoid N+1 queries.
 async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String> {
@@ -120,6 +121,9 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
     let orders = db::list_orders(&state.pool, session_id, None).await?;
 
     let mut count = 0u64;
+    // Track which orders got new fills so we can update their states
+    let mut orders_with_new_fills: std::collections::HashSet<i64> = std::collections::HashSet::new();
+
     for fill in &fills {
         if let Some(order) = orders
             .iter()
@@ -144,7 +148,52 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
                     "recorded missing fill"
                 );
                 state.metrics.fills_recorded.inc();
+                orders_with_new_fills.insert(order.id);
                 count += 1;
+            }
+        }
+    }
+
+    // Update order states for orders that received new fills
+    for order_id in &orders_with_new_fills {
+        if let Some(order) = orders.iter().find(|o| o.id == *order_id) {
+            // Only update non-terminal orders
+            if order.state.is_terminal() {
+                continue;
+            }
+            // Compute total filled quantity from all fills for this order
+            let filled_qty = db::get_filled_quantity(&state.pool, *order_id).await?;
+            let new_state = if filled_qty >= order.quantity {
+                OrderState::Filled
+            } else if filled_qty > Decimal::ZERO {
+                OrderState::PartiallyFilled
+            } else {
+                continue;
+            };
+
+            if new_state != order.state {
+                info!(
+                    order_id = order.id,
+                    from = %order.state,
+                    to = %new_state,
+                    filled_qty = %filled_qty,
+                    order_qty = %order.quantity,
+                    "reconciliation updated order state from fill"
+                );
+                if let Err(e) = db::update_order_state(
+                    &state.pool,
+                    *order_id,
+                    session_id,
+                    new_state,
+                    None,
+                    Some(filled_qty),
+                    None,
+                    "reconciliation",
+                )
+                .await
+                {
+                    error!(error = %e, order_id, "failed to update order state after fill");
+                }
             }
         }
     }

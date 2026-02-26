@@ -598,7 +598,32 @@ pub async fn get_or_create_session(
     Ok(id)
 }
 
-/// Find orders in ambiguous states (for recovery)
+/// Get total filled quantity for an order from the fills table.
+///
+/// Used by reconciliation to determine if an order should transition
+/// to Filled or PartiallyFilled after discovering new fills.
+pub async fn get_filled_quantity(pool: &Pool, order_id: i64) -> Result<Decimal, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let row = client
+        .query_one(
+            "SELECT COALESCE(SUM(quantity), 0) as total_filled FROM fills WHERE order_id = $1",
+            &[&order_id],
+        )
+        .await
+        .map_err(|e| format!("get filled quantity: {}", e))?;
+
+    Ok(row.get("total_filled"))
+}
+
+/// Find orders in ambiguous states (for recovery and reconciliation).
+///
+/// Includes 'acknowledged' because orders can be filled or cancelled on the
+/// exchange while still showing as acknowledged locally (e.g., fills received
+/// out-of-band, mass cancel on exchange).
 pub async fn get_ambiguous_orders(pool: &Pool, session_id: i64) -> Result<Vec<Order>, String> {
     let client = pool
         .get()
@@ -612,7 +637,7 @@ pub async fn get_ambiguous_orders(pool: &Pool, session_id: i64) -> Result<Vec<Or
                     filled_quantity, time_in_force, state, cancel_reason, \
                     created_at, updated_at \
              FROM prediction_orders \
-             WHERE session_id = $1 AND state IN ('submitted', 'pending_cancel', 'pending_amend', 'pending_decrease') \
+             WHERE session_id = $1 AND state IN ('submitted', 'acknowledged', 'pending_cancel', 'pending_amend', 'pending_decrease') \
              ORDER BY id",
             &[&session_id],
         )

@@ -1044,3 +1044,171 @@ async fn test_recovery_pending_decrease_resting_reverts() {
     // Recovery should resolve PendingDecrease to Acknowledged
     assert_order_state(&pool, order_id, OrderState::Acknowledged).await.unwrap();
 }
+
+// =============================================================================
+// Test 27: Reconciliation discovers fills AND updates order state (Bug 1 fix)
+//
+// Scenario: Order is Acknowledged, exchange reports a fill. Reconcile should
+// record the fill and transition the order to Filled.
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_reconciliation_fill_updates_order_state() {
+    let (pool, session_id) = setup().await;
+
+    // Insert order in Acknowledged state (qty=10, filled=0)
+    let order_id = insert_test_order(
+        &pool, session_id, OrderState::Acknowledged,
+        "KXTEST-RECON-FILL-STATE", Some("exch-recon-fs-1"),
+    ).await.unwrap();
+
+    // Mock: exchange reports a fill for the full quantity (10)
+    let mock = MockExchange::new();
+    {
+        let mut state = mock.state.lock().await;
+        state.fills.push(mock_fill(
+            "exch-recon-fs-1",
+            "KXTEST-RECON-FILL-STATE",
+            Decimal::from(10),
+            Decimal::new(50, 2),
+        ));
+    }
+
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    let result = reconciliation::reconcile(&app_state, session_id).await;
+
+    assert_eq!(result.fills_discovered, 1);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    // Order should now be Filled (not still Acknowledged)
+    assert_order_state(&pool, order_id, OrderState::Filled).await.unwrap();
+}
+
+// =============================================================================
+// Test 28: Reconciliation discovers partial fill → PartiallyFilled state
+//
+// Scenario: Order qty=10, fill qty=3. Should transition to PartiallyFilled.
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_reconciliation_partial_fill_updates_order_state() {
+    let (pool, session_id) = setup().await;
+
+    let order_id = insert_test_order(
+        &pool, session_id, OrderState::Acknowledged,
+        "KXTEST-RECON-PFILL", Some("exch-recon-pf-1"),
+    ).await.unwrap();
+
+    // Mock: exchange reports a partial fill (3 of 10)
+    let mock = MockExchange::new();
+    {
+        let mut state = mock.state.lock().await;
+        state.fills.push(mock_fill(
+            "exch-recon-pf-1",
+            "KXTEST-RECON-PFILL",
+            Decimal::from(3),
+            Decimal::new(50, 2),
+        ));
+    }
+
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    let result = reconciliation::reconcile(&app_state, session_id).await;
+
+    assert_eq!(result.fills_discovered, 1);
+
+    // Order should be PartiallyFilled (not Acknowledged)
+    assert_order_state(&pool, order_id, OrderState::PartiallyFilled).await.unwrap();
+}
+
+// =============================================================================
+// Test 29: Reconciliation resolves acknowledged order → Filled (exchange says Executed)
+//
+// Scenario: Order is Acknowledged but exchange says Executed (e.g., IOC fill
+// that completed without streaming notification). Bug 2 fix: Acknowledged is
+// now included in get_ambiguous_orders so resolve_stale_orders picks it up.
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_reconciliation_acknowledged_executed_on_exchange() {
+    let (pool, session_id) = setup().await;
+    let coid = Uuid::new_v4();
+
+    let order_id = insert_test_order_with_coid(
+        &pool, session_id, OrderState::Acknowledged,
+        "KXTEST-RECON-ACK-EXEC", Some("exch-recon-ae-1"), coid,
+    ).await.unwrap();
+
+    // Make the order look stale (updated >30s ago)
+    let client = pool.get().await.unwrap();
+    client.execute(
+        "UPDATE prediction_orders SET updated_at = NOW() - INTERVAL '60 seconds' WHERE id = $1",
+        &[&order_id],
+    ).await.unwrap();
+
+    // Mock: exchange says order is Executed
+    let mock = MockExchange::new();
+    {
+        let mut state = mock.state.lock().await;
+        state.order_statuses.insert(
+            coid,
+            mock_exchange_status("exch-recon-ae-1", ExchangeOrderState::Executed, Decimal::from(10), Decimal::ZERO),
+        );
+    }
+
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    let result = reconciliation::reconcile(&app_state, session_id).await;
+
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert!(result.orders_resolved >= 1, "expected at least 1 resolved order");
+
+    // Order should now be Filled
+    assert_order_state(&pool, order_id, OrderState::Filled).await.unwrap();
+}
+
+// =============================================================================
+// Test 30: Reconciliation resolves acknowledged order → Cancelled (mass cancel)
+//
+// Scenario: Mass cancel was sent on exchange, order cancelled there, but
+// local state still shows Acknowledged. Reconcile should catch it.
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_reconciliation_acknowledged_cancelled_on_exchange() {
+    let (pool, session_id) = setup().await;
+    let coid = Uuid::new_v4();
+
+    let order_id = insert_test_order_with_coid(
+        &pool, session_id, OrderState::Acknowledged,
+        "KXTEST-RECON-ACK-CXL", Some("exch-recon-ac-1"), coid,
+    ).await.unwrap();
+
+    // Make the order stale
+    let client = pool.get().await.unwrap();
+    client.execute(
+        "UPDATE prediction_orders SET updated_at = NOW() - INTERVAL '60 seconds' WHERE id = $1",
+        &[&order_id],
+    ).await.unwrap();
+
+    // Mock: exchange says order is Cancelled (e.g., mass cancel)
+    let mock = MockExchange::new();
+    {
+        let mut state = mock.state.lock().await;
+        state.order_statuses.insert(
+            coid,
+            mock_exchange_status("exch-recon-ac-1", ExchangeOrderState::Cancelled, Decimal::ZERO, Decimal::ZERO),
+        );
+    }
+
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    let result = reconciliation::reconcile(&app_state, session_id).await;
+
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert!(result.orders_resolved >= 1, "expected at least 1 resolved order");
+
+    // Order should now be Cancelled
+    assert_order_state(&pool, order_id, OrderState::Cancelled).await.unwrap();
+}

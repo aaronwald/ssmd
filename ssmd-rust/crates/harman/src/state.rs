@@ -232,6 +232,10 @@ pub fn resolve_exchange_state(
         (OrderState::PendingDecrease, ExchangeOrderState::Resting) => Some(OrderState::Acknowledged),
         (OrderState::PendingDecrease, ExchangeOrderState::Executed) => Some(OrderState::Filled),
         (OrderState::PendingDecrease, ExchangeOrderState::Cancelled) => Some(OrderState::Cancelled),
+        // Acknowledged: order was filled or cancelled on exchange (e.g., mass cancel, IOC fill)
+        (OrderState::Acknowledged, ExchangeOrderState::Executed) => Some(OrderState::Filled),
+        (OrderState::Acknowledged, ExchangeOrderState::Cancelled) => Some(OrderState::Cancelled),
+        // Acknowledged + Resting: consistent, no state change needed
         // PendingCancel + Resting: needs special handling (re-send cancel)
         _ => None,
     }
@@ -823,8 +827,36 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_unknown_combination_returns_none() {
-        // Acknowledged + NotFound is not in the resolution table
+    fn test_resolve_acknowledged_executed() {
+        let result = resolve_exchange_state(
+            &OrderState::Acknowledged,
+            &crate::types::ExchangeOrderState::Executed,
+        );
+        assert_eq!(result, Some(OrderState::Filled));
+    }
+
+    #[test]
+    fn test_resolve_acknowledged_cancelled() {
+        let result = resolve_exchange_state(
+            &OrderState::Acknowledged,
+            &crate::types::ExchangeOrderState::Cancelled,
+        );
+        assert_eq!(result, Some(OrderState::Cancelled));
+    }
+
+    #[test]
+    fn test_resolve_acknowledged_resting_no_change() {
+        // Acknowledged + Resting is consistent — returns None (no state change)
+        let result = resolve_exchange_state(
+            &OrderState::Acknowledged,
+            &crate::types::ExchangeOrderState::Resting,
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_acknowledged_notfound_returns_none() {
+        // Acknowledged + NotFound is unusual — returns None for manual investigation
         let result = resolve_exchange_state(
             &OrderState::Acknowledged,
             &crate::types::ExchangeOrderState::NotFound,
