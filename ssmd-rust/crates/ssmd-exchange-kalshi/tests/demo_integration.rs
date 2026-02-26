@@ -12,6 +12,7 @@
 //! The demo environment may have limited markets or liquidity. Order tests
 //! use deeply out-of-the-money prices (1 cent) to avoid accidental fills.
 
+use harman::error::ExchangeError;
 use harman::exchange::ExchangeAdapter;
 use harman::types::{Action, OrderRequest, Side, TimeInForce};
 use rust_decimal::Decimal;
@@ -301,6 +302,259 @@ async fn test_demo_get_order_by_client_id() {
         status.exchange_order_id, status.status, status.filled_quantity, status.remaining_quantity
     );
     assert_eq!(status.exchange_order_id, exchange_id);
+
+    // Clean up
+    let _ = client.cancel_order(&exchange_id).await;
+}
+
+// ---------------------------------------------------------------------------
+// Negative / Edge Case Tests
+// ---------------------------------------------------------------------------
+
+/// Double cancel: cancel the same order twice. Second cancel should return NotFound.
+#[tokio::test]
+#[ignore]
+async fn test_demo_double_cancel() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+    println!("Using demo market: {}", ticker);
+
+    // Submit and cancel
+    let order = OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker,
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(1, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let exchange_id = client
+        .submit_order(&order)
+        .await
+        .expect("submit_order failed");
+    println!("Order submitted: {}", exchange_id);
+
+    client
+        .cancel_order(&exchange_id)
+        .await
+        .expect("first cancel failed");
+    println!("First cancel succeeded");
+
+    // Second cancel — order already cancelled, should fail
+    let result = client.cancel_order(&exchange_id).await;
+    println!("Second cancel result: {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected second cancel to fail, but it succeeded"
+    );
+    match result.unwrap_err() {
+        ExchangeError::NotFound(_) => println!("Got expected NotFound"),
+        ExchangeError::Rejected { reason } => println!("Got Rejected (acceptable): {}", reason),
+        e => panic!("unexpected error type: {:?}", e),
+    }
+}
+
+/// Cancel a non-existent order ID. Should return NotFound or Rejected.
+#[tokio::test]
+#[ignore]
+async fn test_demo_cancel_nonexistent_order() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let fake_id = Uuid::new_v4().to_string();
+    println!("Cancelling non-existent order: {}", fake_id);
+
+    let result = client.cancel_order(&fake_id).await;
+    println!("Result: {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected cancel of non-existent order to fail"
+    );
+    match result.unwrap_err() {
+        ExchangeError::NotFound(_) => println!("Got expected NotFound"),
+        ExchangeError::Rejected { reason } => println!("Got Rejected (acceptable): {}", reason),
+        e => panic!("unexpected error type: {:?}", e),
+    }
+}
+
+/// Submit order with bogus ticker. Should be rejected by the exchange.
+#[tokio::test]
+#[ignore]
+async fn test_demo_submit_invalid_ticker() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let order = OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker: "NONEXISTENT-TICKER-12345".to_string(),
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(50, 2), // $0.50
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let result = client.submit_order(&order).await;
+    println!("Invalid ticker result: {:?}", result);
+    assert!(result.is_err(), "expected invalid ticker to be rejected");
+    match result.unwrap_err() {
+        ExchangeError::Rejected { reason } => {
+            println!("Got expected Rejected: {}", reason);
+        }
+        e => panic!("expected Rejected, got: {:?}", e),
+    }
+}
+
+/// Submit order with zero quantity. Should be rejected.
+#[tokio::test]
+#[ignore]
+async fn test_demo_submit_zero_quantity() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+
+    let order = OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker,
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(0),
+        price_dollars: Decimal::new(50, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let result = client.submit_order(&order).await;
+    println!("Zero quantity result: {:?}", result);
+    assert!(result.is_err(), "expected zero quantity to be rejected");
+}
+
+/// Submit order with price out of range (> $0.99). Should be rejected.
+#[tokio::test]
+#[ignore]
+async fn test_demo_submit_invalid_price() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+
+    let order = OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker,
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(150, 2), // $1.50 — out of range
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let result = client.submit_order(&order).await;
+    println!("Invalid price result: {:?}", result);
+    assert!(result.is_err(), "expected price > $0.99 to be rejected");
+}
+
+/// Submit duplicate client_order_id. Second should be rejected.
+#[tokio::test]
+#[ignore]
+async fn test_demo_submit_duplicate_client_order_id() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+    println!("Using demo market: {}", ticker);
+
+    let coid = Uuid::new_v4();
+    let order = OrderRequest {
+        client_order_id: coid,
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(1, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let exchange_id = client
+        .submit_order(&order)
+        .await
+        .expect("first submit failed");
+    println!("First submit succeeded: {}", exchange_id);
+
+    // Same client_order_id again
+    let order2 = OrderRequest {
+        client_order_id: coid,
+        ticker,
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(1, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let result = client.submit_order(&order2).await;
+    println!("Duplicate coid result: {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected duplicate client_order_id to be rejected"
+    );
 
     // Clean up
     let _ = client.cancel_order(&exchange_id).await;
