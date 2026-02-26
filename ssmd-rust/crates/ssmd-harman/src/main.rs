@@ -1,18 +1,10 @@
-mod api;
-mod reconciliation;
-mod recovery;
-mod shutdown;
-mod pump;
-
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use clap::Parser;
-use deadpool_postgres::Pool;
 use tracing::{error, info};
 
-use harman::exchange::ExchangeAdapter;
-use harman::risk::RiskLimits;
+use ssmd_harman::{api, recovery, shutdown, AppState, Metrics};
 
 /// ssmd-harman: PostgreSQL-backed order gateway
 #[derive(Parser)]
@@ -37,65 +29,6 @@ struct Args {
         default_value = "https://demo-api.kalshi.co"
     )]
     kalshi_base_url: String,
-}
-
-/// Metrics for prometheus
-pub struct Metrics {
-    pub registry: prometheus::Registry,
-    pub orders_dequeued: prometheus::IntCounter,
-    pub orders_submitted: prometheus::IntCounter,
-    pub orders_rejected: prometheus::IntCounter,
-    pub orders_cancelled: prometheus::IntCounter,
-    pub fills_recorded: prometheus::IntCounter,
-}
-
-impl Metrics {
-    fn new() -> Self {
-        let registry = prometheus::Registry::new();
-
-        let orders_dequeued =
-            prometheus::IntCounter::new("harman_orders_dequeued_total", "Orders dequeued from queue")
-                .unwrap();
-        let orders_submitted =
-            prometheus::IntCounter::new("harman_orders_submitted_total", "Orders submitted to exchange")
-                .unwrap();
-        let orders_rejected =
-            prometheus::IntCounter::new("harman_orders_rejected_total", "Orders rejected by exchange")
-                .unwrap();
-        let orders_cancelled =
-            prometheus::IntCounter::new("harman_orders_cancelled_total", "Orders cancelled")
-                .unwrap();
-        let fills_recorded =
-            prometheus::IntCounter::new("harman_fills_recorded_total", "Fills recorded")
-                .unwrap();
-
-        registry.register(Box::new(orders_dequeued.clone())).unwrap();
-        registry.register(Box::new(orders_submitted.clone())).unwrap();
-        registry.register(Box::new(orders_rejected.clone())).unwrap();
-        registry.register(Box::new(orders_cancelled.clone())).unwrap();
-        registry.register(Box::new(fills_recorded.clone())).unwrap();
-
-        Self {
-            registry,
-            orders_dequeued,
-            orders_submitted,
-            orders_rejected,
-            orders_cancelled,
-            fills_recorded,
-        }
-    }
-}
-
-/// Shared application state
-pub struct AppState {
-    pub pool: Pool,
-    pub exchange: Arc<dyn ExchangeAdapter>,
-    pub risk_limits: RiskLimits,
-    pub shutting_down: AtomicBool,
-    pub metrics: Metrics,
-    pub session_id: i64,
-    pub api_token: String,
-    pub admin_token: String,
 }
 
 #[tokio::main]
@@ -135,7 +68,7 @@ async fn main() {
         &kalshi_config.private_key_pem,
     )
     .expect("invalid Kalshi credentials");
-    let exchange: Arc<dyn ExchangeAdapter> = Arc::new(
+    let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = Arc::new(
         ssmd_exchange_kalshi::client::KalshiClient::new(credentials, args.kalshi_base_url),
     );
 
@@ -152,7 +85,7 @@ async fn main() {
         }
     }
 
-    let risk_limits = RiskLimits {
+    let risk_limits = harman::risk::RiskLimits {
         max_notional: rust_decimal::Decimal::from_f64_retain(args.max_notional)
             .unwrap_or(rust_decimal::Decimal::new(100, 0)),
     };
@@ -168,6 +101,7 @@ async fn main() {
         exchange,
         risk_limits,
         shutting_down: AtomicBool::new(false),
+        suspended: AtomicBool::new(false),
         metrics: Metrics::new(),
         session_id,
         api_token,

@@ -3,6 +3,10 @@ name = "ssmd-harman"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "ssmd_harman"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ssmd-harman"
 path = "src/main.rs"
@@ -26,3 +30,6 @@ rust_decimal = { workspace = true }
 subtle = { workspace = true }
 prometheus = { workspace = true }
 tower = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

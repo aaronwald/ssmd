@@ -78,6 +78,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/orders/mass-cancel", post(mass_cancel))
         .route("/v1/admin/pump", post(pump_handler))
         .route("/v1/admin/reconcile", post(reconcile_handler))
+        .route("/v1/admin/resume", post(resume_handler))
         .route("/v1/admin/risk", get(risk_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -114,6 +115,14 @@ async fn create_order(
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"error": "shutting down"})),
+        )
+            .into_response();
+    }
+
+    if state.suspended.load(std::sync::atomic::Ordering::Relaxed) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "session suspended"})),
         )
             .into_response();
     }
@@ -342,13 +351,20 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .into_response();
     }
 
+    let suspended = state
+        .suspended
+        .load(std::sync::atomic::Ordering::Relaxed);
+
     // Check DB connectivity
     match state.pool.get().await {
-        Ok(_) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "healthy"})),
-        )
-            .into_response(),
+        Ok(_) => {
+            let status = if suspended { "suspended" } else { "healthy" };
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": status, "suspended": suspended})),
+            )
+                .into_response()
+        }
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"status": "unhealthy", "error": e.to_string()})),
@@ -411,6 +427,14 @@ async fn pump_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .into_response();
     }
 
+    if state.suspended.load(std::sync::atomic::Ordering::Relaxed) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "session suspended"})),
+        )
+            .into_response();
+    }
+
     let result = crate::pump::pump(&state).await;
     (StatusCode::OK, Json(result)).into_response()
 }
@@ -421,6 +445,21 @@ async fn pump_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn reconcile_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let result = crate::reconciliation::reconcile(&state).await;
     (StatusCode::OK, Json(result)).into_response()
+}
+
+/// POST /v1/admin/resume
+///
+/// Clear session suspension flag (admin-only, requires investigation first).
+async fn resume_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let was_suspended = state
+        .suspended
+        .swap(false, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!(was_suspended, "admin resumed session");
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"resumed": true, "was_suspended": was_suspended})),
+    )
+        .into_response()
 }
 
 fn order_to_json(order: &Order) -> serde_json::Value {

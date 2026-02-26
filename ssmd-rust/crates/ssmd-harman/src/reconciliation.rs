@@ -1,34 +1,58 @@
 use serde::Serialize;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 use harman::db;
 use harman::state::{self, OrderState};
-use harman::types::ExchangeOrderState;
+use harman::types::{Action, ExchangeOrderState, Side};
+use rust_decimal::Decimal;
 
 use crate::AppState;
 
 const STALE_THRESHOLD: Duration = Duration::from_secs(30);
 
+/// Thresholds for position mismatch severity.
+/// Large mismatches trigger session suspension.
+const LARGE_MISMATCH_CONTRACTS: i64 = 1;
+const LARGE_MISMATCH_NOTIONAL: &str = "10"; // dollars
+
 #[derive(Debug, Serialize)]
 pub struct ReconcileResult {
     pub fills_discovered: u64,
     pub orders_resolved: u64,
+    pub position_mismatches: Vec<PositionMismatch>,
+    pub suspended: bool,
     pub errors: Vec<String>,
 }
 
-/// Run one full reconciliation cycle: discover fills, then resolve stale orders.
+#[derive(Debug, Serialize)]
+pub struct PositionMismatch {
+    pub ticker: String,
+    pub local_quantity: String,
+    pub exchange_quantity: String,
+    pub severity: String,
+}
+
+/// Run one full reconciliation cycle: discover fills, resolve stale orders, compare positions.
 ///
 /// Called explicitly via `POST /v1/admin/reconcile` — no background polling.
 pub async fn reconcile(state: &AppState) -> ReconcileResult {
+    let start = Instant::now();
+
     let mut result = ReconcileResult {
         fills_discovered: 0,
         orders_resolved: 0,
+        position_mismatches: vec![],
+        suspended: false,
         errors: vec![],
     };
 
     match discover_fills(state).await {
-        Ok(count) => result.fills_discovered = count,
+        Ok(count) => {
+            result.fills_discovered = count;
+            state.metrics.reconciliation_fills_discovered.inc_by(count);
+        }
         Err(e) => {
             error!(error = %e, "fill discovery failed");
             result.errors.push(format!("fill discovery: {}", e));
@@ -43,10 +67,40 @@ pub async fn reconcile(state: &AppState) -> ReconcileResult {
         }
     }
 
+    match compare_positions(state).await {
+        Ok(mismatches) => {
+            result.position_mismatches = mismatches;
+        }
+        Err(e) => {
+            error!(error = %e, "position comparison failed");
+            result.errors.push(format!("position comparison: {}", e));
+        }
+    }
+
+    // Check if any mismatch triggered suspension
+    result.suspended = state
+        .suspended
+        .load(std::sync::atomic::Ordering::Relaxed);
+
+    // Record metrics
+    let elapsed = start.elapsed().as_secs_f64();
+    state.metrics.reconciliation_duration.observe(elapsed);
+
+    if result.errors.is_empty() {
+        state.metrics.reconciliation_ok.inc();
+        state
+            .metrics
+            .reconciliation_last_success
+            .set(chrono::Utc::now().timestamp());
+    }
+
     info!(
         fills_discovered = result.fills_discovered,
         orders_resolved = result.orders_resolved,
+        mismatches = result.position_mismatches.len(),
+        suspended = result.suspended,
         errors = result.errors.len(),
+        elapsed_secs = %format!("{:.3}", elapsed),
         "reconciliation complete"
     );
 
@@ -98,6 +152,116 @@ async fn discover_fills(state: &AppState) -> Result<u64, String> {
     }
 
     Ok(count)
+}
+
+/// Compare local positions (from filled orders) against exchange positions.
+///
+/// For each ticker, compute local net position from filled orders:
+///   Buy → +quantity, Sell → -quantity
+/// Then compare against exchange `get_positions()`.
+///
+/// Large mismatches (>1 contract or >$10 notional) trigger session suspension.
+async fn compare_positions(state: &AppState) -> Result<Vec<PositionMismatch>, String> {
+    let exchange_positions = state
+        .exchange
+        .get_positions()
+        .await
+        .map_err(|e| format!("get positions: {}", e))?;
+
+    // Build exchange position map: ticker → signed quantity (Yes side positive, No side negative)
+    let mut exchange_map: HashMap<String, Decimal> = HashMap::new();
+    for pos in &exchange_positions {
+        let signed = match pos.side {
+            Side::Yes => pos.quantity,
+            Side::No => -pos.quantity,
+        };
+        *exchange_map.entry(pos.ticker.clone()).or_default() += signed;
+    }
+
+    // Compute local positions from filled orders in this session
+    let orders = db::list_orders(&state.pool, state.session_id, None).await?;
+    let mut local_map: HashMap<String, Decimal> = HashMap::new();
+    for order in &orders {
+        if order.filled_quantity <= Decimal::ZERO {
+            continue;
+        }
+        // Buy adds to position, Sell subtracts
+        let signed = match order.action {
+            Action::Buy => order.filled_quantity,
+            Action::Sell => -order.filled_quantity,
+        };
+        *local_map.entry(order.ticker.clone()).or_default() += signed;
+    }
+
+    // Collect all tickers from both sides
+    let mut all_tickers: Vec<String> = local_map.keys().cloned().collect();
+    for ticker in exchange_map.keys() {
+        if !all_tickers.contains(ticker) {
+            all_tickers.push(ticker.clone());
+        }
+    }
+    all_tickers.sort();
+
+    let large_threshold_contracts = Decimal::from(LARGE_MISMATCH_CONTRACTS);
+    let large_threshold_notional: Decimal = LARGE_MISMATCH_NOTIONAL
+        .parse()
+        .unwrap_or(Decimal::from(10));
+
+    let mut mismatches = Vec::new();
+    let mut any_large = false;
+
+    for ticker in &all_tickers {
+        let local_qty = local_map.get(ticker).copied().unwrap_or(Decimal::ZERO);
+        let exchange_qty = exchange_map.get(ticker).copied().unwrap_or(Decimal::ZERO);
+        let diff = (local_qty - exchange_qty).abs();
+
+        if diff.is_zero() {
+            continue;
+        }
+
+        // Determine severity: diff > 1 contract is large, or estimate notional
+        // (each contract is worth up to $1, so diff in contracts ≈ diff in dollars at worst)
+        let is_large = diff > large_threshold_contracts || diff > large_threshold_notional;
+        let severity = if is_large { "large" } else { "small" };
+
+        warn!(
+            ticker = %ticker,
+            local_qty = %local_qty,
+            exchange_qty = %exchange_qty,
+            diff = %diff,
+            severity,
+            "position mismatch detected"
+        );
+
+        state
+            .metrics
+            .reconciliation_mismatch
+            .with_label_values(&[severity])
+            .inc();
+
+        if is_large {
+            any_large = true;
+        }
+
+        mismatches.push(PositionMismatch {
+            ticker: ticker.clone(),
+            local_quantity: local_qty.to_string(),
+            exchange_quantity: exchange_qty.to_string(),
+            severity: severity.to_string(),
+        });
+    }
+
+    if any_large {
+        state
+            .suspended
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        error!(
+            mismatches = mismatches.len(),
+            "CRITICAL: large position mismatch detected, session SUSPENDED"
+        );
+    }
+
+    Ok(mismatches)
 }
 
 /// Find and resolve orders stuck in ambiguous states.
