@@ -244,7 +244,7 @@ impl ExchangeAdapter for KalshiClient {
             side: order.side.to_string(),
             action: order.action.to_string(),
             order_type: "limit".to_string(),
-            count_fp: order.quantity.to_string(),
+            count_fp: order.quantity.normalize().to_string(),
             yes_price: (order.price_dollars * Decimal::from(100))
                 .to_i32()
                 .unwrap_or(0),
@@ -500,7 +500,7 @@ impl ExchangeAdapter for KalshiClient {
             side: request.side.to_string(),
             action: request.action.to_string(),
             yes_price: (price * Decimal::from(100)).to_i32().unwrap_or(0),
-            count_fp: quantity.to_string(),
+            count_fp: quantity.normalize().to_string(),
             subaccount: 0,
         };
 
