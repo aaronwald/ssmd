@@ -15,20 +15,24 @@ use crate::AppState;
 ///
 /// This MUST complete before the API server starts to prevent
 /// duplicate submissions or stale risk state.
+///
+/// Uses `startup_session_id` — other sessions recover on first pump.
 pub async fn run(state: &Arc<AppState>) -> Result<(), String> {
     info!("starting recovery coordinator");
 
+    let session_id = state.startup_session_id;
+
     // 1. Resolve ambiguous orders
-    resolve_ambiguous_orders(state).await?;
+    resolve_ambiguous_orders(state, session_id).await?;
 
     // 2. Discover missing fills
-    discover_missing_fills(state).await?;
+    discover_missing_fills(state, session_id).await?;
 
     // 3. Verify position consistency
     verify_positions(state).await?;
 
     // 4. Rebuild risk state (just log it, the real check happens per-order)
-    let risk_state = db::compute_risk_state(&state.pool, state.session_id).await?;
+    let risk_state = db::compute_risk_state(&state.pool, session_id).await?;
     info!(
         open_notional = %risk_state.open_notional,
         max_notional = %state.risk_limits.max_notional,
@@ -43,8 +47,8 @@ pub async fn run(state: &Arc<AppState>) -> Result<(), String> {
 }
 
 /// Resolve orders in submitted or pending_cancel state
-async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
-    let ambiguous = db::get_ambiguous_orders(&state.pool, state.session_id).await?;
+async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Result<(), String> {
+    let ambiguous = db::get_ambiguous_orders(&state.pool, session_id).await?;
 
     if ambiguous.is_empty() {
         info!("no ambiguous orders to recover");
@@ -114,7 +118,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
                     if let Err(e) = db::update_order_state(
                         &state.pool,
                         order.id,
-                        state.session_id,
+                        session_id,
                         new_state,
                         Some(&exchange_status.exchange_order_id),
                         Some(exchange_status.filled_quantity),
@@ -140,7 +144,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
                     let _ = db::update_order_state(
                         &state.pool,
                         order.id,
-                        state.session_id,
+                        session_id,
                         OrderState::Rejected,
                         None,
                         None,
@@ -156,7 +160,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
                     let _ = db::update_order_state(
                         &state.pool,
                         order.id,
-                        state.session_id,
+                        session_id,
                         OrderState::Cancelled,
                         None,
                         None,
@@ -188,9 +192,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>) -> Result<(), String> {
 }
 
 /// Fetch fills from exchange and record any missing ones.
-///
-/// Loads all orders once to avoid N+1 queries.
-async fn discover_missing_fills(state: &Arc<AppState>) -> Result<(), String> {
+async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Result<(), String> {
     let fills = state
         .exchange
         .get_fills()
@@ -199,7 +201,7 @@ async fn discover_missing_fills(state: &Arc<AppState>) -> Result<(), String> {
 
     info!(count = fills.len(), "fetched exchange fills for recovery");
 
-    let orders = db::list_orders(&state.pool, state.session_id, None).await?;
+    let orders = db::list_orders(&state.pool, session_id, None).await?;
     let mut recorded = 0;
 
     for fill in &fills {
@@ -210,7 +212,7 @@ async fn discover_missing_fills(state: &Arc<AppState>) -> Result<(), String> {
             let inserted = db::record_fill(
                 &state.pool,
                 order.id,
-                state.session_id,
+                session_id,
                 &fill.trade_id,
                 fill.price_dollars,
                 fill.quantity,
@@ -245,8 +247,6 @@ async fn verify_positions(state: &Arc<AppState>) -> Result<(), String> {
         "fetched exchange positions for verification"
     );
 
-    // For MVP, just log any positions. A more sophisticated check would
-    // compare against aggregated fills in our DB.
     for pos in &exchange_positions {
         info!(
             ticker = %pos.ticker,

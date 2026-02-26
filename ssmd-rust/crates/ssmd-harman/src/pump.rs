@@ -27,7 +27,7 @@ pub struct PumpResult {
 ///
 /// Processes items until the queue is empty or a rate limit is hit.
 /// Called explicitly via `POST /v1/admin/pump` — no background polling.
-pub async fn pump(state: &AppState) -> PumpResult {
+pub async fn pump(state: &AppState, session_id: i64) -> PumpResult {
     let mut result = PumpResult {
         processed: 0,
         submitted: 0,
@@ -45,7 +45,7 @@ pub async fn pump(state: &AppState) -> PumpResult {
             break;
         }
 
-        match db::dequeue_order(&state.pool, state.session_id).await {
+        match db::dequeue_order(&state.pool, session_id).await {
             Ok(Some(item)) => {
                 state.metrics.orders_dequeued.inc();
                 result.processed += 1;
@@ -58,7 +58,7 @@ pub async fn pump(state: &AppState) -> PumpResult {
 
                 match item.action.as_str() {
                     "submit" => {
-                        let outcome = handle_submit(state, &item).await;
+                        let outcome = handle_submit(state, session_id, &item).await;
                         match outcome {
                             SubmitOutcome::Submitted => result.submitted += 1,
                             SubmitOutcome::Rejected => result.rejected += 1,
@@ -82,7 +82,7 @@ pub async fn pump(state: &AppState) -> PumpResult {
                         }
                     }
                     "cancel" => {
-                        let outcome = handle_cancel(state, &item).await;
+                        let outcome = handle_cancel(state, session_id, &item).await;
                         match outcome {
                             CancelOutcome::Cancelled | CancelOutcome::NotFound => {
                                 result.cancelled += 1;
@@ -101,7 +101,7 @@ pub async fn pump(state: &AppState) -> PumpResult {
                         }
                     }
                     "amend" => {
-                        let outcome = handle_amend(state, &item).await;
+                        let outcome = handle_amend(state, session_id, &item).await;
                         match outcome {
                             AmendOutcome::Amended => result.amended += 1,
                             AmendOutcome::Requeued(reason) => {
@@ -118,7 +118,7 @@ pub async fn pump(state: &AppState) -> PumpResult {
                         }
                     }
                     "decrease" => {
-                        let outcome = handle_decrease(state, &item).await;
+                        let outcome = handle_decrease(state, session_id, &item).await;
                         match outcome {
                             DecreaseOutcome::Decreased => result.decreased += 1,
                             DecreaseOutcome::Requeued(reason) => {
@@ -173,7 +173,7 @@ enum SubmitOutcome {
     RateLimited,
 }
 
-async fn handle_submit(state: &AppState, item: &db::QueueItem) -> SubmitOutcome {
+async fn handle_submit(state: &AppState, session_id: i64, item: &db::QueueItem) -> SubmitOutcome {
     match state
         .exchange
         .submit_order(&harman::types::OrderRequest {
@@ -198,7 +198,7 @@ async fn handle_submit(state: &AppState, item: &db::QueueItem) -> SubmitOutcome 
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Acknowledged,
                 Some(&exchange_order_id),
                 None,
@@ -224,7 +224,7 @@ async fn handle_submit(state: &AppState, item: &db::QueueItem) -> SubmitOutcome 
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Rejected,
                 None,
                 None,
@@ -279,7 +279,7 @@ enum CancelOutcome {
     RateLimited,
 }
 
-async fn handle_cancel(state: &AppState, item: &db::QueueItem) -> CancelOutcome {
+async fn handle_cancel(state: &AppState, session_id: i64, item: &db::QueueItem) -> CancelOutcome {
     let exchange_order_id = match &item.order.exchange_order_id {
         Some(id) => id.clone(),
         None => {
@@ -290,7 +290,7 @@ async fn handle_cancel(state: &AppState, item: &db::QueueItem) -> CancelOutcome 
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Cancelled,
                 None,
                 None,
@@ -314,7 +314,7 @@ async fn handle_cancel(state: &AppState, item: &db::QueueItem) -> CancelOutcome 
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Cancelled,
                 None,
                 None,
@@ -337,7 +337,7 @@ async fn handle_cancel(state: &AppState, item: &db::QueueItem) -> CancelOutcome 
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Cancelled,
                 None,
                 None,
@@ -377,7 +377,7 @@ enum AmendOutcome {
     RateLimited,
 }
 
-async fn handle_amend(state: &AppState, item: &db::QueueItem) -> AmendOutcome {
+async fn handle_amend(state: &AppState, session_id: i64, item: &db::QueueItem) -> AmendOutcome {
     let exchange_order_id = match &item.order.exchange_order_id {
         Some(id) => id.clone(),
         None => {
@@ -388,7 +388,7 @@ async fn handle_amend(state: &AppState, item: &db::QueueItem) -> AmendOutcome {
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Acknowledged,
                 None,
                 None,
@@ -415,7 +415,7 @@ async fn handle_amend(state: &AppState, item: &db::QueueItem) -> AmendOutcome {
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Acknowledged,
                 None,
                 None,
@@ -483,7 +483,7 @@ async fn handle_amend(state: &AppState, item: &db::QueueItem) -> AmendOutcome {
                         &result.new_price_dollars,
                         &result.new_quantity,
                         &item.order_id,
-                        &state.session_id,
+                        &session_id,
                     ],
                 )
                 .await
@@ -507,8 +507,6 @@ async fn handle_amend(state: &AppState, item: &db::QueueItem) -> AmendOutcome {
             AmendOutcome::Amended
         }
         Err(ExchangeError::NotFound(_)) => {
-            // Order not found on exchange (e.g., already cancelled by mass cancel).
-            // Mark as cancelled — do NOT revert to acknowledged.
             warn!(
                 order_id = item.order_id,
                 "amend target not found on exchange, marking cancelled"
@@ -516,7 +514,7 @@ async fn handle_amend(state: &AppState, item: &db::QueueItem) -> AmendOutcome {
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Cancelled,
                 None,
                 None,
@@ -550,7 +548,7 @@ async fn handle_amend(state: &AppState, item: &db::QueueItem) -> AmendOutcome {
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Acknowledged,
                 None,
                 None,
@@ -573,7 +571,7 @@ enum DecreaseOutcome {
     RateLimited,
 }
 
-async fn handle_decrease(state: &AppState, item: &db::QueueItem) -> DecreaseOutcome {
+async fn handle_decrease(state: &AppState, session_id: i64, item: &db::QueueItem) -> DecreaseOutcome {
     let exchange_order_id = match &item.order.exchange_order_id {
         Some(id) => id.clone(),
         None => {
@@ -584,7 +582,7 @@ async fn handle_decrease(state: &AppState, item: &db::QueueItem) -> DecreaseOutc
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Acknowledged,
                 None,
                 None,
@@ -612,7 +610,7 @@ async fn handle_decrease(state: &AppState, item: &db::QueueItem) -> DecreaseOutc
                 if let Err(e) = db::update_order_state(
                     &state.pool,
                     item.order_id,
-                    state.session_id,
+                    session_id,
                     OrderState::Acknowledged,
                     None,
                     None,
@@ -635,7 +633,7 @@ async fn handle_decrease(state: &AppState, item: &db::QueueItem) -> DecreaseOutc
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Acknowledged,
                 None,
                 None,
@@ -681,7 +679,7 @@ async fn handle_decrease(state: &AppState, item: &db::QueueItem) -> DecreaseOutc
                     "UPDATE prediction_orders SET state = 'acknowledged', \
                      quantity = quantity - $1 \
                      WHERE id = $2 AND session_id = $3",
-                    &[&reduce_by, &item.order_id, &state.session_id],
+                    &[&reduce_by, &item.order_id, &session_id],
                 )
                 .await
             {
@@ -704,8 +702,6 @@ async fn handle_decrease(state: &AppState, item: &db::QueueItem) -> DecreaseOutc
             DecreaseOutcome::Decreased
         }
         Err(ExchangeError::NotFound(_)) => {
-            // Order not found on exchange (e.g., already cancelled by mass cancel).
-            // Mark as cancelled — do NOT revert to acknowledged.
             warn!(
                 order_id = item.order_id,
                 "decrease target not found on exchange, marking cancelled"
@@ -713,7 +709,7 @@ async fn handle_decrease(state: &AppState, item: &db::QueueItem) -> DecreaseOutc
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Cancelled,
                 None,
                 None,
@@ -746,7 +742,7 @@ async fn handle_decrease(state: &AppState, item: &db::QueueItem) -> DecreaseOutc
             if let Err(e) = db::update_order_state(
                 &state.pool,
                 item.order_id,
-                state.session_id,
+                session_id,
                 OrderState::Acknowledged,
                 None,
                 None,

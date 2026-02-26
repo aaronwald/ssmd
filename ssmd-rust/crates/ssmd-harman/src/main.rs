@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use clap::Parser;
+use dashmap::DashMap;
 use tracing::{error, info};
 
 use ssmd_harman::{api, recovery, shutdown, AppState, Metrics};
@@ -50,6 +52,14 @@ async fn main() {
     let admin_token = std::env::var("HARMAN_ADMIN_TOKEN")
         .expect("HARMAN_ADMIN_TOKEN must be set");
 
+    // Optional: data-ts auth validation URL for API key support
+    let auth_validate_url = std::env::var("AUTH_VALIDATE_URL").ok();
+    if let Some(ref url) = auth_validate_url {
+        info!(url, "API key validation enabled via data-ts");
+    } else {
+        info!("API key validation disabled (AUTH_VALIDATE_URL not set), static tokens only");
+    }
+
     info!(listen_addr = %args.listen_addr, "ssmd-harman starting");
 
     // Create DB pool
@@ -90,22 +100,27 @@ async fn main() {
             .unwrap_or(rust_decimal::Decimal::new(100, 0)),
     };
 
-    // Get or create session
-    let session_id = harman::db::get_or_create_session(&pool, "kalshi")
+    // Get or create startup session (key_prefix = None for backward compat)
+    let startup_session_id = harman::db::get_or_create_session(&pool, "kalshi", None)
         .await
         .expect("failed to get or create session");
-    info!(session_id, "session initialized");
+    info!(startup_session_id, "startup session initialized");
 
     let state = Arc::new(AppState {
         pool,
         exchange,
         risk_limits,
         shutting_down: AtomicBool::new(false),
-        suspended: AtomicBool::new(false),
         metrics: Metrics::new(),
-        session_id,
         api_token,
         admin_token,
+        startup_session_id,
+        auth_validate_url,
+        http_client: reqwest::Client::new(),
+        session_semaphores: DashMap::new(),
+        suspended_sessions: DashMap::new(),
+        auth_cache: tokio::sync::RwLock::new(HashMap::new()),
+        key_sessions: DashMap::new(),
         pump_semaphore: tokio::sync::Semaphore::new(1),
     });
 

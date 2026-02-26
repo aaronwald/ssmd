@@ -9,7 +9,7 @@ use crate::AppState;
 /// Sequence:
 /// 1. Set shutting_down flag (API returns 503, pump returns early)
 /// 2. Mass cancel all open orders on exchange
-/// 3. Drain remaining queue items (reject them without transitioning to Submitted)
+/// 3. Drain remaining queue items across ALL sessions (reject them without transitioning to Submitted)
 /// 4. Exit
 pub async fn wait_for_shutdown(state: Arc<AppState>) {
     shutdown_signal().await;
@@ -23,9 +23,8 @@ pub async fn wait_for_shutdown(state: Arc<AppState>) {
         Err(e) => error!(error = %e, "mass cancel failed during shutdown"),
     }
 
-    // Drain queue - directly remove items and reject orders without going through
-    // dequeue_order (which would unnecessarily transition them to Submitted first).
-    match harman::db::drain_queue_for_shutdown(&state.pool, state.session_id).await {
+    // Drain queue for ALL sessions — during pod shutdown, reject everything
+    match harman::db::drain_queue_for_shutdown_all(&state.pool).await {
         Ok(count) => {
             if count > 0 {
                 warn!(count, "drained queue items during shutdown");

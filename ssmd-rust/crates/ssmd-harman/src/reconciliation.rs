@@ -37,7 +37,7 @@ pub struct PositionMismatch {
 /// Run one full reconciliation cycle: discover fills, resolve stale orders, compare positions.
 ///
 /// Called explicitly via `POST /v1/admin/reconcile` — no background polling.
-pub async fn reconcile(state: &AppState) -> ReconcileResult {
+pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
     let start = Instant::now();
 
     let mut result = ReconcileResult {
@@ -48,7 +48,7 @@ pub async fn reconcile(state: &AppState) -> ReconcileResult {
         errors: vec![],
     };
 
-    match discover_fills(state).await {
+    match discover_fills(state, session_id).await {
         Ok(count) => {
             result.fills_discovered = count;
             state.metrics.reconciliation_fills_discovered.inc_by(count);
@@ -59,7 +59,7 @@ pub async fn reconcile(state: &AppState) -> ReconcileResult {
         }
     }
 
-    match resolve_stale_orders(state).await {
+    match resolve_stale_orders(state, session_id).await {
         Ok(count) => result.orders_resolved = count,
         Err(e) => {
             error!(error = %e, "stale order resolution failed");
@@ -67,7 +67,7 @@ pub async fn reconcile(state: &AppState) -> ReconcileResult {
         }
     }
 
-    match compare_positions(state).await {
+    match compare_positions(state, session_id).await {
         Ok(mismatches) => {
             result.position_mismatches = mismatches;
         }
@@ -77,10 +77,8 @@ pub async fn reconcile(state: &AppState) -> ReconcileResult {
         }
     }
 
-    // Check if any mismatch triggered suspension
-    result.suspended = state
-        .suspended
-        .load(std::sync::atomic::Ordering::Relaxed);
+    // Check if any mismatch triggered suspension for this session
+    result.suspended = state.suspended_sessions.contains_key(&session_id);
 
     // Record metrics
     let elapsed = start.elapsed().as_secs_f64();
@@ -110,7 +108,7 @@ pub async fn reconcile(state: &AppState) -> ReconcileResult {
 /// Fetch recent fills from exchange and record any missing ones.
 ///
 /// Loads all orders once and builds a lookup to avoid N+1 queries.
-async fn discover_fills(state: &AppState) -> Result<u64, String> {
+async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String> {
     let fills = state
         .exchange
         .get_fills()
@@ -119,7 +117,7 @@ async fn discover_fills(state: &AppState) -> Result<u64, String> {
 
     debug!(count = fills.len(), "fetched exchange fills");
 
-    let orders = db::list_orders(&state.pool, state.session_id, None).await?;
+    let orders = db::list_orders(&state.pool, session_id, None).await?;
 
     let mut count = 0u64;
     for fill in &fills {
@@ -130,7 +128,7 @@ async fn discover_fills(state: &AppState) -> Result<u64, String> {
             let inserted = db::record_fill(
                 &state.pool,
                 order.id,
-                state.session_id,
+                session_id,
                 &fill.trade_id,
                 fill.price_dollars,
                 fill.quantity,
@@ -161,7 +159,7 @@ async fn discover_fills(state: &AppState) -> Result<u64, String> {
 /// Then compare against exchange `get_positions()`.
 ///
 /// Large mismatches (>1 contract or >$10 notional) trigger session suspension.
-async fn compare_positions(state: &AppState) -> Result<Vec<PositionMismatch>, String> {
+async fn compare_positions(state: &AppState, session_id: i64) -> Result<Vec<PositionMismatch>, String> {
     let exchange_positions = state
         .exchange
         .get_positions()
@@ -179,7 +177,7 @@ async fn compare_positions(state: &AppState) -> Result<Vec<PositionMismatch>, St
     }
 
     // Compute local positions from filled orders in this session
-    let orders = db::list_orders(&state.pool, state.session_id, None).await?;
+    let orders = db::list_orders(&state.pool, session_id, None).await?;
     let mut local_map: HashMap<String, Decimal> = HashMap::new();
     for order in &orders {
         if order.filled_quantity <= Decimal::ZERO {
@@ -220,7 +218,6 @@ async fn compare_positions(state: &AppState) -> Result<Vec<PositionMismatch>, St
         }
 
         // Determine severity: diff > 1 contract is large, or estimate notional
-        // (each contract is worth up to $1, so diff in contracts ≈ diff in dollars at worst)
         let is_large = diff > large_threshold_contracts || diff > large_threshold_notional;
         let severity = if is_large { "large" } else { "small" };
 
@@ -252,10 +249,9 @@ async fn compare_positions(state: &AppState) -> Result<Vec<PositionMismatch>, St
     }
 
     if any_large {
-        state
-            .suspended
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        state.suspended_sessions.insert(session_id, ());
         error!(
+            session_id,
             mismatches = mismatches.len(),
             "CRITICAL: large position mismatch detected, session SUSPENDED"
         );
@@ -265,8 +261,8 @@ async fn compare_positions(state: &AppState) -> Result<Vec<PositionMismatch>, St
 }
 
 /// Find and resolve orders stuck in ambiguous states.
-async fn resolve_stale_orders(state: &AppState) -> Result<u64, String> {
-    let ambiguous = db::get_ambiguous_orders(&state.pool, state.session_id).await?;
+async fn resolve_stale_orders(state: &AppState, session_id: i64) -> Result<u64, String> {
+    let ambiguous = db::get_ambiguous_orders(&state.pool, session_id).await?;
 
     let now = chrono::Utc::now();
     let mut count = 0u64;
@@ -328,7 +324,7 @@ async fn resolve_stale_orders(state: &AppState) -> Result<u64, String> {
                     if let Err(e) = db::update_order_state(
                         &state.pool,
                         order.id,
-                        state.session_id,
+                        session_id,
                         new_state,
                         Some(&exchange_status.exchange_order_id),
                         Some(exchange_status.filled_quantity),
@@ -352,7 +348,7 @@ async fn resolve_stale_orders(state: &AppState) -> Result<u64, String> {
                     if let Err(e) = db::update_order_state(
                         &state.pool,
                         order.id,
-                        state.session_id,
+                        session_id,
                         OrderState::Rejected,
                         None,
                         None,

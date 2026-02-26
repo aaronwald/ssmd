@@ -4,14 +4,32 @@ pub mod reconciliation;
 pub mod recovery;
 pub mod shutdown;
 
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Instant;
 
+use dashmap::DashMap;
 use deadpool_postgres::Pool;
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore};
 
 use harman::exchange::ExchangeAdapter;
 use harman::risk::RiskLimits;
+
+/// Cached auth validation result from data-ts
+pub struct CachedAuth {
+    pub key_prefix: String,
+    pub scopes: Vec<String>,
+    pub cached_at: Instant,
+}
+
+/// Per-request session context, injected by auth middleware
+#[derive(Clone, Debug)]
+pub struct SessionContext {
+    pub session_id: i64,
+    pub scopes: Vec<String>,
+    pub key_prefix: String,
+}
 
 /// Metrics for prometheus
 pub struct Metrics {
@@ -113,11 +131,21 @@ pub struct AppState {
     pub exchange: Arc<dyn ExchangeAdapter>,
     pub risk_limits: RiskLimits,
     pub shutting_down: AtomicBool,
-    pub suspended: AtomicBool,
     pub metrics: Metrics,
-    pub session_id: i64,
+    // Static tokens (backward compat, used when AUTH_VALIDATE_URL is not set)
     pub api_token: String,
     pub admin_token: String,
-    /// Prevents concurrent pump execution — only one pump call at a time.
+    // Startup session (used for static token auth + recovery)
+    pub startup_session_id: i64,
+    // HTTP auth validation (new)
+    pub auth_validate_url: Option<String>,
+    pub http_client: reqwest::Client,
+    // Per-session state
+    pub session_semaphores: DashMap<i64, Arc<Semaphore>>,
+    pub suspended_sessions: DashMap<i64, ()>,
+    // Caches
+    pub auth_cache: RwLock<HashMap<u64, CachedAuth>>,
+    pub key_sessions: DashMap<String, i64>,
+    /// Prevents concurrent pump execution for static-token auth (fallback).
     pub pump_semaphore: Semaphore,
 }

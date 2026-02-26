@@ -154,6 +154,12 @@ export function hasScope(scopes: string[], required: string): boolean {
   if (required === "billing:write" && scopes.includes("admin:write")) {
     return true;
   }
+  // harman:admin implies harman:write
+  if (required === "harman:write" && scopes.includes("harman:admin")) return true;
+  // harman:write implies harman:read
+  if (required === "harman:read" && scopes.includes("harman:write")) return true;
+  // harman:admin implies harman:read
+  if (required === "harman:read" && scopes.includes("harman:admin")) return true;
   // Direct match or wildcard
   return scopes.includes(required) || scopes.includes("*");
 }

@@ -11,9 +11,11 @@
 //! Requires a PostgreSQL database. Set DATABASE_URL to run.
 //! Run with: cargo test -p ssmd-harman --test crash_tests -- --ignored
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use harman::db;
 use harman::risk::RiskLimits;
 use harman::state::OrderState;
@@ -35,11 +37,16 @@ async fn build_test_state(
         exchange: Arc::new(mock),
         risk_limits: RiskLimits::default(),
         shutting_down: AtomicBool::new(false),
-        suspended: AtomicBool::new(false),
         metrics: Metrics::new(),
-        session_id,
         api_token: "test-api-token".to_string(),
         admin_token: "test-admin-token".to_string(),
+        startup_session_id: session_id,
+        auth_validate_url: None,
+        http_client: reqwest::Client::new(),
+        session_semaphores: DashMap::new(),
+        suspended_sessions: DashMap::new(),
+        auth_cache: tokio::sync::RwLock::new(HashMap::new()),
+        key_sessions: DashMap::new(),
         pump_semaphore: tokio::sync::Semaphore::new(1),
     })
 }
@@ -312,7 +319,7 @@ async fn test_pump_processes_pending_order() {
     let mock = MockExchange::new();
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
 
-    let result = pump::pump(&app_state).await;
+    let result = pump::pump(&app_state, session_id).await;
 
     assert_eq!(result.processed, 1);
     assert_eq!(result.submitted, 1);
@@ -351,7 +358,7 @@ async fn test_pump_respects_shutting_down_flag() {
     // Set shutting_down BEFORE pump
     app_state.shutting_down.store(true, Ordering::Relaxed);
 
-    let result = pump::pump(&app_state).await;
+    let result = pump::pump(&app_state, session_id).await;
 
     // Pump should return immediately without processing
     assert_eq!(result.processed, 0, "pump should not process items during shutdown");
@@ -384,7 +391,7 @@ async fn test_pump_exchange_rejection() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = pump::pump(&app_state).await;
+    let result = pump::pump(&app_state, session_id).await;
 
     assert_eq!(result.rejected, 1);
 
@@ -416,7 +423,7 @@ async fn test_pump_exchange_timeout_leaves_for_reconciliation() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = pump::pump(&app_state).await;
+    let result = pump::pump(&app_state, session_id).await;
 
     assert_eq!(result.processed, 1);
     // Timeout leaves order as submitted for reconciliation to resolve
@@ -643,7 +650,7 @@ async fn test_reconciliation_discovers_fills() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = reconciliation::reconcile(&app_state).await;
+    let result = reconciliation::reconcile(&app_state, session_id).await;
 
     assert_eq!(result.fills_discovered, 1);
 
@@ -736,7 +743,7 @@ async fn test_pump_cancel_without_exchange_id() {
 
     let mock = MockExchange::new();
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = pump::pump(&app_state).await;
+    let result = pump::pump(&app_state, session_id).await;
 
     assert_eq!(result.cancelled, 1);
     assert_order_state(&pool, order_id, OrderState::Cancelled).await.unwrap();
@@ -765,7 +772,7 @@ async fn test_pump_amend_success() {
 
     let mock = MockExchange::new();
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = pump::pump(&app_state).await;
+    let result = pump::pump(&app_state, session_id).await;
 
     assert_eq!(result.amended, 1);
     assert!(result.errors.is_empty(), "pump errors: {:?}", result.errors);
@@ -812,7 +819,7 @@ async fn test_pump_amend_notfound_marks_cancelled() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = pump::pump(&app_state).await;
+    let result = pump::pump(&app_state, session_id).await;
 
     assert_eq!(result.processed, 1);
 
@@ -847,7 +854,7 @@ async fn test_pump_decrease_success() {
 
     let mock = MockExchange::new();
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = pump::pump(&app_state).await;
+    let result = pump::pump(&app_state, session_id).await;
 
     assert_eq!(result.decreased, 1);
     assert!(result.errors.is_empty(), "pump errors: {:?}", result.errors);
@@ -892,7 +899,7 @@ async fn test_pump_decrease_notfound_marks_cancelled() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = pump::pump(&app_state).await;
+    let result = pump::pump(&app_state, session_id).await;
 
     assert_eq!(result.processed, 1);
 
@@ -926,7 +933,7 @@ async fn test_pump_amend_no_exchange_id_reverts() {
 
     let mock = MockExchange::new();
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = pump::pump(&app_state).await;
+    let result = pump::pump(&app_state, session_id).await;
 
     assert_eq!(result.processed, 1);
 
@@ -960,7 +967,7 @@ async fn test_pump_decrease_no_exchange_id_reverts() {
 
     let mock = MockExchange::new();
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = pump::pump(&app_state).await;
+    let result = pump::pump(&app_state, session_id).await;
 
     assert_eq!(result.processed, 1);
 

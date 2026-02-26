@@ -111,6 +111,24 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 003_amend_decrease applied");
     }
 
+    // Check if 004 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '004_session_key_prefix'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 004: {}", e))?;
+
+    if row.is_none() {
+        let migration_004 = include_str!("../migrations/004_session_key_prefix.sql");
+        client
+            .batch_execute(migration_004)
+            .await
+            .map_err(|e| format!("migration 004 failed: {}", e))?;
+        info!("migration 004_session_key_prefix applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
@@ -499,12 +517,19 @@ pub async fn record_fill(
     Ok(result > 0)
 }
 
-/// Get or create a session for the given exchange.
+/// Get or create a session for the given exchange and optional API key prefix.
 ///
 /// Returns the ID of an open (not closed) session, or creates a new one.
 /// Uses an advisory lock to prevent duplicate session creation during
 /// concurrent startup (e.g., crash-loop restart race).
-pub async fn get_or_create_session(pool: &Pool, exchange: &str) -> Result<i64, String> {
+///
+/// When `key_prefix` is None, finds/creates a session where api_key_prefix IS NULL
+/// (backward compatible with pre-auth behavior). When Some, scopes to that key.
+pub async fn get_or_create_session(
+    pool: &Pool,
+    exchange: &str,
+    key_prefix: Option<&str>,
+) -> Result<i64, String> {
     let mut client = pool
         .get()
         .await
@@ -516,37 +541,51 @@ pub async fn get_or_create_session(pool: &Pool, exchange: &str) -> Result<i64, S
         .map_err(|e| format!("begin tx: {}", e))?;
 
     // Advisory lock scoped to this transaction — serializes concurrent session creation
-    // for the same exchange. Released automatically on commit.
+    // for the same exchange+prefix. Released automatically on commit.
+    let lock_key = match key_prefix {
+        Some(prefix) => format!("{}:{}", exchange, prefix),
+        None => exchange.to_string(),
+    };
     tx.execute(
         "SELECT pg_advisory_xact_lock(hashtext($1))",
-        &[&exchange],
+        &[&lock_key],
     )
     .await
     .map_err(|e| format!("advisory lock: {}", e))?;
 
     // Look for an existing open session
-    let row = tx
-        .query_opt(
-            "SELECT id FROM sessions WHERE exchange = $1 AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
-            &[&exchange],
-        )
-        .await
-        .map_err(|e| format!("query session: {}", e))?;
+    let row = match key_prefix {
+        Some(prefix) => {
+            tx.query_opt(
+                "SELECT id FROM sessions WHERE exchange = $1 AND api_key_prefix = $2 AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
+                &[&exchange, &prefix],
+            )
+            .await
+        }
+        None => {
+            tx.query_opt(
+                "SELECT id FROM sessions WHERE exchange = $1 AND api_key_prefix IS NULL AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
+                &[&exchange],
+            )
+            .await
+        }
+    }
+    .map_err(|e| format!("query session: {}", e))?;
 
     if let Some(row) = row {
         let id: i64 = row.get("id");
         tx.commit()
             .await
             .map_err(|e| format!("commit: {}", e))?;
-        info!(session_id = id, exchange, "using existing session");
+        info!(session_id = id, exchange, key_prefix, "using existing session");
         return Ok(id);
     }
 
     // Create a new session
     let row = tx
         .query_one(
-            "INSERT INTO sessions (exchange) VALUES ($1) RETURNING id",
-            &[&exchange],
+            "INSERT INTO sessions (exchange, api_key_prefix) VALUES ($1, $2) RETURNING id",
+            &[&exchange, &key_prefix],
         )
         .await
         .map_err(|e| format!("create session: {}", e))?;
@@ -555,7 +594,7 @@ pub async fn get_or_create_session(pool: &Pool, exchange: &str) -> Result<i64, S
     tx.commit()
         .await
         .map_err(|e| format!("commit: {}", e))?;
-    info!(session_id = id, exchange, "created new session");
+    info!(session_id = id, exchange, key_prefix, "created new session");
     Ok(id)
 }
 
@@ -1008,6 +1047,48 @@ pub async fn drain_queue_for_shutdown(pool: &Pool, session_id: i64) -> Result<u6
     let count = rows.len() as u64;
 
     // Mark non-terminal orders as rejected
+    for row in &rows {
+        let order_id: i64 = row.get("order_id");
+        tx.execute(
+            "UPDATE prediction_orders SET state = 'rejected', cancel_reason = 'shutdown' \
+             WHERE id = $1 AND state NOT IN ('filled', 'cancelled', 'rejected', 'expired')",
+            &[&order_id],
+        )
+        .await
+        .map_err(|e| format!("reject order: {}", e))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit: {}", e))?;
+
+    Ok(count)
+}
+
+/// Drain ALL queue items during shutdown (across all sessions).
+///
+/// Used during pod shutdown to reject all pending orders regardless of session.
+pub async fn drain_queue_for_shutdown_all(pool: &Pool) -> Result<u64, String> {
+    let mut client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("begin tx: {}", e))?;
+
+    let rows = tx
+        .query(
+            "DELETE FROM order_queue RETURNING order_id",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("drain queue all: {}", e))?;
+
+    let count = rows.len() as u64;
+
     for row in &rows {
         let order_id: i64 = row.get("order_id");
         tx.execute(

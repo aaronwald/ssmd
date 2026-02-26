@@ -466,6 +466,7 @@ route("GET", "/v1/health/gaps", async (req, ctx) => {
 const VALID_SCOPES = [
   "secmaster:read", "datasets:read", "signals:read", "signals:write",
   "admin:read", "admin:write", "llm:chat", "billing:read", "billing:write",
+  "harman:read", "harman:write", "harman:admin",
 ];
 
 route("POST", "/v1/keys", async (req, ctx) => {
@@ -763,6 +764,12 @@ route("GET", "/v1/keys/requests", async () => {
 
   return json({ sincePodStart: true, keys });
 }, true, "admin:read");
+
+// Auth validation endpoint
+route("GET", "/v1/auth/validate", (req, _ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  return Promise.resolve(json({ valid: true, scopes: auth.scopes, key_prefix: auth.keyPrefix }));
+}, true, undefined, "internal");
 
 // Settings endpoints
 route("GET", "/v1/settings", async (_req, ctx) => {
