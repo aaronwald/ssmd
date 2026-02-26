@@ -487,14 +487,20 @@ impl ExchangeAdapter for KalshiClient {
     }
 
     async fn amend_order(&self, request: &AmendRequest) -> Result<AmendResult, ExchangeError> {
+        // Kalshi requires both yes_price and count_fp in every amend request.
+        let price = request.new_price_dollars.ok_or(ExchangeError::Rejected {
+            reason: "Kalshi amend requires new_price_dollars".to_string(),
+        })?;
+        let quantity = request.new_quantity.ok_or(ExchangeError::Rejected {
+            reason: "Kalshi amend requires new_quantity".to_string(),
+        })?;
+
         let body = KalshiAmendRequest {
             ticker: request.ticker.clone(),
             side: request.side.to_string(),
             action: request.action.to_string(),
-            yes_price: request
-                .new_price_dollars
-                .map(|p| (p * Decimal::from(100)).to_i32().unwrap_or(0)),
-            count_fp: request.new_quantity.map(|q| q.to_string()),
+            yes_price: (price * Decimal::from(100)).to_i32().unwrap_or(0),
+            count_fp: quantity.to_string(),
             subaccount: 0,
         };
 
@@ -513,13 +519,17 @@ impl ExchangeAdapter for KalshiClient {
 
             let new_order = &amend_resp.order;
             let yes_price = new_order.yes_price;
+            let remaining = new_order.effective_remaining();
 
+            // Kalshi amend creates a new unfilled order — the response only
+            // populates remaining_count_fp (not count_fp), so remaining IS
+            // the total quantity for the new order.
             Ok(AmendResult {
                 exchange_order_id: new_order.order_id.clone(),
                 new_price_dollars: Decimal::new(yes_price, 2),
-                new_quantity: Decimal::from(new_order.effective_count()),
-                filled_quantity: Decimal::from(new_order.filled_count()),
-                remaining_quantity: Decimal::from(new_order.effective_remaining()),
+                new_quantity: Decimal::from(remaining),
+                filled_quantity: Decimal::ZERO,
+                remaining_quantity: Decimal::from(remaining),
             })
         } else if status == reqwest::StatusCode::NOT_FOUND {
             Err(ExchangeError::NotFound(Uuid::nil()))
@@ -912,7 +922,7 @@ mod tests {
             side: Side::Yes,
             action: Action::Buy,
             new_price_dollars: Some(Decimal::new(2, 2)),
-            new_quantity: None,
+            new_quantity: Some(Decimal::from(1)),
         };
 
         let result = client.amend_order(&request).await;
@@ -938,7 +948,7 @@ mod tests {
             side: Side::Yes,
             action: Action::Buy,
             new_price_dollars: Some(Decimal::new(2, 2)),
-            new_quantity: None,
+            new_quantity: Some(Decimal::from(1)),
         };
 
         let result = client.amend_order(&request).await;
@@ -968,7 +978,7 @@ mod tests {
             side: Side::Yes,
             action: Action::Buy,
             new_price_dollars: Some(Decimal::new(2, 2)),
-            new_quantity: None,
+            new_quantity: Some(Decimal::from(1)),
         };
 
         let result = client.amend_order(&request).await;

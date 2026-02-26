@@ -602,14 +602,14 @@ async fn test_demo_amend_price() {
         .expect("submit_order failed");
     println!("Order submitted: {}", exchange_id);
 
-    // Amend to 2 cents
+    // Amend to 2 cents, keep qty=1
     let amend = AmendRequest {
         exchange_order_id: exchange_id.clone(),
         ticker: ticker.clone(),
         side: Side::Yes,
         action: Action::Buy,
         new_price_dollars: Some(Decimal::new(2, 2)), // $0.02
-        new_quantity: None,
+        new_quantity: Some(Decimal::from(1)),         // same qty
     };
 
     let result = client.amend_order(&amend).await.expect("amend_order failed");
@@ -618,6 +618,7 @@ async fn test_demo_amend_price() {
         result.exchange_order_id, result.new_price_dollars, result.new_quantity, result.remaining_quantity
     );
     assert_eq!(result.new_price_dollars, Decimal::new(2, 2));
+    assert_eq!(result.new_quantity, Decimal::from(1));
 
     // Clean up
     let _ = client.cancel_order(&result.exchange_order_id).await;
@@ -660,12 +661,13 @@ async fn test_demo_amend_quantity() {
         .expect("submit_order failed");
     println!("Order submitted: {}", exchange_id);
 
+    // Keep price at 1 cent, change qty to 2
     let amend = AmendRequest {
         exchange_order_id: exchange_id.clone(),
         ticker: ticker.clone(),
         side: Side::Yes,
         action: Action::Buy,
-        new_price_dollars: None,
+        new_price_dollars: Some(Decimal::new(1, 2)), // same price
         new_quantity: Some(Decimal::from(2)),
     };
 
@@ -845,7 +847,7 @@ async fn test_demo_amend_cancelled_order() {
         side: Side::Yes,
         action: Action::Buy,
         new_price_dollars: Some(Decimal::new(2, 2)),
-        new_quantity: None,
+        new_quantity: Some(Decimal::from(1)),
     };
 
     let result = client.amend_order(&amend).await;
@@ -876,7 +878,7 @@ async fn test_demo_amend_nonexistent_order() {
         side: Side::Yes,
         action: Action::Buy,
         new_price_dollars: Some(Decimal::new(2, 2)),
-        new_quantity: None,
+        new_quantity: Some(Decimal::from(1)),
     };
 
     let result = client.amend_order(&amend).await;
@@ -932,7 +934,7 @@ async fn test_demo_amend_invalid_price() {
         side: Side::Yes,
         action: Action::Buy,
         new_price_dollars: Some(Decimal::new(150, 2)), // $1.50 — out of range
-        new_quantity: None,
+        new_quantity: Some(Decimal::from(1)),
     };
 
     let result = client.amend_order(&amend).await;
@@ -985,7 +987,7 @@ async fn test_demo_amend_zero_quantity() {
         ticker,
         side: Side::Yes,
         action: Action::Buy,
-        new_price_dollars: None,
+        new_price_dollars: Some(Decimal::new(1, 2)),
         new_quantity: Some(Decimal::from(0)),
     };
 
@@ -996,7 +998,7 @@ async fn test_demo_amend_zero_quantity() {
     let _ = client.cancel_order(&exchange_id).await;
 }
 
-/// Decrease more than remaining — should be rejected.
+/// Decrease more than remaining — Kalshi clamps to available quantity (doesn't reject).
 #[tokio::test]
 #[ignore]
 async fn test_demo_decrease_more_than_remaining() {
@@ -1033,14 +1035,13 @@ async fn test_demo_decrease_more_than_remaining() {
         .expect("submit_order failed");
     println!("Order submitted: {} (qty=1)", exchange_id);
 
+    // Kalshi clamps reduce_by to the remaining quantity instead of rejecting
     let result = client.decrease_order(&exchange_id, Decimal::from(5)).await;
     println!("Decrease by 5 (remaining=1) result: {:?}", result);
-    assert!(
-        result.is_err(),
-        "expected decrease more than remaining to fail"
-    );
+    assert!(result.is_ok(), "Kalshi clamps decrease to available qty");
 
-    let _ = client.cancel_order(&exchange_id).await;
+    // Order should now be fully cancelled (remaining=0)
+    // No need to cancel — already fully decreased
 }
 
 /// Decrease a cancelled order — should fail.

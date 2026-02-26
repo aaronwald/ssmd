@@ -167,15 +167,14 @@ pub struct KalshiBalanceResponse {
 }
 
 /// POST /trade-api/v2/portfolio/orders/{order_id}/amend
+/// Kalshi requires both yes_price AND count_fp in every amend request.
 #[derive(Debug, Serialize)]
 pub struct KalshiAmendRequest {
     pub ticker: String,
     pub side: String,
     pub action: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub yes_price: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub count_fp: Option<String>,
+    pub yes_price: i32,
+    pub count_fp: String,
     pub subaccount: i32,
 }
 
