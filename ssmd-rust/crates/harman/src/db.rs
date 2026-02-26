@@ -570,7 +570,7 @@ pub async fn get_or_create_session(
             .await
         }
     }
-    .map_err(|e| format!("query session: {}", e))?;
+    .map_err(|e| format!("query session: {:?}", e))?;
 
     if let Some(row) = row {
         let id: i64 = row.get("id");
