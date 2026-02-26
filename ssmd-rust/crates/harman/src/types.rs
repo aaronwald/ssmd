@@ -52,8 +52,8 @@ pub enum TimeInForce {
 impl std::fmt::Display for TimeInForce {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TimeInForce::Gtc => write!(f, "gtc"),
-            TimeInForce::Ioc => write!(f, "ioc"),
+            TimeInForce::Gtc => write!(f, "good_till_canceled"),
+            TimeInForce::Ioc => write!(f, "immediate_or_cancel"),
         }
     }
 }
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_time_in_force_display() {
-        assert_eq!(TimeInForce::Gtc.to_string(), "gtc");
-        assert_eq!(TimeInForce::Ioc.to_string(), "ioc");
+        assert_eq!(TimeInForce::Gtc.to_string(), "good_till_canceled");
+        assert_eq!(TimeInForce::Ioc.to_string(), "immediate_or_cancel");
     }
 }

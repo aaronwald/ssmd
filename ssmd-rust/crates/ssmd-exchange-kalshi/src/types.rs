@@ -9,7 +9,7 @@ pub struct KalshiOrderRequest {
     pub action: String,
     #[serde(rename = "type")]
     pub order_type: String,
-    pub count_fp: f64,
+    pub count_fp: String,
     pub yes_price: i32,
     pub time_in_force: String,
     pub subaccount: i32,
@@ -35,9 +35,9 @@ pub struct KalshiOrder {
     #[serde(default)]
     pub no_price: i64,
     #[serde(default)]
-    pub count_fp: Option<f64>,
+    pub count_fp: Option<String>,
     #[serde(default)]
-    pub remaining_count_fp: Option<f64>,
+    pub remaining_count_fp: Option<String>,
     #[serde(default)]
     pub count: Option<i64>,
     #[serde(default)]
@@ -46,10 +46,19 @@ pub struct KalshiOrder {
 }
 
 impl KalshiOrder {
+    /// Parse count_fp string to f64
+    fn count_fp_as_f64(&self) -> Option<f64> {
+        self.count_fp.as_deref().and_then(|s| s.parse().ok())
+    }
+
+    /// Parse remaining_count_fp string to f64
+    fn remaining_count_fp_as_f64(&self) -> Option<f64> {
+        self.remaining_count_fp.as_deref().and_then(|s| s.parse().ok())
+    }
+
     /// Get the count (quantity) preferring count_fp.
-    /// Uses round() instead of truncation to handle floating-point precision.
     pub fn effective_count(&self) -> i32 {
-        if let Some(fp) = self.count_fp {
+        if let Some(fp) = self.count_fp_as_f64() {
             fp.round() as i32
         } else {
             self.count.unwrap_or(0) as i32
@@ -57,9 +66,8 @@ impl KalshiOrder {
     }
 
     /// Get the remaining count preferring remaining_count_fp.
-    /// Uses round() instead of truncation to handle floating-point precision.
     pub fn effective_remaining(&self) -> i32 {
-        if let Some(fp) = self.remaining_count_fp {
+        if let Some(fp) = self.remaining_count_fp_as_f64() {
             fp.round() as i32
         } else {
             self.remaining_count.unwrap_or(0) as i32
@@ -80,11 +88,19 @@ pub struct KalshiOrdersResponse {
     pub cursor: Option<String>,
 }
 
+/// Individual result from batch cancel
+#[derive(Debug, Deserialize)]
+pub struct KalshiBatchCancelResult {
+    pub order_id: String,
+    #[serde(default)]
+    pub reduced_by: Option<i32>,
+}
+
 /// Response from DELETE /portfolio/orders/batched (mass cancel)
 #[derive(Debug, Deserialize)]
 pub struct KalshiBatchCancelResponse {
     #[serde(default)]
-    pub orders_cancelled: i32,
+    pub orders: Vec<KalshiBatchCancelResult>,
 }
 
 /// Kalshi fill object

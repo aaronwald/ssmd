@@ -3,6 +3,7 @@ use chrono::DateTime;
 use reqwest::Client;
 use rust_decimal::prelude::*;
 use rust_decimal::Decimal;
+use serde::Serialize;
 use std::time::Duration;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -62,9 +63,11 @@ impl KalshiClient {
     async fn get(&self, path: &str) -> Result<reqwest::Response, ExchangeError> {
         self.throttle().await;
 
+        // Sign only the path portion (before query string)
+        let sign_path = path.split('?').next().unwrap_or(path);
         let (timestamp, signature) = self
             .credentials
-            .sign_rest_request("GET", path)
+            .sign_rest_request("GET", sign_path)
             .map_err(|e| ExchangeError::Auth(e.to_string()))?;
 
         let url = format!("{}{}", self.base_url, path);
@@ -133,8 +136,17 @@ impl KalshiClient {
         Ok(resp)
     }
 
-    /// Make an authenticated DELETE request
+    /// Make an authenticated DELETE request with optional JSON body
     async fn delete(&self, path: &str) -> Result<reqwest::Response, ExchangeError> {
+        self.delete_with_body(path, None::<&()>).await
+    }
+
+    /// Make an authenticated DELETE request with a JSON body
+    async fn delete_with_body<B: Serialize>(
+        &self,
+        path: &str,
+        body: Option<&B>,
+    ) -> Result<reqwest::Response, ExchangeError> {
         self.throttle().await;
 
         let (timestamp, signature) = self
@@ -145,13 +157,19 @@ impl KalshiClient {
         let url = format!("{}{}", self.base_url, path);
         debug!(url = %url, "DELETE request");
 
-        let resp = self
+        let mut req = self
             .http
             .delete(&url)
             .header("KALSHI-ACCESS-KEY", &self.credentials.api_key)
             .header("KALSHI-ACCESS-SIGNATURE", &signature)
             .header("KALSHI-ACCESS-TIMESTAMP", &timestamp)
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        if let Some(b) = body {
+            req = req.json(b);
+        }
+
+        let resp = req
             .send()
             .await
             .map_err(|e| {
@@ -226,7 +244,7 @@ impl ExchangeAdapter for KalshiClient {
             side: order.side.to_string(),
             action: order.action.to_string(),
             order_type: "limit".to_string(),
-            count_fp: order.quantity.to_f64().unwrap_or(0.0),
+            count_fp: order.quantity.to_string(),
             yes_price: (order.price_dollars * Decimal::from(100))
                 .to_i32()
                 .unwrap_or(0),
@@ -271,8 +289,38 @@ impl ExchangeAdapter for KalshiClient {
     }
 
     async fn cancel_all_orders(&self) -> Result<i32, ExchangeError> {
+        // List open orders first
         let resp = self
-            .delete("/trade-api/v2/portfolio/orders/batched")
+            .get("/trade-api/v2/portfolio/orders?status=resting")
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let error_body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Rejected {
+                reason: format!("list orders failed HTTP {}: {}", status, error_body),
+            });
+        }
+
+        let orders_resp: KalshiOrdersResponse = resp
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+
+        if orders_resp.orders.is_empty() {
+            return Ok(0);
+        }
+
+        // Batch cancel by order_id (max 20 per request per API docs)
+        let order_ids: Vec<serde_json::Value> = orders_resp
+            .orders
+            .iter()
+            .map(|o| serde_json::json!({"order_id": o.order_id}))
+            .collect();
+
+        let body = serde_json::json!({"orders": order_ids});
+        let resp = self
+            .delete_with_body("/trade-api/v2/portfolio/orders/batched", Some(&body))
             .await?;
 
         let status = resp.status();
@@ -281,7 +329,7 @@ impl ExchangeAdapter for KalshiClient {
                 .json()
                 .await
                 .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
-            Ok(cancel_resp.orders_cancelled)
+            Ok(cancel_resp.orders.len() as i32)
         } else {
             let error_body = resp.text().await.unwrap_or_default();
             Err(ExchangeError::Rejected {
@@ -498,8 +546,8 @@ mod tests {
                     "side": "yes",
                     "action": "buy",
                     "yes_price": 50,
-                    "count_fp": 10.0,
-                    "remaining_count_fp": 10.0
+                    "count_fp": "10.00",
+                    "remaining_count_fp": "10.00"
                 }
             })))
             .mount(&server)
@@ -590,12 +638,29 @@ mod tests {
     async fn test_cancel_all_orders() {
         let (server, client) = setup().await;
 
+        // Mock list orders (returns 3 resting orders)
+        Mock::given(method("GET"))
+            .and(path("/trade-api/v2/portfolio/orders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "orders": [
+                    {"order_id": "o1", "ticker": "T1", "status": "resting", "side": "yes", "action": "buy"},
+                    {"order_id": "o2", "ticker": "T2", "status": "resting", "side": "yes", "action": "buy"},
+                    {"order_id": "o3", "ticker": "T3", "status": "resting", "side": "yes", "action": "buy"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        // Mock batch cancel
         Mock::given(method("DELETE"))
             .and(path("/trade-api/v2/portfolio/orders/batched"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"orders_cancelled": 3})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "orders": [
+                    {"order_id": "o1", "reduced_by": 1},
+                    {"order_id": "o2", "reduced_by": 1},
+                    {"order_id": "o3", "reduced_by": 1}
+                ]
+            })))
             .mount(&server)
             .await;
 
@@ -619,8 +684,8 @@ mod tests {
                     "side": "yes",
                     "action": "buy",
                     "yes_price": 50,
-                    "count_fp": 10.0,
-                    "remaining_count_fp": 7.0
+                    "count_fp": "10.00",
+                    "remaining_count_fp": "7.00"
                 }]
             })))
             .mount(&server)
