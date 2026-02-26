@@ -50,6 +50,14 @@ async fn main() {
             delete(routes::cancel_order),
         )
         .route(
+            "/trade-api/v2/portfolio/orders/:id/amend",
+            post(routes::amend_order),
+        )
+        .route(
+            "/trade-api/v2/portfolio/orders/:id/decrease",
+            post(routes::decrease_order),
+        )
+        .route(
             "/trade-api/v2/portfolio/fills",
             get(routes::list_fills),
         )

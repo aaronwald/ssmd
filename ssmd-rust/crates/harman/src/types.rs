@@ -166,6 +166,29 @@ pub struct Balance {
     pub total_dollars: Decimal,
 }
 
+/// Request to amend a resting order.
+/// Caller provides original ticker/side/action (required by Kalshi).
+/// At least one of new_price_dollars or new_quantity must be Some.
+#[derive(Debug, Clone)]
+pub struct AmendRequest {
+    pub exchange_order_id: String,
+    pub ticker: String,
+    pub side: Side,
+    pub action: Action,
+    pub new_price_dollars: Option<Decimal>,
+    pub new_quantity: Option<Decimal>,
+}
+
+/// Result of an order amendment
+#[derive(Debug, Clone)]
+pub struct AmendResult {
+    pub exchange_order_id: String,
+    pub new_price_dollars: Decimal,
+    pub new_quantity: Decimal,
+    pub filled_quantity: Decimal,
+    pub remaining_quantity: Decimal,
+}
+
 /// Exchange fill record
 #[derive(Debug, Clone)]
 pub struct ExchangeFill {

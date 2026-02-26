@@ -11,8 +11,8 @@ use uuid::Uuid;
 use harman::error::ExchangeError;
 use harman::exchange::ExchangeAdapter;
 use harman::types::{
-    Action, Balance, ExchangeFill, ExchangeOrderState, ExchangeOrderStatus, OrderRequest,
-    Position, Side,
+    Action, AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrderState,
+    ExchangeOrderStatus, OrderRequest, Position, Side,
 };
 use ssmd_connector_lib::kalshi::auth::KalshiCredentials;
 
@@ -485,6 +485,80 @@ impl ExchangeAdapter for KalshiClient {
             ),
         })
     }
+
+    async fn amend_order(&self, request: &AmendRequest) -> Result<AmendResult, ExchangeError> {
+        let body = KalshiAmendRequest {
+            ticker: request.ticker.clone(),
+            side: request.side.to_string(),
+            action: request.action.to_string(),
+            yes_price: request
+                .new_price_dollars
+                .map(|p| (p * Decimal::from(100)).to_i32().unwrap_or(0)),
+            count_fp: request.new_quantity.map(|q| q.to_string()),
+            subaccount: 0,
+        };
+
+        let path = format!(
+            "/trade-api/v2/portfolio/orders/{}/amend",
+            request.exchange_order_id
+        );
+        let resp = self.post(&path, &body).await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let amend_resp: KalshiAmendResponse = resp
+                .json()
+                .await
+                .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+
+            let new_order = &amend_resp.order;
+            let yes_price = new_order.yes_price;
+
+            Ok(AmendResult {
+                exchange_order_id: new_order.order_id.clone(),
+                new_price_dollars: Decimal::new(yes_price, 2),
+                new_quantity: Decimal::from(new_order.effective_count()),
+                filled_quantity: Decimal::from(new_order.filled_count()),
+                remaining_quantity: Decimal::from(new_order.effective_remaining()),
+            })
+        } else if status == reqwest::StatusCode::NOT_FOUND {
+            Err(ExchangeError::NotFound(Uuid::nil()))
+        } else {
+            let error_body = resp.text().await.unwrap_or_default();
+            Err(ExchangeError::Rejected {
+                reason: format!("amend failed HTTP {}: {}", status, error_body),
+            })
+        }
+    }
+
+    async fn decrease_order(
+        &self,
+        exchange_order_id: &str,
+        reduce_by: Decimal,
+    ) -> Result<(), ExchangeError> {
+        let body = KalshiDecreaseRequest {
+            reduce_by_fp: reduce_by.to_string(),
+            subaccount: 0,
+        };
+
+        let path = format!(
+            "/trade-api/v2/portfolio/orders/{}/decrease",
+            exchange_order_id
+        );
+        let resp = self.post(&path, &body).await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            Ok(())
+        } else if status == reqwest::StatusCode::NOT_FOUND {
+            Err(ExchangeError::NotFound(Uuid::nil()))
+        } else {
+            let error_body = resp.text().await.unwrap_or_default();
+            Err(ExchangeError::Rejected {
+                reason: format!("decrease failed HTTP {}: {}", status, error_body),
+            })
+        }
+    }
 }
 
 impl std::fmt::Debug for KalshiClient {
@@ -770,5 +844,180 @@ mod tests {
         assert_eq!(positions[0].ticker, "KXBTCD-26FEB-T100000");
         assert_eq!(positions[0].quantity, Decimal::from(10));
         assert_eq!(positions[0].market_value_dollars, Decimal::new(500, 2));
+    }
+
+    // --- Amend order tests ---
+
+    #[tokio::test]
+    async fn test_amend_order_success() {
+        let (server, client) = setup().await;
+
+        Mock::given(method("POST"))
+            .and(path("/trade-api/v2/portfolio/orders/exch-123/amend"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "old_order": {
+                    "order_id": "exch-123",
+                    "ticker": "KXBTCD-26FEB-T100000",
+                    "status": "canceled",
+                    "side": "yes",
+                    "action": "buy",
+                    "yes_price": 1,
+                    "count_fp": "10.00",
+                    "remaining_count_fp": "10.00"
+                },
+                "order": {
+                    "order_id": "exch-124",
+                    "ticker": "KXBTCD-26FEB-T100000",
+                    "status": "resting",
+                    "side": "yes",
+                    "action": "buy",
+                    "yes_price": 2,
+                    "count_fp": "5.00",
+                    "remaining_count_fp": "5.00"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let request = harman::types::AmendRequest {
+            exchange_order_id: "exch-123".to_string(),
+            ticker: "KXBTCD-26FEB-T100000".to_string(),
+            side: Side::Yes,
+            action: Action::Buy,
+            new_price_dollars: Some(Decimal::new(2, 2)),
+            new_quantity: Some(Decimal::from(5)),
+        };
+
+        let result = client.amend_order(&request).await.unwrap();
+        assert_eq!(result.exchange_order_id, "exch-124");
+        assert_eq!(result.new_price_dollars, Decimal::new(2, 2));
+        assert_eq!(result.new_quantity, Decimal::from(5));
+        assert_eq!(result.filled_quantity, Decimal::from(0));
+        assert_eq!(result.remaining_quantity, Decimal::from(5));
+    }
+
+    #[tokio::test]
+    async fn test_amend_order_not_found() {
+        let (server, client) = setup().await;
+
+        Mock::given(method("POST"))
+            .and(path("/trade-api/v2/portfolio/orders/exch-999/amend"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let request = harman::types::AmendRequest {
+            exchange_order_id: "exch-999".to_string(),
+            ticker: "KXBTCD-26FEB-T100000".to_string(),
+            side: Side::Yes,
+            action: Action::Buy,
+            new_price_dollars: Some(Decimal::new(2, 2)),
+            new_quantity: None,
+        };
+
+        let result = client.amend_order(&request).await;
+        assert!(matches!(result.unwrap_err(), ExchangeError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_amend_order_rejected() {
+        let (server, client) = setup().await;
+
+        Mock::given(method("POST"))
+            .and(path("/trade-api/v2/portfolio/orders/exch-123/amend"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "code": "CANNOT_UPDATE_FILLED_ORDER",
+                "message": "Cannot amend a filled order"
+            })))
+            .mount(&server)
+            .await;
+
+        let request = harman::types::AmendRequest {
+            exchange_order_id: "exch-123".to_string(),
+            ticker: "KXBTCD-26FEB-T100000".to_string(),
+            side: Side::Yes,
+            action: Action::Buy,
+            new_price_dollars: Some(Decimal::new(2, 2)),
+            new_quantity: None,
+        };
+
+        let result = client.amend_order(&request).await;
+        match result.unwrap_err() {
+            ExchangeError::Rejected { reason } => {
+                assert!(reason.contains("400"));
+            }
+            e => panic!("expected Rejected, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_amend_order_rate_limited() {
+        let (server, client) = setup().await;
+
+        Mock::given(method("POST"))
+            .and(path("/trade-api/v2/portfolio/orders/exch-123/amend"))
+            .respond_with(
+                ResponseTemplate::new(429).insert_header("retry-after", "3"),
+            )
+            .mount(&server)
+            .await;
+
+        let request = harman::types::AmendRequest {
+            exchange_order_id: "exch-123".to_string(),
+            ticker: "KXBTCD-26FEB-T100000".to_string(),
+            side: Side::Yes,
+            action: Action::Buy,
+            new_price_dollars: Some(Decimal::new(2, 2)),
+            new_quantity: None,
+        };
+
+        let result = client.amend_order(&request).await;
+        match result.unwrap_err() {
+            ExchangeError::RateLimited { retry_after_ms } => {
+                assert_eq!(retry_after_ms, 3000);
+            }
+            e => panic!("expected RateLimited, got: {:?}", e),
+        }
+    }
+
+    // --- Decrease order tests ---
+
+    #[tokio::test]
+    async fn test_decrease_order_success() {
+        let (server, client) = setup().await;
+
+        Mock::given(method("POST"))
+            .and(path("/trade-api/v2/portfolio/orders/exch-123/decrease"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "order": {
+                    "order_id": "exch-123",
+                    "ticker": "KXBTCD-26FEB-T100000",
+                    "status": "resting",
+                    "side": "yes",
+                    "action": "buy",
+                    "yes_price": 1,
+                    "count_fp": "10.00",
+                    "remaining_count_fp": "9.00"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let result = client.decrease_order("exch-123", Decimal::from(1)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_decrease_order_not_found() {
+        let (server, client) = setup().await;
+
+        Mock::given(method("POST"))
+            .and(path("/trade-api/v2/portfolio/orders/exch-999/decrease"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let result = client.decrease_order("exch-999", Decimal::from(1)).await;
+        assert!(matches!(result.unwrap_err(), ExchangeError::NotFound(_)));
     }
 }

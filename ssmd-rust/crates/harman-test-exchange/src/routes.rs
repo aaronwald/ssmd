@@ -8,7 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::state::{ExchangeState, Fill, Order, OrderRequest, Position};
+use crate::state::{AmendRequest, DecreaseRequest, ExchangeState, Fill, Order, OrderRequest, Position};
 
 pub type AppState = Arc<Mutex<ExchangeState>>;
 
@@ -49,6 +49,12 @@ pub struct BalanceResponse {
 }
 
 #[derive(Serialize)]
+pub struct AmendResponse {
+    pub old_order: Order,
+    pub order: Order,
+}
+
+#[derive(Serialize)]
 pub struct HealthResponse {
     pub status: String,
 }
@@ -78,7 +84,7 @@ pub async fn submit_order(
         ticker = %req.ticker,
         side = %req.side,
         action = %req.action,
-        count_fp = req.count_fp,
+        count_fp = %req.count_fp,
         yes_price = req.yes_price,
         client_order_id = %req.client_order_id,
         "order submitted — immediate fill"
@@ -142,6 +148,50 @@ pub async fn list_positions(State(state): State<AppState>) -> Json<PositionsResp
         market_positions: positions,
         cursor: None,
     })
+}
+
+pub async fn amend_order(
+    State(state): State<AppState>,
+    Path(order_id): Path<String>,
+    Json(req): Json<AmendRequest>,
+) -> Result<Json<AmendResponse>, StatusCode> {
+    let mut state = state.lock().await;
+    tracing::info!(
+        order_id = %order_id,
+        ticker = %req.ticker,
+        yes_price = ?req.yes_price,
+        count_fp = ?req.count_fp,
+        "amend order"
+    );
+    match state.amend_order(&order_id, &req) {
+        Some((old_order, new_order)) => Ok(Json(AmendResponse {
+            old_order,
+            order: new_order,
+        })),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+pub async fn decrease_order(
+    State(state): State<AppState>,
+    Path(order_id): Path<String>,
+    Json(req): Json<DecreaseRequest>,
+) -> Result<Json<OrderResponse>, StatusCode> {
+    let mut state = state.lock().await;
+    let reduce_by = req
+        .reduce_by_fp
+        .parse::<f64>()
+        .unwrap_or(0.0)
+        .round() as i64;
+    tracing::info!(
+        order_id = %order_id,
+        reduce_by = reduce_by,
+        "decrease order"
+    );
+    match state.decrease_order(&order_id, reduce_by) {
+        Some(order) => Ok(Json(OrderResponse { order })),
+        None => Err(StatusCode::NOT_FOUND),
+    }
 }
 
 pub async fn get_balance(State(state): State<AppState>) -> Json<BalanceResponse> {

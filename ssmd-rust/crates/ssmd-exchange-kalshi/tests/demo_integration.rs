@@ -14,7 +14,7 @@
 
 use harman::error::ExchangeError;
 use harman::exchange::ExchangeAdapter;
-use harman::types::{Action, OrderRequest, Side, TimeInForce};
+use harman::types::{Action, AmendRequest, OrderRequest, Side, TimeInForce};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use ssmd_connector_lib::kalshi::auth::KalshiCredentials;
@@ -558,4 +558,564 @@ async fn test_demo_submit_duplicate_client_order_id() {
 
     // Clean up
     let _ = client.cancel_order(&exchange_id).await;
+}
+
+// ---------------------------------------------------------------------------
+// Amend Order Tests (Positive)
+// ---------------------------------------------------------------------------
+
+/// Amend price: submit at 1c, amend to 2c, verify, cancel.
+#[tokio::test]
+#[ignore]
+async fn test_demo_amend_price() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+    println!("Using demo market: {}", ticker);
+
+    let coid = Uuid::new_v4();
+    let order = OrderRequest {
+        client_order_id: coid,
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(1, 2), // $0.01
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let exchange_id = client
+        .submit_order(&order)
+        .await
+        .expect("submit_order failed");
+    println!("Order submitted: {}", exchange_id);
+
+    // Amend to 2 cents
+    let amend = AmendRequest {
+        exchange_order_id: exchange_id.clone(),
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        new_price_dollars: Some(Decimal::new(2, 2)), // $0.02
+        new_quantity: None,
+    };
+
+    let result = client.amend_order(&amend).await.expect("amend_order failed");
+    println!(
+        "Amend result: new_eid={} price=${} qty={} remaining={}",
+        result.exchange_order_id, result.new_price_dollars, result.new_quantity, result.remaining_quantity
+    );
+    assert_eq!(result.new_price_dollars, Decimal::new(2, 2));
+
+    // Clean up
+    let _ = client.cancel_order(&result.exchange_order_id).await;
+}
+
+/// Amend quantity: submit qty=1, amend to qty=2, verify, cancel.
+#[tokio::test]
+#[ignore]
+async fn test_demo_amend_quantity() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+    println!("Using demo market: {}", ticker);
+
+    let order = OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(1, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let exchange_id = client
+        .submit_order(&order)
+        .await
+        .expect("submit_order failed");
+    println!("Order submitted: {}", exchange_id);
+
+    let amend = AmendRequest {
+        exchange_order_id: exchange_id.clone(),
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        new_price_dollars: None,
+        new_quantity: Some(Decimal::from(2)),
+    };
+
+    let result = client.amend_order(&amend).await.expect("amend_order failed");
+    println!(
+        "Amend result: new_eid={} qty={} remaining={}",
+        result.exchange_order_id, result.new_quantity, result.remaining_quantity
+    );
+    assert_eq!(result.new_quantity, Decimal::from(2));
+
+    let _ = client.cancel_order(&result.exchange_order_id).await;
+}
+
+/// Amend both price and quantity.
+#[tokio::test]
+#[ignore]
+async fn test_demo_amend_price_and_quantity() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+    println!("Using demo market: {}", ticker);
+
+    let order = OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(1, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let exchange_id = client
+        .submit_order(&order)
+        .await
+        .expect("submit_order failed");
+    println!("Order submitted: {}", exchange_id);
+
+    let amend = AmendRequest {
+        exchange_order_id: exchange_id.clone(),
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        new_price_dollars: Some(Decimal::new(2, 2)),
+        new_quantity: Some(Decimal::from(2)),
+    };
+
+    let result = client.amend_order(&amend).await.expect("amend_order failed");
+    println!(
+        "Amend result: new_eid={} price=${} qty={}",
+        result.exchange_order_id, result.new_price_dollars, result.new_quantity
+    );
+    assert_eq!(result.new_price_dollars, Decimal::new(2, 2));
+    assert_eq!(result.new_quantity, Decimal::from(2));
+
+    let _ = client.cancel_order(&result.exchange_order_id).await;
+}
+
+/// Decrease order: submit qty=3, decrease by 1, verify remaining=2, cancel.
+#[tokio::test]
+#[ignore]
+async fn test_demo_decrease_order() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+    println!("Using demo market: {}", ticker);
+
+    let coid = Uuid::new_v4();
+    let order = OrderRequest {
+        client_order_id: coid,
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(3),
+        price_dollars: Decimal::new(1, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let exchange_id = client
+        .submit_order(&order)
+        .await
+        .expect("submit_order failed");
+    println!("Order submitted: {} (qty=3)", exchange_id);
+
+    client
+        .decrease_order(&exchange_id, Decimal::from(1))
+        .await
+        .expect("decrease_order failed");
+    println!("Decreased by 1");
+
+    // Verify via get_order_by_client_id
+    let status = client
+        .get_order_by_client_id(coid)
+        .await
+        .expect("get_order_by_client_id failed");
+    println!(
+        "After decrease: remaining={} filled={}",
+        status.remaining_quantity, status.filled_quantity
+    );
+    assert_eq!(status.remaining_quantity, Decimal::from(2));
+
+    let _ = client.cancel_order(&exchange_id).await;
+}
+
+// ---------------------------------------------------------------------------
+// Amend / Decrease Negative Tests
+// ---------------------------------------------------------------------------
+
+/// Amend a cancelled order — should fail.
+#[tokio::test]
+#[ignore]
+async fn test_demo_amend_cancelled_order() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+    println!("Using demo market: {}", ticker);
+
+    let order = OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(1, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let exchange_id = client
+        .submit_order(&order)
+        .await
+        .expect("submit_order failed");
+    client
+        .cancel_order(&exchange_id)
+        .await
+        .expect("cancel failed");
+    println!("Order {} submitted and cancelled", exchange_id);
+
+    let amend = AmendRequest {
+        exchange_order_id: exchange_id,
+        ticker,
+        side: Side::Yes,
+        action: Action::Buy,
+        new_price_dollars: Some(Decimal::new(2, 2)),
+        new_quantity: None,
+    };
+
+    let result = client.amend_order(&amend).await;
+    println!("Amend cancelled order result: {:?}", result);
+    assert!(result.is_err(), "expected amend of cancelled order to fail");
+    match result.unwrap_err() {
+        ExchangeError::Rejected { reason } => println!("Got expected Rejected: {}", reason),
+        ExchangeError::NotFound(_) => println!("Got NotFound (acceptable)"),
+        e => panic!("unexpected error type: {:?}", e),
+    }
+}
+
+/// Amend a non-existent order — should return NotFound.
+#[tokio::test]
+#[ignore]
+async fn test_demo_amend_nonexistent_order() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let amend = AmendRequest {
+        exchange_order_id: Uuid::new_v4().to_string(),
+        ticker: "KXBTCD-26FEB-T100000".to_string(),
+        side: Side::Yes,
+        action: Action::Buy,
+        new_price_dollars: Some(Decimal::new(2, 2)),
+        new_quantity: None,
+    };
+
+    let result = client.amend_order(&amend).await;
+    println!("Amend non-existent order result: {:?}", result);
+    assert!(result.is_err(), "expected amend of non-existent order to fail");
+    match result.unwrap_err() {
+        ExchangeError::NotFound(_) => println!("Got expected NotFound"),
+        ExchangeError::Rejected { reason } => println!("Got Rejected (acceptable): {}", reason),
+        e => panic!("unexpected error type: {:?}", e),
+    }
+}
+
+/// Amend with invalid price ($1.50) — should be rejected.
+#[tokio::test]
+#[ignore]
+async fn test_demo_amend_invalid_price() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+    println!("Using demo market: {}", ticker);
+
+    let order = OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(1, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let exchange_id = client
+        .submit_order(&order)
+        .await
+        .expect("submit_order failed");
+    println!("Order submitted: {}", exchange_id);
+
+    let amend = AmendRequest {
+        exchange_order_id: exchange_id.clone(),
+        ticker,
+        side: Side::Yes,
+        action: Action::Buy,
+        new_price_dollars: Some(Decimal::new(150, 2)), // $1.50 — out of range
+        new_quantity: None,
+    };
+
+    let result = client.amend_order(&amend).await;
+    println!("Amend invalid price result: {:?}", result);
+    assert!(result.is_err(), "expected invalid price to be rejected");
+
+    // Clean up (order may still be resting if amend failed)
+    let _ = client.cancel_order(&exchange_id).await;
+}
+
+/// Amend with zero quantity — should be rejected.
+#[tokio::test]
+#[ignore]
+async fn test_demo_amend_zero_quantity() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+    println!("Using demo market: {}", ticker);
+
+    let order = OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(1, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let exchange_id = client
+        .submit_order(&order)
+        .await
+        .expect("submit_order failed");
+    println!("Order submitted: {}", exchange_id);
+
+    let amend = AmendRequest {
+        exchange_order_id: exchange_id.clone(),
+        ticker,
+        side: Side::Yes,
+        action: Action::Buy,
+        new_price_dollars: None,
+        new_quantity: Some(Decimal::from(0)),
+    };
+
+    let result = client.amend_order(&amend).await;
+    println!("Amend zero qty result: {:?}", result);
+    assert!(result.is_err(), "expected zero quantity to be rejected");
+
+    let _ = client.cancel_order(&exchange_id).await;
+}
+
+/// Decrease more than remaining — should be rejected.
+#[tokio::test]
+#[ignore]
+async fn test_demo_decrease_more_than_remaining() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+    println!("Using demo market: {}", ticker);
+
+    let order = OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(1, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let exchange_id = client
+        .submit_order(&order)
+        .await
+        .expect("submit_order failed");
+    println!("Order submitted: {} (qty=1)", exchange_id);
+
+    let result = client.decrease_order(&exchange_id, Decimal::from(5)).await;
+    println!("Decrease by 5 (remaining=1) result: {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected decrease more than remaining to fail"
+    );
+
+    let _ = client.cancel_order(&exchange_id).await;
+}
+
+/// Decrease a cancelled order — should fail.
+#[tokio::test]
+#[ignore]
+async fn test_demo_decrease_cancelled_order() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let ticker = match discover_active_market().await {
+        Some(t) => t,
+        None => {
+            eprintln!("no active market found on demo — skipping");
+            return;
+        }
+    };
+    println!("Using demo market: {}", ticker);
+
+    let order = OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker: ticker.clone(),
+        side: Side::Yes,
+        action: Action::Buy,
+        quantity: Decimal::from(1),
+        price_dollars: Decimal::new(1, 2),
+        time_in_force: TimeInForce::Gtc,
+    };
+
+    let exchange_id = client
+        .submit_order(&order)
+        .await
+        .expect("submit_order failed");
+    client
+        .cancel_order(&exchange_id)
+        .await
+        .expect("cancel failed");
+    println!("Order {} submitted and cancelled", exchange_id);
+
+    let result = client.decrease_order(&exchange_id, Decimal::from(1)).await;
+    println!("Decrease cancelled order result: {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected decrease of cancelled order to fail"
+    );
+}
+
+/// Decrease a non-existent order — should return NotFound.
+#[tokio::test]
+#[ignore]
+async fn test_demo_decrease_nonexistent_order() {
+    let client = match make_client() {
+        Some(c) => c,
+        None => {
+            eprintln!("credentials not set — skipping");
+            return;
+        }
+    };
+
+    let fake_id = Uuid::new_v4().to_string();
+    println!("Decreasing non-existent order: {}", fake_id);
+
+    let result = client.decrease_order(&fake_id, Decimal::from(1)).await;
+    println!("Decrease non-existent result: {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected decrease of non-existent order to fail"
+    );
+    match result.unwrap_err() {
+        ExchangeError::NotFound(_) => println!("Got expected NotFound"),
+        ExchangeError::Rejected { reason } => println!("Got Rejected (acceptable): {}", reason),
+        e => panic!("unexpected error type: {:?}", e),
+    }
 }

@@ -1,9 +1,10 @@
 use async_trait::async_trait;
+use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use crate::error::ExchangeError;
 use crate::types::{
-    Balance, ExchangeFill, ExchangeOrderStatus, OrderRequest, Position,
+    AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrderStatus, OrderRequest, Position,
 };
 
 /// Trait for exchange adapters.
@@ -43,4 +44,15 @@ pub trait ExchangeAdapter: Send + Sync {
 
     /// Get current account balance.
     async fn get_balance(&self) -> Result<Balance, ExchangeError>;
+
+    /// Amend a resting order's price and/or quantity.
+    /// Loses queue priority on the exchange.
+    async fn amend_order(&self, request: &AmendRequest) -> Result<AmendResult, ExchangeError>;
+
+    /// Decrease a resting order's quantity (preserves queue priority).
+    async fn decrease_order(
+        &self,
+        exchange_order_id: &str,
+        reduce_by: Decimal,
+    ) -> Result<(), ExchangeError>;
 }

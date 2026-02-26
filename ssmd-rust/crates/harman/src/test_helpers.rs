@@ -15,8 +15,8 @@ use uuid::Uuid;
 use crate::error::ExchangeError;
 use crate::exchange::ExchangeAdapter;
 use crate::types::{
-    Action, Balance, ExchangeFill, ExchangeOrderState, ExchangeOrderStatus, OrderRequest,
-    Position, Side,
+    Action, AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrderState,
+    ExchangeOrderStatus, OrderRequest, Position, Side,
 };
 
 /// Configurable response for `submit_order`.
@@ -39,6 +39,28 @@ pub enum SubmitBehavior {
 pub enum CancelBehavior {
     /// Return Ok(()).
     Accept,
+    /// Return Err(NotFound).
+    NotFound,
+}
+
+/// Configurable response for `amend_order`.
+#[derive(Clone, Debug)]
+pub enum AmendBehavior {
+    /// Return Ok with default AmendResult.
+    Accept,
+    /// Return Err(Rejected).
+    Reject(String),
+    /// Return Err(NotFound).
+    NotFound,
+}
+
+/// Configurable response for `decrease_order`.
+#[derive(Clone, Debug)]
+pub enum DecreaseBehavior {
+    /// Return Ok(()).
+    Accept,
+    /// Return Err(Rejected).
+    Reject(String),
     /// Return Err(NotFound).
     NotFound,
 }
@@ -70,6 +92,14 @@ pub struct MockExchangeState {
     pub cancel_calls: Vec<String>,
     /// How many times cancel_all_orders was called.
     pub cancel_all_calls: u64,
+    /// Default behavior for amend_order.
+    pub amend_behavior: AmendBehavior,
+    /// Log of amend calls.
+    pub amend_calls: Vec<AmendRequest>,
+    /// Default behavior for decrease_order.
+    pub decrease_behavior: DecreaseBehavior,
+    /// Log of decrease calls (exchange_order_id, reduce_by).
+    pub decrease_calls: Vec<(String, Decimal)>,
 }
 
 impl Default for MockExchangeState {
@@ -90,6 +120,10 @@ impl Default for MockExchangeState {
             submitted_orders: Vec::new(),
             cancel_calls: Vec::new(),
             cancel_all_calls: 0,
+            amend_behavior: AmendBehavior::Accept,
+            amend_calls: Vec::new(),
+            decrease_behavior: DecreaseBehavior::Accept,
+            decrease_calls: Vec::new(),
         }
     }
 }
@@ -195,6 +229,44 @@ impl ExchangeAdapter for MockExchange {
     async fn get_balance(&self) -> Result<Balance, ExchangeError> {
         let state = self.state.lock().await;
         Ok(state.balance.clone())
+    }
+
+    async fn amend_order(&self, request: &AmendRequest) -> Result<AmendResult, ExchangeError> {
+        let mut state = self.state.lock().await;
+        state.amend_calls.push(request.clone());
+
+        match &state.amend_behavior {
+            AmendBehavior::Accept => Ok(AmendResult {
+                exchange_order_id: request.exchange_order_id.clone(),
+                new_price_dollars: request.new_price_dollars.unwrap_or(Decimal::ZERO),
+                new_quantity: request.new_quantity.unwrap_or(Decimal::ZERO),
+                filled_quantity: Decimal::ZERO,
+                remaining_quantity: request.new_quantity.unwrap_or(Decimal::ZERO),
+            }),
+            AmendBehavior::Reject(reason) => Err(ExchangeError::Rejected {
+                reason: reason.clone(),
+            }),
+            AmendBehavior::NotFound => Err(ExchangeError::NotFound(Uuid::nil())),
+        }
+    }
+
+    async fn decrease_order(
+        &self,
+        exchange_order_id: &str,
+        reduce_by: Decimal,
+    ) -> Result<(), ExchangeError> {
+        let mut state = self.state.lock().await;
+        state
+            .decrease_calls
+            .push((exchange_order_id.to_string(), reduce_by));
+
+        match &state.decrease_behavior {
+            DecreaseBehavior::Accept => Ok(()),
+            DecreaseBehavior::Reject(reason) => Err(ExchangeError::Rejected {
+                reason: reason.clone(),
+            }),
+            DecreaseBehavior::NotFound => Err(ExchangeError::NotFound(Uuid::nil())),
+        }
     }
 }
 

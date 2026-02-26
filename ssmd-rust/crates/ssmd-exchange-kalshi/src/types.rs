@@ -166,6 +166,33 @@ pub struct KalshiBalanceResponse {
     pub balance: KalshiBalance,
 }
 
+/// POST /trade-api/v2/portfolio/orders/{order_id}/amend
+#[derive(Debug, Serialize)]
+pub struct KalshiAmendRequest {
+    pub ticker: String,
+    pub side: String,
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub yes_price: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count_fp: Option<String>,
+    pub subaccount: i32,
+}
+
+/// Response from amend endpoint
+#[derive(Debug, Deserialize)]
+pub struct KalshiAmendResponse {
+    pub old_order: KalshiOrder,
+    pub order: KalshiOrder,
+}
+
+/// POST /trade-api/v2/portfolio/orders/{order_id}/decrease
+#[derive(Debug, Serialize)]
+pub struct KalshiDecreaseRequest {
+    pub reduce_by_fp: String,
+    pub subaccount: i32,
+}
+
 /// Kalshi API error response
 #[derive(Debug, Deserialize)]
 pub struct KalshiError {

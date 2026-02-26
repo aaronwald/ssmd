@@ -16,9 +16,9 @@ pub struct Order {
     pub yes_price: i64,
     pub no_price: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub count_fp: Option<f64>,
+    pub count_fp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub remaining_count_fp: Option<f64>,
+    pub remaining_count_fp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,7 +63,7 @@ pub struct OrderRequest {
     pub action: String,
     #[serde(rename = "type")]
     pub order_type: String,
-    pub count_fp: f64,
+    pub count_fp: String,
     pub yes_price: i32,
     #[serde(default = "default_tif")]
     pub time_in_force: String,
@@ -73,6 +73,28 @@ pub struct OrderRequest {
 
 fn default_tif() -> String {
     "gtc".to_string()
+}
+
+/// Incoming amend request
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct AmendRequest {
+    pub ticker: String,
+    pub side: String,
+    pub action: String,
+    pub yes_price: Option<i32>,
+    pub count_fp: Option<String>,
+    #[serde(default)]
+    pub subaccount: i32,
+}
+
+/// Incoming decrease request
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct DecreaseRequest {
+    pub reduce_by_fp: String,
+    #[serde(default)]
+    pub subaccount: i32,
 }
 
 /// In-memory exchange state. All mutations go through methods.
@@ -107,12 +129,17 @@ impl ExchangeState {
         id
     }
 
+    /// Parse count_fp string to i64
+    fn parse_count_fp(s: &str) -> i64 {
+        s.parse::<f64>().unwrap_or(0.0).round() as i64
+    }
+
     /// Accept an order, immediately fill it, update balance.
     pub fn submit_order(&mut self, req: &OrderRequest) -> Order {
         let order_id = self.next_order_id();
         let trade_id = self.next_trade_id();
         let now = Utc::now().to_rfc3339();
-        let count = req.count_fp.round() as i64;
+        let count = Self::parse_count_fp(&req.count_fp);
         let yes_price = req.yes_price as i64;
         let no_price = 100 - yes_price;
 
@@ -125,8 +152,8 @@ impl ExchangeState {
             action: req.action.clone(),
             yes_price,
             no_price,
-            count_fp: Some(req.count_fp),
-            remaining_count_fp: Some(0.0),
+            count_fp: Some(req.count_fp.clone()),
+            remaining_count_fp: Some("0".to_string()),
             count: Some(count),
             remaining_count: Some(0),
             created_time: Some(now.clone()),
@@ -181,6 +208,75 @@ impl ExchangeState {
             }
         }
         count
+    }
+
+    /// Amend a resting order. Creates a new order with updated price/quantity.
+    /// Returns (old_order, new_order) or None if not found/not resting.
+    pub fn amend_order(&mut self, order_id: &str, req: &AmendRequest) -> Option<(Order, Order)> {
+        let order = self.orders.get_mut(order_id)?;
+        if order.status != "resting" {
+            return None;
+        }
+
+        // Cancel the old order
+        order.status = "canceled".to_string();
+        let old_order = order.clone();
+
+        // Create new order with amended values
+        let new_order_id = self.next_order_id();
+        let yes_price = req.yes_price.map(|p| p as i64).unwrap_or(old_order.yes_price);
+        let count = req
+            .count_fp
+            .as_ref()
+            .map(|s| Self::parse_count_fp(s))
+            .unwrap_or(old_order.count.unwrap_or(0));
+
+        let new_order = Order {
+            order_id: new_order_id.clone(),
+            client_order_id: old_order.client_order_id.clone(),
+            ticker: req.ticker.clone(),
+            status: "resting".to_string(),
+            side: req.side.clone(),
+            action: req.action.clone(),
+            yes_price,
+            no_price: 100 - yes_price,
+            count_fp: Some(count.to_string()),
+            remaining_count_fp: Some(count.to_string()),
+            count: Some(count),
+            remaining_count: Some(count),
+            created_time: Some(Utc::now().to_rfc3339()),
+        };
+
+        self.orders.insert(new_order_id, new_order.clone());
+        Some((old_order, new_order))
+    }
+
+    /// Decrease a resting order's quantity. Returns updated order or None.
+    pub fn decrease_order(&mut self, order_id: &str, reduce_by: i64) -> Option<Order> {
+        let order = self.orders.get_mut(order_id)?;
+        if order.status != "resting" {
+            return None;
+        }
+
+        let remaining = order.remaining_count.unwrap_or(0);
+        if reduce_by > remaining || reduce_by <= 0 {
+            return None;
+        }
+
+        let new_remaining = remaining - reduce_by;
+        order.remaining_count = Some(new_remaining);
+        order.remaining_count_fp = Some(new_remaining.to_string());
+
+        let total = order.count.unwrap_or(0);
+        let new_total = total - reduce_by;
+        order.count = Some(new_total);
+        order.count_fp = Some(new_total.to_string());
+
+        if new_remaining == 0 {
+            order.status = "canceled".to_string();
+        }
+
+        Some(order.clone())
     }
 
     /// Compute positions from fill history.
