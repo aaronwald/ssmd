@@ -222,6 +222,19 @@ impl TestClient {
             .expect("resume request");
         resp.status()
     }
+
+    async fn positions(&self) -> (reqwest::StatusCode, Value) {
+        let resp = self
+            .client
+            .get(format!("{}/v1/admin/positions", self.base_url))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .expect("positions request");
+        let status = resp.status();
+        let json: Value = resp.json().await.expect("positions json");
+        (status, json)
+    }
 }
 
 /// Helper: create order, pump it to acknowledged, return the order ID.
@@ -627,4 +640,70 @@ async fn test_live_mass_cancel() {
             state
         );
     }
+}
+
+// =============================================================================
+// Test 13: Positions endpoint
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_live_positions() {
+    let c = TestClient::from_env();
+    let (status, json) = c.positions().await;
+    assert_eq!(status, 200, "positions endpoint failed");
+    assert!(
+        json.get("positions").is_some(),
+        "response missing positions field: {:?}",
+        json
+    );
+    let positions = json["positions"].as_array().expect("positions array");
+    println!("positions count: {}", positions.len());
+    // Verify each position has expected fields
+    for pos in positions {
+        assert!(pos.get("ticker").is_some(), "position missing ticker");
+        assert!(pos.get("side").is_some(), "position missing side");
+        assert!(pos.get("quantity").is_some(), "position missing quantity");
+        assert!(
+            pos.get("market_value_dollars").is_some(),
+            "position missing market_value_dollars"
+        );
+    }
+}
+
+// =============================================================================
+// Test 14: Reconcile does not suspend on position mismatches
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_live_reconcile_no_suspend() {
+    let c = TestClient::from_env();
+    let ticker = TestClient::ticker();
+
+    // Create and pump an order
+    let id = create_and_pump(&c, &ticker, "0.02", "1").await;
+
+    // Run reconcile — even with external positions, should NOT suspend
+    let result = c.reconcile().await;
+    println!("reconcile result: {:?}", result);
+
+    // Verify not suspended: health should be "healthy", not "suspended"
+    let health_status = c.health().await;
+    assert_eq!(health_status, 200, "health check failed after reconcile");
+
+    // Verify we can still create orders (session not suspended)
+    let (status, json) = c.create_order(&ticker, "0.03", "1").await;
+    assert_eq!(
+        status, 201,
+        "should be able to create order after reconcile (not suspended): {:?}",
+        json
+    );
+    let id2 = json["id"].as_i64().expect("order id");
+
+    // Clean up
+    c.pump().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    cancel_and_pump(&c, id).await;
+    cancel_and_pump(&c, id2).await;
 }

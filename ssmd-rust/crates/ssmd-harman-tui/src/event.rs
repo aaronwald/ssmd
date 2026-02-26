@@ -54,20 +54,16 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Char('q') => return false,
 
-        KeyCode::Char('j') | KeyCode::Down => {
-            if app.active_tab == Tab::MarketData {
-                app.snap_next();
-            } else {
-                app.select_next();
-            }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if app.active_tab == Tab::MarketData {
-                app.snap_prev();
-            } else {
-                app.select_prev();
-            }
-        }
+        KeyCode::Char('j') | KeyCode::Down => match app.active_tab {
+            Tab::MarketData => app.snap_next(),
+            Tab::Positions => app.pos_next(),
+            _ => app.select_next(),
+        },
+        KeyCode::Char('k') | KeyCode::Up => match app.active_tab {
+            Tab::MarketData => app.snap_prev(),
+            Tab::Positions => app.pos_prev(),
+            _ => app.select_prev(),
+        },
 
         KeyCode::Tab => app.next_tab(),
         KeyCode::Char('?') => {

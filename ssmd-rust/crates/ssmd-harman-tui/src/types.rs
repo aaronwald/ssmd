@@ -217,6 +217,23 @@ pub struct DecreaseOrderRequest {
     pub reduce_by: String,
 }
 
+/// Position info from GET /v1/admin/positions
+#[derive(Debug, Clone, Deserialize)]
+pub struct PositionInfo {
+    pub ticker: String,
+    pub side: Side,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub quantity: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub market_value_dollars: Decimal,
+}
+
+/// Response from GET /v1/admin/positions
+#[derive(Debug, Deserialize)]
+pub struct PositionsResponse {
+    pub positions: Vec<PositionInfo>,
+}
+
 /// Raw response from data-ts GET /v1/data/snap.
 /// Snapshots are raw JSON values — structure varies by feed.
 #[derive(Debug, Deserialize)]

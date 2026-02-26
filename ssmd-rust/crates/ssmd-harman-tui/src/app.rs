@@ -3,13 +3,14 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::client::{DataClient, HarmanClient};
-use crate::types::{CreateOrderRequest, Order, OrderState, RiskInfo, Snapshot};
+use crate::types::{CreateOrderRequest, Order, OrderState, PositionInfo, RiskInfo, Snapshot};
 
 /// Active tab in the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Orders,
     Risk,
+    Positions,
     MarketData,
     Help,
 }
@@ -193,6 +194,9 @@ pub struct App {
     pub snap_selected: usize,
     // Sorted ticker list for autocomplete (built from snapshots)
     pub known_tickers: Vec<String>,
+    // Positions
+    pub positions: Vec<PositionInfo>,
+    pub pos_selected: usize,
 }
 
 impl App {
@@ -216,6 +220,8 @@ impl App {
             market_feed: "kalshi".to_string(),
             snap_selected: 0,
             known_tickers: Vec::new(),
+            positions: Vec::new(),
+            pos_selected: 0,
         }
     }
 
@@ -260,6 +266,20 @@ impl App {
             }
         }
 
+        // Poll positions
+        match self.client.list_positions().await {
+            Ok(positions) => {
+                self.positions = positions;
+            }
+            Err(e) => {
+                let msg = format!("positions: {}", e);
+                self.last_error = Some(match &self.last_error {
+                    Some(existing) => format!("{}; {}", existing, msg),
+                    None => msg,
+                });
+            }
+        }
+
         // Poll market data snapshots if data_client is configured
         if let Some(ref dc) = self.data_client {
             match dc.snap(&self.market_feed, None).await {
@@ -296,6 +316,13 @@ impl App {
             self.snap_selected = 0;
         } else if self.snap_selected >= self.snapshots.len() {
             self.snap_selected = self.snapshots.len() - 1;
+        }
+
+        // Clamp pos_selected
+        if self.positions.is_empty() {
+            self.pos_selected = 0;
+        } else if self.pos_selected >= self.positions.len() {
+            self.pos_selected = self.positions.len() - 1;
         }
     }
 
@@ -346,7 +373,8 @@ impl App {
     pub fn next_tab(&mut self) {
         self.active_tab = match self.active_tab {
             Tab::Orders => Tab::Risk,
-            Tab::Risk => {
+            Tab::Risk => Tab::Positions,
+            Tab::Positions => {
                 if self.data_client.is_some() {
                     Tab::MarketData
                 } else {
@@ -377,6 +405,20 @@ impl App {
     pub fn snap_prev(&mut self) {
         if self.snap_selected > 0 {
             self.snap_selected -= 1;
+        }
+    }
+
+    /// Select the next position row.
+    pub fn pos_next(&mut self) {
+        if !self.positions.is_empty() && self.pos_selected < self.positions.len() - 1 {
+            self.pos_selected += 1;
+        }
+    }
+
+    /// Select the previous position row.
+    pub fn pos_prev(&mut self) {
+        if self.pos_selected > 0 {
+            self.pos_selected -= 1;
         }
     }
 

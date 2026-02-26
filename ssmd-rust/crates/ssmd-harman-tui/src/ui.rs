@@ -26,6 +26,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     match app.active_tab {
         Tab::Orders => draw_orders(f, app, chunks[1]),
         Tab::Risk => draw_risk(f, app, chunks[1]),
+        Tab::Positions => draw_positions(f, app, chunks[1]),
         Tab::MarketData => draw_market_data(f, app, chunks[1]),
         Tab::Help => draw_help(f, app, chunks[1]),
     }
@@ -89,6 +90,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let tab_label = match app.active_tab {
         Tab::Orders => "Orders",
         Tab::Risk => "Risk",
+        Tab::Positions => "Positions",
         Tab::MarketData => "Market Data",
         Tab::Help => "Help",
     };
@@ -258,6 +260,9 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         Row::new(vec!["4", "Filter: Filled"]),
         Row::new(vec!["5", "Filter: Cancelled"]),
     ];
+    rows.push(Row::new(vec!["", ""]));
+    rows.push(Row::new(vec!["", "Positions tab shows exchange positions"]));
+    rows.push(Row::new(vec!["", "with live market prices from snapshots"]));
     if app.has_market_data() {
         rows.push(Row::new(vec!["f", "Cycle feed (Market Data tab)"]));
     }
@@ -286,6 +291,83 @@ fn format_price(val: Option<f64>) -> String {
         Some(v) => format!("{:.4}", v),
         None => "—".to_string(),
     }
+}
+
+fn draw_positions(f: &mut Frame, app: &App, area: Rect) {
+    if app.positions.is_empty() {
+        let msg = Paragraph::new("  No exchange positions")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL).title(" Positions "));
+        f.render_widget(msg, area);
+        return;
+    }
+
+    let header = Row::new(vec![
+        Cell::from("Ticker"),
+        Cell::from("Side"),
+        Cell::from("Qty"),
+        Cell::from("Mkt Value"),
+        Cell::from("Yes Bid"),
+        Cell::from("Yes Ask"),
+        Cell::from("Last"),
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let rows: Vec<Row> = app
+        .positions
+        .iter()
+        .map(|pos| {
+            // Look up snapshot for this ticker
+            let snap = app.snapshots.iter().find(|s| s.ticker == pos.ticker);
+            let side_color = match pos.side {
+                crate::types::Side::Yes => Color::Green,
+                crate::types::Side::No => Color::Red,
+            };
+            Row::new(vec![
+                Cell::from(pos.ticker.clone()),
+                Cell::from(pos.side.to_string()).style(Style::default().fg(side_color)),
+                Cell::from(pos.quantity.to_string()),
+                Cell::from(format!("${}", pos.market_value_dollars)),
+                Cell::from(format_price(snap.and_then(|s| s.yes_bid))),
+                Cell::from(format_price(snap.and_then(|s| s.yes_ask))),
+                Cell::from(format_price(snap.and_then(|s| s.last_price))),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Min(20),
+        Constraint::Length(6),
+        Constraint::Length(10),
+        Constraint::Length(12),
+        Constraint::Length(10),
+        Constraint::Length(10),
+        Constraint::Length(10),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Positions ({}) ", app.positions.len())),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let mut state = TableState::default();
+    if !app.positions.is_empty() {
+        state.select(Some(app.pos_selected));
+    }
+
+    f.render_stateful_widget(table, area, &mut state);
 }
 
 fn draw_market_data(f: &mut Frame, app: &App, area: Rect) {
@@ -399,6 +481,7 @@ fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
         match app.active_tab {
             Tab::Orders => " q:quit  j/k:nav  n:new  c:cancel  p:pump  r:reconcile  x:mass-cancel  1-5:filter  Tab:switch ",
             Tab::Risk => " q:quit  Tab:switch  ?:help ",
+            Tab::Positions => " q:quit  j/k:nav  Tab:switch  ?:help ",
             Tab::MarketData => " q:quit  j/k:nav  f:cycle-feed  Tab:switch  ?:help ",
             Tab::Help => " q:quit  Tab:switch  ?:help ",
         }

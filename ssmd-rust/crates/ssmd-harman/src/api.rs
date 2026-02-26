@@ -218,6 +218,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/admin/pump", post(pump_handler))
         .route("/v1/admin/reconcile", post(reconcile_handler))
         .route("/v1/admin/resume", post(resume_handler))
+        .route("/v1/admin/positions", get(positions_handler))
         .route("/v1/admin/risk", get(risk_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -698,6 +699,32 @@ async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             format!("metrics encoding error: {}", e),
         )
             .into_response(),
+    }
+}
+
+/// GET /v1/admin/positions
+async fn positions_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        return e.into_response();
+    }
+
+    match state.exchange.get_positions().await {
+        Ok(positions) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"positions": positions})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get positions failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
     }
 }
 

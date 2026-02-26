@@ -298,11 +298,10 @@ async fn compare_positions(state: &AppState, session_id: i64) -> Result<Vec<Posi
     }
 
     if any_large {
-        state.suspended_sessions.insert(session_id, ());
-        error!(
+        warn!(
             session_id,
             mismatches = mismatches.len(),
-            "CRITICAL: large position mismatch detected, session SUSPENDED"
+            "position mismatch detected (may be external orders, not suspending)"
         );
     }
 
