@@ -26,10 +26,10 @@ import (
 type ExchangeType string
 
 const (
-	ExchangeTypeKalshi      ExchangeType = "kalshi"
-	ExchangeTypeKraken      ExchangeType = "kraken"
-	ExchangeTypePolymarket  ExchangeType = "polymarket"
-	ExchangeTypeTest        ExchangeType = "test"
+	ExchangeTypeKalshi     ExchangeType = "kalshi"
+	ExchangeTypeKraken     ExchangeType = "kraken"
+	ExchangeTypePolymarket ExchangeType = "polymarket"
+	ExchangeTypeTest       ExchangeType = "test"
 )
 
 // ExchangeEnvironment identifies the exchange environment
@@ -115,6 +115,11 @@ type HarmanSpec struct {
 	// Resources configures CPU/memory for the harman pod
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// EnvVars are additional environment variables injected into the harman container.
+	// Use for optional config like AUTH_VALIDATE_URL without needing a CRD schema change.
+	// +optional
+	EnvVars []corev1.EnvVar `json:"envVars,omitempty"`
 }
 
 // HarmanPhase represents the current phase of the Harman

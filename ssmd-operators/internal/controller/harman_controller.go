@@ -224,6 +224,9 @@ func (r *HarmanReconciler) constructDeployment(harman *ssmdv1alpha1.Harman) *app
 		env = append(env, exchangeEnv...)
 	}
 
+	// Append user-specified env vars (e.g. AUTH_VALIDATE_URL)
+	env = append(env, harman.Spec.EnvVars...)
+
 	// Recreate strategy for single instance
 	strategy := appsv1.DeploymentStrategy{
 		Type: appsv1.RecreateDeploymentStrategyType,
