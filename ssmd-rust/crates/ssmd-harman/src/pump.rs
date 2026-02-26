@@ -443,13 +443,14 @@ async fn handle_amend(state: &AppState, item: &db::QueueItem) -> AmendOutcome {
         .and_then(|v| v.as_str())
         .and_then(|s| s.parse().ok());
 
+    // Fill in missing values from current order — Kalshi requires both price and quantity
     let request = AmendRequest {
         exchange_order_id: exchange_order_id.clone(),
         ticker: item.order.ticker.clone(),
         side: item.order.side,
         action: item.order.action,
-        new_price_dollars,
-        new_quantity,
+        new_price_dollars: Some(new_price_dollars.unwrap_or(item.order.price_dollars)),
+        new_quantity: Some(new_quantity.unwrap_or(item.order.quantity)),
     };
 
     match state.exchange.amend_order(&request).await {
