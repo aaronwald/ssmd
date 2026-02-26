@@ -9,7 +9,7 @@
 //!   HARMAN_TEST_TICKER  - active Kalshi ticker (e.g. KXBTCD-26FEB25-T97500)
 //!
 //! Run with:
-//!   cargo test -p ssmd-harman --test live_integration -- --ignored --nocapture
+//!   cargo test -p ssmd-harman --test live_integration -- --ignored --nocapture --test-threads=1
 
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -205,6 +205,17 @@ impl TestClient {
             .await
             .expect("mass_cancel request");
         resp.json().await.expect("mass_cancel json")
+    }
+
+    async fn resume(&self) -> reqwest::StatusCode {
+        let resp = self
+            .client
+            .post(format!("{}/v1/admin/resume", self.base_url))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .expect("resume request");
+        resp.status()
     }
 }
 
@@ -536,6 +547,9 @@ async fn test_live_reconcile() {
         "reconcile response missing errors field"
     );
 
+    // Resume session in case reconcile suspended it
+    c.resume().await;
+
     cancel_and_pump(&c, id).await;
 }
 
@@ -585,6 +599,9 @@ async fn test_live_mass_cancel() {
     // Now reconcile to pick up the cancellations
     tokio::time::sleep(Duration::from_millis(500)).await;
     c.reconcile().await;
+
+    // Resume session in case reconcile suspended it
+    c.resume().await;
 
     // Verify all cancelled (or at least no longer acknowledged)
     for id in [id1, id2, id3] {
