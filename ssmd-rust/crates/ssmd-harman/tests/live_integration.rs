@@ -5,11 +5,14 @@
 //!
 //! Required env vars:
 //!   HARMAN_URL          - e.g. http://35.231.246.102:8080
-//!   HARMAN_ADMIN_TOKEN  - admin bearer token
 //!   HARMAN_TEST_TICKER  - active Kalshi ticker (e.g. KXBTCD-26FEB25-T97500)
 //!
+//! Auth (one of):
+//!   HARMAN_API_KEY      - ssmd API key with harman:admin scope (preferred)
+//!   HARMAN_ADMIN_TOKEN  - static admin bearer token (legacy)
+//!
 //! Run with:
-//!   cargo test -p ssmd-harman --test live_integration -- --ignored --nocapture --test-threads=1
+//!   cargo test -p ssmd-harman --test live_integration -- --ignored --nocapture
 
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -27,8 +30,10 @@ impl TestClient {
     fn from_env() -> Self {
         let base_url =
             std::env::var("HARMAN_URL").expect("HARMAN_URL required for live integration tests");
-        let token = std::env::var("HARMAN_ADMIN_TOKEN")
-            .expect("HARMAN_ADMIN_TOKEN required for live integration tests");
+        // Prefer API key (per-key session isolation) over legacy static token
+        let token = std::env::var("HARMAN_API_KEY")
+            .or_else(|_| std::env::var("HARMAN_ADMIN_TOKEN"))
+            .expect("HARMAN_API_KEY or HARMAN_ADMIN_TOKEN required for live integration tests");
         Self {
             client: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
