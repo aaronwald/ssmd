@@ -595,15 +595,23 @@ async fn test_live_mass_cancel() {
     // Mass cancel on exchange
     let result = c.mass_cancel().await;
     println!("mass_cancel result: {:?}", result);
+    assert!(
+        result["cancelled"].as_u64().unwrap_or(0) >= 3,
+        "mass cancel should cancel at least 3 orders: {:?}",
+        result
+    );
 
-    // Now reconcile to pick up the cancellations
+    // Mass cancel only cancels on the exchange side.
+    // Cancel each order via the API + pump to update DB state.
     tokio::time::sleep(Duration::from_millis(500)).await;
-    c.reconcile().await;
+    for id in [id1, id2, id3] {
+        let _ = c.cancel_order(id).await;
+    }
+    let pump = c.pump().await;
+    println!("mass_cancel cleanup pump: {:?}", pump);
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Resume session in case reconcile suspended it
-    c.resume().await;
-
-    // Verify all cancelled (or at least no longer acknowledged)
+    // Verify all cancelled
     for id in [id1, id2, id3] {
         let (_, order) = c.get_order(id).await;
         let state = order["state"].as_str().unwrap_or("unknown");
