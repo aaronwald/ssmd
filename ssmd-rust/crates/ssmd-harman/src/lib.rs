@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use deadpool_postgres::Pool;
+use tokio::sync::Semaphore;
 
 use harman::exchange::ExchangeAdapter;
 use harman::risk::RiskLimits;
@@ -117,4 +118,6 @@ pub struct AppState {
     pub session_id: i64,
     pub api_token: String,
     pub admin_token: String,
+    /// Prevents concurrent pump execution — only one pump call at a time.
+    pub pump_semaphore: Semaphore,
 }

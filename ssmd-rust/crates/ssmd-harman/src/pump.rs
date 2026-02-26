@@ -506,6 +506,33 @@ async fn handle_amend(state: &AppState, item: &db::QueueItem) -> AmendOutcome {
             let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
             AmendOutcome::Amended
         }
+        Err(ExchangeError::NotFound(_)) => {
+            // Order not found on exchange (e.g., already cancelled by mass cancel).
+            // Mark as cancelled — do NOT revert to acknowledged.
+            warn!(
+                order_id = item.order_id,
+                "amend target not found on exchange, marking cancelled"
+            );
+            if let Err(e) = db::update_order_state(
+                &state.pool,
+                item.order_id,
+                state.session_id,
+                OrderState::Cancelled,
+                None,
+                None,
+                Some(&CancelReason::ExchangeCancel),
+                "pump",
+            )
+            .await
+            {
+                error!(error = %e, "failed to cancel not-found amend order");
+            }
+            let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            AmendOutcome::Requeued(format!(
+                "amend order {} not found on exchange, cancelled",
+                item.order_id
+            ))
+        }
         Err(ExchangeError::RateLimited { retry_after_ms: _ }) => {
             warn!(order_id = item.order_id, "rate limited on amend, requeueing");
             if let Err(e) = db::requeue_item(&state.pool, item.queue_id).await {
@@ -675,6 +702,33 @@ async fn handle_decrease(state: &AppState, item: &db::QueueItem) -> DecreaseOutc
 
             let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
             DecreaseOutcome::Decreased
+        }
+        Err(ExchangeError::NotFound(_)) => {
+            // Order not found on exchange (e.g., already cancelled by mass cancel).
+            // Mark as cancelled — do NOT revert to acknowledged.
+            warn!(
+                order_id = item.order_id,
+                "decrease target not found on exchange, marking cancelled"
+            );
+            if let Err(e) = db::update_order_state(
+                &state.pool,
+                item.order_id,
+                state.session_id,
+                OrderState::Cancelled,
+                None,
+                None,
+                Some(&CancelReason::ExchangeCancel),
+                "pump",
+            )
+            .await
+            {
+                error!(error = %e, "failed to cancel not-found decrease order");
+            }
+            let _ = db::remove_queue_item(&state.pool, item.queue_id).await;
+            DecreaseOutcome::Requeued(format!(
+                "decrease order {} not found on exchange, cancelled",
+                item.order_id
+            ))
         }
         Err(ExchangeError::RateLimited { retry_after_ms: _ }) => {
             warn!(order_id = item.order_id, "rate limited on decrease, requeueing");

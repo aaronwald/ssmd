@@ -106,6 +106,7 @@ async fn main() {
         session_id,
         api_token,
         admin_token,
+        pump_semaphore: tokio::sync::Semaphore::new(1),
     });
 
     // Run recovery before starting API server

@@ -567,6 +567,7 @@ async fn risk_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// POST /v1/admin/pump
 ///
 /// Drain all pending queue items, submit/cancel to exchange, return results.
+/// Only one pump call can run at a time — concurrent calls return 409.
 async fn pump_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if state
         .shutting_down
@@ -586,6 +587,19 @@ async fn pump_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         )
             .into_response();
     }
+
+    // Prevent concurrent pump execution — processing queue items out of order
+    // can cause state corruption (e.g., amend processed before submit).
+    let _permit = match state.pump_semaphore.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "pump already running"})),
+            )
+                .into_response();
+        }
+    };
 
     let result = crate::pump::pump(&state).await;
     (StatusCode::OK, Json(result)).into_response()

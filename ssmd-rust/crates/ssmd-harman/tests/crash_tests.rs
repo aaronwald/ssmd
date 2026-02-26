@@ -18,7 +18,7 @@ use harman::db;
 use harman::risk::RiskLimits;
 use harman::state::OrderState;
 use harman::test_helpers::*;
-use harman::types::{ExchangeOrderState, ExchangeOrderStatus};
+use harman::types::ExchangeOrderState;
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
@@ -40,6 +40,7 @@ async fn build_test_state(
         session_id,
         api_token: "test-api-token".to_string(),
         admin_token: "test-admin-token".to_string(),
+        pump_semaphore: tokio::sync::Semaphore::new(1),
     })
 }
 
@@ -739,4 +740,300 @@ async fn test_pump_cancel_without_exchange_id() {
 
     assert_eq!(result.cancelled, 1);
     assert_order_state(&pool, order_id, OrderState::Cancelled).await.unwrap();
+}
+
+// =============================================================================
+// Test 19: Pump amend success — updates price/quantity and reverts to acknowledged
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_pump_amend_success() {
+    let (pool, session_id) = setup().await;
+
+    // Insert acknowledged order with exchange_order_id
+    let order_id = insert_test_order(
+        &pool, session_id, OrderState::PendingAmend,
+        "KXTEST-AMEND-OK", Some("exch-amend-1"),
+    ).await.unwrap();
+
+    // Enqueue amend with metadata
+    insert_test_queue_item_with_metadata(
+        &pool, order_id, "amend",
+        serde_json::json!({"new_price_dollars": "0.03", "new_quantity": "5"}),
+    ).await.unwrap();
+
+    let mock = MockExchange::new();
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    let result = pump::pump(&app_state).await;
+
+    assert_eq!(result.amended, 1);
+    assert!(result.errors.is_empty(), "pump errors: {:?}", result.errors);
+
+    // Order should revert to acknowledged
+    assert_order_state(&pool, order_id, OrderState::Acknowledged).await.unwrap();
+
+    // Price and quantity should be updated
+    let (price, qty) = get_order_price_qty(&pool, order_id).await.unwrap();
+    assert_eq!(price, Decimal::new(3, 2), "price should be 0.03");
+    assert_eq!(qty, Decimal::from(5), "quantity should be 5");
+
+    // Queue should be empty
+    let count = queue_count(&pool, session_id).await.unwrap();
+    assert_eq!(count, 0);
+}
+
+// =============================================================================
+// Test 20: Pump amend NotFound — marks order cancelled (not acknowledged)
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_pump_amend_notfound_marks_cancelled() {
+    let (pool, session_id) = setup().await;
+
+    // Insert order in PendingAmend (simulates: order submitted, acked, amend requested,
+    // then mass_cancel killed the order on exchange before pump could amend it)
+    let order_id = insert_test_order(
+        &pool, session_id, OrderState::PendingAmend,
+        "KXTEST-AMEND-NF", Some("exch-amend-gone"),
+    ).await.unwrap();
+
+    insert_test_queue_item_with_metadata(
+        &pool, order_id, "amend",
+        serde_json::json!({"new_price_dollars": "0.04"}),
+    ).await.unwrap();
+
+    // Exchange returns NotFound for this order
+    let mock = MockExchange::new();
+    {
+        let mut state = mock.state.lock().await;
+        state.amend_behavior = AmendBehavior::NotFound;
+    }
+
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    let result = pump::pump(&app_state).await;
+
+    assert_eq!(result.processed, 1);
+
+    // Order must be CANCELLED — not reverted to acknowledged
+    assert_order_state(&pool, order_id, OrderState::Cancelled).await.unwrap();
+
+    // Queue should be empty
+    let count = queue_count(&pool, session_id).await.unwrap();
+    assert_eq!(count, 0);
+}
+
+// =============================================================================
+// Test 21: Pump decrease success — reduces quantity and reverts to acknowledged
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_pump_decrease_success() {
+    let (pool, session_id) = setup().await;
+
+    // Insert order in PendingDecrease with quantity=10, exchange_order_id set
+    let order_id = insert_test_order(
+        &pool, session_id, OrderState::PendingDecrease,
+        "KXTEST-DEC-OK", Some("exch-dec-1"),
+    ).await.unwrap();
+
+    // Enqueue decrease with reduce_by=3
+    insert_test_queue_item_with_metadata(
+        &pool, order_id, "decrease",
+        serde_json::json!({"reduce_by": "3"}),
+    ).await.unwrap();
+
+    let mock = MockExchange::new();
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    let result = pump::pump(&app_state).await;
+
+    assert_eq!(result.decreased, 1);
+    assert!(result.errors.is_empty(), "pump errors: {:?}", result.errors);
+
+    // Order should revert to acknowledged
+    assert_order_state(&pool, order_id, OrderState::Acknowledged).await.unwrap();
+
+    // Quantity should be reduced: 10 - 3 = 7
+    let (_, qty) = get_order_price_qty(&pool, order_id).await.unwrap();
+    assert_eq!(qty, Decimal::from(7), "quantity should be 10 - 3 = 7");
+
+    // Queue should be empty
+    let count = queue_count(&pool, session_id).await.unwrap();
+    assert_eq!(count, 0);
+}
+
+// =============================================================================
+// Test 22: Pump decrease NotFound — marks order cancelled (not acknowledged)
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_pump_decrease_notfound_marks_cancelled() {
+    let (pool, session_id) = setup().await;
+
+    // Insert order in PendingDecrease
+    let order_id = insert_test_order(
+        &pool, session_id, OrderState::PendingDecrease,
+        "KXTEST-DEC-NF", Some("exch-dec-gone"),
+    ).await.unwrap();
+
+    insert_test_queue_item_with_metadata(
+        &pool, order_id, "decrease",
+        serde_json::json!({"reduce_by": "2"}),
+    ).await.unwrap();
+
+    // Exchange returns NotFound
+    let mock = MockExchange::new();
+    {
+        let mut state = mock.state.lock().await;
+        state.decrease_behavior = DecreaseBehavior::NotFound;
+    }
+
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    let result = pump::pump(&app_state).await;
+
+    assert_eq!(result.processed, 1);
+
+    // Order must be CANCELLED — not reverted to acknowledged
+    assert_order_state(&pool, order_id, OrderState::Cancelled).await.unwrap();
+
+    // Queue should be empty
+    let count = queue_count(&pool, session_id).await.unwrap();
+    assert_eq!(count, 0);
+}
+
+// =============================================================================
+// Test 23: Pump amend with no exchange_order_id reverts to acknowledged
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_pump_amend_no_exchange_id_reverts() {
+    let (pool, session_id) = setup().await;
+
+    // Insert order in PendingAmend but WITHOUT exchange_order_id
+    let order_id = insert_test_order(
+        &pool, session_id, OrderState::PendingAmend,
+        "KXTEST-AMEND-NOID", None,
+    ).await.unwrap();
+
+    insert_test_queue_item_with_metadata(
+        &pool, order_id, "amend",
+        serde_json::json!({"new_price_dollars": "0.05"}),
+    ).await.unwrap();
+
+    let mock = MockExchange::new();
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    let result = pump::pump(&app_state).await;
+
+    assert_eq!(result.processed, 1);
+
+    // Should revert to acknowledged (can't amend what never reached exchange)
+    assert_order_state(&pool, order_id, OrderState::Acknowledged).await.unwrap();
+
+    // Queue should be empty
+    let count = queue_count(&pool, session_id).await.unwrap();
+    assert_eq!(count, 0);
+}
+
+// =============================================================================
+// Test 24: Pump decrease with no exchange_order_id reverts to acknowledged
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_pump_decrease_no_exchange_id_reverts() {
+    let (pool, session_id) = setup().await;
+
+    // Insert order in PendingDecrease but WITHOUT exchange_order_id
+    let order_id = insert_test_order(
+        &pool, session_id, OrderState::PendingDecrease,
+        "KXTEST-DEC-NOID", None,
+    ).await.unwrap();
+
+    insert_test_queue_item_with_metadata(
+        &pool, order_id, "decrease",
+        serde_json::json!({"reduce_by": "1"}),
+    ).await.unwrap();
+
+    let mock = MockExchange::new();
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    let result = pump::pump(&app_state).await;
+
+    assert_eq!(result.processed, 1);
+
+    // Should revert to acknowledged (can't decrease what never reached exchange)
+    assert_order_state(&pool, order_id, OrderState::Acknowledged).await.unwrap();
+
+    // Queue should be empty
+    let count = queue_count(&pool, session_id).await.unwrap();
+    assert_eq!(count, 0);
+}
+
+// =============================================================================
+// Test 25: Recovery resolves PendingAmend → revert via exchange state
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_recovery_pending_amend_resting_reverts() {
+    let (pool, session_id) = setup().await;
+    let coid = Uuid::new_v4();
+
+    // Insert order in PendingAmend (crash during amend processing)
+    let order_id = insert_test_order_with_coid(
+        &pool, session_id, OrderState::PendingAmend,
+        "KXTEST-AMEND-RECOVER", Some("exch-amend-r1"), coid,
+    ).await.unwrap();
+
+    // Exchange says order is still resting (amend never completed)
+    let mock = MockExchange::new();
+    {
+        let mut state = mock.state.lock().await;
+        state.order_statuses.insert(
+            coid,
+            mock_exchange_status("exch-amend-r1", ExchangeOrderState::Resting, Decimal::ZERO, Decimal::from(10)),
+        );
+    }
+
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    recovery::run(&app_state).await.unwrap();
+
+    // Recovery should resolve PendingAmend to Acknowledged (since exchange says resting)
+    assert_order_state(&pool, order_id, OrderState::Acknowledged).await.unwrap();
+}
+
+// =============================================================================
+// Test 26: Recovery resolves PendingDecrease → revert via exchange state
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_recovery_pending_decrease_resting_reverts() {
+    let (pool, session_id) = setup().await;
+    let coid = Uuid::new_v4();
+
+    // Insert order in PendingDecrease (crash during decrease processing)
+    let order_id = insert_test_order_with_coid(
+        &pool, session_id, OrderState::PendingDecrease,
+        "KXTEST-DEC-RECOVER", Some("exch-dec-r1"), coid,
+    ).await.unwrap();
+
+    // Exchange says order is still resting
+    let mock = MockExchange::new();
+    {
+        let mut state = mock.state.lock().await;
+        state.order_statuses.insert(
+            coid,
+            mock_exchange_status("exch-dec-r1", ExchangeOrderState::Resting, Decimal::ZERO, Decimal::from(10)),
+        );
+    }
+
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+    recovery::run(&app_state).await.unwrap();
+
+    // Recovery should resolve PendingDecrease to Acknowledged
+    assert_order_state(&pool, order_id, OrderState::Acknowledged).await.unwrap();
 }

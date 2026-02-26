@@ -350,6 +350,29 @@ pub async fn insert_test_queue_item(
     Ok(row.get("id"))
 }
 
+/// Insert a queue item with metadata for an order (used for amend/decrease tests).
+pub async fn insert_test_queue_item_with_metadata(
+    pool: &Pool,
+    order_id: i64,
+    action: &str,
+    metadata: serde_json::Value,
+) -> Result<i64, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let row = client
+        .query_one(
+            "INSERT INTO order_queue (order_id, action, actor, metadata) VALUES ($1, $2, 'test', $3) RETURNING id",
+            &[&order_id, &action, &metadata],
+        )
+        .await
+        .map_err(|e| format!("insert test queue item with metadata: {}", e))?;
+
+    Ok(row.get("id"))
+}
+
 /// Assert that an order is in the expected state.
 pub async fn assert_order_state(
     pool: &Pool,
@@ -380,6 +403,27 @@ pub async fn assert_order_state(
     }
 
     Ok(())
+}
+
+/// Get an order's price and quantity (for amend/decrease assertions).
+pub async fn get_order_price_qty(
+    pool: &Pool,
+    order_id: i64,
+) -> Result<(Decimal, Decimal), String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let row = client
+        .query_one(
+            "SELECT price_dollars, quantity FROM prediction_orders WHERE id = $1",
+            &[&order_id],
+        )
+        .await
+        .map_err(|e| format!("get order price/qty: {}", e))?;
+
+    Ok((row.get("price_dollars"), row.get("quantity")))
 }
 
 /// Get the number of items in the order queue for a session.

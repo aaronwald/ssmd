@@ -502,14 +502,30 @@ pub async fn record_fill(
 /// Get or create a session for the given exchange.
 ///
 /// Returns the ID of an open (not closed) session, or creates a new one.
+/// Uses an advisory lock to prevent duplicate session creation during
+/// concurrent startup (e.g., crash-loop restart race).
 pub async fn get_or_create_session(pool: &Pool, exchange: &str) -> Result<i64, String> {
-    let client = pool
+    let mut client = pool
         .get()
         .await
         .map_err(|e| format!("pool error: {}", e))?;
 
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("begin tx: {}", e))?;
+
+    // Advisory lock scoped to this transaction — serializes concurrent session creation
+    // for the same exchange. Released automatically on commit.
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        &[&exchange],
+    )
+    .await
+    .map_err(|e| format!("advisory lock: {}", e))?;
+
     // Look for an existing open session
-    let row = client
+    let row = tx
         .query_opt(
             "SELECT id FROM sessions WHERE exchange = $1 AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
             &[&exchange],
@@ -519,12 +535,15 @@ pub async fn get_or_create_session(pool: &Pool, exchange: &str) -> Result<i64, S
 
     if let Some(row) = row {
         let id: i64 = row.get("id");
+        tx.commit()
+            .await
+            .map_err(|e| format!("commit: {}", e))?;
         info!(session_id = id, exchange, "using existing session");
         return Ok(id);
     }
 
     // Create a new session
-    let row = client
+    let row = tx
         .query_one(
             "INSERT INTO sessions (exchange) VALUES ($1) RETURNING id",
             &[&exchange],
@@ -533,6 +552,9 @@ pub async fn get_or_create_session(pool: &Pool, exchange: &str) -> Result<i64, S
         .map_err(|e| format!("create session: {}", e))?;
 
     let id: i64 = row.get("id");
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit: {}", e))?;
     info!(session_id = id, exchange, "created new session");
     Ok(id)
 }
