@@ -51,10 +51,14 @@ async fn build_test_state(
     })
 }
 
-/// Setup helper: create pool, run migrations, create a test session.
+/// Setup helper: create pool, run migrations, create a unique test session.
+/// Each test gets its own session to avoid cross-test data contamination.
 async fn setup() -> (deadpool_postgres::Pool, i64) {
     let pool = setup_test_db().await.expect("DATABASE_URL required");
-    let session_id = create_test_session(&pool).await.expect("create session");
+    let unique_name = format!("test-{}", Uuid::new_v4());
+    let session_id = db::get_or_create_session(&pool, &unique_name, None)
+        .await
+        .expect("create session");
     (pool, session_id)
 }
 
