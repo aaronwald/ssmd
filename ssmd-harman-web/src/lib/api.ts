@@ -108,7 +108,7 @@ export const resume = () =>
   request<void>("/v1/admin/resume", { method: "POST" });
 
 export const massCancel = () =>
-  request<void>("/v1/orders/mass-cancel", { method: "POST" });
+  request<void>("/v1/orders/mass-cancel", { method: "POST", body: JSON.stringify({ confirm: true }) });
 
 // Ticker search (secmaster)
 export const searchTickers = (q: string) =>

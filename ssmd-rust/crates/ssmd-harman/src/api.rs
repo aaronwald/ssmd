@@ -288,6 +288,13 @@ async fn create_order(
     }
 
     // Validate
+    if req.ticker.trim().is_empty() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": "ticker is required"})),
+        )
+            .into_response();
+    }
     if req.quantity <= Decimal::ZERO {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
