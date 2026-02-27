@@ -69,18 +69,29 @@ export interface AuditEntry {
   created_at: string;
 }
 
-export interface Position {
+export interface ExchangePosition {
   ticker: string;
-  exchange_position: number;
-  local_position: number;
-  mismatch: boolean;
+  side: Side;
+  quantity: string;
+  market_value_dollars: string;
 }
 
-export interface RiskState {
+export interface LocalPosition {
+  ticker: string;
+  net_quantity: string;
+  buy_filled: string;
+  sell_filled: string;
+}
+
+export interface PositionsView {
+  exchange: ExchangePosition[];
+  local: LocalPosition[];
+}
+
+export interface RiskResponse {
   open_notional: string;
   max_notional: string;
   available_notional: string;
-  suspended: boolean;
 }
 
 export interface CreateOrderRequest {

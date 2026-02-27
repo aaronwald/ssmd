@@ -373,6 +373,8 @@ async fn list_orders(
         return e.into_response();
     }
 
+    // Support individual states plus "open" and "terminal" group filters
+    let group_filter = query.state.clone();
     let state_filter = query.state.and_then(|s| match s.as_str() {
         "pending" => Some(OrderState::Pending),
         "submitted" => Some(OrderState::Submitted),
@@ -391,7 +393,12 @@ async fn list_orders(
 
     match db::list_orders(&state.pool, ctx.session_id, state_filter).await {
         Ok(orders) => {
-            let response: Vec<serde_json::Value> = orders.iter().map(order_to_json).collect();
+            let filtered: Vec<_> = match group_filter.as_deref() {
+                Some("open") => orders.into_iter().filter(|o| o.state.is_open()).collect(),
+                Some("terminal") => orders.into_iter().filter(|o| o.state.is_terminal()).collect(),
+                _ => orders,
+            };
+            let response: Vec<serde_json::Value> = filtered.iter().map(order_to_json).collect();
             (StatusCode::OK, Json(serde_json::json!({"orders": response}))).into_response()
         }
         Err(e) => {
@@ -1221,18 +1228,13 @@ async fn list_groups_handler(
 
     match db::list_groups(&state.pool, ctx.session_id, state_filter).await {
         Ok(groups) => {
-            let response: Vec<serde_json::Value> = groups
-                .iter()
-                .map(|g| {
-                    serde_json::json!({
-                        "id": g.id,
-                        "group_type": g.group_type.to_string(),
-                        "state": g.state.to_string(),
-                        "created_at": g.created_at.to_rfc3339(),
-                        "updated_at": g.updated_at.to_rfc3339(),
-                    })
-                })
-                .collect();
+            let mut response: Vec<serde_json::Value> = Vec::with_capacity(groups.len());
+            for g in &groups {
+                let orders = db::get_group_orders(&state.pool, g.id, ctx.session_id)
+                    .await
+                    .unwrap_or_default();
+                response.push(group_to_json(g, &orders));
+            }
             (StatusCode::OK, Json(serde_json::json!({"groups": response}))).into_response()
         }
         Err(e) => {

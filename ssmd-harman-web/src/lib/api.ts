@@ -3,8 +3,8 @@ import type {
   OrderGroup,
   Fill,
   AuditEntry,
-  Position,
-  RiskState,
+  PositionsView,
+  RiskResponse,
   CreateOrderRequest,
   CreateBracketRequest,
   CreateOcoRequest,
@@ -39,24 +39,32 @@ async function request<T>(
   return res.json();
 }
 
-// Read endpoints
-export const listOrders = (state?: string) =>
-  request<Order[]>(`/v1/orders${state ? `?state=${state}` : ""}`);
+// Read endpoints — API wraps lists in envelope keys
+export const listOrders = async (state?: string): Promise<Order[]> => {
+  const res = await request<{ orders: Order[] }>(`/v1/orders${state ? `?state=${state}` : ""}`);
+  return res.orders;
+};
 
 export const getOrder = (id: number) =>
   request<Order>(`/v1/orders/${id}`);
 
-export const listGroups = (state?: string) =>
-  request<OrderGroup[]>(`/v1/groups${state ? `?state=${state}` : ""}`);
+export const listGroups = async (state?: string): Promise<OrderGroup[]> => {
+  const res = await request<{ groups: OrderGroup[] }>(`/v1/groups${state ? `?state=${state}` : ""}`);
+  return res.groups;
+};
 
 export const getGroup = (id: number) =>
   request<OrderGroup>(`/v1/groups/${id}`);
 
-export const listFills = () =>
-  request<Fill[]>("/v1/fills");
+export const listFills = async (): Promise<Fill[]> => {
+  const res = await request<{ fills: Fill[] }>("/v1/fills");
+  return res.fills;
+};
 
-export const listAudit = () =>
-  request<AuditEntry[]>("/v1/audit");
+export const listAudit = async (): Promise<AuditEntry[]> => {
+  const res = await request<{ audit: AuditEntry[] }>("/v1/audit");
+  return res.audit;
+};
 
 // Write endpoints
 export const createOrder = (order: CreateOrderRequest) =>
@@ -85,10 +93,10 @@ export const getHealth = () =>
   request<HealthResponse>("/health");
 
 export const getPositions = () =>
-  request<Position[]>("/v1/admin/positions");
+  request<PositionsView>("/v1/admin/positions");
 
 export const getRisk = () =>
-  request<RiskState>("/v1/admin/risk");
+  request<RiskResponse>("/v1/admin/risk");
 
 export const pump = () =>
   request<void>("/v1/admin/pump", { method: "POST" });

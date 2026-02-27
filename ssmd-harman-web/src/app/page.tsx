@@ -5,6 +5,7 @@ import { StatusDot } from "@/components/status-dot";
 import { RiskGauge } from "@/components/risk-gauge";
 import { useHealth, usePositions, useRisk } from "@/lib/hooks";
 import { reconcile, resume, massCancel } from "@/lib/api";
+import type { ExchangePosition, LocalPosition } from "@/lib/types";
 
 export default function Dashboard() {
   const { data: health } = useHealth();
@@ -71,34 +72,62 @@ export default function Dashboard() {
       {/* Positions */}
       <div className="bg-bg-raised border border-border rounded-lg p-4 space-y-3">
         <h2 className="text-sm font-medium text-fg-muted">Positions</h2>
-        {positions && positions.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-fg-muted border-b border-border">
-                  <th className="pb-2 pr-4">Ticker</th>
-                  <th className="pb-2 pr-4 text-right">Exchange</th>
-                  <th className="pb-2 pr-4 text-right">Local</th>
-                  <th className="pb-2">Match</th>
-                </tr>
-              </thead>
-              <tbody>
-                {positions.map((p) => (
-                  <tr key={p.ticker} className="border-b border-border-subtle">
-                    <td className="py-2 pr-4 font-mono">{p.ticker}</td>
-                    <td className="py-2 pr-4 font-mono text-right">{p.exchange_position}</td>
-                    <td className="py-2 pr-4 font-mono text-right">{p.local_position}</td>
-                    <td className="py-2">
-                      {p.mismatch ? (
-                        <span className="text-red text-xs font-medium">MISMATCH</span>
-                      ) : (
-                        <span className="text-green text-xs font-medium">OK</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {positions && (positions.exchange.length > 0 || positions.local.length > 0) ? (
+          <div className="space-y-4">
+            {/* Exchange positions */}
+            <div>
+              <h3 className="text-xs font-medium text-fg-muted mb-2">Exchange</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-fg-muted border-b border-border">
+                      <th className="pb-2 pr-4">Ticker</th>
+                      <th className="pb-2 pr-4">Side</th>
+                      <th className="pb-2 pr-4 text-right">Quantity</th>
+                      <th className="pb-2 text-right">Market Value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positions.exchange.map((p: ExchangePosition) => (
+                      <tr key={p.ticker} className="border-b border-border-subtle">
+                        <td className="py-2 pr-4 font-mono">{p.ticker}</td>
+                        <td className="py-2 pr-4 uppercase">{p.side}</td>
+                        <td className="py-2 pr-4 font-mono text-right">{p.quantity}</td>
+                        <td className="py-2 font-mono text-right">${p.market_value_dollars}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            {/* Local positions */}
+            {positions.local.length > 0 && (
+              <div>
+                <h3 className="text-xs font-medium text-fg-muted mb-2">Local</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs text-fg-muted border-b border-border">
+                        <th className="pb-2 pr-4">Ticker</th>
+                        <th className="pb-2 pr-4 text-right">Net Qty</th>
+                        <th className="pb-2 pr-4 text-right">Buy Filled</th>
+                        <th className="pb-2 text-right">Sell Filled</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {positions.local.map((p: LocalPosition) => (
+                        <tr key={p.ticker} className="border-b border-border-subtle">
+                          <td className="py-2 pr-4 font-mono">{p.ticker}</td>
+                          <td className="py-2 pr-4 font-mono text-right">{p.net_quantity}</td>
+                          <td className="py-2 pr-4 font-mono text-right">{p.buy_filled}</td>
+                          <td className="py-2 font-mono text-right">{p.sell_filled}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <p className="text-xs text-fg-subtle">No positions</p>

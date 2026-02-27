@@ -1,8 +1,8 @@
 "use client";
 
-import type { RiskState } from "@/lib/types";
+import type { RiskResponse } from "@/lib/types";
 
-export function RiskGauge({ risk }: { risk: RiskState }) {
+export function RiskGauge({ risk }: { risk: RiskResponse }) {
   const open = parseFloat(risk.open_notional);
   const max = parseFloat(risk.max_notional);
   const available = parseFloat(risk.available_notional);
@@ -31,9 +31,6 @@ export function RiskGauge({ risk }: { risk: RiskState }) {
         <span>{pct.toFixed(1)}% used</span>
         <span>Available: ${available.toFixed(2)}</span>
       </div>
-      {risk.suspended && (
-        <div className="text-sm font-medium text-red">Session Suspended</div>
-      )}
     </div>
   );
 }
