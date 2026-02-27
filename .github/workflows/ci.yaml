@@ -41,7 +41,13 @@ jobs:
         working-directory: ssmd-rust
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/harman_test
-        run: cargo test -p ssmd-harman --test crash_tests -- --ignored --nocapture
+        run: cargo test -p ssmd-harman --test crash_tests -- --ignored --nocapture --test-threads=1
+
+      - name: Run EMS integration tests
+        working-directory: ssmd-rust
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/harman_test
+        run: cargo test -p ssmd-harman-ems --test ems_tests -- --ignored --nocapture --test-threads=1
 
       - name: Rust build
         run: make rust-build
