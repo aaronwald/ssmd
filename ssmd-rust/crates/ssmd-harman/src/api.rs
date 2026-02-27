@@ -980,7 +980,10 @@ async fn list_tickers_handler(
 
     let url = format!("{}/v1/markets?status=active&limit=500", base_url);
     let mut req = state.http_client.get(&url).timeout(Duration::from_secs(10));
-    if let Some(auth) = headers.get("authorization") {
+    // Use DATA_TS_API_KEY if configured, otherwise try forwarding user's auth
+    if let Ok(key) = std::env::var("DATA_TS_API_KEY") {
+        req = req.header("authorization", format!("Bearer {}", key));
+    } else if let Some(auth) = headers.get("authorization") {
         if let Ok(val) = auth.to_str() {
             req = req.header("authorization", val);
         }
@@ -988,20 +991,16 @@ async fn list_tickers_handler(
     let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!(error = %e, "failed to fetch tickers from data-ts");
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({"error": "data-ts unavailable"})),
-            ).into_response();
+            tracing::warn!(error = %e, "failed to fetch tickers from data-ts, returning empty");
+            let filtered = filter_tickers(&[], prefix, 50);
+            return (StatusCode::OK, Json(serde_json::json!({"tickers": filtered}))).into_response();
         }
     };
 
     if !resp.status().is_success() {
-        tracing::warn!(status = %resp.status(), "data-ts returned error for markets");
-        return (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({"error": "data-ts error"})),
-        ).into_response();
+        tracing::warn!(status = %resp.status(), "data-ts returned error for markets, returning empty");
+        let filtered = filter_tickers(&[], prefix, 50);
+        return (StatusCode::OK, Json(serde_json::json!({"tickers": filtered}))).into_response();
     }
 
     let body: serde_json::Value = match resp.json().await {
