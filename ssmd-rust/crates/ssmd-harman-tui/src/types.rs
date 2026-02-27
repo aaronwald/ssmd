@@ -19,6 +19,7 @@ pub enum OrderState {
     Cancelled,
     Rejected,
     Expired,
+    Staged,
 }
 
 impl std::fmt::Display for OrderState {
@@ -35,6 +36,7 @@ impl std::fmt::Display for OrderState {
             OrderState::Cancelled => "cancelled",
             OrderState::Rejected => "rejected",
             OrderState::Expired => "expired",
+            OrderState::Staged => "staged",
         };
         write!(f, "{}", s)
     }
@@ -133,6 +135,8 @@ pub struct Order {
     pub time_in_force: TimeInForce,
     pub state: OrderState,
     pub cancel_reason: Option<CancelReason>,
+    pub group_id: Option<i64>,
+    pub leg_role: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

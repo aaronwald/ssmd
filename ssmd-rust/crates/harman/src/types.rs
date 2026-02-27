@@ -68,6 +68,74 @@ impl TimeInForce {
     }
 }
 
+/// Type of an order group
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupType {
+    Bracket,
+    Oco,
+}
+
+impl std::fmt::Display for GroupType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GroupType::Bracket => write!(f, "bracket"),
+            GroupType::Oco => write!(f, "oco"),
+        }
+    }
+}
+
+/// State of an order group
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupState {
+    Active,
+    Completed,
+    Cancelled,
+}
+
+impl std::fmt::Display for GroupState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GroupState::Active => write!(f, "active"),
+            GroupState::Completed => write!(f, "completed"),
+            GroupState::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+/// Role of an order within a group
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegRole {
+    Entry,
+    TakeProfit,
+    StopLoss,
+    OcoLeg,
+}
+
+impl std::fmt::Display for LegRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LegRole::Entry => write!(f, "entry"),
+            LegRole::TakeProfit => write!(f, "take_profit"),
+            LegRole::StopLoss => write!(f, "stop_loss"),
+            LegRole::OcoLeg => write!(f, "oco_leg"),
+        }
+    }
+}
+
+/// An order group (bracket or OCO)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderGroup {
+    pub id: i64,
+    pub session_id: i64,
+    pub group_type: GroupType,
+    pub state: GroupState,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Reason for order cancellation
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,6 +187,8 @@ pub struct Order {
     pub time_in_force: TimeInForce,
     pub state: OrderState,
     pub cancel_reason: Option<CancelReason>,
+    pub group_id: Option<i64>,
+    pub leg_role: Option<LegRole>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

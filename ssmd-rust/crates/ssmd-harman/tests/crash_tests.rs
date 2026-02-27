@@ -20,7 +20,7 @@ use harman::db;
 use harman::risk::RiskLimits;
 use harman::state::OrderState;
 use harman::test_helpers::*;
-use harman::types::ExchangeOrderState;
+use harman::types::{Action, ExchangeOrderState, LegRole, OrderRequest, Side, TimeInForce};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
@@ -1232,4 +1232,316 @@ async fn test_reconciliation_acknowledged_cancelled_on_exchange() {
 
     // Order should now be Cancelled
     assert_order_state(&pool, order_id, OrderState::Cancelled).await.unwrap();
+}
+
+// =============================================================================
+// Helper: create a test OrderRequest
+// =============================================================================
+
+fn test_order_request(ticker: &str, side: Side, action: Action, qty: Decimal, price: Decimal) -> OrderRequest {
+    OrderRequest {
+        client_order_id: Uuid::new_v4(),
+        ticker: ticker.to_string(),
+        side,
+        action,
+        quantity: qty,
+        price_dollars: price,
+        time_in_force: TimeInForce::Gtc,
+    }
+}
+
+// =============================================================================
+// Test 30: Create bracket group — entry pending, TP+SL staged
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_bracket_creation() {
+    let (pool, session_id) = setup().await;
+
+    let mock = MockExchange::new();
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+
+    let entry = test_order_request("KXTEST-BRACKET", Side::Yes, Action::Buy, Decimal::from(5), Decimal::new(50, 2));
+    let tp = test_order_request("KXTEST-BRACKET", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(80, 2));
+    let sl = test_order_request("KXTEST-BRACKET", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(20, 2));
+
+    let (group, orders) = app_state.oms.create_bracket(session_id, entry, tp, sl).await.unwrap();
+
+    assert_eq!(group.group_type, harman::types::GroupType::Bracket);
+    assert_eq!(group.state, harman::types::GroupState::Active);
+    assert_eq!(orders.len(), 3);
+
+    // Entry should be Pending
+    let entry_order = orders.iter().find(|o| o.leg_role == Some(LegRole::Entry)).unwrap();
+    assert_eq!(entry_order.state, OrderState::Pending);
+    assert_eq!(entry_order.group_id, Some(group.id));
+
+    // TP should be Staged
+    let tp_order = orders.iter().find(|o| o.leg_role == Some(LegRole::TakeProfit)).unwrap();
+    assert_eq!(tp_order.state, OrderState::Staged);
+
+    // SL should be Staged
+    let sl_order = orders.iter().find(|o| o.leg_role == Some(LegRole::StopLoss)).unwrap();
+    assert_eq!(sl_order.state, OrderState::Staged);
+
+    // Only entry should have a queue item
+    let count = queue_count(&pool, session_id).await.unwrap();
+    assert_eq!(count, 1);
+}
+
+// =============================================================================
+// Test 31: Bracket entry fills → triggers activate TP+SL
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_bracket_entry_fill_activates_exits() {
+    let (pool, session_id) = setup().await;
+
+    let mock = MockExchange::new();
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+
+    let entry = test_order_request("KXTEST-BRACKET-2", Side::Yes, Action::Buy, Decimal::from(5), Decimal::new(50, 2));
+    let tp = test_order_request("KXTEST-BRACKET-2", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(80, 2));
+    let sl = test_order_request("KXTEST-BRACKET-2", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(20, 2));
+
+    let (group, orders) = app_state.oms.create_bracket(session_id, entry, tp, sl).await.unwrap();
+    let entry_order = orders.iter().find(|o| o.leg_role == Some(LegRole::Entry)).unwrap();
+
+    // Simulate entry being filled
+    db::update_order_state(
+        &pool, entry_order.id, session_id, OrderState::Filled,
+        Some("exch-bracket-entry"), Some(Decimal::from(5)), None, "test",
+    ).await.unwrap();
+
+    // Drain the entry's queue item
+    let _ = db::dequeue_order(&pool, session_id).await;
+    let _ = db::remove_queue_item(&pool, 1).await;
+
+    // Evaluate triggers
+    let activated = app_state.oms.evaluate_triggers(session_id).await.unwrap();
+    assert_eq!(activated, 2, "should activate TP and SL");
+
+    // TP and SL should now be Pending
+    let tp_order = orders.iter().find(|o| o.leg_role == Some(LegRole::TakeProfit)).unwrap();
+    assert_order_state(&pool, tp_order.id, OrderState::Pending).await.unwrap();
+
+    let sl_order = orders.iter().find(|o| o.leg_role == Some(LegRole::StopLoss)).unwrap();
+    assert_order_state(&pool, sl_order.id, OrderState::Pending).await.unwrap();
+
+    // Group should still be active (exits not yet terminal)
+    let group_now = db::get_group(&pool, group.id, session_id).await.unwrap().unwrap();
+    assert_eq!(group_now.state, harman::types::GroupState::Active);
+}
+
+// =============================================================================
+// Test 32: Bracket exit fills → cancels other exit, group completed
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_bracket_exit_fill_completes_group() {
+    let (pool, session_id) = setup().await;
+
+    let mock = MockExchange::new();
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+
+    let entry = test_order_request("KXTEST-BRACKET-3", Side::Yes, Action::Buy, Decimal::from(5), Decimal::new(50, 2));
+    let tp = test_order_request("KXTEST-BRACKET-3", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(80, 2));
+    let sl = test_order_request("KXTEST-BRACKET-3", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(20, 2));
+
+    let (group, orders) = app_state.oms.create_bracket(session_id, entry, tp, sl).await.unwrap();
+    let entry_order = orders.iter().find(|o| o.leg_role == Some(LegRole::Entry)).unwrap();
+    let tp_order = orders.iter().find(|o| o.leg_role == Some(LegRole::TakeProfit)).unwrap();
+    let sl_order = orders.iter().find(|o| o.leg_role == Some(LegRole::StopLoss)).unwrap();
+
+    // Simulate: entry filled, TP filled, SL still staged
+    db::update_order_state(
+        &pool, entry_order.id, session_id, OrderState::Filled,
+        Some("exch-b3-entry"), Some(Decimal::from(5)), None, "test",
+    ).await.unwrap();
+    db::update_order_state(
+        &pool, tp_order.id, session_id, OrderState::Filled,
+        Some("exch-b3-tp"), Some(Decimal::from(5)), None, "test",
+    ).await.unwrap();
+
+    // Evaluate triggers
+    let _ = app_state.oms.evaluate_triggers(session_id).await.unwrap();
+
+    // SL should be cancelled (it was still staged when TP filled)
+    assert_order_state(&pool, sl_order.id, OrderState::Cancelled).await.unwrap();
+
+    // Group should be completed
+    let group_now = db::get_group(&pool, group.id, session_id).await.unwrap().unwrap();
+    assert_eq!(group_now.state, harman::types::GroupState::Completed);
+}
+
+// =============================================================================
+// Test 33: Bracket entry rejected → staged legs cancelled, group cancelled
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_bracket_entry_rejected_cancels_group() {
+    let (pool, session_id) = setup().await;
+
+    let mock = MockExchange::new();
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+
+    let entry = test_order_request("KXTEST-BRACKET-4", Side::Yes, Action::Buy, Decimal::from(5), Decimal::new(50, 2));
+    let tp = test_order_request("KXTEST-BRACKET-4", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(80, 2));
+    let sl = test_order_request("KXTEST-BRACKET-4", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(20, 2));
+
+    let (group, orders) = app_state.oms.create_bracket(session_id, entry, tp, sl).await.unwrap();
+    let entry_order = orders.iter().find(|o| o.leg_role == Some(LegRole::Entry)).unwrap();
+    let tp_order = orders.iter().find(|o| o.leg_role == Some(LegRole::TakeProfit)).unwrap();
+    let sl_order = orders.iter().find(|o| o.leg_role == Some(LegRole::StopLoss)).unwrap();
+
+    // Simulate entry rejected
+    db::update_order_state(
+        &pool, entry_order.id, session_id, OrderState::Rejected,
+        None, None, None, "test",
+    ).await.unwrap();
+
+    // Evaluate triggers
+    let _ = app_state.oms.evaluate_triggers(session_id).await.unwrap();
+
+    // TP and SL should be cancelled
+    assert_order_state(&pool, tp_order.id, OrderState::Cancelled).await.unwrap();
+    assert_order_state(&pool, sl_order.id, OrderState::Cancelled).await.unwrap();
+
+    // Group should be cancelled
+    let group_now = db::get_group(&pool, group.id, session_id).await.unwrap().unwrap();
+    assert_eq!(group_now.state, harman::types::GroupState::Cancelled);
+}
+
+// =============================================================================
+// Test 34: OCO creation — both legs pending
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_oco_creation() {
+    let (pool, session_id) = setup().await;
+
+    let mock = MockExchange::new();
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+
+    let leg1 = test_order_request("KXTEST-OCO-1", Side::Yes, Action::Buy, Decimal::from(5), Decimal::new(40, 2));
+    let leg2 = test_order_request("KXTEST-OCO-2", Side::No, Action::Buy, Decimal::from(5), Decimal::new(60, 2));
+
+    let (group, orders) = app_state.oms.create_oco(session_id, leg1, leg2).await.unwrap();
+
+    assert_eq!(group.group_type, harman::types::GroupType::Oco);
+    assert_eq!(orders.len(), 2);
+    assert!(orders.iter().all(|o| o.state == OrderState::Pending));
+    assert!(orders.iter().all(|o| o.leg_role == Some(LegRole::OcoLeg)));
+
+    // Both should have queue items
+    let count = queue_count(&pool, session_id).await.unwrap();
+    assert_eq!(count, 2);
+}
+
+// =============================================================================
+// Test 35: OCO — one fills, other gets cancel request, group completed
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_oco_fill_cancels_other() {
+    let (pool, session_id) = setup().await;
+
+    let mock = MockExchange::new();
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+
+    let leg1 = test_order_request("KXTEST-OCO-3", Side::Yes, Action::Buy, Decimal::from(5), Decimal::new(40, 2));
+    let leg2 = test_order_request("KXTEST-OCO-4", Side::No, Action::Buy, Decimal::from(5), Decimal::new(60, 2));
+
+    let (group, orders) = app_state.oms.create_oco(session_id, leg1, leg2).await.unwrap();
+
+    // Simulate first leg acknowledged and filled
+    db::update_order_state(
+        &pool, orders[0].id, session_id, OrderState::Acknowledged,
+        Some("exch-oco-1"), None, None, "test",
+    ).await.unwrap();
+    db::update_order_state(
+        &pool, orders[0].id, session_id, OrderState::Filled,
+        None, Some(Decimal::from(5)), None, "test",
+    ).await.unwrap();
+
+    // Second leg acknowledged (on exchange)
+    db::update_order_state(
+        &pool, orders[1].id, session_id, OrderState::Acknowledged,
+        Some("exch-oco-2"), None, None, "test",
+    ).await.unwrap();
+
+    // Evaluate triggers
+    let _ = app_state.oms.evaluate_triggers(session_id).await.unwrap();
+
+    // Group should be completed
+    let group_now = db::get_group(&pool, group.id, session_id).await.unwrap().unwrap();
+    assert_eq!(group_now.state, harman::types::GroupState::Completed);
+}
+
+// =============================================================================
+// Test 36: Cancel group — staged legs cancelled directly, open legs get cancel
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_cancel_group() {
+    let (pool, session_id) = setup().await;
+
+    let mock = MockExchange::new();
+    let app_state = build_test_state(mock, pool.clone(), session_id).await;
+
+    let entry = test_order_request("KXTEST-CANCEL-GRP", Side::Yes, Action::Buy, Decimal::from(5), Decimal::new(50, 2));
+    let tp = test_order_request("KXTEST-CANCEL-GRP", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(80, 2));
+    let sl = test_order_request("KXTEST-CANCEL-GRP", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(20, 2));
+
+    let (group, orders) = app_state.oms.create_bracket(session_id, entry, tp, sl).await.unwrap();
+    let tp_order = orders.iter().find(|o| o.leg_role == Some(LegRole::TakeProfit)).unwrap();
+    let sl_order = orders.iter().find(|o| o.leg_role == Some(LegRole::StopLoss)).unwrap();
+
+    // Cancel the whole group
+    app_state.oms.cancel_group(group.id, session_id).await.unwrap();
+
+    // Staged TP and SL should be directly cancelled
+    assert_order_state(&pool, tp_order.id, OrderState::Cancelled).await.unwrap();
+    assert_order_state(&pool, sl_order.id, OrderState::Cancelled).await.unwrap();
+
+    // Group should be cancelled
+    let group_now = db::get_group(&pool, group.id, session_id).await.unwrap().unwrap();
+    assert_eq!(group_now.state, harman::types::GroupState::Cancelled);
+}
+
+// =============================================================================
+// Test 37: Staged legs not counted toward risk limit
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_staged_legs_excluded_from_risk() {
+    let (pool, session_id) = setup().await;
+
+    let mock = MockExchange::new();
+    // Use tight risk limits: $5 max notional
+    let registry = prometheus::Registry::new();
+    let ems_metrics = ssmd_harman_ems::EmsMetrics::new(&registry);
+    let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = Arc::new(mock);
+    let limits = RiskLimits { max_notional: Decimal::from(5) };
+    let ems = Arc::new(ssmd_harman_ems::Ems::new(pool.clone(), exchange.clone(), limits, ems_metrics));
+    let oms_metrics = OmsMetrics::new(&registry);
+    let oms = Arc::new(ssmd_harman_oms::Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
+
+    // Bracket: entry=$2.50 (pending), TP=$4.00 (staged), SL=$1.00 (staged)
+    // If staged legs were counted: total = $7.50 > $5 → rejected
+    // Correct: only entry counted = $2.50 < $5 → accepted
+    let entry = test_order_request("KXTEST-RISK-STAGED", Side::Yes, Action::Buy, Decimal::from(5), Decimal::new(50, 2));
+    let tp = test_order_request("KXTEST-RISK-STAGED", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(80, 2));
+    let sl = test_order_request("KXTEST-RISK-STAGED", Side::Yes, Action::Sell, Decimal::from(5), Decimal::new(20, 2));
+
+    let result = oms.create_bracket(session_id, entry, tp, sl).await;
+    assert!(result.is_ok(), "bracket should pass risk check — staged legs excluded");
 }

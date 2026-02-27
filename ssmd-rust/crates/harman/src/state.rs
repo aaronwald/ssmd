@@ -29,6 +29,8 @@ pub enum OrderState {
     Rejected,
     /// Expired by exchange (terminal)
     Expired,
+    /// Order created but waiting for trigger activation (not on exchange, no risk)
+    Staged,
 }
 
 impl OrderState {
@@ -72,6 +74,7 @@ impl std::fmt::Display for OrderState {
             OrderState::Cancelled => "cancelled",
             OrderState::Rejected => "rejected",
             OrderState::Expired => "expired",
+            OrderState::Staged => "staged",
         };
         write!(f, "{}", s)
     }
@@ -104,6 +107,8 @@ pub enum OrderEvent {
     DecreaseConfirm,
     /// Order expired
     Expire,
+    /// Trigger condition met, activate staged order
+    Activate,
 }
 
 impl std::fmt::Display for OrderEvent {
@@ -121,6 +126,7 @@ impl std::fmt::Display for OrderEvent {
             OrderEvent::DecreaseRequest => write!(f, "decrease_request"),
             OrderEvent::DecreaseConfirm => write!(f, "decrease_confirm"),
             OrderEvent::Expire => write!(f, "expire"),
+            OrderEvent::Activate => write!(f, "activate"),
         }
     }
 }
@@ -197,6 +203,10 @@ pub fn apply_event(
         // PendingDecrease transitions
         (OrderState::PendingDecrease, OrderEvent::DecreaseConfirm) => Ok(OrderState::Acknowledged),
         (OrderState::PendingDecrease, OrderEvent::CancelRequest) => Ok(OrderState::PendingCancel),
+
+        // Staged transitions
+        (OrderState::Staged, OrderEvent::Activate) => Ok(OrderState::Pending),
+        (OrderState::Staged, OrderEvent::CancelRequest) => Ok(OrderState::Cancelled),
 
         // All other transitions are invalid
         (state, evt) => Err(TransitionError::InvalidTransition {
@@ -305,6 +315,7 @@ mod tests {
             OrderState::PendingCancel,
             OrderState::PendingAmend,
             OrderState::PendingDecrease,
+            OrderState::Staged,
         ];
         for state in non_terminal {
             let result = apply_event(state, &OrderEvent::Fill { filled_qty: Decimal::from(1) });
@@ -380,6 +391,7 @@ mod tests {
             OrderState::PendingCancel,
             OrderState::PendingAmend,
             OrderState::PendingDecrease,
+            OrderState::Staged,
         ];
         for state in non_terminal {
             let result = apply_event(state, &OrderEvent::PartialFill { filled_qty: Decimal::from(1) });
@@ -1111,5 +1123,85 @@ mod tests {
             &crate::types::ExchangeOrderState::Cancelled,
         );
         assert_eq!(result, Some(OrderState::Cancelled));
+    }
+
+    // ======================================================================
+    // Staged state tests
+    // ======================================================================
+
+    #[test]
+    fn test_staged_is_not_terminal() {
+        assert!(!OrderState::Staged.is_terminal());
+    }
+
+    #[test]
+    fn test_staged_is_not_open() {
+        assert!(!OrderState::Staged.is_open());
+    }
+
+    #[test]
+    fn test_staged_display() {
+        assert_eq!(OrderState::Staged.to_string(), "staged");
+    }
+
+    #[test]
+    fn test_staged_activate_to_pending() {
+        let result = apply_event(OrderState::Staged, &OrderEvent::Activate);
+        assert_eq!(result.unwrap(), OrderState::Pending);
+    }
+
+    #[test]
+    fn test_staged_cancel_request_to_cancelled() {
+        let result = apply_event(OrderState::Staged, &OrderEvent::CancelRequest);
+        assert_eq!(result.unwrap(), OrderState::Cancelled);
+    }
+
+    #[test]
+    fn test_staged_fill_accepted() {
+        let result = apply_event(
+            OrderState::Staged,
+            &OrderEvent::Fill { filled_qty: Decimal::from(10) },
+        );
+        assert_eq!(result.unwrap(), OrderState::Filled);
+    }
+
+    #[test]
+    fn test_staged_partial_fill_accepted() {
+        let result = apply_event(
+            OrderState::Staged,
+            &OrderEvent::PartialFill { filled_qty: Decimal::from(3) },
+        );
+        assert_eq!(result.unwrap(), OrderState::PartiallyFilled);
+    }
+
+    #[test]
+    fn test_staged_rejects_submit() {
+        assert!(apply_event(OrderState::Staged, &OrderEvent::Submit).is_err());
+    }
+
+    #[test]
+    fn test_staged_rejects_acknowledge() {
+        assert!(apply_event(
+            OrderState::Staged,
+            &OrderEvent::Acknowledge { exchange_order_id: "x".into() }
+        ).is_err());
+    }
+
+    #[test]
+    fn test_activate_display() {
+        assert_eq!(format!("{}", OrderEvent::Activate), "activate");
+    }
+
+    #[test]
+    fn test_lifecycle_staged_activate_then_fill() {
+        // Staged → Pending → Submitted → Acknowledged → Filled
+        let s = apply_event(OrderState::Staged, &OrderEvent::Activate).unwrap();
+        assert_eq!(s, OrderState::Pending);
+        let s = apply_event(s, &OrderEvent::Submit).unwrap();
+        assert_eq!(s, OrderState::Submitted);
+        let s = apply_event(s, &OrderEvent::Acknowledge { exchange_order_id: "e1".into() }).unwrap();
+        assert_eq!(s, OrderState::Acknowledged);
+        let s = apply_event(s, &OrderEvent::Fill { filled_qty: Decimal::from(10) }).unwrap();
+        assert_eq!(s, OrderState::Filled);
     }
 }

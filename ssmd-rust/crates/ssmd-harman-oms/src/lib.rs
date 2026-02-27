@@ -1,3 +1,4 @@
+pub mod groups;
 pub mod positions;
 pub mod reconciliation;
 pub mod recovery;

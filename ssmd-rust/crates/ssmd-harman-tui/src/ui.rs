@@ -118,6 +118,7 @@ fn state_color(state: OrderState) -> Color {
         OrderState::Acknowledged | OrderState::Submitted => Color::LightGreen,
         OrderState::PartiallyFilled => Color::Magenta,
         OrderState::Expired => Color::DarkGray,
+        OrderState::Staged => Color::Blue,
     }
 }
 

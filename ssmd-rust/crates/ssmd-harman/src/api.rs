@@ -18,7 +18,7 @@ use uuid::Uuid;
 use harman::db;
 use harman::error::EnqueueError;
 use harman::state::OrderState;
-use harman::types::{Action, Order, OrderRequest, Side, TimeInForce};
+use harman::types::{Action, GroupState, Order, OrderGroup, OrderRequest, Side, TimeInForce};
 
 use crate::{AppState, SessionContext};
 
@@ -210,9 +210,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/orders/:id", delete(cancel_order))
         .route("/v1/orders/:id/amend", post(amend_order))
         .route("/v1/orders/:id/decrease", post(decrease_order))
+        .route("/v1/groups/bracket", post(create_bracket_group))
+        .route("/v1/groups/oco", post(create_oco_group))
+        .route("/v1/groups/:id", delete(cancel_group_handler))
         // harman:read
         .route("/v1/orders", get(list_orders))
         .route("/v1/orders/:id", get(get_order))
+        .route("/v1/groups", get(list_groups_handler))
+        .route("/v1/groups/:id", get(get_group_handler))
         // harman:admin
         .route("/v1/orders/mass-cancel", post(mass_cancel))
         .route("/v1/admin/pump", post(pump_handler))
@@ -370,6 +375,7 @@ async fn list_orders(
         "cancelled" => Some(OrderState::Cancelled),
         "rejected" => Some(OrderState::Rejected),
         "expired" => Some(OrderState::Expired),
+        "staged" => Some(OrderState::Staged),
         _ => None,
     });
 
@@ -862,7 +868,292 @@ fn order_to_json(order: &Order) -> serde_json::Value {
         "time_in_force": order.time_in_force,
         "state": order.state.to_string(),
         "cancel_reason": order.cancel_reason,
+        "group_id": order.group_id,
+        "leg_role": order.leg_role.map(|r| r.to_string()),
         "created_at": order.created_at.to_rfc3339(),
         "updated_at": order.updated_at.to_rfc3339(),
     })
+}
+
+fn group_to_json(group: &OrderGroup, orders: &[Order]) -> serde_json::Value {
+    serde_json::json!({
+        "id": group.id,
+        "session_id": group.session_id,
+        "group_type": group.group_type.to_string(),
+        "state": group.state.to_string(),
+        "orders": orders.iter().map(order_to_json).collect::<Vec<_>>(),
+        "created_at": group.created_at.to_rfc3339(),
+        "updated_at": group.updated_at.to_rfc3339(),
+    })
+}
+
+/// POST /v1/groups/bracket
+#[derive(Debug, Deserialize)]
+pub struct CreateBracketRequest {
+    pub entry: CreateOrderRequest,
+    pub take_profit: CreateOrderRequest,
+    pub stop_loss: CreateOrderRequest,
+}
+
+async fn create_bracket_group(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Json(req): Json<CreateBracketRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:write") {
+        return e.into_response();
+    }
+
+    if state.ems.is_shutting_down() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "shutting down"})),
+        )
+            .into_response();
+    }
+
+    if state.oms.is_suspended(ctx.session_id) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "session suspended"})),
+        )
+            .into_response();
+    }
+
+    let entry = to_order_request(&req.entry);
+    let tp = to_order_request(&req.take_profit);
+    let sl = to_order_request(&req.stop_loss);
+
+    match state.oms.create_bracket(ctx.session_id, entry, tp, sl).await {
+        Ok((group, orders)) => {
+            if state.auto_pump {
+                state.pump_trigger.notify(ctx.session_id);
+            }
+            (
+                StatusCode::CREATED,
+                Json(group_to_json(&group, &orders)),
+            )
+                .into_response()
+        }
+        Err(EnqueueError::DuplicateClientOrderId(_)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "duplicate client_order_id"})),
+        )
+            .into_response(),
+        Err(EnqueueError::RiskCheck(e)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(EnqueueError::Database(e)) => {
+            tracing::error!(error = %e, "database error creating bracket group");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /v1/groups/oco
+#[derive(Debug, Deserialize)]
+pub struct CreateOcoRequest {
+    pub leg1: CreateOrderRequest,
+    pub leg2: CreateOrderRequest,
+}
+
+async fn create_oco_group(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Json(req): Json<CreateOcoRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:write") {
+        return e.into_response();
+    }
+
+    if state.ems.is_shutting_down() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "shutting down"})),
+        )
+            .into_response();
+    }
+
+    if state.oms.is_suspended(ctx.session_id) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "session suspended"})),
+        )
+            .into_response();
+    }
+
+    let leg1 = to_order_request(&req.leg1);
+    let leg2 = to_order_request(&req.leg2);
+
+    match state.oms.create_oco(ctx.session_id, leg1, leg2).await {
+        Ok((group, orders)) => {
+            if state.auto_pump {
+                state.pump_trigger.notify(ctx.session_id);
+            }
+            (
+                StatusCode::CREATED,
+                Json(group_to_json(&group, &orders)),
+            )
+                .into_response()
+        }
+        Err(EnqueueError::DuplicateClientOrderId(_)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "duplicate client_order_id"})),
+        )
+            .into_response(),
+        Err(EnqueueError::RiskCheck(e)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(EnqueueError::Database(e)) => {
+            tracing::error!(error = %e, "database error creating OCO group");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// GET /v1/groups
+#[derive(Debug, Deserialize)]
+pub struct ListGroupsQuery {
+    pub state: Option<String>,
+}
+
+async fn list_groups_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Query(query): Query<ListGroupsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        return e.into_response();
+    }
+
+    let state_filter = query.state.and_then(|s| match s.as_str() {
+        "active" => Some(GroupState::Active),
+        "completed" => Some(GroupState::Completed),
+        "cancelled" => Some(GroupState::Cancelled),
+        _ => None,
+    });
+
+    match db::list_groups(&state.pool, ctx.session_id, state_filter).await {
+        Ok(groups) => {
+            let response: Vec<serde_json::Value> = groups
+                .iter()
+                .map(|g| {
+                    serde_json::json!({
+                        "id": g.id,
+                        "group_type": g.group_type.to_string(),
+                        "state": g.state.to_string(),
+                        "created_at": g.created_at.to_rfc3339(),
+                        "updated_at": g.updated_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            (StatusCode::OK, Json(serde_json::json!({"groups": response}))).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "list groups failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// GET /v1/groups/:id
+async fn get_group_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        return e.into_response();
+    }
+
+    match db::get_group(&state.pool, id, ctx.session_id).await {
+        Ok(Some(group)) => {
+            match db::get_group_orders(&state.pool, id, ctx.session_id).await {
+                Ok(orders) => {
+                    (StatusCode::OK, Json(group_to_json(&group, &orders))).into_response()
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "get group orders failed");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "internal error"})),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "group not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get group failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// DELETE /v1/groups/:id
+async fn cancel_group_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:write") {
+        return e.into_response();
+    }
+
+    match state.oms.cancel_group(id, ctx.session_id).await {
+        Ok(()) => {
+            if state.auto_pump {
+                state.pump_trigger.notify(ctx.session_id);
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "cancelled"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "cancel group failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e})),
+            )
+                .into_response()
+        }
+    }
+}
+
+fn to_order_request(req: &CreateOrderRequest) -> OrderRequest {
+    OrderRequest {
+        client_order_id: req.client_order_id,
+        ticker: req.ticker.clone(),
+        side: req.side,
+        action: req.action,
+        quantity: req.quantity,
+        price_dollars: req.price_dollars,
+        time_in_force: req.time_in_force,
+    }
 }

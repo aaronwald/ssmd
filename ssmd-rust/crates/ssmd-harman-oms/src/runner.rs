@@ -107,6 +107,19 @@ impl OmsRunner {
                     if !result.errors.is_empty() {
                         warn!(session_id = sid, errors = ?result.errors, "auto-pump errors");
                     }
+
+                    // Evaluate group triggers after pump
+                    match self.oms.evaluate_triggers(sid).await {
+                        Ok(activated) if activated > 0 => {
+                            info!(session_id = sid, activated, "triggers activated, re-pumping");
+                            let result = self.oms.ems.pump(sid).await;
+                            if !result.errors.is_empty() {
+                                warn!(session_id = sid, errors = ?result.errors, "re-pump errors");
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => warn!(session_id = sid, error = %e, "trigger evaluation failed"),
+                    }
                 }
             }
         }

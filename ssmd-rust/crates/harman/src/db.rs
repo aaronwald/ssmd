@@ -10,7 +10,8 @@ use crate::error::EnqueueError;
 use crate::risk::{RiskLimits, RiskState};
 use crate::state::OrderState;
 use crate::types::{
-    Action, CancelReason, Order, OrderRequest, Side, TimeInForce,
+    Action, CancelReason, GroupState, GroupType, LegRole, Order, OrderGroup, OrderRequest, Side,
+    TimeInForce,
 };
 
 /// Create a connection pool from a database URL
@@ -127,6 +128,24 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
             .await
             .map_err(|e| format!("migration 004 failed: {}", e))?;
         info!("migration 004_session_key_prefix applied");
+    }
+
+    // Check if 005 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '005_order_groups'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 005: {}", e))?;
+
+    if row.is_none() {
+        let migration_005 = include_str!("../migrations/005_order_groups.sql");
+        client
+            .batch_execute(migration_005)
+            .await
+            .map_err(|e| format!("migration 005 failed: {}", e))?;
+        info!("migration 005_order_groups applied");
     }
 
     info!("database migrations applied successfully");
@@ -251,6 +270,8 @@ pub async fn enqueue_order(
         time_in_force: request.time_in_force,
         state: OrderState::Pending,
         cancel_reason: None,
+        group_id: None,
+        leg_role: None,
         created_at,
         updated_at,
     })
@@ -288,7 +309,7 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
                     o.id, o.session_id, o.client_order_id, o.exchange_order_id, \
                     o.ticker, o.side, o.action as order_action, o.quantity, o.price_dollars, \
                     o.filled_quantity, o.time_in_force, o.state, o.cancel_reason, \
-                    o.created_at, o.updated_at \
+                    o.group_id, o.leg_role, o.created_at, o.updated_at \
              FROM order_queue q \
              JOIN prediction_orders o ON o.id = q.order_id \
              WHERE NOT q.processing AND o.session_id = $1 \
@@ -359,6 +380,10 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
         cancel_reason: row
             .get::<_, Option<String>>("cancel_reason")
             .map(|s| parse_cancel_reason(&s)),
+        group_id: row.get("group_id"),
+        leg_role: row
+            .get::<_, Option<String>>("leg_role")
+            .map(|s| parse_leg_role(&s)),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     };
@@ -635,7 +660,7 @@ pub async fn get_ambiguous_orders(pool: &Pool, session_id: i64) -> Result<Vec<Or
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
                     filled_quantity, time_in_force, state, cancel_reason, \
-                    created_at, updated_at \
+                    group_id, leg_role, created_at, updated_at \
              FROM prediction_orders \
              WHERE session_id = $1 AND state IN ('submitted', 'acknowledged', 'pending_cancel', 'pending_amend', 'pending_decrease') \
              ORDER BY id",
@@ -659,7 +684,7 @@ pub async fn get_order(pool: &Pool, order_id: i64, session_id: i64) -> Result<Op
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
                     filled_quantity, time_in_force, state, cancel_reason, \
-                    created_at, updated_at \
+                    group_id, leg_role, created_at, updated_at \
              FROM prediction_orders WHERE id = $1 AND session_id = $2",
             &[&order_id, &session_id],
         )
@@ -685,7 +710,7 @@ pub async fn get_order_by_client_id(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
                     filled_quantity, time_in_force, state, cancel_reason, \
-                    created_at, updated_at \
+                    group_id, leg_role, created_at, updated_at \
              FROM prediction_orders WHERE client_order_id = $1 AND session_id = $2",
             &[&client_order_id, &session_id],
         )
@@ -712,7 +737,7 @@ pub async fn list_orders(
                 "SELECT id, session_id, client_order_id, exchange_order_id, \
                         ticker, side, action, quantity, price_dollars, \
                         filled_quantity, time_in_force, state, cancel_reason, \
-                        created_at, updated_at \
+                        group_id, leg_role, created_at, updated_at \
                  FROM prediction_orders WHERE session_id = $1 AND state = $2 ORDER BY id",
                 &[&session_id, &state.to_string()],
             )
@@ -723,7 +748,7 @@ pub async fn list_orders(
                 "SELECT id, session_id, client_order_id, exchange_order_id, \
                         ticker, side, action, quantity, price_dollars, \
                         filled_quantity, time_in_force, state, cancel_reason, \
-                        created_at, updated_at \
+                        group_id, leg_role, created_at, updated_at \
                  FROM prediction_orders WHERE session_id = $1 ORDER BY id",
                 &[&session_id],
             )
@@ -1351,6 +1376,385 @@ pub async fn create_external_resting_order(
 
 // --- Helper parsers ---
 
+/// Create an order group with its legs atomically.
+///
+/// Each leg is an `(OrderRequest, LegRole, OrderState)` tuple. Pending legs are
+/// queued for submission; staged legs wait for trigger activation. Risk check
+/// applies only to pending legs (staged legs are excluded by design).
+pub async fn create_order_group(
+    pool: &Pool,
+    session_id: i64,
+    group_type: GroupType,
+    legs: &[(OrderRequest, LegRole, OrderState)],
+    risk_limits: &RiskLimits,
+) -> Result<(OrderGroup, Vec<Order>), EnqueueError> {
+    let mut client = pool
+        .get()
+        .await
+        .map_err(|e| EnqueueError::Database(format!("pool error: {}", e)))?;
+
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| EnqueueError::Database(format!("begin tx: {}", e)))?;
+
+    // Lock open order rows to serialize concurrent enqueues, then compute risk.
+    tx.query(
+        "SELECT id FROM prediction_orders \
+         WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease') \
+         FOR UPDATE",
+        &[&session_id],
+    )
+    .await
+    .map_err(|e| EnqueueError::Database(format!("risk lock: {}", e)))?;
+
+    let risk_row = tx
+        .query_one(
+            "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
+             FROM prediction_orders \
+             WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| EnqueueError::Database(format!("risk query: {}", e)))?;
+
+    let open_notional: Decimal = risk_row.get::<_, Decimal>("open_notional");
+
+    // Compute notional for pending legs only (staged legs excluded from risk)
+    let mut pending_notional = Decimal::ZERO;
+    for (req, _role, state) in legs {
+        if state.is_open() {
+            pending_notional += req.notional();
+        }
+    }
+
+    if open_notional + pending_notional > risk_limits.max_notional {
+        return Err(EnqueueError::RiskCheck(
+            crate::error::RiskCheckError::MaxNotionalExceeded {
+                current: open_notional,
+                requested: pending_notional,
+                limit: risk_limits.max_notional,
+            },
+        ));
+    }
+
+    // Create the group
+    let group_row = tx
+        .query_one(
+            "INSERT INTO order_groups (session_id, group_type) VALUES ($1, $2) \
+             RETURNING id, session_id, group_type, state, created_at, updated_at",
+            &[&session_id, &group_type.to_string()],
+        )
+        .await
+        .map_err(|e| EnqueueError::Database(format!("insert group: {}", e)))?;
+
+    let group_id: i64 = group_row.get("id");
+    let group = OrderGroup {
+        id: group_id,
+        session_id: group_row.get("session_id"),
+        group_type: parse_group_type(group_row.get("group_type")),
+        state: parse_group_state(group_row.get("state")),
+        created_at: group_row.get("created_at"),
+        updated_at: group_row.get("updated_at"),
+    };
+
+    let mut orders = Vec::with_capacity(legs.len());
+    for (req, role, initial_state) in legs {
+        let state_str = initial_state.to_string();
+        let role_str = role.to_string();
+
+        let row = tx
+            .query_one(
+                "INSERT INTO prediction_orders \
+                 (session_id, client_order_id, ticker, side, action, quantity, price_dollars, \
+                  time_in_force, state, group_id, leg_role) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+                 RETURNING id, created_at, updated_at",
+                &[
+                    &session_id,
+                    &req.client_order_id,
+                    &req.ticker,
+                    &req.side.to_string(),
+                    &req.action.to_string(),
+                    &req.quantity,
+                    &req.price_dollars,
+                    &req.time_in_force.to_string(),
+                    &state_str,
+                    &group_id,
+                    &role_str,
+                ],
+            )
+            .await
+            .map_err(|e| {
+                if let Some(db_err) = e.as_db_error() {
+                    if db_err.code() == &tokio_postgres::error::SqlState::UNIQUE_VIOLATION {
+                        return EnqueueError::DuplicateClientOrderId(req.client_order_id);
+                    }
+                }
+                EnqueueError::Database(format!("insert leg order: {}", e))
+            })?;
+
+        let order_id: i64 = row.get("id");
+        let created_at: DateTime<Utc> = row.get("created_at");
+        let updated_at: DateTime<Utc> = row.get("updated_at");
+
+        // Queue pending legs for submission
+        if *initial_state == OrderState::Pending {
+            tx.execute(
+                "INSERT INTO order_queue (order_id, action, actor) VALUES ($1, 'submit', 'api')",
+                &[&order_id],
+            )
+            .await
+            .map_err(|e| EnqueueError::Database(format!("insert queue: {}", e)))?;
+        }
+
+        // Audit log
+        tx.execute(
+            "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+             VALUES ($1, 'none', $2, 'created', 'api')",
+            &[&order_id, &state_str],
+        )
+        .await
+        .map_err(|e| EnqueueError::Database(format!("insert audit: {}", e)))?;
+
+        orders.push(Order {
+            id: order_id,
+            session_id,
+            client_order_id: req.client_order_id,
+            exchange_order_id: None,
+            ticker: req.ticker.clone(),
+            side: req.side,
+            action: req.action,
+            quantity: req.quantity,
+            price_dollars: req.price_dollars,
+            filled_quantity: Decimal::ZERO,
+            time_in_force: req.time_in_force,
+            state: *initial_state,
+            cancel_reason: None,
+            group_id: Some(group_id),
+            leg_role: Some(*role),
+            created_at,
+            updated_at,
+        });
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| EnqueueError::Database(format!("commit: {}", e)))?;
+
+    debug!(group_id, group_type = %group_type, "order group created");
+
+    Ok((group, orders))
+}
+
+/// Activate a staged order: Staged → Pending + insert queue item.
+///
+/// No risk check — exit legs close the entry position.
+pub async fn activate_staged_order(
+    pool: &Pool,
+    order_id: i64,
+    session_id: i64,
+) -> Result<(), String> {
+    let mut client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("begin tx: {}", e))?;
+
+    let updated = tx
+        .execute(
+            "UPDATE prediction_orders SET state = 'pending' \
+             WHERE id = $1 AND session_id = $2 AND state = 'staged'",
+            &[&order_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("activate staged: {}", e))?;
+
+    if updated == 0 {
+        return Err(format!("order {} not in staged state", order_id));
+    }
+
+    tx.execute(
+        "INSERT INTO order_queue (order_id, action, actor) VALUES ($1, 'submit', 'trigger')",
+        &[&order_id],
+    )
+    .await
+    .map_err(|e| format!("insert queue: {}", e))?;
+
+    tx.execute(
+        "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+         VALUES ($1, 'staged', 'pending', 'activate', 'trigger')",
+        &[&order_id],
+    )
+    .await
+    .map_err(|e| format!("insert audit: {}", e))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit: {}", e))?;
+
+    info!(order_id, "staged order activated");
+    Ok(())
+}
+
+/// Get all orders for a group.
+pub async fn get_group_orders(
+    pool: &Pool,
+    group_id: i64,
+    session_id: i64,
+) -> Result<Vec<Order>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT id, session_id, client_order_id, exchange_order_id, \
+                    ticker, side, action, quantity, price_dollars, \
+                    filled_quantity, time_in_force, state, cancel_reason, \
+                    group_id, leg_role, created_at, updated_at \
+             FROM prediction_orders \
+             WHERE group_id = $1 AND session_id = $2 \
+             ORDER BY id",
+            &[&group_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("get group orders: {}", e))?;
+
+    Ok(rows.iter().map(row_to_order).collect())
+}
+
+/// Get active groups with at least one terminal leg for trigger evaluation.
+pub async fn get_groups_needing_evaluation(
+    pool: &Pool,
+    session_id: i64,
+) -> Result<Vec<(OrderGroup, Vec<Order>)>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    // Find active groups that have at least one terminal order
+    let group_rows = client
+        .query(
+            "SELECT DISTINCT g.id, g.session_id, g.group_type, g.state, g.created_at, g.updated_at \
+             FROM order_groups g \
+             JOIN prediction_orders o ON o.group_id = g.id \
+             WHERE g.state = 'active' AND g.session_id = $1 \
+               AND o.state IN ('filled', 'cancelled', 'rejected', 'expired') \
+             ORDER BY g.id",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| format!("get groups needing eval: {}", e))?;
+
+    let mut results = Vec::new();
+    for grow in &group_rows {
+        let group = row_to_group(grow);
+        let order_rows = client
+            .query(
+                "SELECT id, session_id, client_order_id, exchange_order_id, \
+                        ticker, side, action, quantity, price_dollars, \
+                        filled_quantity, time_in_force, state, cancel_reason, \
+                        group_id, leg_role, created_at, updated_at \
+                 FROM prediction_orders \
+                 WHERE group_id = $1 AND session_id = $2 \
+                 ORDER BY id",
+                &[&group.id, &session_id],
+            )
+            .await
+            .map_err(|e| format!("get group orders for eval: {}", e))?;
+
+        let orders: Vec<Order> = order_rows.iter().map(row_to_order).collect();
+        results.push((group, orders));
+    }
+
+    Ok(results)
+}
+
+/// Update an order group's state.
+pub async fn update_group_state(
+    pool: &Pool,
+    group_id: i64,
+    state: GroupState,
+) -> Result<(), String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    client
+        .execute(
+            "UPDATE order_groups SET state = $1 WHERE id = $2",
+            &[&state.to_string(), &group_id],
+        )
+        .await
+        .map_err(|e| format!("update group state: {}", e))?;
+
+    Ok(())
+}
+
+/// List groups for a session, with optional state filter.
+pub async fn list_groups(
+    pool: &Pool,
+    session_id: i64,
+    state_filter: Option<GroupState>,
+) -> Result<Vec<OrderGroup>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = if let Some(state) = state_filter {
+        client
+            .query(
+                "SELECT id, session_id, group_type, state, created_at, updated_at \
+                 FROM order_groups WHERE session_id = $1 AND state = $2 ORDER BY id",
+                &[&session_id, &state.to_string()],
+            )
+            .await
+    } else {
+        client
+            .query(
+                "SELECT id, session_id, group_type, state, created_at, updated_at \
+                 FROM order_groups WHERE session_id = $1 ORDER BY id",
+                &[&session_id],
+            )
+            .await
+    }
+    .map_err(|e| format!("list groups: {}", e))?;
+
+    Ok(rows.iter().map(row_to_group).collect())
+}
+
+/// Get a group by ID, scoped to a session.
+pub async fn get_group(
+    pool: &Pool,
+    group_id: i64,
+    session_id: i64,
+) -> Result<Option<OrderGroup>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let row = client
+        .query_opt(
+            "SELECT id, session_id, group_type, state, created_at, updated_at \
+             FROM order_groups WHERE id = $1 AND session_id = $2",
+            &[&group_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("get group: {}", e))?;
+
+    Ok(row.as_ref().map(row_to_group))
+}
+
 fn row_to_order(row: &tokio_postgres::Row) -> Order {
     Order {
         id: row.get("id"),
@@ -1368,6 +1772,21 @@ fn row_to_order(row: &tokio_postgres::Row) -> Order {
         cancel_reason: row
             .get::<_, Option<String>>("cancel_reason")
             .map(|s| parse_cancel_reason(&s)),
+        group_id: row.get("group_id"),
+        leg_role: row
+            .get::<_, Option<String>>("leg_role")
+            .map(|s| parse_leg_role(&s)),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn row_to_group(row: &tokio_postgres::Row) -> OrderGroup {
+    OrderGroup {
+        id: row.get("id"),
+        session_id: row.get("session_id"),
+        group_type: parse_group_type(row.get("group_type")),
+        state: parse_group_state(row.get("state")),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
@@ -1419,9 +1838,46 @@ fn parse_state(s: &str) -> OrderState {
         "cancelled" => OrderState::Cancelled,
         "rejected" => OrderState::Rejected,
         "expired" => OrderState::Expired,
+        "staged" => OrderState::Staged,
         _ => {
             warn!(state = s, "unknown order state in DB, defaulting to Pending");
             OrderState::Pending
+        }
+    }
+}
+
+fn parse_leg_role(s: &str) -> LegRole {
+    match s {
+        "entry" => LegRole::Entry,
+        "take_profit" => LegRole::TakeProfit,
+        "stop_loss" => LegRole::StopLoss,
+        "oco_leg" => LegRole::OcoLeg,
+        _ => {
+            warn!(value = s, "unknown leg_role in DB, defaulting to Entry");
+            LegRole::Entry
+        }
+    }
+}
+
+fn parse_group_type(s: &str) -> GroupType {
+    match s {
+        "bracket" => GroupType::Bracket,
+        "oco" => GroupType::Oco,
+        _ => {
+            warn!(value = s, "unknown group_type in DB, defaulting to Bracket");
+            GroupType::Bracket
+        }
+    }
+}
+
+fn parse_group_state(s: &str) -> GroupState {
+    match s {
+        "active" => GroupState::Active,
+        "completed" => GroupState::Completed,
+        "cancelled" => GroupState::Cancelled,
+        _ => {
+            warn!(value = s, "unknown group_state in DB, defaulting to Active");
+            GroupState::Active
         }
     }
 }
