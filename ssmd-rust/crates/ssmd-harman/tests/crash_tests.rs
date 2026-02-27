@@ -1310,7 +1310,7 @@ async fn test_bracket_entry_fill_activates_exits() {
 
     // Drain the entry's queue item
     if let Ok(Some(qi)) = db::dequeue_order(&pool, session_id).await {
-        let _ = db::remove_queue_item(&pool, qi.id).await;
+        let _ = db::remove_queue_item(&pool, qi.queue_id).await;
     }
 
     // Evaluate triggers
