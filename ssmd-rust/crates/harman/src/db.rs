@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::{Config, Pool, Runtime};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use serde_json;
 use tokio_postgres::NoTls;
 use tracing::{debug, info, warn};
@@ -642,6 +643,114 @@ pub async fn get_filled_quantity(pool: &Pool, order_id: i64) -> Result<Decimal, 
         .map_err(|e| format!("get filled quantity: {}", e))?;
 
     Ok(row.get("total_filled"))
+}
+
+/// A fill record returned by list_fills.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Fill {
+    pub id: i64,
+    pub order_id: i64,
+    pub ticker: String,
+    pub side: String,
+    pub action: String,
+    pub trade_id: String,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub price_dollars: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub quantity: Decimal,
+    pub is_taker: bool,
+    pub filled_at: DateTime<Utc>,
+}
+
+/// An audit log entry returned by list_audit_log.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub order_id: i64,
+    pub ticker: String,
+    pub from_state: String,
+    pub to_state: String,
+    pub event: String,
+    pub actor: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// List fills for a session, joining with prediction_orders to get ticker/side/action.
+pub async fn list_fills(pool: &Pool, session_id: i64, limit: i64) -> Result<Vec<Fill>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT f.id, f.order_id, o.ticker, o.side, o.action, f.trade_id, \
+             f.price_dollars, f.quantity, f.is_taker, f.filled_at \
+             FROM fills f \
+             JOIN prediction_orders o ON f.order_id = o.id \
+             WHERE o.session_id = $1 \
+             ORDER BY f.filled_at DESC \
+             LIMIT $2",
+            &[&session_id, &limit],
+        )
+        .await
+        .map_err(|e| format!("list fills: {}", e))?;
+
+    Ok(rows
+        .iter()
+        .map(|row| Fill {
+            id: row.get("id"),
+            order_id: row.get("order_id"),
+            ticker: row.get("ticker"),
+            side: row.get("side"),
+            action: row.get("action"),
+            trade_id: row.get("trade_id"),
+            price_dollars: row.get("price_dollars"),
+            quantity: row.get("quantity"),
+            is_taker: row.get("is_taker"),
+            filled_at: row.get("filled_at"),
+        })
+        .collect())
+}
+
+/// List audit log entries for a session, joining with prediction_orders to get ticker.
+pub async fn list_audit_log(
+    pool: &Pool,
+    session_id: i64,
+    limit: i64,
+) -> Result<Vec<AuditEntry>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT a.id, a.order_id, o.ticker, a.from_state, a.to_state, \
+             a.event, a.actor, a.created_at \
+             FROM audit_log a \
+             JOIN prediction_orders o ON a.order_id = o.id \
+             WHERE o.session_id = $1 \
+             ORDER BY a.created_at DESC \
+             LIMIT $2",
+            &[&session_id, &limit],
+        )
+        .await
+        .map_err(|e| format!("list audit log: {}", e))?;
+
+    Ok(rows
+        .iter()
+        .map(|row| AuditEntry {
+            id: row.get("id"),
+            order_id: row.get("order_id"),
+            ticker: row.get("ticker"),
+            from_state: row.get("from_state"),
+            to_state: row.get("to_state"),
+            event: row.get("event"),
+            actor: row.get("actor"),
+            created_at: row.get("created_at"),
+        })
+        .collect())
 }
 
 /// Find orders in ambiguous states (for recovery and reconciliation).

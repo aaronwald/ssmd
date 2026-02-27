@@ -220,6 +220,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/orders/:id", get(get_order))
         .route("/v1/groups", get(list_groups_handler))
         .route("/v1/groups/:id", get(get_group_handler))
+        .route("/v1/fills", get(list_fills_handler))
+        .route("/v1/audit", get(list_audit_handler))
         // harman:admin
         .route("/v1/orders/mass-cancel", post(mass_cancel))
         .route("/v1/admin/pump", post(pump_handler))
@@ -859,6 +861,68 @@ async fn resume_handler(
         Json(serde_json::json!({"resumed": true, "was_suspended": was_suspended})),
     )
         .into_response()
+}
+
+/// GET /v1/fills
+#[derive(Debug, Deserialize)]
+pub struct ListFillsQuery {
+    pub limit: Option<i64>,
+}
+
+async fn list_fills_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Query(query): Query<ListFillsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(100).min(1000);
+
+    match db::list_fills(&state.pool, ctx.session_id, limit).await {
+        Ok(fills) => (StatusCode::OK, Json(serde_json::json!({"fills": fills}))).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "list fills failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// GET /v1/audit
+#[derive(Debug, Deserialize)]
+pub struct ListAuditQuery {
+    pub limit: Option<i64>,
+}
+
+async fn list_audit_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Query(query): Query<ListAuditQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(100).min(1000);
+
+    match db::list_audit_log(&state.pool, ctx.session_id, limit).await {
+        Ok(entries) => {
+            (StatusCode::OK, Json(serde_json::json!({"audit": entries}))).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "list audit log failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
 }
 
 fn order_to_json(order: &Order) -> serde_json::Value {
