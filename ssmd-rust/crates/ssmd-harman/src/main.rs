@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -7,6 +6,7 @@ use dashmap::DashMap;
 use tracing::{error, info};
 
 use ssmd_harman::{api, recovery, shutdown, AppState, Metrics};
+use ssmd_harman_ems::{Ems, EmsMetrics};
 
 /// ssmd-harman: PostgreSQL-backed order gateway
 #[derive(Parser)]
@@ -39,14 +39,14 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "ssmd_harman=info,harman=info".into()),
+                .unwrap_or_else(|_| "ssmd_harman=info,harman=info,ssmd_harman_ems=info".into()),
         )
         .json()
         .init();
 
     let args = Args::parse();
 
-    // Load tokens from environment only — not CLI args — to avoid /proc/PID/cmdline exposure
+    // Load tokens from environment only -- not CLI args -- to avoid /proc/PID/cmdline exposure
     let api_token = std::env::var("HARMAN_API_TOKEN")
         .expect("HARMAN_API_TOKEN must be set");
     let admin_token = std::env::var("HARMAN_ADMIN_TOKEN")
@@ -106,12 +106,15 @@ async fn main() {
         .expect("failed to get or create session");
     info!(startup_session_id, "startup session initialized");
 
+    // Create shared registry, EMS metrics first, then reconciliation metrics
+    let registry = prometheus::Registry::new();
+    let ems_metrics = EmsMetrics::new(&registry);
+    let ems = Arc::new(Ems::new(pool.clone(), exchange, risk_limits, ems_metrics));
+
     let state = Arc::new(AppState {
+        ems,
         pool,
-        exchange,
-        risk_limits,
-        shutting_down: AtomicBool::new(false),
-        metrics: Metrics::new(),
+        metrics: Metrics::new(registry),
         api_token,
         admin_token,
         startup_session_id,

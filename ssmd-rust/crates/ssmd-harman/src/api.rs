@@ -256,7 +256,7 @@ async fn create_order(
         return e.into_response();
     }
 
-    if state.shutting_down.load(std::sync::atomic::Ordering::Relaxed) {
+    if state.ems.is_shutting_down() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"error": "shutting down"})),
@@ -298,7 +298,7 @@ async fn create_order(
         time_in_force: req.time_in_force,
     };
 
-    match db::enqueue_order(&state.pool, &order_req, ctx.session_id, &state.risk_limits).await {
+    match state.ems.enqueue(ctx.session_id, &order_req).await {
         Ok(order) => (
             StatusCode::CREATED,
             Json(serde_json::json!({
@@ -422,13 +422,10 @@ async fn cancel_order(
         return e.into_response();
     }
 
-    match db::atomic_cancel_order(
-        &state.pool,
-        id,
-        ctx.session_id,
-        &harman::types::CancelReason::UserRequested,
-    )
-    .await
+    match state
+        .ems
+        .enqueue_cancel(id, ctx.session_id, &harman::types::CancelReason::UserRequested)
+        .await
     {
         Ok(()) => (
             StatusCode::OK,
@@ -526,7 +523,7 @@ async fn amend_order(
         None => None,
     };
 
-    match db::atomic_amend_order(&state.pool, id, ctx.session_id, new_price, new_qty).await {
+    match state.ems.enqueue_amend(id, ctx.session_id, new_price, new_qty).await {
         Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "pending_amend"})),
@@ -587,7 +584,7 @@ async fn decrease_order(
         }
     };
 
-    match db::atomic_decrease_order(&state.pool, id, ctx.session_id, reduce_by).await {
+    match state.ems.enqueue_decrease(id, ctx.session_id, reduce_by).await {
         Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "pending_decrease"})),
@@ -637,7 +634,7 @@ async fn mass_cancel(
             .into_response();
     }
 
-    match state.exchange.cancel_all_orders().await {
+    match state.ems.exchange.cancel_all_orders().await {
         Ok(count) => (
             StatusCode::OK,
             Json(serde_json::json!({"cancelled": count})),
@@ -656,11 +653,7 @@ async fn mass_cancel(
 
 /// GET /health
 async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let shutting_down = state
-        .shutting_down
-        .load(std::sync::atomic::Ordering::Relaxed);
-
-    if shutting_down {
+    if state.ems.is_shutting_down() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"status": "shutting_down"})),
@@ -715,7 +708,7 @@ async fn positions_handler(
         return e.into_response();
     }
 
-    let exchange_positions = match state.exchange.get_positions().await {
+    let exchange_positions = match state.ems.exchange.get_positions().await {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "get positions failed");
@@ -762,9 +755,9 @@ async fn risk_handler(
         Ok(risk_state) => (
             StatusCode::OK,
             Json(serde_json::json!({
-                "max_notional": state.risk_limits.max_notional.to_string(),
+                "max_notional": state.ems.risk_limits.max_notional.to_string(),
                 "open_notional": risk_state.open_notional.to_string(),
-                "available_notional": (state.risk_limits.max_notional - risk_state.open_notional).to_string(),
+                "available_notional": (state.ems.risk_limits.max_notional - risk_state.open_notional).to_string(),
             })),
         )
             .into_response(),
@@ -788,10 +781,7 @@ async fn pump_handler(
         return e.into_response();
     }
 
-    if state
-        .shutting_down
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
+    if state.ems.is_shutting_down() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"error": "shutting down"})),
@@ -825,8 +815,6 @@ async fn pump_handler(
     };
 
     let result = crate::pump::pump(&state, ctx.session_id).await;
-    state.metrics.orders_amended.inc_by(result.amended);
-    state.metrics.orders_decreased.inc_by(result.decreased);
     (StatusCode::OK, Json(result)).into_response()
 }
 

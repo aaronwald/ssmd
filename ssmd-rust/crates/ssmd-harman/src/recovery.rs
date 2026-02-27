@@ -39,7 +39,7 @@ pub async fn run(state: &Arc<AppState>) -> Result<(), String> {
     let risk_state = db::compute_risk_state(&state.pool, session_id).await?;
     info!(
         open_notional = %risk_state.open_notional,
-        max_notional = %state.risk_limits.max_notional,
+        max_notional = %state.ems.risk_limits.max_notional,
         "risk state after recovery"
     );
 
@@ -63,6 +63,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
 
     for order in &ambiguous {
         match state
+            .ems
             .exchange
             .get_order_by_client_id(order.client_order_id)
             .await
@@ -89,7 +90,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
                                 "recovery: pending_cancel still resting, re-sending cancel"
                             );
                             if let Some(eid) = &order.exchange_order_id {
-                                match state.exchange.cancel_order(eid).await {
+                                match state.ems.exchange.cancel_order(eid).await {
                                     Ok(()) => {
                                         info!(order_id = order.id, "re-cancel succeeded");
                                         Some(OrderState::Cancelled)
@@ -211,6 +212,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
 /// Fetch resting orders from exchange and import any not tracked locally.
 async fn discover_external_orders(state: &Arc<AppState>, session_id: i64) -> Result<(), String> {
     let exchange_orders = state
+        .ems
         .exchange
         .get_orders()
         .await
@@ -272,6 +274,7 @@ async fn discover_external_orders(state: &Arc<AppState>, session_id: i64) -> Res
 /// Also updates order state when fills bring an order to Filled/PartiallyFilled.
 async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Result<(), String> {
     let fills = state
+        .ems
         .exchange
         .get_fills(None)
         .await
@@ -415,6 +418,7 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
 /// Check local positions against exchange positions
 async fn verify_positions(state: &Arc<AppState>) -> Result<(), String> {
     let exchange_positions = state
+        .ems
         .exchange
         .get_positions()
         .await

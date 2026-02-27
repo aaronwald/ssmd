@@ -123,6 +123,7 @@ pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
 /// synthetic orders in 'acknowledged' state so they appear in the blotter.
 async fn discover_external_orders(state: &AppState, session_id: i64) -> Result<u64, String> {
     let exchange_orders = state
+        .ems
         .exchange
         .get_orders()
         .await
@@ -191,6 +192,7 @@ async fn discover_external_orders(state: &AppState, session_id: i64) -> Result<u
 /// Loads all orders once and builds a lookup to avoid N+1 queries.
 async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String> {
     let fills = state
+        .ems
         .exchange
         .get_fills(None)
         .await
@@ -227,7 +229,7 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
                     trade_id = %fill.trade_id,
                     "recorded missing fill"
                 );
-                state.metrics.fills_recorded.inc();
+                state.ems.metrics.fills_recorded.inc();
                 orders_with_new_fills.insert(order.id);
                 count += 1;
             }
@@ -268,7 +270,7 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
                     )
                     .await?;
                     if inserted {
-                        state.metrics.fills_recorded.inc();
+                        state.ems.metrics.fills_recorded.inc();
                         state.metrics.fills_external_imported.inc();
                         count += 1;
                     }
@@ -340,6 +342,7 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
 /// Large mismatches (>1 contract or >$10 notional) trigger session suspension.
 async fn compare_positions(state: &AppState, session_id: i64) -> Result<Vec<PositionMismatch>, String> {
     let exchange_positions = state
+        .ems
         .exchange
         .get_positions()
         .await
@@ -462,6 +465,7 @@ async fn resolve_stale_orders(state: &AppState, session_id: i64) -> Result<u64, 
         );
 
         match state
+            .ems
             .exchange
             .get_order_by_client_id(order.client_order_id)
             .await
@@ -477,7 +481,7 @@ async fn resolve_stale_orders(state: &AppState, session_id: i64) -> Result<u64, 
                             {
                                 if let Some(eid) = &order.exchange_order_id {
                                     warn!(order_id = order.id, "re-sending cancel");
-                                    let _ = state.exchange.cancel_order(eid).await;
+                                    let _ = state.ems.exchange.cancel_order(eid).await;
                                 }
                             } else {
                                 warn!(

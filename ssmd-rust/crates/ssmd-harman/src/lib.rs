@@ -5,7 +5,6 @@ pub mod recovery;
 pub mod shutdown;
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -13,8 +12,7 @@ use dashmap::DashMap;
 use deadpool_postgres::Pool;
 use tokio::sync::{RwLock, Semaphore};
 
-use harman::exchange::ExchangeAdapter;
-use harman::risk::RiskLimits;
+use ssmd_harman_ems::Ems;
 
 /// Cached auth validation result from data-ts
 pub struct CachedAuth {
@@ -31,43 +29,20 @@ pub struct SessionContext {
     pub key_prefix: String,
 }
 
-/// Metrics for prometheus
+/// Reconciliation metrics (stays in binary, moves to OMS later).
+/// EMS metrics (orders_dequeued, orders_submitted, etc.) are in EmsMetrics.
 pub struct Metrics {
     pub registry: prometheus::Registry,
-    pub orders_dequeued: prometheus::IntCounter,
-    pub orders_submitted: prometheus::IntCounter,
-    pub orders_rejected: prometheus::IntCounter,
-    pub orders_cancelled: prometheus::IntCounter,
-    pub fills_recorded: prometheus::IntCounter,
     pub reconciliation_ok: prometheus::IntCounter,
     pub reconciliation_mismatch: prometheus::IntCounterVec,
     pub reconciliation_duration: prometheus::Histogram,
     pub reconciliation_last_success: prometheus::IntGauge,
     pub reconciliation_fills_discovered: prometheus::IntCounter,
-    pub orders_amended: prometheus::IntCounter,
-    pub orders_decreased: prometheus::IntCounter,
     pub fills_external_imported: prometheus::IntCounter,
 }
 
 impl Metrics {
-    pub fn new() -> Self {
-        let registry = prometheus::Registry::new();
-
-        let orders_dequeued =
-            prometheus::IntCounter::new("harman_orders_dequeued_total", "Orders dequeued from queue")
-                .unwrap();
-        let orders_submitted =
-            prometheus::IntCounter::new("harman_orders_submitted_total", "Orders submitted to exchange")
-                .unwrap();
-        let orders_rejected =
-            prometheus::IntCounter::new("harman_orders_rejected_total", "Orders rejected by exchange")
-                .unwrap();
-        let orders_cancelled =
-            prometheus::IntCounter::new("harman_orders_cancelled_total", "Orders cancelled")
-                .unwrap();
-        let fills_recorded =
-            prometheus::IntCounter::new("harman_fills_recorded_total", "Fills recorded")
-                .unwrap();
+    pub fn new(registry: prometheus::Registry) -> Self {
         let reconciliation_ok =
             prometheus::IntCounter::new("harman_reconciliation_ok_total", "Successful reconciliation cycles")
                 .unwrap();
@@ -94,65 +69,36 @@ impl Metrics {
             "Fills discovered during reconciliation",
         )
         .unwrap();
-        let orders_amended =
-            prometheus::IntCounter::new("harman_orders_amended_total", "Orders amended on exchange")
-                .unwrap();
-        let orders_decreased = prometheus::IntCounter::new(
-            "harman_orders_decreased_total",
-            "Orders decreased on exchange",
-        )
-        .unwrap();
         let fills_external_imported = prometheus::IntCounter::new(
             "harman_fills_external_imported_total",
             "External fills imported as synthetic orders",
         )
         .unwrap();
 
-        registry.register(Box::new(orders_dequeued.clone())).unwrap();
-        registry.register(Box::new(orders_submitted.clone())).unwrap();
-        registry.register(Box::new(orders_rejected.clone())).unwrap();
-        registry.register(Box::new(orders_cancelled.clone())).unwrap();
-        registry.register(Box::new(fills_recorded.clone())).unwrap();
         registry.register(Box::new(reconciliation_ok.clone())).unwrap();
         registry.register(Box::new(reconciliation_mismatch.clone())).unwrap();
         registry.register(Box::new(reconciliation_duration.clone())).unwrap();
         registry.register(Box::new(reconciliation_last_success.clone())).unwrap();
         registry.register(Box::new(reconciliation_fills_discovered.clone())).unwrap();
-        registry.register(Box::new(orders_amended.clone())).unwrap();
-        registry.register(Box::new(orders_decreased.clone())).unwrap();
         registry.register(Box::new(fills_external_imported.clone())).unwrap();
 
         Self {
             registry,
-            orders_dequeued,
-            orders_submitted,
-            orders_rejected,
-            orders_cancelled,
-            fills_recorded,
             reconciliation_ok,
             reconciliation_mismatch,
             reconciliation_duration,
             reconciliation_last_success,
             reconciliation_fills_discovered,
-            orders_amended,
-            orders_decreased,
             fills_external_imported,
         }
     }
 }
 
-impl Default for Metrics {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Shared application state
 pub struct AppState {
+    /// The EMS instance (owns exchange, risk_limits, shutting_down, pump)
+    pub ems: Arc<Ems>,
     pub pool: Pool,
-    pub exchange: Arc<dyn ExchangeAdapter>,
-    pub risk_limits: RiskLimits,
-    pub shutting_down: AtomicBool,
     pub metrics: Metrics,
     // Static tokens (backward compat, used when AUTH_VALIDATE_URL is not set)
     pub api_token: String,
