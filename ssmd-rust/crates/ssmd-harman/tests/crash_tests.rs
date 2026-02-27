@@ -1309,7 +1309,7 @@ async fn test_bracket_entry_fill_activates_exits() {
     ).await.unwrap();
 
     // Drain the entry's queue item
-    if let Some(qi) = db::dequeue_order(&pool, session_id).await {
+    if let Ok(Some(qi)) = db::dequeue_order(&pool, session_id).await {
         let _ = db::remove_queue_item(&pool, qi.id).await;
     }
 
