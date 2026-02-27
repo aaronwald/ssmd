@@ -235,6 +235,178 @@ impl TestClient {
         let json: Value = resp.json().await.expect("positions json");
         (status, json)
     }
+
+    // --- Groups ---
+
+    async fn create_bracket(
+        &self,
+        ticker: &str,
+        entry_price: &str,
+        tp_price: &str,
+        sl_price: &str,
+        qty: &str,
+    ) -> (reqwest::StatusCode, Value) {
+        let body = serde_json::json!({
+            "entry": {
+                "client_order_id": Uuid::new_v4(),
+                "ticker": ticker,
+                "side": "yes",
+                "action": "buy",
+                "quantity": qty,
+                "price_dollars": entry_price,
+                "time_in_force": "gtc"
+            },
+            "take_profit": {
+                "client_order_id": Uuid::new_v4(),
+                "ticker": ticker,
+                "side": "yes",
+                "action": "sell",
+                "quantity": qty,
+                "price_dollars": tp_price,
+                "time_in_force": "gtc"
+            },
+            "stop_loss": {
+                "client_order_id": Uuid::new_v4(),
+                "ticker": ticker,
+                "side": "yes",
+                "action": "sell",
+                "quantity": qty,
+                "price_dollars": sl_price,
+                "time_in_force": "gtc"
+            }
+        });
+        let resp = self
+            .client
+            .post(format!("{}/v1/groups/bracket", self.base_url))
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .expect("create_bracket request");
+        let status = resp.status();
+        let json: Value = resp.json().await.expect("create_bracket json");
+        (status, json)
+    }
+
+    async fn create_oco(
+        &self,
+        ticker: &str,
+        leg1_price: &str,
+        leg2_price: &str,
+        qty: &str,
+    ) -> (reqwest::StatusCode, Value) {
+        let body = serde_json::json!({
+            "leg1": {
+                "client_order_id": Uuid::new_v4(),
+                "ticker": ticker,
+                "side": "yes",
+                "action": "buy",
+                "quantity": qty,
+                "price_dollars": leg1_price,
+                "time_in_force": "gtc"
+            },
+            "leg2": {
+                "client_order_id": Uuid::new_v4(),
+                "ticker": ticker,
+                "side": "no",
+                "action": "buy",
+                "quantity": qty,
+                "price_dollars": leg2_price,
+                "time_in_force": "gtc"
+            }
+        });
+        let resp = self
+            .client
+            .post(format!("{}/v1/groups/oco", self.base_url))
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .expect("create_oco request");
+        let status = resp.status();
+        let json: Value = resp.json().await.expect("create_oco json");
+        (status, json)
+    }
+
+    async fn list_groups(&self, state_filter: Option<&str>) -> Value {
+        let mut url = format!("{}/v1/groups", self.base_url);
+        if let Some(s) = state_filter {
+            url.push_str(&format!("?state={}", s));
+        }
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .expect("list_groups request");
+        resp.json().await.expect("list_groups json")
+    }
+
+    async fn get_group(&self, id: i64) -> (reqwest::StatusCode, Value) {
+        let resp = self
+            .client
+            .get(format!("{}/v1/groups/{}", self.base_url, id))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .expect("get_group request");
+        let status = resp.status();
+        let json: Value = resp.json().await.expect("get_group json");
+        (status, json)
+    }
+
+    async fn cancel_group(&self, id: i64) -> (reqwest::StatusCode, Value) {
+        let resp = self
+            .client
+            .delete(format!("{}/v1/groups/{}", self.base_url, id))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .expect("cancel_group request");
+        let status = resp.status();
+        let json: Value = resp.json().await.expect("cancel_group json");
+        (status, json)
+    }
+
+    // --- Fills & Audit ---
+
+    async fn list_fills(&self) -> Value {
+        let resp = self
+            .client
+            .get(format!("{}/v1/fills", self.base_url))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .expect("list_fills request");
+        resp.json().await.expect("list_fills json")
+    }
+
+    async fn list_audit(&self) -> Value {
+        let resp = self
+            .client
+            .get(format!("{}/v1/audit", self.base_url))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .expect("list_audit request");
+        resp.json().await.expect("list_audit json")
+    }
+
+    // --- Tickers ---
+
+    async fn search_tickers(&self, q: &str) -> (reqwest::StatusCode, Value) {
+        let resp = self
+            .client
+            .get(format!("{}/v1/tickers?q={}", self.base_url, q))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .expect("search_tickers request");
+        let status = resp.status();
+        let json: Value = resp.json().await.expect("search_tickers json");
+        (status, json)
+    }
 }
 
 /// Helper: create order, pump it to acknowledged, return the order ID.
@@ -721,4 +893,394 @@ async fn test_live_reconcile_no_suspend() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     cancel_and_pump(&c, id).await;
     cancel_and_pump(&c, id2).await;
+}
+
+/// Helper: cancel a group and pump to process the leg cancels.
+/// Tolerates non-success (group may already be terminal).
+async fn cancel_group_and_pump(c: &TestClient, group_id: i64) {
+    let (status, _) = c.cancel_group(group_id).await;
+    assert!(
+        status.is_success() || status == 422 || status == 500,
+        "cancel group {} failed: {}",
+        group_id,
+        status
+    );
+    c.pump().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+}
+
+/// Helper: find an order by leg_role in a group's orders array.
+fn find_order_by_role<'a>(orders: &'a [Value], role: &str) -> &'a Value {
+    orders
+        .iter()
+        .find(|o| o["leg_role"].as_str() == Some(role))
+        .unwrap_or_else(|| panic!("no order with leg_role={} in group", role))
+}
+
+// =============================================================================
+// Test 15: Create bracket group
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_live_create_bracket() {
+    let c = TestClient::from_env();
+    let ticker = TestClient::ticker();
+
+    let (status, json) = c.create_bracket(&ticker, "0.02", "0.05", "0.01", "1").await;
+    assert_eq!(status, 201, "create bracket failed: {:?}", json);
+
+    assert_eq!(json["group_type"].as_str(), Some("bracket"));
+    assert_eq!(json["state"].as_str(), Some("active"));
+
+    let orders = json["orders"].as_array().expect("orders array");
+    assert_eq!(orders.len(), 3, "bracket should have 3 orders");
+
+    // Verify leg roles
+    let entry = find_order_by_role(orders, "entry");
+    let tp = find_order_by_role(orders, "take_profit");
+    let sl = find_order_by_role(orders, "stop_loss");
+
+    assert_eq!(entry["state"].as_str(), Some("pending"));
+    assert_eq!(tp["state"].as_str(), Some("staged"));
+    assert_eq!(sl["state"].as_str(), Some("staged"));
+
+    let group_id = json["id"].as_i64().expect("group id");
+    println!("bracket group_id={}, entry={}, tp={}, sl={}",
+        group_id,
+        entry["id"].as_i64().unwrap(),
+        tp["id"].as_i64().unwrap(),
+        sl["id"].as_i64().unwrap(),
+    );
+
+    // Verify group appears in list
+    let groups = c.list_groups(Some("active")).await;
+    let groups_arr = groups["groups"].as_array().expect("groups array");
+    let found = groups_arr.iter().any(|g| g["id"].as_i64() == Some(group_id));
+    assert!(found, "bracket group {} not found in active groups list", group_id);
+
+    // Cleanup
+    cancel_group_and_pump(&c, group_id).await;
+}
+
+// =============================================================================
+// Test 16: Bracket entry pumped to acknowledged, exits stay staged
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_live_bracket_pump_entry() {
+    let c = TestClient::from_env();
+    let ticker = TestClient::ticker();
+
+    let (status, json) = c.create_bracket(&ticker, "0.02", "0.05", "0.01", "1").await;
+    assert_eq!(status, 201, "create bracket failed: {:?}", json);
+    let group_id = json["id"].as_i64().expect("group id");
+
+    // Pump entry to exchange
+    let pump = c.pump().await;
+    println!("bracket pump result: {:?}", pump);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify entry acknowledged, exits still staged
+    let (_, group) = c.get_group(group_id).await;
+    let orders = group["orders"].as_array().expect("orders array");
+
+    let entry = find_order_by_role(orders, "entry");
+    let tp = find_order_by_role(orders, "take_profit");
+    let sl = find_order_by_role(orders, "stop_loss");
+
+    assert_eq!(
+        entry["state"].as_str(),
+        Some("acknowledged"),
+        "entry should be acknowledged: {:?}",
+        entry["state"]
+    );
+    assert_eq!(
+        tp["state"].as_str(),
+        Some("staged"),
+        "take_profit should stay staged: {:?}",
+        tp["state"]
+    );
+    assert_eq!(
+        sl["state"].as_str(),
+        Some("staged"),
+        "stop_loss should stay staged: {:?}",
+        sl["state"]
+    );
+
+    // Cleanup
+    cancel_group_and_pump(&c, group_id).await;
+}
+
+// =============================================================================
+// Test 17: Cancel bracket group
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_live_cancel_bracket() {
+    let c = TestClient::from_env();
+    let ticker = TestClient::ticker();
+
+    let (status, json) = c.create_bracket(&ticker, "0.02", "0.05", "0.01", "1").await;
+    assert_eq!(status, 201);
+    let group_id = json["id"].as_i64().expect("group id");
+
+    // Pump entry to acknowledged
+    c.pump().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Cancel group
+    let (status, cancel_json) = c.cancel_group(group_id).await;
+    assert!(status.is_success(), "cancel bracket failed: {:?}", cancel_json);
+
+    // Pump to process the cancel on exchange
+    c.pump().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify group cancelled
+    let (_, group) = c.get_group(group_id).await;
+    assert_eq!(
+        group["state"].as_str(),
+        Some("cancelled"),
+        "group should be cancelled: {:?}",
+        group["state"]
+    );
+
+    // All orders should be terminal
+    let orders = group["orders"].as_array().expect("orders array");
+    for order in orders {
+        let state = order["state"].as_str().unwrap_or("unknown");
+        assert!(
+            state == "cancelled" || state == "filled" || state == "rejected",
+            "order {} should be terminal, got: {}",
+            order["id"],
+            state
+        );
+    }
+}
+
+// =============================================================================
+// Test 18: Create OCO group
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_live_create_oco() {
+    let c = TestClient::from_env();
+    let ticker = TestClient::ticker();
+
+    let (status, json) = c.create_oco(&ticker, "0.02", "0.02", "1").await;
+    assert_eq!(status, 201, "create OCO failed: {:?}", json);
+
+    assert_eq!(json["group_type"].as_str(), Some("oco"));
+    assert_eq!(json["state"].as_str(), Some("active"));
+
+    let orders = json["orders"].as_array().expect("orders array");
+    assert_eq!(orders.len(), 2, "OCO should have 2 orders");
+
+    // Both legs should be oco_leg and pending
+    for order in orders {
+        assert_eq!(
+            order["leg_role"].as_str(),
+            Some("oco_leg"),
+            "OCO order should have leg_role=oco_leg: {:?}",
+            order["leg_role"]
+        );
+        assert_eq!(
+            order["state"].as_str(),
+            Some("pending"),
+            "OCO leg should be pending: {:?}",
+            order["state"]
+        );
+    }
+
+    let group_id = json["id"].as_i64().expect("group id");
+    println!("OCO group_id={}", group_id);
+
+    // Cleanup
+    cancel_group_and_pump(&c, group_id).await;
+}
+
+// =============================================================================
+// Test 19: OCO pump both legs acknowledged
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_live_oco_pump() {
+    let c = TestClient::from_env();
+    let ticker = TestClient::ticker();
+
+    let (status, json) = c.create_oco(&ticker, "0.02", "0.02", "1").await;
+    assert_eq!(status, 201);
+    let group_id = json["id"].as_i64().expect("group id");
+
+    // Pump both legs
+    let pump = c.pump().await;
+    println!("OCO pump result: {:?}", pump);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify both acknowledged
+    let (_, group) = c.get_group(group_id).await;
+    let orders = group["orders"].as_array().expect("orders array");
+
+    for order in orders {
+        assert_eq!(
+            order["state"].as_str(),
+            Some("acknowledged"),
+            "OCO leg {} should be acknowledged: {:?}",
+            order["id"],
+            order["state"]
+        );
+    }
+
+    // Cleanup
+    cancel_group_and_pump(&c, group_id).await;
+}
+
+// =============================================================================
+// Test 20: Cancel OCO group
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_live_cancel_oco() {
+    let c = TestClient::from_env();
+    let ticker = TestClient::ticker();
+
+    let (status, json) = c.create_oco(&ticker, "0.02", "0.02", "1").await;
+    assert_eq!(status, 201);
+    let group_id = json["id"].as_i64().expect("group id");
+
+    // Pump to acknowledged
+    c.pump().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Cancel group
+    let (status, cancel_json) = c.cancel_group(group_id).await;
+    assert!(status.is_success(), "cancel OCO failed: {:?}", cancel_json);
+
+    // Pump to process cancels on exchange
+    c.pump().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify group cancelled
+    let (_, group) = c.get_group(group_id).await;
+    assert_eq!(
+        group["state"].as_str(),
+        Some("cancelled"),
+        "OCO group should be cancelled: {:?}",
+        group["state"]
+    );
+
+    // Both legs should be cancelled
+    let orders = group["orders"].as_array().expect("orders array");
+    for order in orders {
+        let state = order["state"].as_str().unwrap_or("unknown");
+        assert!(
+            state == "cancelled" || state == "filled",
+            "OCO leg {} should be cancelled or filled, got: {}",
+            order["id"],
+            state
+        );
+    }
+}
+
+// =============================================================================
+// Test 21: Ticker search
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_live_ticker_search() {
+    let c = TestClient::from_env();
+    let ticker = TestClient::ticker();
+
+    // Extract prefix from the test ticker (e.g. "KXBTCD" from "KXBTCD-26FEB25-T97500")
+    let prefix = ticker.split('-').next().unwrap_or(&ticker);
+
+    // Search with known prefix — should return results
+    let (status, json) = c.search_tickers(prefix).await;
+    assert_eq!(status, 200, "ticker search failed: {:?}", json);
+
+    let tickers = json["tickers"].as_array().expect("tickers array");
+    assert!(
+        !tickers.is_empty(),
+        "ticker search for '{}' should return results",
+        prefix
+    );
+    println!("ticker search '{}': {} results", prefix, tickers.len());
+
+    // Verify at least one result matches the prefix
+    let has_match = tickers
+        .iter()
+        .any(|t| t.as_str().map(|s| s.starts_with(prefix)).unwrap_or(false));
+    assert!(has_match, "no ticker starts with '{}': {:?}", prefix, tickers);
+
+    // Search with nonsense — should return empty
+    let (status, json) = c.search_tickers("ZZZZNONEXISTENT").await;
+    assert_eq!(status, 200, "ticker search for nonsense failed");
+    let tickers = json["tickers"].as_array().expect("tickers array");
+    assert!(
+        tickers.is_empty(),
+        "ticker search for nonsense should be empty, got: {:?}",
+        tickers
+    );
+}
+
+// =============================================================================
+// Test 22: Fills and audit endpoints
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_live_fills_and_audit() {
+    let c = TestClient::from_env();
+    let ticker = TestClient::ticker();
+
+    // Fills endpoint should return 200 with array
+    let fills = c.list_fills().await;
+    assert!(
+        fills.get("fills").is_some(),
+        "fills response missing 'fills' field: {:?}",
+        fills
+    );
+    let fills_arr = fills["fills"].as_array().expect("fills array");
+    println!("existing fills: {}", fills_arr.len());
+
+    // Audit endpoint should return 200 with array
+    let audit = c.list_audit().await;
+    assert!(
+        audit.get("audit").is_some(),
+        "audit response missing 'audit' field: {:?}",
+        audit
+    );
+    let audit_before = audit["audit"].as_array().expect("audit array").len();
+    println!("existing audit entries: {}", audit_before);
+
+    // Create order, pump, cancel, pump — generates audit entries
+    let id = create_and_pump(&c, &ticker, "0.02", "1").await;
+    cancel_and_pump(&c, id).await;
+
+    // Verify audit entries exist for the order lifecycle
+    let audit = c.list_audit().await;
+    let audit_arr = audit["audit"].as_array().expect("audit array");
+    println!("audit entries after order lifecycle: {}", audit_arr.len());
+    assert!(
+        audit_arr.len() > audit_before,
+        "audit should have new entries after order lifecycle"
+    );
+
+    // Check that at least one audit entry references our order
+    let has_order_audit = audit_arr
+        .iter()
+        .any(|e| e["order_id"].as_i64() == Some(id));
+    assert!(
+        has_order_audit,
+        "audit should contain entries for order {}: {:?}",
+        id,
+        &audit_arr[..audit_arr.len().min(5)]
+    );
 }

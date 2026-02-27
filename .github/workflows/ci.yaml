@@ -41,6 +41,7 @@ jobs:
         working-directory: ssmd-rust
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/harman_test
+          RUST_BACKTRACE: 1
         run: cargo test -p ssmd-harman --test crash_tests -- --ignored --nocapture --test-threads=1
 
       - name: Run EMS integration tests

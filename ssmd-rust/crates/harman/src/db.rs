@@ -614,7 +614,7 @@ pub async fn get_or_create_session(
             &[&exchange, &key_prefix],
         )
         .await
-        .map_err(|e| format!("create session: {}", e))?;
+        .map_err(|e| format!("create session: {:?}", e))?;
 
     let id: i64 = row.get("id");
     tx.commit()
@@ -1761,6 +1761,12 @@ pub async fn get_groups_needing_evaluation(
         )
         .await
         .map_err(|e| format!("get groups needing eval: {}", e))?;
+
+    debug!(
+        session_id,
+        groups_found = group_rows.len(),
+        "get_groups_needing_evaluation"
+    );
 
     let mut results = Vec::new();
     for grow in &group_rows {

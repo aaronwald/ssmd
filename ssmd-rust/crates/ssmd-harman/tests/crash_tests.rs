@@ -1314,6 +1314,40 @@ async fn test_bracket_entry_fill_activates_exits() {
         let _ = db::remove_queue_item(&pool, qi.queue_id).await;
     }
 
+    // Debug: verify DB state before evaluate_triggers
+    {
+        let client = pool.get().await.unwrap();
+        let row = client.query_one(
+            "SELECT state, group_id FROM prediction_orders WHERE id = $1",
+            &[&entry_order.id],
+        ).await.unwrap();
+        let state: String = row.get("state");
+        let gid: Option<i64> = row.get("group_id");
+        eprintln!("[diag] entry order {} state={} group_id={:?} session_id={}", entry_order.id, state, gid, session_id);
+
+        let rows = client.query(
+            "SELECT id, state, group_id, leg_role FROM prediction_orders WHERE group_id = $1",
+            &[&gid.unwrap()],
+        ).await.unwrap();
+        for r in &rows {
+            let id: i64 = r.get("id");
+            let s: String = r.get("state");
+            let lr: Option<String> = r.get("leg_role");
+            eprintln!("[diag] group order id={} state={} leg_role={:?}", id, s, lr);
+        }
+
+        let grows = client.query(
+            "SELECT id, state, session_id FROM order_groups WHERE session_id = $1",
+            &[&session_id],
+        ).await.unwrap();
+        for g in &grows {
+            let id: i64 = g.get("id");
+            let s: String = g.get("state");
+            let sid: i64 = g.get("session_id");
+            eprintln!("[diag] group id={} state={} session_id={}", id, s, sid);
+        }
+    }
+
     // Evaluate triggers
     let activated = app_state.oms.evaluate_triggers(session_id).await.unwrap();
     assert_eq!(activated, 2, "should activate TP and SL");
