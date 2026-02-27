@@ -1,11 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useOrders } from "@/lib/hooks";
 import { pump } from "@/lib/api";
 import { StateBadge } from "@/components/state-badge";
 import { OrderActions } from "@/components/order-actions";
 import { CreateOrderForm } from "@/components/create-order-form";
+import type { Order } from "@/lib/types";
+
+type SortKey = "id" | "ticker" | "quantity" | "price_dollars" | "state" | "created_at";
+type SortDir = "asc" | "desc";
 
 const stateFilters = [
   { value: "", label: "All" },
@@ -20,6 +24,33 @@ export default function OrdersPage() {
   const [filter, setFilter] = useState("");
   const { data: orders, error } = useOrders(filter || undefined);
   const [pumpMsg, setPumpMsg] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("created_at");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  function handleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir(sortDir === "asc" ? "desc" : "asc");
+    } else {
+      setSortKey(key);
+      setSortDir(key === "created_at" || key === "id" ? "desc" : "asc");
+    }
+  }
+
+  const sortedOrders = useMemo(() => {
+    if (!orders) return undefined;
+    return [...orders].sort((a, b) => {
+      let cmp = 0;
+      switch (sortKey) {
+        case "id": cmp = a.id - b.id; break;
+        case "ticker": cmp = a.ticker.localeCompare(b.ticker); break;
+        case "quantity": cmp = Number(a.quantity) - Number(b.quantity); break;
+        case "price_dollars": cmp = Number(a.price_dollars) - Number(b.price_dollars); break;
+        case "state": cmp = a.state.localeCompare(b.state); break;
+        case "created_at": cmp = a.created_at.localeCompare(b.created_at); break;
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [orders, sortKey, sortDir]);
 
   async function handlePump() {
     setPumpMsg("");
@@ -61,23 +92,23 @@ export default function OrdersPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-fg-muted border-b border-border">
-                <th className="px-4 py-2">ID</th>
-                <th className="px-4 py-2">Ticker</th>
+                <SortTh k="id" current={sortKey} dir={sortDir} onClick={handleSort}>ID</SortTh>
+                <SortTh k="ticker" current={sortKey} dir={sortDir} onClick={handleSort}>Ticker</SortTh>
                 <th className="px-4 py-2">Side</th>
                 <th className="px-4 py-2">Action</th>
-                <th className="px-4 py-2 text-right">Qty</th>
+                <SortTh k="quantity" current={sortKey} dir={sortDir} onClick={handleSort} align="right">Qty</SortTh>
                 <th className="px-4 py-2 text-right">Filled</th>
-                <th className="px-4 py-2 text-right">Price</th>
+                <SortTh k="price_dollars" current={sortKey} dir={sortDir} onClick={handleSort} align="right">Price</SortTh>
                 <th className="px-4 py-2">TIF</th>
-                <th className="px-4 py-2">State</th>
+                <SortTh k="state" current={sortKey} dir={sortDir} onClick={handleSort}>State</SortTh>
                 <th className="px-4 py-2">Leg</th>
-                <th className="px-4 py-2">Created</th>
+                <SortTh k="created_at" current={sortKey} dir={sortDir} onClick={handleSort}>Created</SortTh>
                 <th className="px-4 py-2">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {orders && orders.length > 0 ? (
-                orders.map((o) => (
+              {sortedOrders && sortedOrders.length > 0 ? (
+                sortedOrders.map((o) => (
                   <tr key={o.id} className="border-b border-border-subtle hover:bg-bg-surface-hover">
                     <td className="px-4 py-2 font-mono text-fg-muted">{o.id}</td>
                     <td className="px-4 py-2 font-mono">{o.ticker}</td>
@@ -96,7 +127,7 @@ export default function OrdersPage() {
               ) : (
                 <tr>
                   <td colSpan={12} className="px-4 py-8 text-center text-fg-subtle text-sm">
-                    {orders ? "No orders" : "Loading..."}
+                    {sortedOrders ? "No orders" : "Loading..."}
                   </td>
                 </tr>
               )}
@@ -105,5 +136,21 @@ export default function OrdersPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function SortTh({ k, current, dir, onClick, align, children }: {
+  k: SortKey; current: SortKey; dir: SortDir;
+  onClick: (k: SortKey) => void; align?: "right"; children: React.ReactNode;
+}) {
+  const active = current === k;
+  const arrow = active ? (dir === "asc" ? " \u25B2" : " \u25BC") : "";
+  return (
+    <th
+      className={`px-4 py-2 cursor-pointer select-none hover:text-fg transition-colors ${align === "right" ? "text-right" : ""} ${active ? "text-fg" : ""}`}
+      onClick={() => onClick(k)}
+    >
+      {children}{arrow}
+    </th>
   );
 }
