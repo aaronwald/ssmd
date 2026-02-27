@@ -947,6 +947,7 @@ async fn list_audit_handler(
 async fn list_tickers_handler(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SessionContext>,
+    headers: HeaderMap,
     Query(query): Query<TickerSearchQuery>,
 ) -> impl IntoResponse {
     if let Err(e) = require_scope(&ctx, "harman:read") {
@@ -978,7 +979,13 @@ async fn list_tickers_handler(
     };
 
     let url = format!("{}/v1/markets?status=active&limit=500", base_url);
-    let resp = match state.http_client.get(&url).timeout(Duration::from_secs(10)).send().await {
+    let mut req = state.http_client.get(&url).timeout(Duration::from_secs(10));
+    if let Some(auth) = headers.get("authorization") {
+        if let Ok(val) = auth.to_str() {
+            req = req.header("authorization", val);
+        }
+    }
+    let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "failed to fetch tickers from data-ts");
