@@ -12,7 +12,7 @@
 //! Run with: cargo test -p ssmd-harman --test crash_tests -- --ignored
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -25,6 +25,7 @@ use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use ssmd_harman::{pump, reconciliation, recovery, AppState, Metrics};
+use ssmd_harman_ems::{Ems, EmsMetrics};
 
 /// Build an AppState using MockExchange and a test DB pool.
 async fn build_test_state(
@@ -32,12 +33,18 @@ async fn build_test_state(
     pool: deadpool_postgres::Pool,
     session_id: i64,
 ) -> Arc<AppState> {
+    let registry = prometheus::Registry::new();
+    let ems_metrics = EmsMetrics::new(&registry);
+    let ems = Arc::new(Ems::new(
+        pool.clone(),
+        Arc::new(mock),
+        RiskLimits::default(),
+        ems_metrics,
+    ));
     Arc::new(AppState {
+        ems,
         pool,
-        exchange: Arc::new(mock),
-        risk_limits: RiskLimits::default(),
-        shutting_down: AtomicBool::new(false),
-        metrics: Metrics::new(),
+        metrics: Metrics::new(registry),
         api_token: "test-api-token".to_string(),
         admin_token: "test-admin-token".to_string(),
         startup_session_id: session_id,
@@ -360,7 +367,7 @@ async fn test_pump_respects_shutting_down_flag() {
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
 
     // Set shutting_down BEFORE pump
-    app_state.shutting_down.store(true, Ordering::Relaxed);
+    app_state.ems.shutting_down.store(true, Ordering::Relaxed);
 
     let result = pump::pump(&app_state, session_id).await;
 

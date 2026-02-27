@@ -42,3 +42,5 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 rust_decimal = { workspace = true }
 dashmap = { workspace = true }
+ssmd-harman-ems = { path = "../ssmd-harman-ems" }
+prometheus = { workspace = true }
