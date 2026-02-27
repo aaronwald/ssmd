@@ -3790,12 +3790,31 @@ dependencies = [
  "sha2",
  "ssmd-connector-lib",
  "ssmd-exchange-kalshi",
+ "ssmd-harman-ems",
  "subtle",
  "tokio",
  "tokio-postgres",
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "ssmd-harman-ems"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "deadpool-postgres",
+ "harman",
+ "prometheus",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
  "uuid",
 ]
 
