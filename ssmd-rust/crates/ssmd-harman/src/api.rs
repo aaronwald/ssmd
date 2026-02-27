@@ -20,6 +20,8 @@ use harman::error::EnqueueError;
 use harman::state::OrderState;
 use harman::types::{Action, GroupState, Order, OrderGroup, OrderRequest, Side, TimeInForce};
 
+use tower_http::cors::{Any, CorsLayer};
+
 use crate::{AppState, SessionContext};
 
 /// Extract bearer token from Authorization header
@@ -230,7 +232,12 @@ pub fn router(state: Arc<AppState>) -> Router {
             auth_middleware,
         ));
 
-    public.merge(authenticated).with_state(state)
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    public.merge(authenticated).layer(cors).with_state(state)
 }
 
 /// POST /v1/orders

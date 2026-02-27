@@ -35,6 +35,7 @@ tower = { workspace = true }
 reqwest = { workspace = true }
 dashmap = { workspace = true }
 sha2 = "0.10"
+tower-http = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
