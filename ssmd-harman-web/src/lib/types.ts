@@ -120,3 +120,32 @@ export interface HealthResponse {
   session_state: string;
   uptime_seconds: number;
 }
+
+export interface SnapResponse {
+  feed: string;
+  snapshots: RawKalshiSnapshot[];
+  count: number;
+}
+
+/** Raw Kalshi snapshot from snap endpoint — prices in msg as cents + dollar strings */
+export interface RawKalshiSnapshot {
+  _ticker: string;
+  msg?: {
+    yes_bid_dollars?: string;
+    yes_ask_dollars?: string;
+    price_dollars?: string;
+    yes_bid?: number;
+    yes_ask?: number;
+    price?: number;
+    volume?: number;
+    open_interest?: number;
+  };
+}
+
+/** Normalized snapshot for display — all prices in dollars */
+export interface NormalizedSnapshot {
+  ticker: string;
+  yesBid: number | null;
+  yesAsk: number | null;
+  last: number | null;
+}

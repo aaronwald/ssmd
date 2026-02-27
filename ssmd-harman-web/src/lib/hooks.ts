@@ -9,6 +9,7 @@ import {
   listAudit,
   getPositions,
   getRisk,
+  getSnapMap,
 } from "./api";
 
 const REFRESH_INTERVAL = 5000;
@@ -47,4 +48,8 @@ export function usePositions() {
 
 export function useRisk() {
   return useSWR("risk", getRisk, { refreshInterval: REFRESH_INTERVAL });
+}
+
+export function useSnapMap(feed: string = "kalshi") {
+  return useSWR(`snap-${feed}`, () => getSnapMap(feed), { refreshInterval: REFRESH_INTERVAL });
 }

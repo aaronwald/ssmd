@@ -9,6 +9,8 @@ import type {
   CreateBracketRequest,
   CreateOcoRequest,
   HealthResponse,
+  SnapResponse,
+  NormalizedSnapshot,
 } from "./types";
 
 const BASE_URL =
@@ -113,3 +115,19 @@ export const massCancel = () =>
 // Ticker search (secmaster)
 export const searchTickers = (q: string) =>
   request<{ tickers: string[] }>(`/v1/tickers?q=${encodeURIComponent(q)}`);
+
+// Market data (snap) — returns normalized snapshots keyed by ticker
+export const getSnapMap = async (feed: string = "kalshi"): Promise<Map<string, NormalizedSnapshot>> => {
+  const raw = await request<SnapResponse>(`/v1/snap?feed=${encodeURIComponent(feed)}`);
+  const map = new Map<string, NormalizedSnapshot>();
+  for (const s of raw.snapshots) {
+    const ticker = s._ticker;
+    const msg = s.msg;
+    if (!ticker || !msg) continue;
+    const yesBid = msg.yes_bid_dollars != null ? parseFloat(msg.yes_bid_dollars) : (msg.yes_bid != null ? msg.yes_bid / 100 : null);
+    const yesAsk = msg.yes_ask_dollars != null ? parseFloat(msg.yes_ask_dollars) : (msg.yes_ask != null ? msg.yes_ask / 100 : null);
+    const last = msg.price_dollars != null ? parseFloat(msg.price_dollars) : (msg.price != null ? msg.price / 100 : null);
+    map.set(ticker, { ticker, yesBid, yesAsk, last });
+  }
+  return map;
+};

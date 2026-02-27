@@ -223,6 +223,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/fills", get(list_fills_handler))
         .route("/v1/audit", get(list_audit_handler))
         .route("/v1/tickers", get(list_tickers_handler))
+        .route("/v1/snap", get(snap_handler))
         // harman:admin
         .route("/v1/orders/mass-cancel", post(mass_cancel))
         .route("/v1/admin/pump", post(pump_handler))
@@ -1055,6 +1056,80 @@ fn filter_tickers<'a>(tickers: &'a [String], prefix: &str, limit: usize) -> Vec<
 #[derive(Debug, Deserialize)]
 struct TickerSearchQuery {
     q: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapQuery {
+    feed: Option<String>,
+    tickers: Option<String>,
+}
+
+/// GET /v1/snap — proxy to data-ts snap endpoint for live market data.
+/// Caches for 30 seconds per feed.
+async fn snap_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Query(query): Query<SnapQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        return e.into_response();
+    }
+
+    let feed = query.feed.as_deref().unwrap_or("kalshi");
+
+    let base_url = match &state.auth_validate_url {
+        Some(url) => url.replace("/v1/auth/validate", ""),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "data-ts not configured"})),
+            )
+                .into_response();
+        }
+    };
+
+    let mut url = format!("{}/v1/data/snap?feed={}", base_url, feed);
+    if let Some(tickers) = &query.tickers {
+        url.push_str(&format!("&tickers={}", tickers));
+    }
+
+    let mut req = state.http_client.get(&url).timeout(Duration::from_secs(10));
+    if let Ok(key) = std::env::var("DATA_TS_API_KEY") {
+        req = req.header("authorization", format!("Bearer {}", key));
+    }
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to fetch snap from data-ts");
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({"feed": feed, "snapshots": [], "count": 0})),
+            )
+                .into_response();
+        }
+    };
+
+    if !resp.status().is_success() {
+        tracing::warn!(status = %resp.status(), "data-ts snap returned error");
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"feed": feed, "snapshots": [], "count": 0})),
+        )
+            .into_response();
+    }
+
+    match resp.json::<serde_json::Value>().await {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to parse data-ts snap response");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"feed": feed, "snapshots": [], "count": 0})),
+            )
+                .into_response()
+        }
+    }
 }
 
 fn order_to_json(order: &Order) -> serde_json::Value {
