@@ -474,9 +474,16 @@ impl ExchangeAdapter for KalshiClient {
             let page_count = orders_resp.orders.len();
 
             all_orders.extend(orders_resp.orders.into_iter().map(|o| {
-                let qty = Decimal::from(o.effective_count());
-                let filled = Decimal::from(o.filled_count());
+                let count = Decimal::from(o.effective_count());
                 let remaining = Decimal::from(o.effective_remaining());
+                // For resting orders, Kalshi may not populate count_fp — only remaining_count_fp.
+                // Use remaining as quantity when count is zero.
+                let qty = if count.is_zero() && !remaining.is_zero() {
+                    remaining
+                } else {
+                    count
+                };
+                let filled = qty - remaining;
                 let status = Self::map_order_status(&o);
                 let side = Self::parse_side(&o.side);
                 let action = Self::parse_action(&o.action);
