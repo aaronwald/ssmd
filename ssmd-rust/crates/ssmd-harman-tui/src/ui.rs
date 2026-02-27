@@ -392,6 +392,8 @@ fn draw_positions(f: &mut Frame, app: &App, area: Rect) {
             Cell::from("Net Qty"),
             Cell::from("Buy Filled"),
             Cell::from("Sell Filled"),
+            Cell::from("Last"),
+            Cell::from("Mkt Value"),
         ])
         .style(
             Style::default()
@@ -410,19 +412,32 @@ fn draw_positions(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Color::DarkGray
                 };
+                let snap = app.snapshots.iter().find(|s| s.ticker == pos.ticker);
+                let last = snap.and_then(|s| s.last_price);
+                let mkt_value = last.map(|p| {
+                    let net_f64 = pos.net_quantity.to_string().parse::<f64>().unwrap_or(0.0);
+                    net_f64 * p
+                });
                 Row::new(vec![
                     Cell::from(pos.ticker.clone()),
                     Cell::from(pos.net_quantity.to_string()).style(Style::default().fg(net_color)),
                     Cell::from(pos.buy_filled.to_string()),
                     Cell::from(pos.sell_filled.to_string()),
+                    Cell::from(format_price(last)),
+                    Cell::from(match mkt_value {
+                        Some(v) => format!("${:.2}", v),
+                        None => "—".to_string(),
+                    }),
                 ])
             })
             .collect();
 
         let widths = [
             Constraint::Min(20),
+            Constraint::Length(10),
             Constraint::Length(12),
             Constraint::Length(12),
+            Constraint::Length(10),
             Constraint::Length(12),
         ];
 
