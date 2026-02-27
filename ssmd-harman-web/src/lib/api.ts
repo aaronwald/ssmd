@@ -73,10 +73,10 @@ export const createOrder = (order: CreateOrderRequest) =>
 export const cancelOrder = (id: number) =>
   request<void>(`/v1/orders/${id}`, { method: "DELETE" });
 
-export const amendOrder = (id: number, body: { price_dollars?: string; quantity?: string }) =>
+export const amendOrder = (id: number, body: { new_price_dollars?: string; new_quantity?: string }) =>
   request<Order>(`/v1/orders/${id}/amend`, { method: "POST", body: JSON.stringify(body) });
 
-export const decreaseOrder = (id: number, body: { quantity: string }) =>
+export const decreaseOrder = (id: number, body: { reduce_by: string }) =>
   request<Order>(`/v1/orders/${id}/decrease`, { method: "POST", body: JSON.stringify(body) });
 
 export const createBracket = (req: CreateBracketRequest) =>

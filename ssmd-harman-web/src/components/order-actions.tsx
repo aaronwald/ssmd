@@ -46,7 +46,7 @@ export function OrderActions({ order }: { order: Order }) {
     setLoading(true);
     setError("");
     try {
-      await amendOrder(order.id, { price_dollars: newPrice, quantity: newQty });
+      await amendOrder(order.id, { new_price_dollars: newPrice, new_quantity: newQty });
       setMode("idle");
       mutate((key: string) => typeof key === "string" && key.startsWith("orders"));
     } catch (err) {
@@ -60,7 +60,7 @@ export function OrderActions({ order }: { order: Order }) {
     setLoading(true);
     setError("");
     try {
-      await decreaseOrder(order.id, { quantity: newQty });
+      await decreaseOrder(order.id, { reduce_by: newQty });
       setMode("idle");
       mutate((key: string) => typeof key === "string" && key.startsWith("orders"));
     } catch (err) {
