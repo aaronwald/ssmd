@@ -211,6 +211,8 @@ pub struct ExchangeFill {
     pub quantity: Decimal,
     pub is_taker: bool,
     pub filled_at: DateTime<Utc>,
+    /// None for external fills (placed on exchange website, not via harman)
+    pub client_order_id: Option<Uuid>,
 }
 
 #[cfg(test)]

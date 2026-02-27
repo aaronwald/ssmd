@@ -231,7 +231,21 @@ pub struct PositionInfo {
 /// Response from GET /v1/admin/positions
 #[derive(Debug, Deserialize)]
 pub struct PositionsResponse {
-    pub positions: Vec<PositionInfo>,
+    pub exchange: Vec<PositionInfo>,
+    #[serde(default)]
+    pub local: Vec<LocalPositionInfo>,
+}
+
+/// Local position computed from filled orders
+#[derive(Debug, Clone, Deserialize)]
+pub struct LocalPositionInfo {
+    pub ticker: String,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub net_quantity: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub buy_filled: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub sell_filled: Decimal,
 }
 
 /// Raw response from data-ts GET /v1/data/snap.

@@ -1132,6 +1132,152 @@ pub async fn drain_queue_for_shutdown_all(pool: &Pool) -> Result<u64, String> {
     Ok(count)
 }
 
+/// Local position computed from filled orders in a session.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LocalPosition {
+    pub ticker: String,
+    /// Net quantity: positive = long, negative = short
+    pub net_quantity: Decimal,
+    pub buy_filled: Decimal,
+    pub sell_filled: Decimal,
+}
+
+/// Compute local positions from all filled orders in a session.
+///
+/// Groups by ticker, sums Buy filled_quantity (positive) and Sell filled_quantity (negative).
+pub async fn compute_local_positions(
+    pool: &Pool,
+    session_id: i64,
+) -> Result<Vec<LocalPosition>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT ticker, action, SUM(filled_quantity) as total_filled \
+             FROM prediction_orders \
+             WHERE session_id = $1 AND filled_quantity > 0 \
+             GROUP BY ticker, action \
+             ORDER BY ticker",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| format!("compute local positions: {}", e))?;
+
+    // Aggregate by ticker
+    let mut map: std::collections::HashMap<String, (Decimal, Decimal)> =
+        std::collections::HashMap::new();
+    for row in &rows {
+        let ticker: String = row.get("ticker");
+        let action_str: String = row.get("action");
+        let total: Decimal = row.get("total_filled");
+        let entry = map.entry(ticker).or_insert((Decimal::ZERO, Decimal::ZERO));
+        match action_str.as_str() {
+            "buy" => entry.0 += total,
+            "sell" => entry.1 += total,
+            _ => {}
+        }
+    }
+
+    let mut positions: Vec<LocalPosition> = map
+        .into_iter()
+        .map(|(ticker, (buy, sell))| LocalPosition {
+            ticker,
+            net_quantity: buy - sell,
+            buy_filled: buy,
+            sell_filled: sell,
+        })
+        .collect();
+    positions.sort_by(|a, b| a.ticker.cmp(&b.ticker));
+    Ok(positions)
+}
+
+/// Parameters for creating a synthetic order from an external fill.
+pub struct ExternalOrderParams<'a> {
+    pub session_id: i64,
+    pub exchange_order_id: &'a str,
+    pub ticker: &'a str,
+    pub side: Side,
+    pub action: Action,
+    pub quantity: Decimal,
+    pub price_dollars: Decimal,
+}
+
+/// Create a synthetic order for an external fill (placed on exchange website, not via harman).
+///
+/// If an order with the same exchange_order_id already exists in this session, returns
+/// its ID instead of creating a duplicate (handles partial fills on the same order).
+///
+/// The order is created in 'filled' state with actor='external'.
+pub async fn create_external_order(
+    pool: &Pool,
+    params: &ExternalOrderParams<'_>,
+) -> Result<i64, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    // Check if we already have an order for this exchange_order_id in this session
+    let existing = client
+        .query_opt(
+            "SELECT id FROM prediction_orders WHERE exchange_order_id = $1 AND session_id = $2",
+            &[&params.exchange_order_id, &params.session_id],
+        )
+        .await
+        .map_err(|e| format!("check existing external order: {}", e))?;
+
+    if let Some(row) = existing {
+        return Ok(row.get("id"));
+    }
+
+    // Create new synthetic order
+    let client_order_id = Uuid::new_v4();
+    let row = client
+        .query_one(
+            "INSERT INTO prediction_orders \
+             (session_id, client_order_id, exchange_order_id, ticker, side, action, \
+              quantity, price_dollars, filled_quantity, time_in_force, state) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'gtc', 'filled') \
+             RETURNING id",
+            &[
+                &params.session_id,
+                &client_order_id,
+                &params.exchange_order_id,
+                &params.ticker,
+                &params.side.to_string(),
+                &params.action.to_string(),
+                &params.quantity,
+                &params.price_dollars,
+                &params.quantity, // filled_quantity = quantity (fully filled)
+            ],
+        )
+        .await
+        .map_err(|e| format!("insert external order: {}", e))?;
+
+    let order_id: i64 = row.get("id");
+
+    // Audit log
+    let _ = client
+        .execute(
+            "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+             VALUES ($1, 'none', 'filled', 'external_import', 'external')",
+            &[&order_id],
+        )
+        .await;
+
+    info!(
+        order_id,
+        exchange_order_id = params.exchange_order_id,
+        ticker = params.ticker,
+        "created synthetic order for external fill"
+    );
+
+    Ok(order_id)
+}
+
 // --- Helper parsers ---
 
 fn row_to_order(row: &tokio_postgres::Row) -> Order {

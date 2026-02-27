@@ -425,28 +425,39 @@ impl ExchangeAdapter for KalshiClient {
             .collect())
     }
 
-    async fn get_fills(&self) -> Result<Vec<ExchangeFill>, ExchangeError> {
-        let fills_path = format!("{}/portfolio/fills", self.path_prefix);
-        let resp = self.get(&fills_path).await?;
+    async fn get_fills(&self, min_ts: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExchangeFill>, ExchangeError> {
+        let mut all_fills = Vec::new();
+        let mut cursor: Option<String> = None;
+        let limit = 200; // Kalshi max per page
 
-        let status = resp.status();
-        if !status.is_success() {
-            let error_body = resp.text().await.unwrap_or_default();
-            return Err(ExchangeError::Unexpected(format!(
-                "HTTP {}: {}",
-                status, error_body
-            )));
-        }
+        loop {
+            let mut url = format!("{}/portfolio/fills?limit={}", self.path_prefix, limit);
+            if let Some(ts) = min_ts {
+                url.push_str(&format!("&min_ts={}", ts.timestamp()));
+            }
+            if let Some(ref c) = cursor {
+                url.push_str(&format!("&cursor={}", c));
+            }
 
-        let fills_resp: KalshiFillsResponse = resp
-            .json()
-            .await
-            .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+            let resp = self.get(&url).await?;
 
-        Ok(fills_resp
-            .fills
-            .into_iter()
-            .map(|f| {
+            let status = resp.status();
+            if !status.is_success() {
+                let error_body = resp.text().await.unwrap_or_default();
+                return Err(ExchangeError::Unexpected(format!(
+                    "HTTP {}: {}",
+                    status, error_body
+                )));
+            }
+
+            let fills_resp: KalshiFillsResponse = resp
+                .json()
+                .await
+                .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+
+            let page_count = fills_resp.fills.len();
+
+            all_fills.extend(fills_resp.fills.into_iter().map(|f| {
                 let filled_at = DateTime::parse_from_rfc3339(&f.created_time)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now());
@@ -461,9 +472,21 @@ impl ExchangeAdapter for KalshiClient {
                     quantity: Decimal::from(f.count),
                     is_taker: f.is_taker,
                     filled_at,
+                    client_order_id: f
+                        .client_order_id
+                        .as_deref()
+                        .and_then(|s| Uuid::parse_str(s).ok()),
                 }
-            })
-            .collect())
+            }));
+
+            match fills_resp.cursor {
+                Some(c) if !c.is_empty() && page_count > 0 => cursor = Some(c),
+                _ => break,
+            }
+        }
+
+        debug!(count = all_fills.len(), "fetched all fills (paginated)");
+        Ok(all_fills)
     }
 
     async fn get_balance(&self) -> Result<Balance, ExchangeError> {
@@ -829,7 +852,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let fills = client.get_fills().await.unwrap();
+        let fills = client.get_fills(None).await.unwrap();
         assert_eq!(fills.len(), 1);
         assert_eq!(fills[0].trade_id, "trade-001");
         assert_eq!(fills[0].price_dollars, Decimal::new(50, 2));

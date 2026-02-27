@@ -703,6 +703,10 @@ async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 /// GET /v1/admin/positions
+///
+/// Returns both exchange positions (from Kalshi API) and local positions
+/// (computed from filled orders in DB). This lets the user compare both
+/// views and spot discrepancies.
 async fn positions_handler(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SessionContext>,
@@ -711,21 +715,38 @@ async fn positions_handler(
         return e.into_response();
     }
 
-    match state.exchange.get_positions().await {
-        Ok(positions) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"positions": positions})),
-        )
-            .into_response(),
+    let exchange_positions = match state.exchange.get_positions().await {
+        Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "get positions failed");
-            (
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal error"})),
             )
-                .into_response()
+                .into_response();
         }
-    }
+    };
+
+    let local_positions = match db::compute_local_positions(&state.pool, ctx.session_id).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "compute local positions failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "exchange": exchange_positions,
+            "local": local_positions,
+        })),
+    )
+        .into_response()
 }
 
 /// GET /v1/admin/risk

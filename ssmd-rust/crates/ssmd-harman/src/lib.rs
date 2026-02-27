@@ -46,6 +46,7 @@ pub struct Metrics {
     pub reconciliation_fills_discovered: prometheus::IntCounter,
     pub orders_amended: prometheus::IntCounter,
     pub orders_decreased: prometheus::IntCounter,
+    pub fills_external_imported: prometheus::IntCounter,
 }
 
 impl Metrics {
@@ -101,6 +102,11 @@ impl Metrics {
             "Orders decreased on exchange",
         )
         .unwrap();
+        let fills_external_imported = prometheus::IntCounter::new(
+            "harman_fills_external_imported_total",
+            "External fills imported as synthetic orders",
+        )
+        .unwrap();
 
         registry.register(Box::new(orders_dequeued.clone())).unwrap();
         registry.register(Box::new(orders_submitted.clone())).unwrap();
@@ -114,6 +120,7 @@ impl Metrics {
         registry.register(Box::new(reconciliation_fills_discovered.clone())).unwrap();
         registry.register(Box::new(orders_amended.clone())).unwrap();
         registry.register(Box::new(orders_decreased.clone())).unwrap();
+        registry.register(Box::new(fills_external_imported.clone())).unwrap();
 
         Self {
             registry,
@@ -129,6 +136,7 @@ impl Metrics {
             reconciliation_fills_discovered,
             orders_amended,
             orders_decreased,
+            fills_external_imported,
         }
     }
 }

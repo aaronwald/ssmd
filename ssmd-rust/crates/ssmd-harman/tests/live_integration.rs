@@ -266,10 +266,11 @@ async fn create_and_pump(c: &TestClient, ticker: &str, price: &str, qty: &str) -
 }
 
 /// Helper: cancel an acknowledged order and pump the cancel.
+/// Tolerates 422 (order already in terminal state) for cleanup after reconcile.
 async fn cancel_and_pump(c: &TestClient, id: i64) {
     let (status, _) = c.cancel_order(id).await;
     assert!(
-        status.is_success(),
+        status.is_success() || status == 422,
         "cancel order {} failed: status {}",
         id,
         status
@@ -652,22 +653,36 @@ async fn test_live_positions() {
     let c = TestClient::from_env();
     let (status, json) = c.positions().await;
     assert_eq!(status, 200, "positions endpoint failed");
+
+    // Response has both exchange and local positions
     assert!(
-        json.get("positions").is_some(),
-        "response missing positions field: {:?}",
+        json.get("exchange").is_some(),
+        "response missing exchange field: {:?}",
         json
     );
-    let positions = json["positions"].as_array().expect("positions array");
-    println!("positions count: {}", positions.len());
-    // Verify each position has expected fields
-    for pos in positions {
-        assert!(pos.get("ticker").is_some(), "position missing ticker");
-        assert!(pos.get("side").is_some(), "position missing side");
-        assert!(pos.get("quantity").is_some(), "position missing quantity");
+    assert!(
+        json.get("local").is_some(),
+        "response missing local field: {:?}",
+        json
+    );
+
+    let exchange = json["exchange"].as_array().expect("exchange array");
+    println!("exchange positions: {}", exchange.len());
+    for pos in exchange {
+        assert!(pos.get("ticker").is_some(), "exchange position missing ticker");
+        assert!(pos.get("side").is_some(), "exchange position missing side");
+        assert!(pos.get("quantity").is_some(), "exchange position missing quantity");
         assert!(
             pos.get("market_value_dollars").is_some(),
-            "position missing market_value_dollars"
+            "exchange position missing market_value_dollars"
         );
+    }
+
+    let local = json["local"].as_array().expect("local array");
+    println!("local positions: {}", local.len());
+    for pos in local {
+        assert!(pos.get("ticker").is_some(), "local position missing ticker");
+        assert!(pos.get("net_quantity").is_some(), "local position missing net_quantity");
     }
 }
 

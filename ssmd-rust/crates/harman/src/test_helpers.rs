@@ -221,7 +221,7 @@ impl ExchangeAdapter for MockExchange {
         Ok(state.positions.clone())
     }
 
-    async fn get_fills(&self) -> Result<Vec<ExchangeFill>, ExchangeError> {
+    async fn get_fills(&self, _min_ts: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExchangeFill>, ExchangeError> {
         let state = self.state.lock().await;
         Ok(state.fills.clone())
     }
@@ -493,5 +493,6 @@ pub fn mock_fill(
         quantity,
         is_taker: true,
         filled_at: Utc::now(),
+        client_order_id: None,
     }
 }

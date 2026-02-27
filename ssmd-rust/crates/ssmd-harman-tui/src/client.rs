@@ -222,7 +222,7 @@ impl HarmanClient {
             anyhow::bail!("list_positions: {} {}", status, body);
         }
         let body: PositionsResponse = resp.json().await.context("list_positions: parse response")?;
-        Ok(body.positions)
+        Ok(body.exchange)
     }
 
     /// GET /v1/admin/risk

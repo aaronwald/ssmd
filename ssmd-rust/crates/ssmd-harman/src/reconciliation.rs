@@ -112,7 +112,7 @@ pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
 async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String> {
     let fills = state
         .exchange
-        .get_fills()
+        .get_fills(None)
         .await
         .map_err(|e| format!("get fills: {}", e))?;
 
@@ -150,6 +150,56 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
                 state.metrics.fills_recorded.inc();
                 orders_with_new_fills.insert(order.id);
                 count += 1;
+            }
+        } else {
+            // No matching local order — this is an external fill.
+            // Fills are sacrosanct: never drop fills. Import as synthetic order.
+            info!(
+                trade_id = %fill.trade_id,
+                exchange_order_id = %fill.order_id,
+                ticker = %fill.ticker,
+                client_order_id = ?fill.client_order_id,
+                "importing external fill"
+            );
+            match db::create_external_order(
+                &state.pool,
+                &db::ExternalOrderParams {
+                    session_id,
+                    exchange_order_id: &fill.order_id,
+                    ticker: &fill.ticker,
+                    side: fill.side,
+                    action: fill.action,
+                    quantity: fill.quantity,
+                    price_dollars: fill.price_dollars,
+                },
+            )
+            .await
+            {
+                Ok(order_id) => {
+                    let inserted = db::record_fill(
+                        &state.pool,
+                        order_id,
+                        session_id,
+                        &fill.trade_id,
+                        fill.price_dollars,
+                        fill.quantity,
+                        fill.is_taker,
+                        fill.filled_at,
+                    )
+                    .await?;
+                    if inserted {
+                        state.metrics.fills_recorded.inc();
+                        state.metrics.fills_external_imported.inc();
+                        count += 1;
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        trade_id = %fill.trade_id,
+                        "failed to import external fill"
+                    );
+                }
             }
         }
     }

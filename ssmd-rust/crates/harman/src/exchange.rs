@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
@@ -37,10 +38,11 @@ pub trait ExchangeAdapter: Send + Sync {
     /// Get current portfolio positions.
     async fn get_positions(&self) -> Result<Vec<Position>, ExchangeError>;
 
-    /// Get recent fills (trade executions).
+    /// Get fills (trade executions), optionally filtered by minimum timestamp.
     ///
-    /// Returns fills ordered by time, most recent first.
-    async fn get_fills(&self) -> Result<Vec<ExchangeFill>, ExchangeError>;
+    /// When `min_ts` is Some, only returns fills at or after the given time.
+    /// Implementations must paginate internally to return all matching fills.
+    async fn get_fills(&self, min_ts: Option<DateTime<Utc>>) -> Result<Vec<ExchangeFill>, ExchangeError>;
 
     /// Get current account balance.
     async fn get_balance(&self) -> Result<Balance, ExchangeError>;

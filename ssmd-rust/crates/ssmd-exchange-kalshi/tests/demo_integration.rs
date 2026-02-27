@@ -140,7 +140,7 @@ async fn test_demo_get_fills() {
     };
 
     let fills = client
-        .get_fills()
+        .get_fills(None)
         .await
         .expect("get_fills failed on demo API");
 

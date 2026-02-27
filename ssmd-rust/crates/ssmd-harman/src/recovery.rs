@@ -210,7 +210,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
 async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Result<(), String> {
     let fills = state
         .exchange
-        .get_fills()
+        .get_fills(None)
         .await
         .map_err(|e| format!("get fills: {}", e))?;
 
@@ -220,6 +220,8 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
     let mut recorded = 0;
     let mut orders_with_new_fills: std::collections::HashSet<i64> =
         std::collections::HashSet::new();
+
+    let mut external_imported = 0u64;
 
     for fill in &fills {
         if let Some(order) = orders
@@ -242,11 +244,62 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
                 recorded += 1;
                 orders_with_new_fills.insert(order.id);
             }
+        } else {
+            // External fill — import as synthetic order (fills are sacrosanct)
+            info!(
+                trade_id = %fill.trade_id,
+                exchange_order_id = %fill.order_id,
+                ticker = %fill.ticker,
+                "recovery: importing external fill"
+            );
+            match db::create_external_order(
+                &state.pool,
+                &db::ExternalOrderParams {
+                    session_id,
+                    exchange_order_id: &fill.order_id,
+                    ticker: &fill.ticker,
+                    side: fill.side,
+                    action: fill.action,
+                    quantity: fill.quantity,
+                    price_dollars: fill.price_dollars,
+                },
+            )
+            .await
+            {
+                Ok(order_id) => {
+                    let inserted = db::record_fill(
+                        &state.pool,
+                        order_id,
+                        session_id,
+                        &fill.trade_id,
+                        fill.price_dollars,
+                        fill.quantity,
+                        fill.is_taker,
+                        fill.filled_at,
+                    )
+                    .await?;
+                    if inserted {
+                        recorded += 1;
+                        external_imported += 1;
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        trade_id = %fill.trade_id,
+                        "recovery: failed to import external fill"
+                    );
+                }
+            }
         }
     }
 
     if recorded > 0 {
-        info!(count = recorded, "recorded missing fills during recovery");
+        info!(
+            count = recorded,
+            external = external_imported,
+            "recorded missing fills during recovery"
+        );
     }
 
     // Update order states for orders that received new fills

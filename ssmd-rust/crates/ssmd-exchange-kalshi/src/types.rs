@@ -114,9 +114,13 @@ pub struct KalshiFill {
     #[serde(default)]
     pub yes_price: i64,
     #[serde(default)]
+    pub no_price: i64,
+    #[serde(default)]
     pub count: i64,
     pub is_taker: bool,
     pub created_time: String,
+    #[serde(default)]
+    pub client_order_id: Option<String>,
 }
 
 /// Response from GET /portfolio/fills
