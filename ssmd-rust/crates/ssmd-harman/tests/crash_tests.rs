@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use ssmd_harman::{pump, AppState};
 use ssmd_harman_ems::{Ems, EmsMetrics};
+use ssmd_harman_oms::runner::OmsRunner;
 use ssmd_harman_oms::{Oms, OmsMetrics};
 
 /// Build an AppState using MockExchange and a test DB pool.
@@ -45,6 +46,8 @@ async fn build_test_state(
     ));
     let oms_metrics = OmsMetrics::new(&registry);
     let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
+    let runner = Arc::new(OmsRunner::new(oms.clone(), None, session_id));
+    let pump_trigger = runner.pump_trigger();
     Arc::new(AppState {
         ems,
         oms,
@@ -55,6 +58,9 @@ async fn build_test_state(
         startup_session_id: session_id,
         auth_validate_url: None,
         http_client: reqwest::Client::new(),
+        runner,
+        auto_pump: false,
+        pump_trigger,
         session_semaphores: DashMap::new(),
         auth_cache: tokio::sync::RwLock::new(HashMap::new()),
         key_sessions: DashMap::new(),

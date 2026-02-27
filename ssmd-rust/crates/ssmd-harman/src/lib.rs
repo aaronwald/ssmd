@@ -12,6 +12,7 @@ use tokio::sync::{RwLock, Semaphore};
 
 use ssmd_harman_ems::Ems;
 use ssmd_harman_oms::Oms;
+use ssmd_harman_oms::runner::{OmsRunner, PumpTrigger};
 
 /// Cached auth validation result from data-ts
 pub struct CachedAuth {
@@ -45,6 +46,10 @@ pub struct AppState {
     // HTTP auth validation (new)
     pub auth_validate_url: Option<String>,
     pub http_client: reqwest::Client,
+    // OMS background runner
+    pub runner: Arc<OmsRunner>,
+    pub auto_pump: bool,
+    pub pump_trigger: PumpTrigger,
     // Per-session state
     pub session_semaphores: DashMap<i64, Arc<Semaphore>>,
     // Caches

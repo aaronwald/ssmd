@@ -1,6 +1,7 @@
 pub mod positions;
 pub mod reconciliation;
 pub mod recovery;
+pub mod runner;
 
 use std::sync::Arc;
 

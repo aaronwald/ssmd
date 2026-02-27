@@ -299,15 +299,20 @@ async fn create_order(
     };
 
     match state.ems.enqueue(ctx.session_id, &order_req).await {
-        Ok(order) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({
-                "id": order.id,
-                "client_order_id": order.client_order_id,
-                "status": "pending"
-            })),
-        )
-            .into_response(),
+        Ok(order) => {
+            if state.auto_pump {
+                state.pump_trigger.notify(ctx.session_id);
+            }
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({
+                    "id": order.id,
+                    "client_order_id": order.client_order_id,
+                    "status": "pending"
+                })),
+            )
+                .into_response()
+        }
         Err(EnqueueError::DuplicateClientOrderId(cid)) => {
             match db::get_order_by_client_id(&state.pool, cid, ctx.session_id).await {
                 Ok(Some(order)) if order.state != OrderState::Pending => {
@@ -427,11 +432,16 @@ async fn cancel_order(
         .enqueue_cancel(id, ctx.session_id, &harman::types::CancelReason::UserRequested)
         .await
     {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "pending_cancel"})),
-        )
-            .into_response(),
+        Ok(()) => {
+            if state.auto_pump {
+                state.pump_trigger.notify(ctx.session_id);
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "pending_cancel"})),
+            )
+                .into_response()
+        }
         Err(e) if e.contains("not found") => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "order not found"})),
@@ -524,11 +534,16 @@ async fn amend_order(
     };
 
     match state.ems.enqueue_amend(id, ctx.session_id, new_price, new_qty).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "pending_amend"})),
-        )
-            .into_response(),
+        Ok(()) => {
+            if state.auto_pump {
+                state.pump_trigger.notify(ctx.session_id);
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "pending_amend"})),
+            )
+                .into_response()
+        }
         Err(e) if e.contains("not found") => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "order not found"})),
@@ -585,11 +600,16 @@ async fn decrease_order(
     };
 
     match state.ems.enqueue_decrease(id, ctx.session_id, reduce_by).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "pending_decrease"})),
-        )
-            .into_response(),
+        Ok(()) => {
+            if state.auto_pump {
+                state.pump_trigger.notify(ctx.session_id);
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "pending_decrease"})),
+            )
+                .into_response()
+        }
         Err(e) if e.contains("not found") => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "order not found"})),

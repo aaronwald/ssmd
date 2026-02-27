@@ -9,6 +9,9 @@ use crate::AppState;
 pub async fn wait_for_shutdown(state: Arc<AppState>) {
     shutdown_signal().await;
     info!("shutdown signal received");
+    // Stop background tasks first (auto-pump, auto-reconcile)
+    state.runner.shutdown();
+    // Then EMS shutdown (mass cancel + drain)
     state.ems.shutdown().await;
 }
 

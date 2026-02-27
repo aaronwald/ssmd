@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use dashmap::DashMap;
@@ -7,6 +8,7 @@ use tracing::{error, info};
 
 use ssmd_harman::{api, shutdown, AppState};
 use ssmd_harman_ems::{Ems, EmsMetrics};
+use ssmd_harman_oms::runner::OmsRunner;
 use ssmd_harman_oms::{Oms, OmsMetrics};
 
 /// ssmd-harman: PostgreSQL-backed order gateway
@@ -32,6 +34,14 @@ struct Args {
         default_value = "https://demo-api.kalshi.co"
     )]
     kalshi_base_url: String,
+
+    /// Enable auto-pump after order mutations
+    #[arg(long, env = "AUTO_PUMP", default_value = "false")]
+    auto_pump: bool,
+
+    /// Auto-reconcile interval in seconds (0 = disabled)
+    #[arg(long, env = "RECONCILE_INTERVAL_SECS", default_value = "0")]
+    reconcile_interval_secs: u64,
 }
 
 #[tokio::main]
@@ -115,6 +125,20 @@ async fn main() {
     let oms_metrics = OmsMetrics::new(&registry);
     let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
 
+    let reconcile_interval = if args.reconcile_interval_secs > 0 {
+        Some(Duration::from_secs(args.reconcile_interval_secs))
+    } else {
+        None
+    };
+    let runner = Arc::new(OmsRunner::new(oms.clone(), reconcile_interval, startup_session_id));
+    let pump_trigger = runner.pump_trigger();
+    if args.auto_pump {
+        info!("auto-pump enabled");
+    }
+    if let Some(interval) = reconcile_interval {
+        info!(interval_secs = interval.as_secs(), "auto-reconcile enabled");
+    }
+
     let state = Arc::new(AppState {
         ems,
         oms: oms.clone(),
@@ -125,6 +149,9 @@ async fn main() {
         startup_session_id,
         auth_validate_url,
         http_client: reqwest::Client::new(),
+        runner: runner.clone(),
+        auto_pump: args.auto_pump,
+        pump_trigger,
         session_semaphores: DashMap::new(),
         auth_cache: tokio::sync::RwLock::new(HashMap::new()),
         key_sessions: DashMap::new(),
@@ -136,6 +163,12 @@ async fn main() {
         error!(error = %e, "recovery failed, exiting");
         std::process::exit(1);
     }
+
+    // Spawn OMS background runner (auto-pump + auto-reconcile)
+    let runner_state = state.clone();
+    tokio::spawn(async move {
+        runner_state.runner.run(&runner_state.session_semaphores).await;
+    });
 
     // Spawn shutdown handler
     let shutdown_state = state.clone();
