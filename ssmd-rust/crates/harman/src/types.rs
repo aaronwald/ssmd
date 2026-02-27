@@ -199,6 +199,21 @@ pub struct AmendResult {
     pub remaining_quantity: Decimal,
 }
 
+/// Exchange order record (resting or filled orders from the exchange)
+#[derive(Debug, Clone)]
+pub struct ExchangeOrder {
+    pub exchange_order_id: String,
+    pub client_order_id: Option<Uuid>,
+    pub ticker: String,
+    pub side: Side,
+    pub action: Action,
+    pub price_dollars: Decimal,
+    pub quantity: Decimal,
+    pub filled_quantity: Decimal,
+    pub remaining_quantity: Decimal,
+    pub status: ExchangeOrderState,
+}
+
 /// Exchange fill record
 #[derive(Debug, Clone)]
 pub struct ExchangeFill {

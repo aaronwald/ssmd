@@ -11,8 +11,8 @@ use uuid::Uuid;
 use harman::error::ExchangeError;
 use harman::exchange::ExchangeAdapter;
 use harman::types::{
-    Action, AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrderState,
-    ExchangeOrderStatus, OrderRequest, Position, Side,
+    Action, AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrder,
+    ExchangeOrderState, ExchangeOrderStatus, OrderRequest, Position, Side,
 };
 use ssmd_connector_lib::kalshi::auth::KalshiCredentials;
 
@@ -439,6 +439,74 @@ impl ExchangeAdapter for KalshiClient {
 
         debug!(count = all_positions.len(), "fetched all positions (paginated)");
         Ok(all_positions)
+    }
+
+    async fn get_orders(&self) -> Result<Vec<ExchangeOrder>, ExchangeError> {
+        let mut all_orders = Vec::new();
+        let mut cursor: Option<String> = None;
+        let limit = 200;
+
+        loop {
+            let mut url = format!(
+                "{}/portfolio/orders?status=resting&limit={}",
+                self.path_prefix, limit
+            );
+            if let Some(ref c) = cursor {
+                url.push_str(&format!("&cursor={}", c));
+            }
+
+            let resp = self.get(&url).await?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                let error_body = resp.text().await.unwrap_or_default();
+                return Err(ExchangeError::Unexpected(format!(
+                    "HTTP {}: {}",
+                    status, error_body
+                )));
+            }
+
+            let orders_resp: KalshiOrdersResponse = resp
+                .json()
+                .await
+                .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+
+            let page_count = orders_resp.orders.len();
+
+            all_orders.extend(orders_resp.orders.into_iter().map(|o| {
+                let qty = Decimal::from(o.effective_count());
+                let filled = Decimal::from(o.filled_count());
+                let remaining = Decimal::from(o.effective_remaining());
+                let status = Self::map_order_status(&o);
+                let side = Self::parse_side(&o.side);
+                let action = Self::parse_action(&o.action);
+                let price_dollars = Decimal::new(o.yes_price, 2);
+                let client_order_id = o
+                    .client_order_id
+                    .as_deref()
+                    .and_then(|s| Uuid::parse_str(s).ok());
+                ExchangeOrder {
+                    exchange_order_id: o.order_id,
+                    client_order_id,
+                    ticker: o.ticker,
+                    side,
+                    action,
+                    price_dollars,
+                    quantity: qty,
+                    filled_quantity: filled,
+                    remaining_quantity: remaining,
+                    status,
+                }
+            }));
+
+            match orders_resp.cursor {
+                Some(c) if !c.is_empty() && page_count > 0 => cursor = Some(c),
+                _ => break,
+            }
+        }
+
+        debug!(count = all_orders.len(), "fetched resting orders (paginated)");
+        Ok(all_orders)
     }
 
     async fn get_fills(&self, min_ts: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExchangeFill>, ExchangeError> {

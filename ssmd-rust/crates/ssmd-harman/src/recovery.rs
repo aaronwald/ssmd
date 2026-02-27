@@ -26,13 +26,16 @@ pub async fn run(state: &Arc<AppState>) -> Result<(), String> {
     // 1. Resolve ambiguous orders
     resolve_ambiguous_orders(state, session_id).await?;
 
-    // 2. Discover missing fills
+    // 2. Discover external resting orders
+    discover_external_orders(state, session_id).await?;
+
+    // 3. Discover missing fills
     discover_missing_fills(state, session_id).await?;
 
-    // 3. Verify position consistency
+    // 4. Verify position consistency
     verify_positions(state).await?;
 
-    // 4. Rebuild risk state (just log it, the real check happens per-order)
+    // 5. Rebuild risk state (just log it, the real check happens per-order)
     let risk_state = db::compute_risk_state(&state.pool, session_id).await?;
     info!(
         open_notional = %risk_state.open_notional,
@@ -40,7 +43,7 @@ pub async fn run(state: &Arc<AppState>) -> Result<(), String> {
         "risk state after recovery"
     );
 
-    // 5. Clean up stale queue items (items marked processing from a crash)
+    // 6. Clean up stale queue items (items marked processing from a crash)
     clean_stale_queue(state).await?;
 
     info!("recovery complete");
@@ -200,6 +203,66 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
                 return Err(format!("exchange error during recovery: {}", e));
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Fetch resting orders from exchange and import any not tracked locally.
+async fn discover_external_orders(state: &Arc<AppState>, session_id: i64) -> Result<(), String> {
+    let exchange_orders = state
+        .exchange
+        .get_orders()
+        .await
+        .map_err(|e| format!("get orders: {}", e))?;
+
+    info!(count = exchange_orders.len(), "fetched exchange resting orders for recovery");
+
+    let local_orders = db::list_orders(&state.pool, session_id, None).await?;
+
+    let mut imported = 0u64;
+    for order in &exchange_orders {
+        let known = local_orders
+            .iter()
+            .any(|o| o.exchange_order_id.as_deref() == Some(&order.exchange_order_id));
+
+        if known {
+            continue;
+        }
+
+        info!(
+            exchange_order_id = %order.exchange_order_id,
+            ticker = %order.ticker,
+            "recovery: importing external resting order"
+        );
+
+        match db::create_external_resting_order(
+            &state.pool,
+            &db::ExternalOrderParams {
+                session_id,
+                exchange_order_id: &order.exchange_order_id,
+                ticker: &order.ticker,
+                side: order.side,
+                action: order.action,
+                quantity: order.quantity,
+                price_dollars: order.price_dollars,
+            },
+        )
+        .await
+        {
+            Ok(_) => imported += 1,
+            Err(e) => {
+                error!(
+                    error = %e,
+                    exchange_order_id = %order.exchange_order_id,
+                    "recovery: failed to import external resting order"
+                );
+            }
+        }
+    }
+
+    if imported > 0 {
+        info!(count = imported, "recovery: imported external resting orders");
     }
 
     Ok(())

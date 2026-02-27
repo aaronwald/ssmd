@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::error::ExchangeError;
 use crate::exchange::ExchangeAdapter;
 use crate::types::{
-    Action, AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrderState,
+    Action, AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrder, ExchangeOrderState,
     ExchangeOrderStatus, OrderRequest, Position, Side,
 };
 
@@ -80,6 +80,8 @@ pub struct MockExchangeState {
     pub order_statuses: HashMap<Uuid, ExchangeOrderStatus>,
     /// Fills to return from get_fills.
     pub fills: Vec<ExchangeFill>,
+    /// Resting orders to return from get_orders.
+    pub resting_orders: Vec<ExchangeOrder>,
     /// Positions to return from get_positions.
     pub positions: Vec<Position>,
     /// Balance to return from get_balance.
@@ -111,6 +113,7 @@ impl Default for MockExchangeState {
             cancel_all_count: 0,
             order_statuses: HashMap::new(),
             fills: Vec::new(),
+            resting_orders: Vec::new(),
             positions: Vec::new(),
             balance: Balance {
                 available_dollars: Decimal::new(10000, 2),
@@ -219,6 +222,11 @@ impl ExchangeAdapter for MockExchange {
     async fn get_positions(&self) -> Result<Vec<Position>, ExchangeError> {
         let state = self.state.lock().await;
         Ok(state.positions.clone())
+    }
+
+    async fn get_orders(&self) -> Result<Vec<ExchangeOrder>, ExchangeError> {
+        let state = self.state.lock().await;
+        Ok(state.resting_orders.clone())
     }
 
     async fn get_fills(&self, _min_ts: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExchangeFill>, ExchangeError> {

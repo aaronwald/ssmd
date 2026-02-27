@@ -5,7 +5,8 @@ use uuid::Uuid;
 
 use crate::error::ExchangeError;
 use crate::types::{
-    AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrderStatus, OrderRequest, Position,
+    AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrder, ExchangeOrderStatus,
+    OrderRequest, Position,
 };
 
 /// Trait for exchange adapters.
@@ -37,6 +38,12 @@ pub trait ExchangeAdapter: Send + Sync {
 
     /// Get current portfolio positions.
     async fn get_positions(&self) -> Result<Vec<Position>, ExchangeError>;
+
+    /// Get resting (open) orders from the exchange.
+    ///
+    /// Returns orders in resting state. Used by reconciliation to discover
+    /// external orders placed outside of harman (e.g., via exchange website).
+    async fn get_orders(&self) -> Result<Vec<ExchangeOrder>, ExchangeError>;
 
     /// Get fills (trade executions), optionally filtered by minimum timestamp.
     ///

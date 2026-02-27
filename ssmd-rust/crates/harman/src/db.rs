@@ -1278,6 +1278,77 @@ pub async fn create_external_order(
     Ok(order_id)
 }
 
+/// Create a synthetic order for an external resting order (placed on exchange website).
+///
+/// Unlike `create_external_order()` (for fills), this creates the order in 'acknowledged'
+/// state with filled_quantity=0, representing a live resting order on the exchange.
+///
+/// If an order with the same exchange_order_id already exists, returns its ID.
+pub async fn create_external_resting_order(
+    pool: &Pool,
+    params: &ExternalOrderParams<'_>,
+) -> Result<i64, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    // Check if we already have this order
+    let existing = client
+        .query_opt(
+            "SELECT id FROM prediction_orders WHERE exchange_order_id = $1 AND session_id = $2",
+            &[&params.exchange_order_id, &params.session_id],
+        )
+        .await
+        .map_err(|e| format!("check existing external resting order: {}", e))?;
+
+    if let Some(row) = existing {
+        return Ok(row.get("id"));
+    }
+
+    let client_order_id = Uuid::new_v4();
+    let row = client
+        .query_one(
+            "INSERT INTO prediction_orders \
+             (session_id, client_order_id, exchange_order_id, ticker, side, action, \
+              quantity, price_dollars, filled_quantity, time_in_force, state) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 'gtc', 'acknowledged') \
+             RETURNING id",
+            &[
+                &params.session_id,
+                &client_order_id,
+                &params.exchange_order_id,
+                &params.ticker,
+                &params.side.to_string(),
+                &params.action.to_string(),
+                &params.quantity,
+                &params.price_dollars,
+            ],
+        )
+        .await
+        .map_err(|e| format!("insert external resting order: {}", e))?;
+
+    let order_id: i64 = row.get("id");
+
+    // Audit log
+    let _ = client
+        .execute(
+            "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+             VALUES ($1, 'none', 'acknowledged', 'external_import', 'external')",
+            &[&order_id],
+        )
+        .await;
+
+    info!(
+        order_id,
+        exchange_order_id = params.exchange_order_id,
+        ticker = params.ticker,
+        "created synthetic order for external resting order"
+    );
+
+    Ok(order_id)
+}
+
 // --- Helper parsers ---
 
 fn row_to_order(row: &tokio_postgres::Row) -> Order {

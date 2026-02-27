@@ -48,6 +48,18 @@ pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
         errors: vec![],
     };
 
+    match discover_external_orders(state, session_id).await {
+        Ok(count) => {
+            if count > 0 {
+                info!(count, "imported external resting orders");
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "external order discovery failed");
+            result.errors.push(format!("external order discovery: {}", e));
+        }
+    }
+
     match discover_fills(state, session_id).await {
         Ok(count) => {
             result.fills_discovered = count;
@@ -103,6 +115,74 @@ pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
     );
 
     result
+}
+
+/// Fetch resting orders from exchange and import any not tracked locally.
+///
+/// External resting orders (placed via exchange website) are imported as
+/// synthetic orders in 'acknowledged' state so they appear in the blotter.
+async fn discover_external_orders(state: &AppState, session_id: i64) -> Result<u64, String> {
+    let exchange_orders = state
+        .exchange
+        .get_orders()
+        .await
+        .map_err(|e| format!("get orders: {}", e))?;
+
+    debug!(count = exchange_orders.len(), "fetched exchange resting orders");
+
+    let local_orders = db::list_orders(&state.pool, session_id, None).await?;
+
+    let mut count = 0u64;
+    for order in &exchange_orders {
+        // Check if we already track this order locally
+        let known = local_orders
+            .iter()
+            .any(|o| o.exchange_order_id.as_deref() == Some(&order.exchange_order_id));
+
+        if known {
+            continue;
+        }
+
+        info!(
+            exchange_order_id = %order.exchange_order_id,
+            ticker = %order.ticker,
+            side = ?order.side,
+            action = ?order.action,
+            quantity = %order.quantity,
+            price = %order.price_dollars,
+            client_order_id = ?order.client_order_id,
+            "importing external resting order"
+        );
+
+        match db::create_external_resting_order(
+            &state.pool,
+            &db::ExternalOrderParams {
+                session_id,
+                exchange_order_id: &order.exchange_order_id,
+                ticker: &order.ticker,
+                side: order.side,
+                action: order.action,
+                quantity: order.quantity,
+                price_dollars: order.price_dollars,
+            },
+        )
+        .await
+        {
+            Ok(_order_id) => {
+                state.metrics.fills_external_imported.inc();
+                count += 1;
+            }
+            Err(e) => {
+                error!(
+                    error = %e,
+                    exchange_order_id = %order.exchange_order_id,
+                    "failed to import external resting order"
+                );
+            }
+        }
+    }
+
+    Ok(count)
 }
 
 /// Fetch recent fills from exchange and record any missing ones.
