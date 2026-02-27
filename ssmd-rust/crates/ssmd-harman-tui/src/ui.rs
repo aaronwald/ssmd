@@ -126,6 +126,7 @@ fn draw_orders(f: &mut Frame, app: &App, area: Rect) {
 
     let header = Row::new(vec![
         Cell::from("ID"),
+        Cell::from("ExchID"),
         Cell::from("Ticker"),
         Cell::from("Side"),
         Cell::from("Action"),
@@ -145,8 +146,14 @@ fn draw_orders(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|order| {
             let color = state_color(order.state);
+            let exch_id = order
+                .exchange_order_id
+                .as_deref()
+                .map(|s| if s.len() > 8 { &s[..8] } else { s })
+                .unwrap_or("—");
             Row::new(vec![
                 Cell::from(order.id.to_string()),
+                Cell::from(exch_id.to_string()),
                 Cell::from(order.ticker.clone()),
                 Cell::from(order.side.to_string()),
                 Cell::from(order.action.to_string()),
@@ -160,7 +167,8 @@ fn draw_orders(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let widths = [
-        Constraint::Length(8),
+        Constraint::Length(6),
+        Constraint::Length(10),
         Constraint::Min(16),
         Constraint::Length(5),
         Constraint::Length(6),
@@ -294,80 +302,140 @@ fn format_price(val: Option<f64>) -> String {
 }
 
 fn draw_positions(f: &mut Frame, app: &App, area: Rect) {
-    if app.positions.is_empty() {
-        let msg = Paragraph::new("  No exchange positions")
+    if app.positions.is_empty() && app.local_positions.is_empty() {
+        let msg = Paragraph::new("  No positions")
             .style(Style::default().fg(Color::DarkGray))
             .block(Block::default().borders(Borders::ALL).title(" Positions "));
         f.render_widget(msg, area);
         return;
     }
 
-    let header = Row::new(vec![
-        Cell::from("Ticker"),
-        Cell::from("Side"),
-        Cell::from("Qty"),
-        Cell::from("Mkt Value"),
-        Cell::from("Yes Bid"),
-        Cell::from("Yes Ask"),
-        Cell::from("Last"),
-    ])
-    .style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    );
+    // Split into exchange (top) and local (bottom)
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
 
-    let rows: Vec<Row> = app
-        .positions
-        .iter()
-        .map(|pos| {
-            // Look up snapshot for this ticker
-            let snap = app.snapshots.iter().find(|s| s.ticker == pos.ticker);
-            let side_color = match pos.side {
-                crate::types::Side::Yes => Color::Green,
-                crate::types::Side::No => Color::Red,
-            };
-            Row::new(vec![
-                Cell::from(pos.ticker.clone()),
-                Cell::from(pos.side.to_string()).style(Style::default().fg(side_color)),
-                Cell::from(pos.quantity.to_string()),
-                Cell::from(format!("${}", pos.market_value_dollars)),
-                Cell::from(format_price(snap.and_then(|s| s.yes_bid))),
-                Cell::from(format_price(snap.and_then(|s| s.yes_ask))),
-                Cell::from(format_price(snap.and_then(|s| s.last_price))),
-            ])
-        })
-        .collect();
-
-    let widths = [
-        Constraint::Min(20),
-        Constraint::Length(6),
-        Constraint::Length(10),
-        Constraint::Length(12),
-        Constraint::Length(10),
-        Constraint::Length(10),
-        Constraint::Length(10),
-    ];
-
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" Positions ({}) ", app.positions.len())),
-        )
-        .row_highlight_style(
+    // --- Exchange positions (top) ---
+    {
+        let header = Row::new(vec![
+            Cell::from("Ticker"),
+            Cell::from("Side"),
+            Cell::from("Qty"),
+            Cell::from("Mkt Value"),
+            Cell::from("Yes Bid"),
+            Cell::from("Yes Ask"),
+            Cell::from("Last"),
+        ])
+        .style(
             Style::default()
-                .bg(Color::DarkGray)
+                .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         );
 
-    let mut state = TableState::default();
-    if !app.positions.is_empty() {
-        state.select(Some(app.pos_selected));
+        let rows: Vec<Row> = app
+            .positions
+            .iter()
+            .map(|pos| {
+                let snap = app.snapshots.iter().find(|s| s.ticker == pos.ticker);
+                let side_color = match pos.side {
+                    crate::types::Side::Yes => Color::Green,
+                    crate::types::Side::No => Color::Red,
+                };
+                Row::new(vec![
+                    Cell::from(pos.ticker.clone()),
+                    Cell::from(pos.side.to_string()).style(Style::default().fg(side_color)),
+                    Cell::from(pos.quantity.to_string()),
+                    Cell::from(format!("${}", pos.market_value_dollars)),
+                    Cell::from(format_price(snap.and_then(|s| s.yes_bid))),
+                    Cell::from(format_price(snap.and_then(|s| s.yes_ask))),
+                    Cell::from(format_price(snap.and_then(|s| s.last_price))),
+                ])
+            })
+            .collect();
+
+        let widths = [
+            Constraint::Min(20),
+            Constraint::Length(6),
+            Constraint::Length(10),
+            Constraint::Length(12),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(10),
+        ];
+
+        let table = Table::new(rows, widths)
+            .header(header)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" Exchange Positions ({}) ", app.positions.len())),
+            )
+            .row_highlight_style(
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            );
+
+        let mut state = TableState::default();
+        if !app.positions.is_empty() {
+            state.select(Some(app.pos_selected));
+        }
+
+        f.render_stateful_widget(table, chunks[0], &mut state);
     }
 
-    f.render_stateful_widget(table, area, &mut state);
+    // --- Local positions (bottom) ---
+    {
+        let header = Row::new(vec![
+            Cell::from("Ticker"),
+            Cell::from("Net Qty"),
+            Cell::from("Buy Filled"),
+            Cell::from("Sell Filled"),
+        ])
+        .style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+
+        let rows: Vec<Row> = app
+            .local_positions
+            .iter()
+            .map(|pos| {
+                let net_color = if pos.net_quantity > Decimal::ZERO {
+                    Color::Green
+                } else if pos.net_quantity < Decimal::ZERO {
+                    Color::Red
+                } else {
+                    Color::DarkGray
+                };
+                Row::new(vec![
+                    Cell::from(pos.ticker.clone()),
+                    Cell::from(pos.net_quantity.to_string()).style(Style::default().fg(net_color)),
+                    Cell::from(pos.buy_filled.to_string()),
+                    Cell::from(pos.sell_filled.to_string()),
+                ])
+            })
+            .collect();
+
+        let widths = [
+            Constraint::Min(20),
+            Constraint::Length(12),
+            Constraint::Length(12),
+            Constraint::Length(12),
+        ];
+
+        let table = Table::new(rows, widths)
+            .header(header)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" Local Positions ({}) ", app.local_positions.len())),
+            );
+
+        f.render_widget(table, chunks[1]);
+    }
 }
 
 fn draw_market_data(f: &mut Frame, app: &App, area: Rect) {

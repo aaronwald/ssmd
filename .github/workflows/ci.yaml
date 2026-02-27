@@ -38,6 +38,7 @@ jobs:
         run: make rust-test
 
       - name: Run crash recovery tests
+        working-directory: ssmd-rust
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/harman_test
         run: cargo test -p ssmd-harman --test crash_tests -- --ignored --nocapture

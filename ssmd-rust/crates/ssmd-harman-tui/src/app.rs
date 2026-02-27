@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::client::{DataClient, HarmanClient};
-use crate::types::{CreateOrderRequest, Order, OrderState, PositionInfo, RiskInfo, Snapshot};
+use crate::types::{CreateOrderRequest, LocalPositionInfo, Order, OrderState, PositionInfo, RiskInfo, Snapshot};
 
 /// Active tab in the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +196,7 @@ pub struct App {
     pub known_tickers: Vec<String>,
     // Positions
     pub positions: Vec<PositionInfo>,
+    pub local_positions: Vec<LocalPositionInfo>,
     pub pos_selected: usize,
 }
 
@@ -221,6 +222,7 @@ impl App {
             snap_selected: 0,
             known_tickers: Vec::new(),
             positions: Vec::new(),
+            local_positions: Vec::new(),
             pos_selected: 0,
         }
     }
@@ -266,10 +268,11 @@ impl App {
             }
         }
 
-        // Poll positions
+        // Poll positions (exchange + local)
         match self.client.list_positions().await {
-            Ok(positions) => {
-                self.positions = positions;
+            Ok((exchange, local)) => {
+                self.positions = exchange;
+                self.local_positions = local;
             }
             Err(e) => {
                 let msg = format!("positions: {}", e);

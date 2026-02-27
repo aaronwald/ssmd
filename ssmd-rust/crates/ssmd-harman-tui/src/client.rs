@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 
 use crate::types::{
-    CreateOrderRequest, HealthResponse, MassCancelResult, Order, OrdersResponse, PositionInfo,
-    PositionsResponse, PumpResult, ReconcileResult, RiskInfo, Snapshot, SnapResponse,
+    CreateOrderRequest, HealthResponse, LocalPositionInfo, MassCancelResult, Order, OrdersResponse,
+    PositionInfo, PositionsResponse, PumpResult, ReconcileResult, RiskInfo, Snapshot, SnapResponse,
 };
 
 /// HTTP client for the harman order management API.
@@ -206,8 +206,8 @@ impl HarmanClient {
         resp.json().await.context("reconcile: parse response")
     }
 
-    /// GET /v1/admin/positions
-    pub async fn list_positions(&self) -> Result<Vec<PositionInfo>> {
+    /// GET /v1/admin/positions — returns (exchange, local) positions
+    pub async fn list_positions(&self) -> Result<(Vec<PositionInfo>, Vec<LocalPositionInfo>)> {
         let url = format!("{}/v1/admin/positions", self.base_url);
         let resp = self
             .client
@@ -222,7 +222,7 @@ impl HarmanClient {
             anyhow::bail!("list_positions: {} {}", status, body);
         }
         let body: PositionsResponse = resp.json().await.context("list_positions: parse response")?;
-        Ok(body.exchange)
+        Ok((body.exchange, body.local))
     }
 
     /// GET /v1/admin/risk
