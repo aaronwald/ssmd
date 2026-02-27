@@ -55,6 +55,8 @@ pub struct AppState {
     // Caches
     pub auth_cache: RwLock<HashMap<u64, CachedAuth>>,
     pub key_sessions: DashMap<String, i64>,
+    /// Cached ticker list from secmaster (via data-ts), refreshed every 5 minutes
+    pub ticker_cache: RwLock<Option<(std::time::Instant, Vec<String>)>>,
     /// Prevents concurrent pump execution for static-token auth (fallback).
     pub pump_semaphore: Semaphore,
 }

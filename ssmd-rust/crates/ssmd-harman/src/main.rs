@@ -155,6 +155,7 @@ async fn main() {
         session_semaphores: DashMap::new(),
         auth_cache: tokio::sync::RwLock::new(HashMap::new()),
         key_sessions: DashMap::new(),
+        ticker_cache: tokio::sync::RwLock::new(None),
         pump_semaphore: tokio::sync::Semaphore::new(1),
     });
 

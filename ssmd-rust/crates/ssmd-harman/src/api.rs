@@ -222,6 +222,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/groups/:id", get(get_group_handler))
         .route("/v1/fills", get(list_fills_handler))
         .route("/v1/audit", get(list_audit_handler))
+        .route("/v1/tickers", get(list_tickers_handler))
         // harman:admin
         .route("/v1/orders/mass-cancel", post(mass_cancel))
         .route("/v1/admin/pump", post(pump_handler))
@@ -923,6 +924,108 @@ async fn list_audit_handler(
                 .into_response()
         }
     }
+}
+
+/// GET /v1/tickers — proxy to data-ts secmaster for ticker autocomplete.
+/// Caches for 5 minutes to avoid hammering data-ts.
+async fn list_tickers_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Query(query): Query<TickerSearchQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        return e.into_response();
+    }
+
+    let prefix = query.q.as_deref().unwrap_or("");
+
+    // Check cache (5 minute TTL)
+    {
+        let cache = state.ticker_cache.read().await;
+        if let Some((cached_at, tickers)) = cache.as_ref() {
+            if cached_at.elapsed() < Duration::from_secs(300) {
+                let filtered = filter_tickers(tickers, prefix, 50);
+                return (StatusCode::OK, Json(serde_json::json!({"tickers": filtered}))).into_response();
+            }
+        }
+    }
+
+    // Cache miss — fetch from data-ts
+    let base_url = match &state.auth_validate_url {
+        Some(url) => url.replace("/v1/auth/validate", ""),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "data-ts not configured"})),
+            ).into_response();
+        }
+    };
+
+    let url = format!("{}/v1/markets?status=active&limit=500", base_url);
+    let resp = match state.http_client.get(&url).timeout(Duration::from_secs(10)).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to fetch tickers from data-ts");
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": "data-ts unavailable"})),
+            ).into_response();
+        }
+    };
+
+    if !resp.status().is_success() {
+        tracing::warn!(status = %resp.status(), "data-ts returned error for markets");
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": "data-ts error"})),
+        ).into_response();
+    }
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to parse data-ts markets response");
+            return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "parse error"}))).into_response();
+        }
+    };
+
+    // Extract ticker strings from the markets array
+    let tickers: Vec<String> = body["markets"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m["ticker"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Update cache
+    {
+        let mut cache = state.ticker_cache.write().await;
+        *cache = Some((std::time::Instant::now(), tickers.clone()));
+    }
+
+    let filtered = filter_tickers(&tickers, prefix, 50);
+    (StatusCode::OK, Json(serde_json::json!({"tickers": filtered}))).into_response()
+}
+
+/// Filter tickers by prefix (case-insensitive) and limit results
+fn filter_tickers<'a>(tickers: &'a [String], prefix: &str, limit: usize) -> Vec<&'a str> {
+    if prefix.is_empty() {
+        return tickers.iter().map(|s| s.as_str()).take(limit).collect();
+    }
+    let prefix_upper = prefix.to_uppercase();
+    tickers
+        .iter()
+        .filter(|t| t.to_uppercase().starts_with(&prefix_upper))
+        .map(|s| s.as_str())
+        .take(limit)
+        .collect()
+}
+
+#[derive(Debug, Deserialize)]
+struct TickerSearchQuery {
+    q: Option<String>,
 }
 
 fn order_to_json(order: &Order) -> serde_json::Value {

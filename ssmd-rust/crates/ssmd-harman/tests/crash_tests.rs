@@ -65,6 +65,7 @@ async fn build_test_state(
         auth_cache: tokio::sync::RwLock::new(HashMap::new()),
         key_sessions: DashMap::new(),
         pump_semaphore: tokio::sync::Semaphore::new(1),
+        ticker_cache: tokio::sync::RwLock::new(None),
     })
 }
 
