@@ -71,6 +71,7 @@ export default function OrdersPage() {
                 <th className="px-4 py-2">TIF</th>
                 <th className="px-4 py-2">State</th>
                 <th className="px-4 py-2">Leg</th>
+                <th className="px-4 py-2">Created</th>
                 <th className="px-4 py-2">Actions</th>
               </tr>
             </thead>
@@ -88,12 +89,13 @@ export default function OrdersPage() {
                     <td className="px-4 py-2 uppercase text-xs">{o.time_in_force}</td>
                     <td className="px-4 py-2"><StateBadge state={o.state} /></td>
                     <td className="px-4 py-2 text-xs text-fg-muted">{o.leg_role || "-"}</td>
+                    <td className="px-4 py-2 text-xs text-fg-muted font-mono">{new Date(o.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
                     <td className="px-4 py-2"><OrderActions order={o} /></td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={11} className="px-4 py-8 text-center text-fg-subtle text-sm">
+                  <td colSpan={12} className="px-4 py-8 text-center text-fg-subtle text-sm">
                     {orders ? "No orders" : "Loading..."}
                   </td>
                 </tr>
