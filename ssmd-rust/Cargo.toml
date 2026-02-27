@@ -12,6 +12,7 @@ members = [
     "crates/ssmd-cache",
     "crates/ssmd-parquet-gen",
     "crates/harman",
+    "crates/ssmd-harman-ems",
     "crates/ssmd-exchange-kalshi",
     "crates/ssmd-harman",
     "crates/ssmd-snap",
