@@ -24,8 +24,9 @@ use harman::types::ExchangeOrderState;
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
-use ssmd_harman::{pump, reconciliation, recovery, AppState, Metrics};
+use ssmd_harman::{pump, AppState};
 use ssmd_harman_ems::{Ems, EmsMetrics};
+use ssmd_harman_oms::{Oms, OmsMetrics};
 
 /// Build an AppState using MockExchange and a test DB pool.
 async fn build_test_state(
@@ -35,23 +36,26 @@ async fn build_test_state(
 ) -> Arc<AppState> {
     let registry = prometheus::Registry::new();
     let ems_metrics = EmsMetrics::new(&registry);
+    let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = Arc::new(mock);
     let ems = Arc::new(Ems::new(
         pool.clone(),
-        Arc::new(mock),
+        exchange.clone(),
         RiskLimits::default(),
         ems_metrics,
     ));
+    let oms_metrics = OmsMetrics::new(&registry);
+    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
     Arc::new(AppState {
         ems,
+        oms,
         pool,
-        metrics: Metrics::new(registry),
+        registry,
         api_token: "test-api-token".to_string(),
         admin_token: "test-admin-token".to_string(),
         startup_session_id: session_id,
         auth_validate_url: None,
         http_client: reqwest::Client::new(),
         session_semaphores: DashMap::new(),
-        suspended_sessions: DashMap::new(),
         auth_cache: tokio::sync::RwLock::new(HashMap::new()),
         key_sessions: DashMap::new(),
         pump_semaphore: tokio::sync::Semaphore::new(1),
@@ -102,7 +106,7 @@ async fn test_recovery_submitted_order_resting_on_exchange() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     // Order should now be Acknowledged
     assert_order_state(&pool, order_id, OrderState::Acknowledged)
@@ -141,7 +145,7 @@ async fn test_recovery_submitted_order_executed_on_exchange() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     assert_order_state(&pool, order_id, OrderState::Filled)
         .await
@@ -173,7 +177,7 @@ async fn test_recovery_submitted_order_not_found_on_exchange() {
     let mock = MockExchange::new();
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     assert_order_state(&pool, order_id, OrderState::Rejected)
         .await
@@ -211,7 +215,7 @@ async fn test_recovery_pending_cancel_order_cancelled_on_exchange() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     assert_order_state(&pool, order_id, OrderState::Cancelled)
         .await
@@ -250,7 +254,7 @@ async fn test_recovery_pending_cancel_resting_resends_cancel() {
     let mock = MockExchange::with_state(mock_state.clone());
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     // Verify cancel was re-sent
     let state = mock_state.lock().await;
@@ -293,7 +297,7 @@ async fn test_double_recovery_idempotent() {
     // First recovery
     let mock1 = MockExchange::with_state(mock_state.clone());
     let app_state = build_test_state(mock1, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     assert_order_state(&pool, order_id, OrderState::Filled)
         .await
@@ -302,7 +306,7 @@ async fn test_double_recovery_idempotent() {
     // Second recovery — should succeed with no errors even though order is now terminal
     let mock2 = MockExchange::with_state(mock_state.clone());
     let app_state2 = build_test_state(mock2, pool.clone(), session_id).await;
-    recovery::run(&app_state2).await.unwrap();
+    app_state2.oms.run_recovery(session_id).await.unwrap();
 
     // Still filled
     assert_order_state(&pool, order_id, OrderState::Filled)
@@ -522,7 +526,7 @@ async fn test_recovery_discovers_missing_fills() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     // Verify fill was recorded in DB
     let client = pool.get().await.unwrap();
@@ -588,7 +592,7 @@ async fn test_recovery_multiple_ambiguous_orders() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     assert_order_state(&pool, oid1, OrderState::Acknowledged).await.unwrap();
     assert_order_state(&pool, oid2, OrderState::Filled).await.unwrap();
@@ -621,7 +625,7 @@ async fn test_recovery_cleans_stale_queue_items() {
 
     let mock = MockExchange::new();
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     // Queue item should have processing=FALSE now
     let row = client
@@ -661,7 +665,7 @@ async fn test_reconciliation_discovers_fills() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = reconciliation::reconcile(&app_state, session_id).await;
+    let result = app_state.oms.reconcile(session_id).await;
 
     assert_eq!(result.fills_discovered, 1);
 
@@ -728,7 +732,7 @@ async fn test_recovery_ignores_terminal_orders() {
 
     let mock = MockExchange::new();
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     // All should remain in their terminal states
     assert_order_state(&pool, oid_filled, OrderState::Filled).await.unwrap();
@@ -1017,7 +1021,7 @@ async fn test_recovery_pending_amend_resting_reverts() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     // Recovery should resolve PendingAmend to Acknowledged (since exchange says resting)
     assert_order_state(&pool, order_id, OrderState::Acknowledged).await.unwrap();
@@ -1050,7 +1054,7 @@ async fn test_recovery_pending_decrease_resting_reverts() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    recovery::run(&app_state).await.unwrap();
+    app_state.oms.run_recovery(session_id).await.unwrap();
 
     // Recovery should resolve PendingDecrease to Acknowledged
     assert_order_state(&pool, order_id, OrderState::Acknowledged).await.unwrap();
@@ -1087,7 +1091,7 @@ async fn test_reconciliation_fill_updates_order_state() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = reconciliation::reconcile(&app_state, session_id).await;
+    let result = app_state.oms.reconcile(session_id).await;
 
     assert_eq!(result.fills_discovered, 1);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -1125,7 +1129,7 @@ async fn test_reconciliation_partial_fill_updates_order_state() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = reconciliation::reconcile(&app_state, session_id).await;
+    let result = app_state.oms.reconcile(session_id).await;
 
     assert_eq!(result.fills_discovered, 1);
 
@@ -1170,7 +1174,7 @@ async fn test_reconciliation_acknowledged_executed_on_exchange() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = reconciliation::reconcile(&app_state, session_id).await;
+    let result = app_state.oms.reconcile(session_id).await;
 
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     assert!(result.orders_resolved >= 1, "expected at least 1 resolved order");
@@ -1215,7 +1219,7 @@ async fn test_reconciliation_acknowledged_cancelled_on_exchange() {
     }
 
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
-    let result = reconciliation::reconcile(&app_state, session_id).await;
+    let result = app_state.oms.reconcile(session_id).await;
 
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     assert!(result.orders_resolved >= 1, "expected at least 1 resolved order");

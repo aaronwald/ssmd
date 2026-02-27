@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use harman::db;
@@ -7,7 +6,7 @@ use harman::state::{self, OrderState};
 use harman::types::ExchangeOrderState;
 use rust_decimal::Decimal;
 
-use crate::AppState;
+use crate::Oms;
 
 /// Run recovery before starting the API server.
 ///
@@ -16,43 +15,39 @@ use crate::AppState;
 ///
 /// This MUST complete before the API server starts to prevent
 /// duplicate submissions or stale risk state.
-///
-/// Uses `startup_session_id` — other sessions recover on first pump.
-pub async fn run(state: &Arc<AppState>) -> Result<(), String> {
+pub async fn run(oms: &Oms, session_id: i64) -> Result<(), String> {
     info!("starting recovery coordinator");
 
-    let session_id = state.startup_session_id;
-
     // 1. Resolve ambiguous orders
-    resolve_ambiguous_orders(state, session_id).await?;
+    resolve_ambiguous_orders(oms, session_id).await?;
 
     // 2. Discover external resting orders
-    discover_external_orders(state, session_id).await?;
+    discover_external_orders(oms, session_id).await?;
 
     // 3. Discover missing fills
-    discover_missing_fills(state, session_id).await?;
+    discover_missing_fills(oms, session_id).await?;
 
     // 4. Verify position consistency
-    verify_positions(state).await?;
+    verify_positions(oms).await?;
 
     // 5. Rebuild risk state (just log it, the real check happens per-order)
-    let risk_state = db::compute_risk_state(&state.pool, session_id).await?;
+    let risk_state = db::compute_risk_state(&oms.pool, session_id).await?;
     info!(
         open_notional = %risk_state.open_notional,
-        max_notional = %state.ems.risk_limits.max_notional,
+        max_notional = %oms.ems.risk_limits.max_notional,
         "risk state after recovery"
     );
 
     // 6. Clean up stale queue items (items marked processing from a crash)
-    clean_stale_queue(state).await?;
+    clean_stale_queue(oms).await?;
 
     info!("recovery complete");
     Ok(())
 }
 
 /// Resolve orders in submitted or pending_cancel state
-async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Result<(), String> {
-    let ambiguous = db::get_ambiguous_orders(&state.pool, session_id).await?;
+async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), String> {
+    let ambiguous = db::get_ambiguous_orders(&oms.pool, session_id).await?;
 
     if ambiguous.is_empty() {
         info!("no ambiguous orders to recover");
@@ -62,8 +57,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
     info!(count = ambiguous.len(), "recovering ambiguous orders");
 
     for order in &ambiguous {
-        match state
-            .ems
+        match oms
             .exchange
             .get_order_by_client_id(order.client_order_id)
             .await
@@ -90,7 +84,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
                                 "recovery: pending_cancel still resting, re-sending cancel"
                             );
                             if let Some(eid) = &order.exchange_order_id {
-                                match state.ems.exchange.cancel_order(eid).await {
+                                match oms.exchange.cancel_order(eid).await {
                                     Ok(()) => {
                                         info!(order_id = order.id, "re-cancel succeeded");
                                         Some(OrderState::Cancelled)
@@ -121,7 +115,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
 
                 if let Some(new_state) = new_state {
                     if let Err(e) = db::update_order_state(
-                        &state.pool,
+                        &oms.pool,
                         order.id,
                         session_id,
                         new_state,
@@ -148,7 +142,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
                             "recovery: submitted order not found on exchange → rejected"
                         );
                         let _ = db::update_order_state(
-                            &state.pool,
+                            &oms.pool,
                             order.id,
                             session_id,
                             OrderState::Rejected,
@@ -165,7 +159,7 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
                             "recovery: pending_cancel order not found → cancelled"
                         );
                         let _ = db::update_order_state(
-                            &state.pool,
+                            &oms.pool,
                             order.id,
                             session_id,
                             OrderState::Cancelled,
@@ -210,9 +204,8 @@ async fn resolve_ambiguous_orders(state: &Arc<AppState>, session_id: i64) -> Res
 }
 
 /// Fetch resting orders from exchange and import any not tracked locally.
-async fn discover_external_orders(state: &Arc<AppState>, session_id: i64) -> Result<(), String> {
-    let exchange_orders = state
-        .ems
+async fn discover_external_orders(oms: &Oms, session_id: i64) -> Result<(), String> {
+    let exchange_orders = oms
         .exchange
         .get_orders()
         .await
@@ -220,7 +213,7 @@ async fn discover_external_orders(state: &Arc<AppState>, session_id: i64) -> Res
 
     info!(count = exchange_orders.len(), "fetched exchange resting orders for recovery");
 
-    let local_orders = db::list_orders(&state.pool, session_id, None).await?;
+    let local_orders = db::list_orders(&oms.pool, session_id, None).await?;
 
     let mut imported = 0u64;
     for order in &exchange_orders {
@@ -239,7 +232,7 @@ async fn discover_external_orders(state: &Arc<AppState>, session_id: i64) -> Res
         );
 
         match db::create_external_resting_order(
-            &state.pool,
+            &oms.pool,
             &db::ExternalOrderParams {
                 session_id,
                 exchange_order_id: &order.exchange_order_id,
@@ -272,9 +265,8 @@ async fn discover_external_orders(state: &Arc<AppState>, session_id: i64) -> Res
 
 /// Fetch fills from exchange and record any missing ones.
 /// Also updates order state when fills bring an order to Filled/PartiallyFilled.
-async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Result<(), String> {
-    let fills = state
-        .ems
+async fn discover_missing_fills(oms: &Oms, session_id: i64) -> Result<(), String> {
+    let fills = oms
         .exchange
         .get_fills(None)
         .await
@@ -282,7 +274,7 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
 
     info!(count = fills.len(), "fetched exchange fills for recovery");
 
-    let orders = db::list_orders(&state.pool, session_id, None).await?;
+    let orders = db::list_orders(&oms.pool, session_id, None).await?;
     let mut recorded = 0;
     let mut orders_with_new_fills: std::collections::HashSet<i64> =
         std::collections::HashSet::new();
@@ -295,7 +287,7 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
             .find(|o| o.exchange_order_id.as_deref() == Some(&fill.order_id))
         {
             let inserted = db::record_fill(
-                &state.pool,
+                &oms.pool,
                 order.id,
                 session_id,
                 &fill.trade_id,
@@ -319,7 +311,7 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
                 "recovery: importing external fill"
             );
             match db::create_external_order(
-                &state.pool,
+                &oms.pool,
                 &db::ExternalOrderParams {
                     session_id,
                     exchange_order_id: &fill.order_id,
@@ -334,7 +326,7 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
             {
                 Ok(order_id) => {
                     let inserted = db::record_fill(
-                        &state.pool,
+                        &oms.pool,
                         order_id,
                         session_id,
                         &fill.trade_id,
@@ -374,7 +366,7 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
             if order.state.is_terminal() {
                 continue;
             }
-            let filled_qty = db::get_filled_quantity(&state.pool, *order_id).await?;
+            let filled_qty = db::get_filled_quantity(&oms.pool, *order_id).await?;
             let new_state = if filled_qty >= order.quantity {
                 OrderState::Filled
             } else if filled_qty > Decimal::ZERO {
@@ -391,7 +383,7 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
                     "recovery: updated order state from fills"
                 );
                 if let Err(e) = db::update_order_state(
-                    &state.pool,
+                    &oms.pool,
                     *order_id,
                     session_id,
                     new_state,
@@ -416,9 +408,8 @@ async fn discover_missing_fills(state: &Arc<AppState>, session_id: i64) -> Resul
 }
 
 /// Check local positions against exchange positions
-async fn verify_positions(state: &Arc<AppState>) -> Result<(), String> {
-    let exchange_positions = state
-        .ems
+async fn verify_positions(oms: &Oms) -> Result<(), String> {
+    let exchange_positions = oms
         .exchange
         .get_positions()
         .await
@@ -442,8 +433,8 @@ async fn verify_positions(state: &Arc<AppState>) -> Result<(), String> {
 }
 
 /// Clean up stale queue items that were marked processing when we crashed
-async fn clean_stale_queue(state: &Arc<AppState>) -> Result<(), String> {
-    let client = state
+async fn clean_stale_queue(oms: &Oms) -> Result<(), String> {
+    let client = oms
         .pool
         .get()
         .await

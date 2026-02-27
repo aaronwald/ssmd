@@ -5,8 +5,9 @@ use clap::Parser;
 use dashmap::DashMap;
 use tracing::{error, info};
 
-use ssmd_harman::{api, recovery, shutdown, AppState, Metrics};
+use ssmd_harman::{api, shutdown, AppState};
 use ssmd_harman_ems::{Ems, EmsMetrics};
+use ssmd_harman_oms::{Oms, OmsMetrics};
 
 /// ssmd-harman: PostgreSQL-backed order gateway
 #[derive(Parser)]
@@ -39,7 +40,7 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "ssmd_harman=info,harman=info,ssmd_harman_ems=info".into()),
+                .unwrap_or_else(|_| "ssmd_harman=info,harman=info,ssmd_harman_ems=info,ssmd_harman_oms=info".into()),
         )
         .json()
         .init();
@@ -106,29 +107,32 @@ async fn main() {
         .expect("failed to get or create session");
     info!(startup_session_id, "startup session initialized");
 
-    // Create shared registry, EMS metrics first, then reconciliation metrics
+    // Create shared registry, EMS metrics first, then OMS metrics
     let registry = prometheus::Registry::new();
     let ems_metrics = EmsMetrics::new(&registry);
-    let ems = Arc::new(Ems::new(pool.clone(), exchange, risk_limits, ems_metrics));
+    let ems = Arc::new(Ems::new(pool.clone(), exchange.clone(), risk_limits, ems_metrics));
+
+    let oms_metrics = OmsMetrics::new(&registry);
+    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
 
     let state = Arc::new(AppState {
         ems,
+        oms: oms.clone(),
         pool,
-        metrics: Metrics::new(registry),
+        registry,
         api_token,
         admin_token,
         startup_session_id,
         auth_validate_url,
         http_client: reqwest::Client::new(),
         session_semaphores: DashMap::new(),
-        suspended_sessions: DashMap::new(),
         auth_cache: tokio::sync::RwLock::new(HashMap::new()),
         key_sessions: DashMap::new(),
         pump_semaphore: tokio::sync::Semaphore::new(1),
     });
 
     // Run recovery before starting API server
-    if let Err(e) = recovery::run(&state).await {
+    if let Err(e) = oms.run_recovery(startup_session_id).await {
         error!(error = %e, "recovery failed, exiting");
         std::process::exit(1);
     }

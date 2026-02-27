@@ -264,7 +264,7 @@ async fn create_order(
             .into_response();
     }
 
-    if state.suspended_sessions.contains_key(&ctx.session_id) {
+    if state.oms.is_suspended(ctx.session_id) {
         return (
             StatusCode::CONFLICT,
             Json(serde_json::json!({"error": "session suspended"})),
@@ -661,7 +661,7 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .into_response();
     }
 
-    let any_suspended = !state.suspended_sessions.is_empty();
+    let any_suspended = !state.oms.suspended_sessions.is_empty();
 
     // Check DB connectivity
     match state.pool.get().await {
@@ -684,7 +684,7 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// GET /metrics
 async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let encoder = prometheus::TextEncoder::new();
-    let families = state.metrics.registry.gather();
+    let families = state.registry.gather();
     match encoder.encode_to_string(&families) {
         Ok(text) => (StatusCode::OK, text).into_response(),
         Err(e) => (
@@ -708,38 +708,17 @@ async fn positions_handler(
         return e.into_response();
     }
 
-    let exchange_positions = match state.ems.exchange.get_positions().await {
-        Ok(p) => p,
+    match state.oms.positions(ctx.session_id).await {
+        Ok(view) => (StatusCode::OK, Json(serde_json::json!(view))).into_response(),
         Err(e) => {
-            tracing::error!(error = %e, "get positions failed");
-            return (
+            tracing::error!(error = %e, "positions failed");
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal error"})),
             )
-                .into_response();
+                .into_response()
         }
-    };
-
-    let local_positions = match db::compute_local_positions(&state.pool, ctx.session_id).await {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!(error = %e, "compute local positions failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal error"})),
-            )
-                .into_response();
-        }
-    };
-
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "exchange": exchange_positions,
-            "local": local_positions,
-        })),
-    )
-        .into_response()
+    }
 }
 
 /// GET /v1/admin/risk
@@ -789,7 +768,7 @@ async fn pump_handler(
             .into_response();
     }
 
-    if state.suspended_sessions.contains_key(&ctx.session_id) {
+    if state.oms.is_suspended(ctx.session_id) {
         return (
             StatusCode::CONFLICT,
             Json(serde_json::json!({"error": "session suspended"})),
@@ -827,7 +806,7 @@ async fn reconcile_handler(
         return e.into_response();
     }
 
-    let result = crate::reconciliation::reconcile(&state, ctx.session_id).await;
+    let result = state.oms.reconcile(ctx.session_id).await;
     (StatusCode::OK, Json(result)).into_response()
 }
 
@@ -840,7 +819,7 @@ async fn resume_handler(
         return e.into_response();
     }
 
-    let was_suspended = state.suspended_sessions.remove(&ctx.session_id).is_some();
+    let was_suspended = state.oms.resume(ctx.session_id);
     tracing::info!(session_id = ctx.session_id, was_suspended, "admin resumed session");
     (
         StatusCode::OK,

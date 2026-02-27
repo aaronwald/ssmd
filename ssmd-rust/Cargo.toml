@@ -13,6 +13,7 @@ members = [
     "crates/ssmd-parquet-gen",
     "crates/harman",
     "crates/ssmd-harman-ems",
+    "crates/ssmd-harman-oms",
     "crates/ssmd-exchange-kalshi",
     "crates/ssmd-harman",
     "crates/ssmd-snap",

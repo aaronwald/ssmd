@@ -3791,6 +3791,7 @@ dependencies = [
  "ssmd-connector-lib",
  "ssmd-exchange-kalshi",
  "ssmd-harman-ems",
+ "ssmd-harman-oms",
  "subtle",
  "tokio",
  "tokio-postgres",
@@ -3812,6 +3813,26 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ssmd-harman-oms"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dashmap",
+ "deadpool-postgres",
+ "harman",
+ "prometheus",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "ssmd-harman-ems",
  "tokio",
  "tokio-postgres",
  "tracing",

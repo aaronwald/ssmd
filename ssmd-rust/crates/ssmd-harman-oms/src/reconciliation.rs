@@ -8,7 +8,7 @@ use harman::state::{self, OrderState};
 use harman::types::{Action, ExchangeOrderState, Side};
 use rust_decimal::Decimal;
 
-use crate::AppState;
+use crate::Oms;
 
 const STALE_THRESHOLD: Duration = Duration::from_secs(30);
 
@@ -37,7 +37,7 @@ pub struct PositionMismatch {
 /// Run one full reconciliation cycle: discover fills, resolve stale orders, compare positions.
 ///
 /// Called explicitly via `POST /v1/admin/reconcile` — no background polling.
-pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
+pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
     let start = Instant::now();
 
     let mut result = ReconcileResult {
@@ -48,7 +48,7 @@ pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
         errors: vec![],
     };
 
-    match discover_external_orders(state, session_id).await {
+    match discover_external_orders(oms, session_id).await {
         Ok(count) => {
             if count > 0 {
                 info!(count, "imported external resting orders");
@@ -60,10 +60,10 @@ pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
         }
     }
 
-    match discover_fills(state, session_id).await {
+    match discover_fills(oms, session_id).await {
         Ok(count) => {
             result.fills_discovered = count;
-            state.metrics.reconciliation_fills_discovered.inc_by(count);
+            oms.metrics.reconciliation_fills_discovered.inc_by(count);
         }
         Err(e) => {
             error!(error = %e, "fill discovery failed");
@@ -71,7 +71,7 @@ pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
         }
     }
 
-    match resolve_stale_orders(state, session_id).await {
+    match resolve_stale_orders(oms, session_id).await {
         Ok(count) => result.orders_resolved = count,
         Err(e) => {
             error!(error = %e, "stale order resolution failed");
@@ -79,7 +79,7 @@ pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
         }
     }
 
-    match compare_positions(state, session_id).await {
+    match compare_positions(oms, session_id).await {
         Ok(mismatches) => {
             result.position_mismatches = mismatches;
         }
@@ -90,16 +90,15 @@ pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
     }
 
     // Check if any mismatch triggered suspension for this session
-    result.suspended = state.suspended_sessions.contains_key(&session_id);
+    result.suspended = oms.suspended_sessions.contains_key(&session_id);
 
     // Record metrics
     let elapsed = start.elapsed().as_secs_f64();
-    state.metrics.reconciliation_duration.observe(elapsed);
+    oms.metrics.reconciliation_duration.observe(elapsed);
 
     if result.errors.is_empty() {
-        state.metrics.reconciliation_ok.inc();
-        state
-            .metrics
+        oms.metrics.reconciliation_ok.inc();
+        oms.metrics
             .reconciliation_last_success
             .set(chrono::Utc::now().timestamp());
     }
@@ -121,9 +120,8 @@ pub async fn reconcile(state: &AppState, session_id: i64) -> ReconcileResult {
 ///
 /// External resting orders (placed via exchange website) are imported as
 /// synthetic orders in 'acknowledged' state so they appear in the blotter.
-async fn discover_external_orders(state: &AppState, session_id: i64) -> Result<u64, String> {
-    let exchange_orders = state
-        .ems
+async fn discover_external_orders(oms: &Oms, session_id: i64) -> Result<u64, String> {
+    let exchange_orders = oms
         .exchange
         .get_orders()
         .await
@@ -131,7 +129,7 @@ async fn discover_external_orders(state: &AppState, session_id: i64) -> Result<u
 
     debug!(count = exchange_orders.len(), "fetched exchange resting orders");
 
-    let local_orders = db::list_orders(&state.pool, session_id, None).await?;
+    let local_orders = db::list_orders(&oms.pool, session_id, None).await?;
 
     let mut count = 0u64;
     for order in &exchange_orders {
@@ -156,7 +154,7 @@ async fn discover_external_orders(state: &AppState, session_id: i64) -> Result<u
         );
 
         match db::create_external_resting_order(
-            &state.pool,
+            &oms.pool,
             &db::ExternalOrderParams {
                 session_id,
                 exchange_order_id: &order.exchange_order_id,
@@ -170,7 +168,7 @@ async fn discover_external_orders(state: &AppState, session_id: i64) -> Result<u
         .await
         {
             Ok(_order_id) => {
-                state.metrics.fills_external_imported.inc();
+                oms.metrics.fills_external_imported.inc();
                 count += 1;
             }
             Err(e) => {
@@ -190,9 +188,8 @@ async fn discover_external_orders(state: &AppState, session_id: i64) -> Result<u
 /// After recording fills, update order states (Acknowledged → Filled/PartiallyFilled).
 ///
 /// Loads all orders once and builds a lookup to avoid N+1 queries.
-async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String> {
-    let fills = state
-        .ems
+async fn discover_fills(oms: &Oms, session_id: i64) -> Result<u64, String> {
+    let fills = oms
         .exchange
         .get_fills(None)
         .await
@@ -200,7 +197,7 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
 
     debug!(count = fills.len(), "fetched exchange fills");
 
-    let orders = db::list_orders(&state.pool, session_id, None).await?;
+    let orders = db::list_orders(&oms.pool, session_id, None).await?;
 
     let mut count = 0u64;
     // Track which orders got new fills so we can update their states
@@ -212,7 +209,7 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
             .find(|o| o.exchange_order_id.as_deref() == Some(&fill.order_id))
         {
             let inserted = db::record_fill(
-                &state.pool,
+                &oms.pool,
                 order.id,
                 session_id,
                 &fill.trade_id,
@@ -229,7 +226,7 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
                     trade_id = %fill.trade_id,
                     "recorded missing fill"
                 );
-                state.ems.metrics.fills_recorded.inc();
+                oms.ems.metrics.fills_recorded.inc();
                 orders_with_new_fills.insert(order.id);
                 count += 1;
             }
@@ -244,7 +241,7 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
                 "importing external fill"
             );
             match db::create_external_order(
-                &state.pool,
+                &oms.pool,
                 &db::ExternalOrderParams {
                     session_id,
                     exchange_order_id: &fill.order_id,
@@ -259,7 +256,7 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
             {
                 Ok(order_id) => {
                     let inserted = db::record_fill(
-                        &state.pool,
+                        &oms.pool,
                         order_id,
                         session_id,
                         &fill.trade_id,
@@ -270,8 +267,8 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
                     )
                     .await?;
                     if inserted {
-                        state.ems.metrics.fills_recorded.inc();
-                        state.metrics.fills_external_imported.inc();
+                        oms.ems.metrics.fills_recorded.inc();
+                        oms.metrics.fills_external_imported.inc();
                         count += 1;
                     }
                 }
@@ -294,7 +291,7 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
                 continue;
             }
             // Compute total filled quantity from all fills for this order
-            let filled_qty = db::get_filled_quantity(&state.pool, *order_id).await?;
+            let filled_qty = db::get_filled_quantity(&oms.pool, *order_id).await?;
             let new_state = if filled_qty >= order.quantity {
                 OrderState::Filled
             } else if filled_qty > Decimal::ZERO {
@@ -313,7 +310,7 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
                     "reconciliation updated order state from fill"
                 );
                 if let Err(e) = db::update_order_state(
-                    &state.pool,
+                    &oms.pool,
                     *order_id,
                     session_id,
                     new_state,
@@ -340,9 +337,8 @@ async fn discover_fills(state: &AppState, session_id: i64) -> Result<u64, String
 /// Then compare against exchange `get_positions()`.
 ///
 /// Large mismatches (>1 contract or >$10 notional) trigger session suspension.
-async fn compare_positions(state: &AppState, session_id: i64) -> Result<Vec<PositionMismatch>, String> {
-    let exchange_positions = state
-        .ems
+async fn compare_positions(oms: &Oms, session_id: i64) -> Result<Vec<PositionMismatch>, String> {
+    let exchange_positions = oms
         .exchange
         .get_positions()
         .await
@@ -359,7 +355,7 @@ async fn compare_positions(state: &AppState, session_id: i64) -> Result<Vec<Posi
     }
 
     // Compute local positions from filled orders in this session
-    let orders = db::list_orders(&state.pool, session_id, None).await?;
+    let orders = db::list_orders(&oms.pool, session_id, None).await?;
     let mut local_map: HashMap<String, Decimal> = HashMap::new();
     for order in &orders {
         if order.filled_quantity <= Decimal::ZERO {
@@ -412,8 +408,7 @@ async fn compare_positions(state: &AppState, session_id: i64) -> Result<Vec<Posi
             "position mismatch detected"
         );
 
-        state
-            .metrics
+        oms.metrics
             .reconciliation_mismatch
             .with_label_values(&[severity])
             .inc();
@@ -442,8 +437,8 @@ async fn compare_positions(state: &AppState, session_id: i64) -> Result<Vec<Posi
 }
 
 /// Find and resolve orders stuck in ambiguous states.
-async fn resolve_stale_orders(state: &AppState, session_id: i64) -> Result<u64, String> {
-    let ambiguous = db::get_ambiguous_orders(&state.pool, session_id).await?;
+async fn resolve_stale_orders(oms: &Oms, session_id: i64) -> Result<u64, String> {
+    let ambiguous = db::get_ambiguous_orders(&oms.pool, session_id).await?;
 
     let now = chrono::Utc::now();
     let mut count = 0u64;
@@ -464,8 +459,7 @@ async fn resolve_stale_orders(state: &AppState, session_id: i64) -> Result<u64, 
             "resolving stale order"
         );
 
-        match state
-            .ems
+        match oms
             .exchange
             .get_order_by_client_id(order.client_order_id)
             .await
@@ -481,7 +475,7 @@ async fn resolve_stale_orders(state: &AppState, session_id: i64) -> Result<u64, 
                             {
                                 if let Some(eid) = &order.exchange_order_id {
                                     warn!(order_id = order.id, "re-sending cancel");
-                                    let _ = state.ems.exchange.cancel_order(eid).await;
+                                    let _ = oms.exchange.cancel_order(eid).await;
                                 }
                             } else {
                                 warn!(
@@ -504,7 +498,7 @@ async fn resolve_stale_orders(state: &AppState, session_id: i64) -> Result<u64, 
                     );
 
                     if let Err(e) = db::update_order_state(
-                        &state.pool,
+                        &oms.pool,
                         order.id,
                         session_id,
                         new_state,
@@ -528,7 +522,7 @@ async fn resolve_stale_orders(state: &AppState, session_id: i64) -> Result<u64, 
                         "submitted order not found on exchange, marking rejected"
                     );
                     if let Err(e) = db::update_order_state(
-                        &state.pool,
+                        &oms.pool,
                         order.id,
                         session_id,
                         OrderState::Rejected,
