@@ -23,7 +23,7 @@ export default function Dashboard() {
   }
 
   const healthStatus = health
-    ? health.status === "ok"
+    ? health.status === "healthy"
       ? "green"
       : "red"
     : "yellow";

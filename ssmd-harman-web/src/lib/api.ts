@@ -101,3 +101,7 @@ export const resume = () =>
 
 export const massCancel = () =>
   request<void>("/v1/orders/mass-cancel", { method: "POST" });
+
+// Ticker search (secmaster)
+export const searchTickers = (q: string) =>
+  request<{ tickers: string[] }>(`/v1/tickers?q=${encodeURIComponent(q)}`);

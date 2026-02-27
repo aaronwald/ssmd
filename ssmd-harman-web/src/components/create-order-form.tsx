@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { createOrder } from "@/lib/api";
 import type { Side, Action, TimeInForce } from "@/lib/types";
 import { useSWRConfig } from "swr";
+import { TickerInput } from "./ticker-input";
 
 export function CreateOrderForm() {
   const { mutate } = useSWRConfig();
@@ -48,13 +49,10 @@ export function CreateOrderForm() {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <div>
           <label className="block text-xs text-fg-muted mb-1">Ticker</label>
-          <input
-            type="text"
+          <TickerInput
             value={ticker}
-            onChange={(e) => setTicker(e.target.value)}
-            required
+            onChange={setTicker}
             className="w-full rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm font-mono text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"
-            placeholder="KXBTCD-26..."
           />
         </div>
         <div>

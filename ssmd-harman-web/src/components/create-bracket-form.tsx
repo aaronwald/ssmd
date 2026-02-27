@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { createBracket } from "@/lib/api";
 import type { Side, Action, TimeInForce } from "@/lib/types";
 import { useSWRConfig } from "swr";
+import { TickerInput } from "./ticker-input";
 
 function LegFields({
   label,
@@ -104,7 +105,11 @@ export function CreateBracketForm() {
       <h3 className="text-sm font-medium text-fg">Create Bracket</h3>
       <div>
         <label className="block text-xs text-fg-muted mb-1">Ticker (shared)</label>
-        <input type="text" value={ticker} onChange={(e) => setTicker(e.target.value)} required className="w-full max-w-xs rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm font-mono text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none" placeholder="KXBTCD-26..." />
+        <TickerInput
+          value={ticker}
+          onChange={setTicker}
+          className="w-full max-w-xs rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm font-mono text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"
+        />
       </div>
       <LegFields label="Entry" side={eSide} setSide={setESide} action={eAction} setAction={setEAction} quantity={eQty} setQuantity={setEQty} price={ePrice} setPrice={setEPrice} tif={eTif} setTif={setETif} />
       <LegFields label="Take Profit" side={tpSide} setSide={setTpSide} action={tpAction} setAction={setTpAction} quantity={tpQty} setQuantity={setTpQty} price={tpPrice} setPrice={setTpPrice} tif={tpTif} setTif={setTpTif} />
