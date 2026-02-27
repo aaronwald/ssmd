@@ -71,11 +71,11 @@ async fn build_test_state(
 /// Setup helper: create pool, run migrations, create a unique test session.
 /// Each test gets its own session to avoid cross-test data contamination.
 async fn setup() -> (deadpool_postgres::Pool, i64) {
-    let pool = setup_test_db().await.expect("DATABASE_URL required");
+    let pool = setup_test_db().await.expect("setup_test_db failed");
     let unique_name = format!("test-{}", Uuid::new_v4());
     let session_id = db::get_or_create_session(&pool, &unique_name, None)
         .await
-        .expect("create session");
+        .unwrap_or_else(|e| panic!("create session '{}' failed: {}", unique_name, e));
     (pool, session_id)
 }
 
@@ -1162,12 +1162,9 @@ async fn test_reconciliation_acknowledged_executed_on_exchange() {
         "KXTEST-RECON-ACK-EXEC", Some("exch-recon-ae-1"), coid,
     ).await.unwrap();
 
-    // Make the order look stale (updated >30s ago)
-    let client = pool.get().await.unwrap();
-    client.execute(
-        "UPDATE prediction_orders SET updated_at = NOW() - INTERVAL '60 seconds' WHERE id = $1",
-        &[&order_id],
-    ).await.unwrap();
+    // Make the order look stale (updated >30s ago).
+    // Must use make_order_stale() to bypass the updated_at trigger.
+    make_order_stale(&pool, order_id, 60).await.unwrap();
 
     // Mock: exchange says order is Executed
     let mock = MockExchange::new();
@@ -1207,12 +1204,8 @@ async fn test_reconciliation_acknowledged_cancelled_on_exchange() {
         "KXTEST-RECON-ACK-CXL", Some("exch-recon-ac-1"), coid,
     ).await.unwrap();
 
-    // Make the order stale
-    let client = pool.get().await.unwrap();
-    client.execute(
-        "UPDATE prediction_orders SET updated_at = NOW() - INTERVAL '60 seconds' WHERE id = $1",
-        &[&order_id],
-    ).await.unwrap();
+    // Make the order look stale. Must bypass updated_at trigger.
+    make_order_stale(&pool, order_id, 60).await.unwrap();
 
     // Mock: exchange says order is Cancelled (e.g., mass cancel)
     let mock = MockExchange::new();
@@ -1316,8 +1309,9 @@ async fn test_bracket_entry_fill_activates_exits() {
     ).await.unwrap();
 
     // Drain the entry's queue item
-    let _ = db::dequeue_order(&pool, session_id).await;
-    let _ = db::remove_queue_item(&pool, 1).await;
+    if let Some(qi) = db::dequeue_order(&pool, session_id).await {
+        let _ = db::remove_queue_item(&pool, qi.id).await;
+    }
 
     // Evaluate triggers
     let activated = app_state.oms.evaluate_triggers(session_id).await.unwrap();

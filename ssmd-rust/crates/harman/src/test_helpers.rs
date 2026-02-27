@@ -454,6 +454,46 @@ pub async fn queue_count(pool: &Pool, session_id: i64) -> Result<i64, String> {
     Ok(row.get("cnt"))
 }
 
+/// Make an order look stale by setting updated_at to the past.
+///
+/// Must disable the updated_at trigger first, since it unconditionally
+/// sets NEW.updated_at = NOW() on every UPDATE.
+pub async fn make_order_stale(pool: &Pool, order_id: i64, seconds_ago: i64) -> Result<(), String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    client
+        .execute(
+            "ALTER TABLE prediction_orders DISABLE TRIGGER prediction_orders_updated_at",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("disable trigger: {}", e))?;
+
+    client
+        .execute(
+            &format!(
+                "UPDATE prediction_orders SET updated_at = NOW() - INTERVAL '{} seconds' WHERE id = $1",
+                seconds_ago
+            ),
+            &[&order_id],
+        )
+        .await
+        .map_err(|e| format!("update stale: {}", e))?;
+
+    client
+        .execute(
+            "ALTER TABLE prediction_orders ENABLE TRIGGER prediction_orders_updated_at",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("enable trigger: {}", e))?;
+
+    Ok(())
+}
+
 /// Create a test pool and run migrations. Requires DATABASE_URL env var.
 pub async fn setup_test_db() -> Result<Pool, String> {
     let url = std::env::var("DATABASE_URL")
