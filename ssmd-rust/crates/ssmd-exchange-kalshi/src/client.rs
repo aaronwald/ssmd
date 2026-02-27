@@ -392,27 +392,35 @@ impl ExchangeAdapter for KalshiClient {
     }
 
     async fn get_positions(&self) -> Result<Vec<Position>, ExchangeError> {
-        let path = format!("{}/portfolio/positions", self.path_prefix);
-        let resp = self.get(&path).await?;
+        let mut all_positions = Vec::new();
+        let mut cursor: Option<String> = None;
+        let limit = 200;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let error_body = resp.text().await.unwrap_or_default();
-            return Err(ExchangeError::Unexpected(format!(
-                "HTTP {}: {}",
-                status, error_body
-            )));
-        }
+        loop {
+            let mut url = format!("{}/portfolio/positions?limit={}", self.path_prefix, limit);
+            if let Some(ref c) = cursor {
+                url.push_str(&format!("&cursor={}", c));
+            }
 
-        let positions_resp: KalshiPositionsResponse = resp
-            .json()
-            .await
-            .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+            let resp = self.get(&url).await?;
 
-        Ok(positions_resp
-            .market_positions
-            .into_iter()
-            .map(|p| Position {
+            let status = resp.status();
+            if !status.is_success() {
+                let error_body = resp.text().await.unwrap_or_default();
+                return Err(ExchangeError::Unexpected(format!(
+                    "HTTP {}: {}",
+                    status, error_body
+                )));
+            }
+
+            let positions_resp: KalshiPositionsResponse = resp
+                .json()
+                .await
+                .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+
+            let page_count = positions_resp.market_positions.len();
+
+            all_positions.extend(positions_resp.market_positions.into_iter().map(|p| Position {
                 ticker: p.ticker,
                 side: if p.position >= 0 {
                     Side::Yes
@@ -421,8 +429,16 @@ impl ExchangeAdapter for KalshiClient {
                 },
                 quantity: Decimal::from(p.position.unsigned_abs()),
                 market_value_dollars: Decimal::new(p.market_exposure, 2),
-            })
-            .collect())
+            }));
+
+            match positions_resp.cursor {
+                Some(c) if !c.is_empty() && page_count > 0 => cursor = Some(c),
+                _ => break,
+            }
+        }
+
+        debug!(count = all_positions.len(), "fetched all positions (paginated)");
+        Ok(all_positions)
     }
 
     async fn get_fills(&self, min_ts: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExchangeFill>, ExchangeError> {
