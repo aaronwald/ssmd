@@ -396,6 +396,15 @@ async fn list_orders(
             let filtered: Vec<_> = match group_filter.as_deref() {
                 Some("open") => orders.into_iter().filter(|o| o.state.is_open()).collect(),
                 Some("terminal") => orders.into_iter().filter(|o| o.state.is_terminal()).collect(),
+                Some("resting") => orders.into_iter()
+                    .filter(|o| matches!(o.state, OrderState::Acknowledged | OrderState::PartiallyFilled))
+                    .collect(),
+                Some("today") => {
+                    let today = chrono::Utc::now().date_naive();
+                    orders.into_iter()
+                        .filter(|o| o.created_at.date_naive() == today)
+                        .collect()
+                }
                 _ => orders,
             };
             let response: Vec<serde_json::Value> = filtered.iter().map(order_to_json).collect();

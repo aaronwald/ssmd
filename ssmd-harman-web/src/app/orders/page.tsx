@@ -10,8 +10,10 @@ import { CreateOrderForm } from "@/components/create-order-form";
 const stateFilters = [
   { value: "", label: "All" },
   { value: "open", label: "Open" },
+  { value: "resting", label: "Resting" },
   { value: "terminal", label: "Terminal" },
   { value: "staged", label: "Staged" },
+  { value: "today", label: "Today" },
 ];
 
 export default function OrdersPage() {

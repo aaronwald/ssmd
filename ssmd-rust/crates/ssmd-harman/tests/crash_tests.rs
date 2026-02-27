@@ -1303,16 +1303,16 @@ async fn test_bracket_entry_fill_activates_exits() {
     let (group, orders) = app_state.oms.create_bracket(session_id, entry, tp, sl).await.unwrap();
     let entry_order = orders.iter().find(|o| o.leg_role == Some(LegRole::Entry)).unwrap();
 
-    // Simulate entry being filled
+    // Drain the entry's queue item first (dequeue transitions Pending → Submitted)
+    if let Ok(Some(qi)) = db::dequeue_order(&pool, session_id).await {
+        let _ = db::remove_queue_item(&pool, qi.queue_id).await;
+    }
+
+    // Simulate entry being filled (after dequeue so it doesn't overwrite)
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Filled,
         Some("exch-bracket-entry"), Some(Decimal::from(5)), None, "test",
     ).await.unwrap();
-
-    // Drain the entry's queue item
-    if let Ok(Some(qi)) = db::dequeue_order(&pool, session_id).await {
-        let _ = db::remove_queue_item(&pool, qi.queue_id).await;
-    }
 
     // Debug: verify DB state before evaluate_triggers
     {

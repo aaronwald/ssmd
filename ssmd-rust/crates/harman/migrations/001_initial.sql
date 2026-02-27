@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- Insert the default MVP session (idempotent)
 INSERT INTO sessions (id, exchange) VALUES (1, 'kalshi') ON CONFLICT (id) DO NOTHING;
 
+-- Sync the sequence past any explicitly-inserted IDs to prevent duplicate key errors
+SELECT setval('sessions_id_seq', GREATEST((SELECT MAX(id) FROM sessions), 1));
+
 -- Orders
 -- NOTE: side CHECK ('yes'/'no') is prediction-market-specific.
 -- This table is intentionally scoped to prediction markets (Kalshi), not a generalized order table.
