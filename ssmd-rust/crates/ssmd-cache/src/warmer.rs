@@ -200,7 +200,8 @@ impl CacheWarmer {
         let event_rows = self.client
             .query(
                 r#"
-                SELECT e.series_ticker, e.event_ticker, e.title, e.status, e.strike_date,
+                SELECT e.series_ticker, e.event_ticker, e.title, e.status,
+                       e.strike_date::text,
                        COUNT(m.ticker) AS market_count
                 FROM events e
                 LEFT JOIN markets m ON m.event_ticker = e.event_ticker AND m.status = 'active'
@@ -216,12 +217,12 @@ impl CacheWarmer {
             let event_ticker: String = row.get(1);
             let title: Option<String> = row.get(2);
             let status: String = row.get(3);
-            let strike_date: Option<chrono::NaiveDateTime> = row.get(4);
+            let strike_date: Option<String> = row.get(4);
             let market_count: i64 = row.get(5);
             let val = serde_json::json!({
                 "title": title.unwrap_or_default(),
                 "status": status,
-                "strike_date": strike_date.map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+                "strike_date": strike_date,
                 "market_count": market_count,
             });
             let hash_key = format!("monitor:events:{}", series_ticker);
@@ -234,7 +235,7 @@ impl CacheWarmer {
         let market_rows = self.client
             .query(
                 r#"
-                SELECT m.event_ticker, m.ticker, m.title, m.status, m.close_time
+                SELECT m.event_ticker, m.ticker, m.title, m.status, m.close_time::text
                 FROM markets m
                 JOIN events e ON m.event_ticker = e.event_ticker
                 WHERE m.status = 'active' AND e.status = 'active'
@@ -248,11 +249,11 @@ impl CacheWarmer {
             let market_ticker: String = row.get(1);
             let title: Option<String> = row.get(2);
             let status: String = row.get(3);
-            let close_time: Option<chrono::NaiveDateTime> = row.get(4);
+            let close_time: Option<String> = row.get(4);
             let val = serde_json::json!({
                 "title": title.unwrap_or_default(),
                 "status": status,
-                "close_time": close_time.map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+                "close_time": close_time,
             });
             let hash_key = format!("monitor:markets:{}", event_ticker);
             cache.hset(&hash_key, &market_ticker, &val.to_string()).await?;
