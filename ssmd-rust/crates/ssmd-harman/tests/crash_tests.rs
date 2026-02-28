@@ -66,6 +66,8 @@ async fn build_test_state(
         key_sessions: DashMap::new(),
         pump_semaphore: tokio::sync::Semaphore::new(1),
         ticker_cache: tokio::sync::RwLock::new(None),
+        redis_conn: None,
+        monitor_metrics: ssmd_harman::MonitorMetrics::new(&prometheus::Registry::new()),
     })
 }
 
