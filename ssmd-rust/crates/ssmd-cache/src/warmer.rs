@@ -539,6 +539,58 @@ impl CacheWarmer {
         Ok(total_keys)
     }
 
+    /// Build flat treemap data for the activity view.
+    /// Stores as a single `monitor:treemap` Redis key (JSON array) with 10-min TTL.
+    pub async fn warm_treemap(&self, cache: &RedisCache) -> Result<u64> {
+        let rows = self.client
+            .query(
+                r#"
+                SELECT e.category, e.series_ticker, e.event_ticker,
+                       m.ticker, m.title, m.volume, m.open_interest,
+                       m.close_time::text
+                FROM markets m
+                JOIN events e ON m.event_ticker = e.event_ticker
+                WHERE m.status = 'active'
+                  AND m.close_time > NOW()
+                  AND e.category IS NOT NULL
+                ORDER BY e.category, e.series_ticker, m.volume DESC NULLS LAST
+                "#,
+                &[],
+            )
+            .await?;
+
+        let markets: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                let category: String = row.get(0);
+                let series: String = row.get(1);
+                let event: String = row.get(2);
+                let ticker: String = row.get(3);
+                let title: Option<String> = row.get(4);
+                let volume: Option<i64> = row.get(5);
+                let open_interest: Option<i64> = row.get(6);
+                let close_time: Option<String> = row.get(7);
+                serde_json::json!({
+                    "category": category,
+                    "series": series,
+                    "event": event,
+                    "ticker": ticker,
+                    "title": title.unwrap_or_default(),
+                    "volume": volume.unwrap_or(0),
+                    "open_interest": open_interest.unwrap_or(0),
+                    "close_time": close_time,
+                })
+            })
+            .collect();
+
+        let count = markets.len() as u64;
+        let json = serde_json::to_string(&markets)?;
+        cache.set_raw_with_ttl("monitor:treemap", &json, 600).await?;
+
+        tracing::info!(count, "Warmed monitor:treemap");
+        Ok(count)
+    }
+
     /// Warm pairs table into Redis (Kraken futures)
     /// Key: secmaster:pair:{pair_id}
     pub async fn warm_pairs(&self, cache: &RedisCache) -> Result<u64> {
@@ -610,6 +662,9 @@ impl CacheWarmer {
         // Build monitor index hashes from the warmed data
         let indexes = self.warm_monitor_indexes(cache).await?;
 
+        // Build flat treemap data for activity view
+        let treemap = self.warm_treemap(cache).await?;
+
         let elapsed = start.elapsed();
         tracing::info!(
             series,
@@ -619,6 +674,7 @@ impl CacheWarmer {
             pairs,
             pm_conditions,
             indexes,
+            treemap,
             elapsed_ms = elapsed.as_millis(),
             "Cache warming complete"
         );

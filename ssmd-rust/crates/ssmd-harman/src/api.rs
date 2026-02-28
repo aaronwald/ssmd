@@ -229,6 +229,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/monitor/series", get(monitor_series_handler))
         .route("/v1/monitor/events", get(monitor_events_handler))
         .route("/v1/monitor/markets", get(monitor_markets_handler))
+        .route("/v1/monitor/treemap", get(monitor_treemap_handler))
         // harman:admin
         .route("/v1/orders/mass-cancel", post(mass_cancel))
         .route("/v1/admin/pump", post(pump_handler))
@@ -1450,6 +1451,111 @@ async fn monitor_markets_handler(
     let market_values: Vec<serde_json::Value> = markets.into_iter().map(|(_, v)| v).collect();
     state.monitor_metrics.requests_total.with_label_values(&["markets", "ok"]).inc();
     (StatusCode::OK, Json(serde_json::json!({"markets": market_values}))).into_response()
+}
+
+/// GET /v1/monitor/treemap — flat market list with volume for treemap visualization
+async fn monitor_treemap_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        state.monitor_metrics.requests_total.with_label_values(&["treemap", "forbidden"]).inc();
+        return e.into_response();
+    }
+    let Some(ref conn) = state.redis_conn else {
+        state.monitor_metrics.requests_total.with_label_values(&["treemap", "ok"]).inc();
+        return (StatusCode::OK, Json(serde_json::json!({"markets": []}))).into_response();
+    };
+    let mut conn = conn.clone();
+
+    // Read the pre-built treemap JSON array from Redis
+    let timer = state.monitor_metrics.redis_duration_seconds.start_timer();
+    let raw: Option<String> = match redis::cmd("GET")
+        .arg("monitor:treemap")
+        .query_async(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            timer.observe_duration();
+            state.monitor_metrics.redis_errors_total.inc();
+            tracing::warn!(error = %e, "Redis GET monitor:treemap failed");
+            state.monitor_metrics.requests_total.with_label_values(&["treemap", "ok"]).inc();
+            return (StatusCode::OK, Json(serde_json::json!({"markets": []}))).into_response();
+        }
+    };
+    timer.observe_duration();
+
+    let Some(raw_json) = raw else {
+        state.monitor_metrics.requests_total.with_label_values(&["treemap", "ok"]).inc();
+        return (StatusCode::OK, Json(serde_json::json!({"markets": []}))).into_response();
+    };
+
+    let mut markets: Vec<serde_json::Value> = match serde_json::from_str(&raw_json) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to parse monitor:treemap JSON");
+            state.monitor_metrics.requests_total.with_label_values(&["treemap", "ok"]).inc();
+            return (StatusCode::OK, Json(serde_json::json!({"markets": []}))).into_response();
+        }
+    };
+
+    // Enrich with live snap data (Kalshi markets only for now)
+    if !markets.is_empty() {
+        let snap_keys: Vec<String> = markets
+            .iter()
+            .map(|m| {
+                let ticker = m.get("ticker").and_then(|v| v.as_str()).unwrap_or("");
+                format!("snap:kalshi:{}", ticker)
+            })
+            .collect();
+        let snap_timer = state.monitor_metrics.redis_duration_seconds.start_timer();
+        let snap_results: Vec<Option<String>> = match redis::cmd("MGET")
+            .arg(&snap_keys)
+            .query_async(&mut conn)
+            .await
+        {
+            Ok(r) => {
+                snap_timer.observe_duration();
+                r
+            }
+            Err(e) => {
+                snap_timer.observe_duration();
+                state.monitor_metrics.redis_errors_total.inc();
+                tracing::warn!(error = %e, "Redis MGET snap keys failed for treemap");
+                vec![None; markets.len()]
+            }
+        };
+
+        for (i, snap_str) in snap_results.into_iter().enumerate() {
+            if let Some(s) = snap_str {
+                if let Ok(snap) = serde_json::from_str::<serde_json::Value>(&s) {
+                    let msg = snap.get("msg").unwrap_or(&snap);
+                    let market = &mut markets[i];
+                    // Kalshi: convert cents to dollars
+                    if let Some(yb) = msg.get("yes_bid").and_then(|v| v.as_f64()) {
+                        market["yes_bid"] = serde_json::json!(yb / 100.0);
+                    }
+                    if let Some(ya) = msg.get("yes_ask").and_then(|v| v.as_f64()) {
+                        market["yes_ask"] = serde_json::json!(ya / 100.0);
+                    }
+                    if let Some(lp) = msg.get("last_price").or_else(|| msg.get("price")).and_then(|v| v.as_f64()) {
+                        market["last"] = serde_json::json!(lp / 100.0);
+                    }
+                    // Overwrite volume/OI from snap if present (more current than DB)
+                    if let Some(vol) = msg.get("volume") {
+                        market["snap_volume"] = vol.clone();
+                    }
+                    if let Some(oi) = msg.get("open_interest") {
+                        market["snap_open_interest"] = oi.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    state.monitor_metrics.requests_total.with_label_values(&["treemap", "ok"]).inc();
+    (StatusCode::OK, Json(serde_json::json!({"markets": markets}))).into_response()
 }
 
 fn order_to_json(order: &Order) -> serde_json::Value {

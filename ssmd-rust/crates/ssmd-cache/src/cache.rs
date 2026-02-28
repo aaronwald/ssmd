@@ -214,6 +214,22 @@ impl RedisCache {
 
     // --- Hash-based monitor index methods ---
 
+    /// SET a raw string key with TTL in seconds
+    pub async fn set_raw_with_ttl(&self, key: &str, value: &str, ttl_secs: u64) -> Result<()> {
+        let mut conn = self.conn.clone();
+        conn.set_ex::<_, _, ()>(key, value, ttl_secs).await?;
+        tracing::debug!(key, ttl_secs, "SET with TTL");
+        Ok(())
+    }
+
+    /// GET a raw string key
+    pub async fn get_raw(&self, key: &str) -> Result<Option<String>> {
+        let mut conn = self.conn.clone();
+        let result: Option<String> = conn.get(key).await?;
+        tracing::debug!(key, found = result.is_some(), "GET");
+        Ok(result)
+    }
+
     /// HSET a field in a hash key
     pub async fn hset(&self, hash_key: &str, field: &str, value: &str) -> Result<()> {
         let mut conn = self.conn.clone();

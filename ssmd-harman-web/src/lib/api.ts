@@ -15,6 +15,7 @@ import type {
   MonitorSeries,
   MonitorEvent,
   MonitorMarket,
+  TreemapMarket,
 } from "./types";
 
 const BASE_URL =
@@ -154,5 +155,11 @@ export const getEvents = async (series: string): Promise<MonitorEvent[]> => {
 
 export const getMarkets = async (event: string): Promise<MonitorMarket[]> => {
   const res = await request<{ markets: MonitorMarket[] }>(`/v1/monitor/markets?event=${encodeURIComponent(event)}`);
+  return res.markets;
+};
+
+// Treemap (flat market list with volume for activity view)
+export const getTreemap = async (): Promise<TreemapMarket[]> => {
+  const res = await request<{ markets: TreemapMarket[] }>("/v1/monitor/treemap");
   return res.markets;
 };
