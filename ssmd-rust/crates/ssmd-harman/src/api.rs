@@ -1374,21 +1374,23 @@ async fn monitor_markets_handler(
         for (i, snap_str) in snap_results.into_iter().enumerate() {
             if let Some(s) = snap_str {
                 if let Ok(snap) = serde_json::from_str::<serde_json::Value>(&s) {
-                    // Convert Kalshi prices from cents to dollars
+                    // Snap data is nested: {"type":"ticker","msg":{...prices...}}
+                    let msg = snap.get("msg").unwrap_or(&snap);
                     let market = &mut markets[i].1;
-                    if let Some(yb) = snap.get("yes_bid").and_then(|v| v.as_f64()) {
+                    // Convert Kalshi prices from cents to dollars
+                    if let Some(yb) = msg.get("yes_bid").and_then(|v| v.as_f64()) {
                         market["yes_bid"] = serde_json::json!(yb / 100.0);
                     }
-                    if let Some(ya) = snap.get("yes_ask").and_then(|v| v.as_f64()) {
+                    if let Some(ya) = msg.get("yes_ask").and_then(|v| v.as_f64()) {
                         market["yes_ask"] = serde_json::json!(ya / 100.0);
                     }
-                    if let Some(lp) = snap.get("last_price").and_then(|v| v.as_f64()) {
+                    if let Some(lp) = msg.get("last_price").or_else(|| msg.get("price")).and_then(|v| v.as_f64()) {
                         market["last"] = serde_json::json!(lp / 100.0);
                     }
-                    if let Some(vol) = snap.get("volume") {
+                    if let Some(vol) = msg.get("volume") {
                         market["volume"] = vol.clone();
                     }
-                    if let Some(oi) = snap.get("open_interest") {
+                    if let Some(oi) = msg.get("open_interest") {
                         market["open_interest"] = oi.clone();
                     }
                 }
