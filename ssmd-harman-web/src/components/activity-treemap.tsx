@@ -3,9 +3,9 @@
 import { useEffect, useRef, useMemo } from "react";
 import { useTreemap } from "@/lib/hooks";
 
-// Side-effect imports for Perspective custom elements + d3fc plugin
-import perspective from "@finos/perspective";
-import "@finos/perspective-viewer";
+// Use inline builds — these bundle WASM as base64 and self-initialize
+import perspective from "@finos/perspective/dist/esm/perspective.inline.js";
+import "@finos/perspective-viewer/dist/esm/perspective-viewer.inline.js";
 import "@finos/perspective-viewer-d3fc";
 import type { HTMLPerspectiveViewerElement } from "@finos/perspective-viewer";
 
@@ -79,11 +79,13 @@ export default function ActivityTreemap() {
     let cancelled = false;
 
     // Create the custom element imperatively to avoid JSX type conflicts
-    const viewer = document.createElement("perspective-viewer");
+    const viewer = document.createElement(
+      "perspective-viewer"
+    ) as unknown as HTMLPerspectiveViewerElement;
     viewer.style.width = "100%";
     viewer.style.height = "100%";
     viewer.className = "perspective-viewer-material-dark";
-    container.appendChild(viewer);
+    container.appendChild(viewer as unknown as HTMLElement);
     viewerRef.current = viewer;
 
     async function init() {
@@ -103,8 +105,8 @@ export default function ActivityTreemap() {
 
     return () => {
       cancelled = true;
-      if (container.contains(viewer)) {
-        container.removeChild(viewer);
+      if (container.contains(viewer as unknown as HTMLElement)) {
+        container.removeChild(viewer as unknown as HTMLElement);
       }
       viewerRef.current = null;
     };
