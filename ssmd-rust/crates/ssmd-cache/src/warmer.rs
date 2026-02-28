@@ -567,7 +567,7 @@ impl CacheWarmer {
 
                     UNION ALL
 
-                    -- Kraken futures pairs
+                    -- Kraken futures (perpetuals only, with volume)
                     SELECT 'kraken' AS exchange,
                            'Futures' AS category,
                            p.base AS series,
@@ -580,10 +580,12 @@ impl CacheWarmer {
                     FROM pairs p
                     WHERE p.deleted_at IS NULL
                       AND p.status = 'active'
+                      AND p.market_type = 'perpetual'
+                      AND COALESCE(p.volume_24h, 0) > 0
 
                     UNION ALL
 
-                    -- Polymarket conditions
+                    -- Polymarket conditions (with volume only)
                     SELECT 'polymarket' AS exchange,
                            COALESCE(pc.category, 'Other') AS category,
                            LEFT(pc.question, 80) AS series,
@@ -596,6 +598,7 @@ impl CacheWarmer {
                     FROM polymarket_conditions pc
                     WHERE pc.deleted_at IS NULL
                       AND pc.active = true
+                      AND COALESCE(pc.volume, 0) > 0
                 ) all_markets
                 ORDER BY exchange, category, series, volume DESC NULLS LAST
                 "#,
