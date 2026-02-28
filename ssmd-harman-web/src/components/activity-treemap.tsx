@@ -24,11 +24,11 @@ const SCHEMA = {
   last: "float",
 };
 
-// Treemap config: group by category→series, size by volume
+// Treemap config: group by category→series, size by volume, color by last price
 const VIEWER_CONFIG = {
   plugin: "Treemap",
   group_by: ["category", "series"],
-  columns: ["volume"],
+  columns: ["volume", "last"],
   settings: true,
 };
 
