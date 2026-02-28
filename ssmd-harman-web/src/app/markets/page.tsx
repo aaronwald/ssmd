@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { Suspense, useState, useMemo, useCallback } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { useCategories, useSeries, useEvents, useMarkets } from "@/lib/hooks";
 import type { MonitorMarket } from "@/lib/types";
 
@@ -8,10 +9,22 @@ type SortKey = "ticker" | "title" | "yes_bid" | "yes_ask" | "last" | "volume" | 
 type SortDir = "asc" | "desc";
 
 export default function MarketsPage() {
-  const [category, setCategory] = useState<string | null>(null);
-  const [series, setSeries] = useState<string | null>(null);
-  const [event, setEvent] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-fg-subtle">Loading...</div>}>
+      <MarketsContent />
+    </Suspense>
+  );
+}
+
+function MarketsContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // Read filter state from URL params
+  const category = searchParams.get("category");
+  const series = searchParams.get("series");
+  const event = searchParams.get("event");
+  const search = searchParams.get("q") ?? "";
   const [sortKey, setSortKey] = useState<SortKey>("ticker");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
@@ -20,20 +33,30 @@ export default function MarketsPage() {
   const { data: events } = useEvents(series);
   const { data: markets, error } = useMarkets(event);
 
-  // Reset downstream selections when parent changes
+  // Update URL params helper
+  const setParams = useCallback((updates: Record<string, string | null>) => {
+    const params = new URLSearchParams(searchParams.toString());
+    for (const [k, v] of Object.entries(updates)) {
+      if (v) params.set(k, v);
+      else params.delete(k);
+    }
+    router.replace(`/markets?${params.toString()}`);
+  }, [searchParams, router]);
+
   const handleCategoryChange = (val: string) => {
-    setCategory(val || null);
-    setSeries(null);
-    setEvent(null);
+    setParams({ category: val || null, series: null, event: null, q: null });
   };
 
   const handleSeriesChange = (val: string) => {
-    setSeries(val || null);
-    setEvent(null);
+    setParams({ series: val || null, event: null, q: null });
   };
 
   const handleEventChange = (val: string) => {
-    setEvent(val || null);
+    setParams({ event: val || null, q: null });
+  };
+
+  const handleSearchChange = (val: string) => {
+    setParams({ q: val || null });
   };
 
   // Filter + sort markets
@@ -147,7 +170,7 @@ export default function MarketsPage() {
             type="text"
             placeholder="Search ticker or title..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
             className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none w-64"
           />
         )}
