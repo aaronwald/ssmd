@@ -26,11 +26,11 @@ impl CacheWarmer {
         Ok(row.get(0))
     }
 
-    /// Warm markets table into Redis (only active markets)
+    /// Warm markets table into Redis (only live markets — active + not yet expired)
     /// Key structure: secmaster:series:SERIES:event:EVENT:market:MARKET
     pub async fn warm_markets(&self, cache: &RedisCache) -> Result<u64> {
         // Join markets with events to get series_ticker and event_ticker
-        // Only cache active markets during warming
+        // Only cache live markets (active + close_time in future)
         let rows = self.client
             .query(
                 r#"
@@ -42,6 +42,7 @@ impl CacheWarmer {
                 FROM markets m
                 JOIN events e ON m.event_ticker = e.event_ticker
                 WHERE m.status = 'active'
+                  AND (m.close_time IS NULL OR m.close_time > NOW())
                 "#,
                 &[],
             )
@@ -63,12 +64,12 @@ impl CacheWarmer {
         Ok(count)
     }
 
-    /// Warm events table into Redis (only active events during warming)
+    /// Warm events table into Redis (only live events — active + not yet expired)
     /// Key structure: secmaster:series:SERIES:event:EVENT
     pub async fn warm_events(&self, cache: &RedisCache) -> Result<u64> {
         let rows = self.client
             .query(
-                "SELECT event_ticker, series_ticker, row_to_json(events.*) FROM events WHERE status = 'active'",
+                "SELECT event_ticker, series_ticker, row_to_json(events.*) FROM events WHERE status = 'active' AND (strike_date IS NULL OR strike_date > NOW())",
                 &[],
             )
             .await?;
@@ -133,7 +134,7 @@ impl CacheWarmer {
     pub async fn warm_monitor_indexes(&self, cache: &RedisCache) -> Result<u64> {
         let start = std::time::Instant::now();
 
-        // 1. Categories: aggregate from events → series → category
+        // 1. Categories: aggregate from live events (not yet expired)
         let cat_rows = self.client
             .query(
                 r#"
@@ -141,7 +142,9 @@ impl CacheWarmer {
                        COUNT(DISTINCT e.event_ticker) AS event_count,
                        COUNT(DISTINCT e.series_ticker) AS series_count
                 FROM events e
-                WHERE e.status = 'active' AND e.category IS NOT NULL
+                WHERE e.status = 'active'
+                  AND e.category IS NOT NULL
+                  AND (e.strike_date IS NULL OR e.strike_date > NOW())
                 GROUP BY e.category
                 "#,
                 &[],
@@ -162,7 +165,7 @@ impl CacheWarmer {
         total_keys += cat_rows.len() as u64;
         tracing::info!(categories = cat_rows.len(), "Warmed monitor:categories");
 
-        // 2. Series per category: active events + active markets counts
+        // 2. Series per category: live events + live markets counts
         let series_rows = self.client
             .query(
                 r#"
@@ -171,7 +174,9 @@ impl CacheWarmer {
                        COUNT(DISTINCT m.ticker) AS active_markets
                 FROM series s
                 JOIN events e ON e.series_ticker = s.ticker AND e.status = 'active'
+                  AND (e.strike_date IS NULL OR e.strike_date > NOW())
                 LEFT JOIN markets m ON m.event_ticker = e.event_ticker AND m.status = 'active'
+                  AND (m.close_time IS NULL OR m.close_time > NOW())
                 WHERE e.category IS NOT NULL
                 GROUP BY e.category, s.ticker, s.title
                 "#,
@@ -196,7 +201,7 @@ impl CacheWarmer {
         total_keys += series_rows.len() as u64;
         tracing::info!(series_entries = series_rows.len(), "Warmed monitor:series:*");
 
-        // 3. Events per series: title, status, strike_date, market_count
+        // 3. Events per series: only live events (strike_date in future)
         let event_rows = self.client
             .query(
                 r#"
@@ -205,7 +210,9 @@ impl CacheWarmer {
                        COUNT(m.ticker) AS market_count
                 FROM events e
                 LEFT JOIN markets m ON m.event_ticker = e.event_ticker AND m.status = 'active'
+                  AND (m.close_time IS NULL OR m.close_time > NOW())
                 WHERE e.status = 'active'
+                  AND (e.strike_date IS NULL OR e.strike_date > NOW())
                 GROUP BY e.series_ticker, e.event_ticker, e.title, e.status, e.strike_date
                 "#,
                 &[],
@@ -231,7 +238,7 @@ impl CacheWarmer {
         total_keys += event_rows.len() as u64;
         tracing::info!(event_entries = event_rows.len(), "Warmed monitor:events:*");
 
-        // 4. Markets per event: title, status, close_time
+        // 4. Markets per event: only live markets (close_time in future)
         let market_rows = self.client
             .query(
                 r#"
@@ -239,6 +246,8 @@ impl CacheWarmer {
                 FROM markets m
                 JOIN events e ON m.event_ticker = e.event_ticker
                 WHERE m.status = 'active' AND e.status = 'active'
+                  AND (m.close_time IS NULL OR m.close_time > NOW())
+                  AND (e.strike_date IS NULL OR e.strike_date > NOW())
                 "#,
                 &[],
             )
