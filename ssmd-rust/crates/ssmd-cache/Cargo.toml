@@ -26,6 +26,8 @@ futures-util = { workspace = true }
 anyhow = { workspace = true }
 lru = { workspace = true }
 chrono = { workspace = true }
+axum = { workspace = true }
+prometheus = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

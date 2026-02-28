@@ -11,6 +11,10 @@ import type {
   HealthResponse,
   SnapResponse,
   NormalizedSnapshot,
+  MonitorCategory,
+  MonitorSeries,
+  MonitorEvent,
+  MonitorMarket,
 } from "./types";
 
 const BASE_URL =
@@ -130,4 +134,25 @@ export const getSnapMap = async (feed: string = "kalshi"): Promise<Map<string, N
     map.set(ticker, { ticker, yesBid, yesAsk, last });
   }
   return map;
+};
+
+// Monitor hierarchy endpoints (reads from Redis cache)
+export const getCategories = async (): Promise<MonitorCategory[]> => {
+  const res = await request<{ categories: MonitorCategory[] }>("/v1/monitor/categories");
+  return res.categories;
+};
+
+export const getSeries = async (category: string): Promise<MonitorSeries[]> => {
+  const res = await request<{ series: MonitorSeries[] }>(`/v1/monitor/series?category=${encodeURIComponent(category)}`);
+  return res.series;
+};
+
+export const getEvents = async (series: string): Promise<MonitorEvent[]> => {
+  const res = await request<{ events: MonitorEvent[] }>(`/v1/monitor/events?series=${encodeURIComponent(series)}`);
+  return res.events;
+};
+
+export const getMarkets = async (event: string): Promise<MonitorMarket[]> => {
+  const res = await request<{ markets: MonitorMarket[] }>(`/v1/monitor/markets?event=${encodeURIComponent(event)}`);
+  return res.markets;
 };

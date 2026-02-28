@@ -14,6 +14,55 @@ use ssmd_harman_ems::Ems;
 use ssmd_harman_oms::Oms;
 use ssmd_harman_oms::runner::{OmsRunner, PumpTrigger};
 
+/// Prometheus metrics for monitor endpoints
+pub struct MonitorMetrics {
+    pub requests_total: prometheus::IntCounterVec,
+    pub redis_duration_seconds: prometheus::Histogram,
+    pub redis_errors_total: prometheus::IntCounter,
+}
+
+impl MonitorMetrics {
+    pub fn new(registry: &prometheus::Registry) -> Self {
+        let requests_total = prometheus::IntCounterVec::new(
+            prometheus::Opts::new(
+                "harman_monitor_requests_total",
+                "Total monitor endpoint requests",
+            ),
+            &["endpoint", "status"],
+        )
+        .unwrap();
+        let redis_duration_seconds = prometheus::Histogram::with_opts(
+            prometheus::HistogramOpts::new(
+                "harman_monitor_redis_duration_seconds",
+                "Redis operation duration for monitor endpoints",
+            )
+            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25]),
+        )
+        .unwrap();
+        let redis_errors_total = prometheus::IntCounter::new(
+            "harman_monitor_redis_errors_total",
+            "Total Redis errors in monitor endpoints",
+        )
+        .unwrap();
+
+        registry
+            .register(Box::new(requests_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(redis_duration_seconds.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(redis_errors_total.clone()))
+            .unwrap();
+
+        Self {
+            requests_total,
+            redis_duration_seconds,
+            redis_errors_total,
+        }
+    }
+}
+
 /// Cached auth validation result from data-ts
 pub struct CachedAuth {
     pub key_prefix: String,
@@ -59,4 +108,8 @@ pub struct AppState {
     pub ticker_cache: RwLock<Option<(std::time::Instant, Vec<String>)>>,
     /// Prevents concurrent pump execution for static-token auth (fallback).
     pub pump_semaphore: Semaphore,
+    /// Optional Redis connection for monitor data (from ssmd-cache)
+    pub redis_conn: Option<redis::aio::MultiplexedConnection>,
+    /// Prometheus metrics for monitor endpoints
+    pub monitor_metrics: MonitorMetrics,
 }

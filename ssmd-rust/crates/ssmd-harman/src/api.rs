@@ -224,6 +224,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/audit", get(list_audit_handler))
         .route("/v1/tickers", get(list_tickers_handler))
         .route("/v1/snap", get(snap_handler))
+        // harman:read (monitor)
+        .route("/v1/monitor/categories", get(monitor_categories_handler))
+        .route("/v1/monitor/series", get(monitor_series_handler))
+        .route("/v1/monitor/events", get(monitor_events_handler))
+        .route("/v1/monitor/markets", get(monitor_markets_handler))
         // harman:admin
         .route("/v1/orders/mass-cancel", post(mass_cancel))
         .route("/v1/admin/pump", post(pump_handler))
@@ -1130,6 +1135,270 @@ async fn snap_handler(
                 .into_response()
         }
     }
+}
+
+// --- Monitor endpoints (Redis-backed, from ssmd-cache) ---
+
+#[derive(Debug, Deserialize)]
+struct MonitorQuery {
+    category: Option<String>,
+    series: Option<String>,
+    event: Option<String>,
+}
+
+/// GET /v1/monitor/categories — list all categories with event/series counts
+async fn monitor_categories_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        state.monitor_metrics.requests_total.with_label_values(&["categories", "forbidden"]).inc();
+        return e.into_response();
+    }
+    let Some(ref conn) = state.redis_conn else {
+        state.monitor_metrics.requests_total.with_label_values(&["categories", "ok"]).inc();
+        return (StatusCode::OK, Json(serde_json::json!({"categories": []}))).into_response();
+    };
+    let mut conn = conn.clone();
+    let timer = state.monitor_metrics.redis_duration_seconds.start_timer();
+    let result: std::collections::HashMap<String, String> = match redis::cmd("HGETALL")
+        .arg("monitor:categories")
+        .query_async(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            timer.observe_duration();
+            state.monitor_metrics.redis_errors_total.inc();
+            tracing::warn!(error = %e, "Redis HGETALL monitor:categories failed");
+            state.monitor_metrics.requests_total.with_label_values(&["categories", "ok"]).inc();
+            return (StatusCode::OK, Json(serde_json::json!({"categories": []}))).into_response();
+        }
+    };
+    timer.observe_duration();
+    let categories: Vec<serde_json::Value> = result
+        .into_iter()
+        .map(|(name, val)| {
+            let mut obj: serde_json::Value =
+                serde_json::from_str(&val).unwrap_or(serde_json::json!({}));
+            obj["name"] = serde_json::json!(name);
+            obj
+        })
+        .collect();
+    state.monitor_metrics.requests_total.with_label_values(&["categories", "ok"]).inc();
+    (StatusCode::OK, Json(serde_json::json!({"categories": categories}))).into_response()
+}
+
+/// GET /v1/monitor/series?category=Crypto — list series in a category
+async fn monitor_series_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Query(query): Query<MonitorQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        state.monitor_metrics.requests_total.with_label_values(&["series", "forbidden"]).inc();
+        return e.into_response();
+    }
+    let Some(category) = &query.category else {
+        state.monitor_metrics.requests_total.with_label_values(&["series", "bad_request"]).inc();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "category query parameter is required"})),
+        )
+            .into_response();
+    };
+    let Some(ref conn) = state.redis_conn else {
+        state.monitor_metrics.requests_total.with_label_values(&["series", "ok"]).inc();
+        return (StatusCode::OK, Json(serde_json::json!({"series": []}))).into_response();
+    };
+    let mut conn = conn.clone();
+    let key = format!("monitor:series:{}", category);
+    let timer = state.monitor_metrics.redis_duration_seconds.start_timer();
+    let result: std::collections::HashMap<String, String> = match redis::cmd("HGETALL")
+        .arg(&key)
+        .query_async(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            timer.observe_duration();
+            state.monitor_metrics.redis_errors_total.inc();
+            tracing::warn!(error = %e, key, "Redis HGETALL failed");
+            state.monitor_metrics.requests_total.with_label_values(&["series", "ok"]).inc();
+            return (StatusCode::OK, Json(serde_json::json!({"series": []}))).into_response();
+        }
+    };
+    timer.observe_duration();
+    let series: Vec<serde_json::Value> = result
+        .into_iter()
+        .map(|(ticker, val)| {
+            let mut obj: serde_json::Value =
+                serde_json::from_str(&val).unwrap_or(serde_json::json!({}));
+            obj["ticker"] = serde_json::json!(ticker);
+            obj
+        })
+        .collect();
+    state.monitor_metrics.requests_total.with_label_values(&["series", "ok"]).inc();
+    (StatusCode::OK, Json(serde_json::json!({"series": series}))).into_response()
+}
+
+/// GET /v1/monitor/events?series=KXBTCD — list events in a series
+async fn monitor_events_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Query(query): Query<MonitorQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        state.monitor_metrics.requests_total.with_label_values(&["events", "forbidden"]).inc();
+        return e.into_response();
+    }
+    let Some(series) = &query.series else {
+        state.monitor_metrics.requests_total.with_label_values(&["events", "bad_request"]).inc();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "series query parameter is required"})),
+        )
+            .into_response();
+    };
+    let Some(ref conn) = state.redis_conn else {
+        state.monitor_metrics.requests_total.with_label_values(&["events", "ok"]).inc();
+        return (StatusCode::OK, Json(serde_json::json!({"events": []}))).into_response();
+    };
+    let mut conn = conn.clone();
+    let key = format!("monitor:events:{}", series);
+    let timer = state.monitor_metrics.redis_duration_seconds.start_timer();
+    let result: std::collections::HashMap<String, String> = match redis::cmd("HGETALL")
+        .arg(&key)
+        .query_async(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            timer.observe_duration();
+            state.monitor_metrics.redis_errors_total.inc();
+            tracing::warn!(error = %e, key, "Redis HGETALL failed");
+            state.monitor_metrics.requests_total.with_label_values(&["events", "ok"]).inc();
+            return (StatusCode::OK, Json(serde_json::json!({"events": []}))).into_response();
+        }
+    };
+    timer.observe_duration();
+    let events: Vec<serde_json::Value> = result
+        .into_iter()
+        .map(|(ticker, val)| {
+            let mut obj: serde_json::Value =
+                serde_json::from_str(&val).unwrap_or(serde_json::json!({}));
+            obj["ticker"] = serde_json::json!(ticker);
+            obj
+        })
+        .collect();
+    state.monitor_metrics.requests_total.with_label_values(&["events", "ok"]).inc();
+    (StatusCode::OK, Json(serde_json::json!({"events": events}))).into_response()
+}
+
+/// GET /v1/monitor/markets?event=KXBTCD-26FEB28 — list markets with live snap data
+async fn monitor_markets_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Query(query): Query<MonitorQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        state.monitor_metrics.requests_total.with_label_values(&["markets", "forbidden"]).inc();
+        return e.into_response();
+    }
+    let Some(event) = &query.event else {
+        state.monitor_metrics.requests_total.with_label_values(&["markets", "bad_request"]).inc();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "event query parameter is required"})),
+        )
+            .into_response();
+    };
+    let Some(ref conn) = state.redis_conn else {
+        state.monitor_metrics.requests_total.with_label_values(&["markets", "ok"]).inc();
+        return (StatusCode::OK, Json(serde_json::json!({"markets": []}))).into_response();
+    };
+    let mut conn = conn.clone();
+    let key = format!("monitor:markets:{}", event);
+    let timer = state.monitor_metrics.redis_duration_seconds.start_timer();
+    let result: std::collections::HashMap<String, String> = match redis::cmd("HGETALL")
+        .arg(&key)
+        .query_async(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            timer.observe_duration();
+            state.monitor_metrics.redis_errors_total.inc();
+            tracing::warn!(error = %e, key, "Redis HGETALL failed");
+            state.monitor_metrics.requests_total.with_label_values(&["markets", "ok"]).inc();
+            return (StatusCode::OK, Json(serde_json::json!({"markets": []}))).into_response();
+        }
+    };
+    timer.observe_duration();
+
+    // Collect tickers and parse market objects
+    let mut markets: Vec<(String, serde_json::Value)> = result
+        .into_iter()
+        .map(|(ticker, val)| {
+            let mut obj: serde_json::Value =
+                serde_json::from_str(&val).unwrap_or(serde_json::json!({}));
+            obj["ticker"] = serde_json::json!(&ticker);
+            (ticker, obj)
+        })
+        .collect();
+
+    // Enrich with live snap data if available
+    if !markets.is_empty() {
+        let snap_keys: Vec<String> = markets
+            .iter()
+            .map(|(ticker, _)| format!("snap:kalshi:{}", ticker))
+            .collect();
+        let snap_timer = state.monitor_metrics.redis_duration_seconds.start_timer();
+        let snap_results: Vec<Option<String>> = match redis::cmd("MGET")
+            .arg(&snap_keys)
+            .query_async(&mut conn)
+            .await
+        {
+            Ok(r) => {
+                snap_timer.observe_duration();
+                r
+            }
+            Err(e) => {
+                snap_timer.observe_duration();
+                state.monitor_metrics.redis_errors_total.inc();
+                tracing::warn!(error = %e, "Redis MGET snap keys failed");
+                vec![None; markets.len()]
+            }
+        };
+
+        for (i, snap_str) in snap_results.into_iter().enumerate() {
+            if let Some(s) = snap_str {
+                if let Ok(snap) = serde_json::from_str::<serde_json::Value>(&s) {
+                    // Convert Kalshi prices from cents to dollars
+                    let market = &mut markets[i].1;
+                    if let Some(yb) = snap.get("yes_bid").and_then(|v| v.as_f64()) {
+                        market["yes_bid"] = serde_json::json!(yb / 100.0);
+                    }
+                    if let Some(ya) = snap.get("yes_ask").and_then(|v| v.as_f64()) {
+                        market["yes_ask"] = serde_json::json!(ya / 100.0);
+                    }
+                    if let Some(lp) = snap.get("last_price").and_then(|v| v.as_f64()) {
+                        market["last_price"] = serde_json::json!(lp / 100.0);
+                    }
+                    if let Some(vol) = snap.get("volume") {
+                        market["volume"] = vol.clone();
+                    }
+                    if let Some(oi) = snap.get("open_interest") {
+                        market["open_interest"] = oi.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    let market_values: Vec<serde_json::Value> = markets.into_iter().map(|(_, v)| v).collect();
+    state.monitor_metrics.requests_total.with_label_values(&["markets", "ok"]).inc();
+    (StatusCode::OK, Json(serde_json::json!({"markets": market_values}))).into_response()
 }
 
 fn order_to_json(order: &Order) -> serde_json::Value {

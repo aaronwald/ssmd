@@ -212,6 +212,48 @@ impl RedisCache {
         Ok(())
     }
 
+    // --- Hash-based monitor index methods ---
+
+    /// HSET a field in a hash key
+    pub async fn hset(&self, hash_key: &str, field: &str, value: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        conn.hset::<_, _, _, ()>(hash_key, field, value).await?;
+        tracing::debug!(key = %hash_key, field, "HSET");
+        Ok(())
+    }
+
+    /// HGETALL — return all fields and values from a hash
+    pub async fn hgetall(&self, hash_key: &str) -> Result<std::collections::HashMap<String, String>> {
+        let mut conn = self.conn.clone();
+        let result: std::collections::HashMap<String, String> = conn.hgetall(hash_key).await?;
+        tracing::debug!(key = %hash_key, fields = result.len(), "HGETALL");
+        Ok(result)
+    }
+
+    /// HDEL a field from a hash key
+    pub async fn hdel(&self, hash_key: &str, field: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        conn.hdel::<_, _, ()>(hash_key, field).await?;
+        tracing::debug!(key = %hash_key, field, "HDEL");
+        Ok(())
+    }
+
+    /// HINCRBY — increment a numeric field in a hash
+    pub async fn hincrby(&self, hash_key: &str, field: &str, increment: i64) -> Result<i64> {
+        let mut conn = self.conn.clone();
+        let result: i64 = conn.hincr(hash_key, field, increment).await?;
+        tracing::debug!(key = %hash_key, field, increment, result, "HINCRBY");
+        Ok(result)
+    }
+
+    /// DEL an entire key (hash or string)
+    pub async fn del_key(&self, key: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        conn.del::<_, ()>(key).await?;
+        tracing::debug!(key, "DEL key");
+        Ok(())
+    }
+
     /// Get count of keys matching pattern
     pub async fn count(&self, pattern: &str) -> Result<u64> {
         let mut conn = self.conn.clone();

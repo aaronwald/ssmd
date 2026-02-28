@@ -149,3 +149,37 @@ export interface NormalizedSnapshot {
   yesAsk: number | null;
   last: number | null;
 }
+
+/** Monitor hierarchy types */
+export interface MonitorCategory {
+  name: string;
+  event_count: number;
+  series_count: number;
+}
+
+export interface MonitorSeries {
+  ticker: string;
+  title: string;
+  active_events: number;
+  active_markets: number;
+}
+
+export interface MonitorEvent {
+  ticker: string;
+  title: string;
+  status: string;
+  strike_date: string | null;
+  market_count: number;
+}
+
+export interface MonitorMarket {
+  ticker: string;
+  title: string;
+  status: string;
+  close_time: string | null;
+  yes_bid: number | null;
+  yes_ask: number | null;
+  last: number | null;
+  volume: number | null;
+  open_interest: number | null;
+}

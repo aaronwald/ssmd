@@ -91,6 +91,33 @@ def query_volume(cfg: Config, date_str: str | None = None, feed: str | None = No
     return json.dumps(result, default=str)
 
 
+# --- Monitor (hierarchical browsing) tools ---
+
+
+def browse_categories(cfg: Config) -> str:
+    """Browse market categories from the monitor index cache."""
+    result = api_get(cfg, "/v1/monitor/categories")
+    return json.dumps(result, default=str)
+
+
+def browse_series(cfg: Config, category: str) -> str:
+    """Browse series within a category from the monitor index cache."""
+    result = api_get(cfg, "/v1/monitor/series", {"category": category})
+    return json.dumps(result, default=str)
+
+
+def browse_events(cfg: Config, series: str) -> str:
+    """Browse events within a series from the monitor index cache."""
+    result = api_get(cfg, "/v1/monitor/events", {"series": series})
+    return json.dumps(result, default=str)
+
+
+def browse_markets(cfg: Config, event: str) -> str:
+    """Browse markets within an event with live prices from the monitor index cache."""
+    result = api_get(cfg, "/v1/monitor/markets", {"event": event})
+    return json.dumps(result, default=str)
+
+
 # --- Secmaster tools ---
 
 

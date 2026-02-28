@@ -1956,6 +1956,120 @@ route("GET", "/v1/data/snap", async (req) => {
   });
 }, true, "datasets:read", "public");
 
+// Monitor hierarchy endpoints (populated by ssmd-cache into Redis)
+route("GET", "/v1/monitor/categories", async () => {
+  const redis = await getRedis();
+  const raw = await redis.hgetall("monitor:categories");
+  // hgetall returns flat array: [field1, value1, field2, value2, ...]
+  const categories: Array<{ name: string; [key: string]: unknown }> = [];
+  for (let i = 0; i < raw.length; i += 2) {
+    const name = raw[i];
+    try {
+      const data = JSON.parse(raw[i + 1]);
+      categories.push({ name, ...data });
+    } catch {
+      // skip unparseable entries
+    }
+  }
+  return json({ categories });
+}, true, "datasets:read", "public");
+
+route("GET", "/v1/monitor/series", async (req) => {
+  const url = new URL(req.url);
+  const category = url.searchParams.get("category");
+  if (!category) {
+    return json({ error: "category query parameter is required" }, 400);
+  }
+  const redis = await getRedis();
+  const raw = await redis.hgetall(`monitor:series:${category}`);
+  const series: Array<{ ticker: string; [key: string]: unknown }> = [];
+  for (let i = 0; i < raw.length; i += 2) {
+    const ticker = raw[i];
+    try {
+      const data = JSON.parse(raw[i + 1]);
+      series.push({ ticker, ...data });
+    } catch {
+      // skip unparseable entries
+    }
+  }
+  return json({ series });
+}, true, "datasets:read", "public");
+
+route("GET", "/v1/monitor/events", async (req) => {
+  const url = new URL(req.url);
+  const series = url.searchParams.get("series");
+  if (!series) {
+    return json({ error: "series query parameter is required" }, 400);
+  }
+  const redis = await getRedis();
+  const raw = await redis.hgetall(`monitor:events:${series}`);
+  const events: Array<{ ticker: string; [key: string]: unknown }> = [];
+  for (let i = 0; i < raw.length; i += 2) {
+    const ticker = raw[i];
+    try {
+      const data = JSON.parse(raw[i + 1]);
+      events.push({ ticker, ...data });
+    } catch {
+      // skip unparseable entries
+    }
+  }
+  return json({ events });
+}, true, "datasets:read", "public");
+
+route("GET", "/v1/monitor/markets", async (req) => {
+  const url = new URL(req.url);
+  const event = url.searchParams.get("event");
+  if (!event) {
+    return json({ error: "event query parameter is required" }, 400);
+  }
+  const redis = await getRedis();
+  const raw = await redis.hgetall(`monitor:markets:${event}`);
+
+  // Parse market entries
+  const tickers: string[] = [];
+  // deno-lint-ignore no-explicit-any
+  const marketMap = new Map<string, any>();
+  for (let i = 0; i < raw.length; i += 2) {
+    const ticker = raw[i];
+    try {
+      const data = JSON.parse(raw[i + 1]);
+      tickers.push(ticker);
+      marketMap.set(ticker, { ticker, ...data });
+    } catch {
+      // skip unparseable entries
+    }
+  }
+
+  // Merge snap data for live prices
+  if (tickers.length > 0) {
+    const snapKeys = tickers.map((t) => `snap:kalshi:${t}`);
+    const snapValues = await redis.mget(...snapKeys);
+    const kalshiPriceFields = ["yes_bid", "yes_ask", "last_price"];
+
+    for (let i = 0; i < tickers.length; i++) {
+      const snapRaw = snapValues[i];
+      if (!snapRaw) continue;
+      try {
+        const snap = JSON.parse(snapRaw);
+        const market = marketMap.get(tickers[i]);
+        if (!market) continue;
+        // Convert cents to dollars for Kalshi prices
+        for (const field of kalshiPriceFields) {
+          if (typeof snap[field] === "number") {
+            market[field === "last_price" ? "last" : field] = snap[field] / 100;
+          }
+        }
+        if (typeof snap.volume === "number") market.volume = snap.volume;
+        if (typeof snap.open_interest === "number") market.open_interest = snap.open_interest;
+      } catch {
+        // skip unparseable snap
+      }
+    }
+  }
+
+  return json({ markets: [...marketMap.values()] });
+}, true, "datasets:read", "public");
+
 // Chat completions proxy (OpenRouter)
 route("POST", "/v1/chat/completions", async (req, ctx) => {
   if (!OPENROUTER_API_KEY) {

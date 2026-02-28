@@ -10,9 +10,15 @@ import {
   getPositions,
   getRisk,
   getSnapMap,
+  getCategories,
+  getSeries,
+  getEvents,
+  getMarkets,
 } from "./api";
 
 const REFRESH_INTERVAL = 5000;
+const METADATA_REFRESH = 60000; // 60s for metadata (categories, series, events)
+const LIVE_REFRESH = 5000; // 5s for live prices (markets)
 
 export function useHealth() {
   return useSWR("health", getHealth, { refreshInterval: REFRESH_INTERVAL });
@@ -52,4 +58,33 @@ export function useRisk() {
 
 export function useSnapMap(feed: string = "kalshi") {
   return useSWR(`snap-${feed}`, () => getSnapMap(feed), { refreshInterval: REFRESH_INTERVAL });
+}
+
+// Monitor hierarchy hooks — tiered refresh rates
+export function useCategories() {
+  return useSWR("monitor-categories", getCategories, { refreshInterval: METADATA_REFRESH });
+}
+
+export function useSeries(category: string | null) {
+  return useSWR(
+    category ? `monitor-series-${category}` : null,
+    () => getSeries(category!),
+    { refreshInterval: METADATA_REFRESH }
+  );
+}
+
+export function useEvents(series: string | null) {
+  return useSWR(
+    series ? `monitor-events-${series}` : null,
+    () => getEvents(series!),
+    { refreshInterval: METADATA_REFRESH }
+  );
+}
+
+export function useMarkets(event: string | null) {
+  return useSWR(
+    event ? `monitor-markets-${event}` : null,
+    () => getMarkets(event!),
+    { refreshInterval: LIVE_REFRESH }
+  );
 }

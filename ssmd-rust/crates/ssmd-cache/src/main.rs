@@ -1,3 +1,5 @@
+use axum::{routing::get, Router, response::IntoResponse};
+use prometheus::{Registry, TextEncoder, Encoder};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_cache::{
@@ -6,6 +8,20 @@ use ssmd_cache::{
     warmer::CacheWarmer,
     consumer::CdcConsumer,
 };
+
+/// Prometheus metrics endpoint
+async fn metrics_handler(
+    axum::extract::State(registry): axum::extract::State<Registry>,
+) -> impl IntoResponse {
+    let encoder = TextEncoder::new();
+    let metric_families = registry.gather();
+    let mut buf = Vec::new();
+    encoder.encode(&metric_families, &mut buf).unwrap_or_default();
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        buf,
+    )
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,6 +39,22 @@ async fn main() -> anyhow::Result<()> {
         "Starting ssmd-cache"
     );
 
+    // Set up Prometheus metrics
+    let registry = Registry::new();
+
+    // Spawn metrics HTTP server on port 9090
+    let metrics_registry = registry.clone();
+    tokio::spawn(async move {
+        let app = Router::new()
+            .route("/metrics", get(metrics_handler))
+            .route("/health", get(|| async { "ok" }))
+            .with_state(metrics_registry);
+
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:9090").await.unwrap();
+        tracing::info!("Metrics server listening on 0.0.0.0:9090");
+        axum::serve(listener, app).await.unwrap();
+    });
+
     // Connect to Redis
     let cache = RedisCache::new(&config.redis_url).await?;
 
@@ -32,10 +64,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Log cache stats
     let series = cache.count("secmaster:series:*").await?;
-    let markets = cache.count("secmaster:series:*:market:*").await?;
-    let events = cache.count("secmaster:event:*").await?;
     let fees = cache.count("secmaster:fee:*").await?;
-    tracing::info!(series, markets, events, fees, "Cache populated");
+    tracing::info!(series, fees, "Cache populated");
 
     // Start consuming CDC events
     let mut consumer = CdcConsumer::new(

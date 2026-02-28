@@ -18,6 +18,10 @@ from ssmd_mcp.tools import (
     check_freshness,
     query_events,
     query_volume,
+    browse_categories,
+    browse_series,
+    browse_events,
+    browse_markets,
     secmaster_stats,
     search_markets,
     search_events,
@@ -215,6 +219,72 @@ TOOLS = [
                     "description": "Optional: filter to a single feed.",
                 },
             },
+        },
+    ),
+    Tool(
+        name="browse_categories",
+        description=(
+            "Browse market categories from the hierarchical monitor index. "
+            "Returns category names with event and series counts. "
+            "Start here to drill down: categories → series → events → markets."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        },
+    ),
+    Tool(
+        name="browse_series",
+        description=(
+            "Browse series within a category. Returns series tickers with titles "
+            "and counts of active events and markets. "
+            "Drill-down: categories → series → events → markets."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Category to browse (e.g., 'Crypto', 'Economics').",
+                },
+            },
+            "required": ["category"],
+        },
+    ),
+    Tool(
+        name="browse_events",
+        description=(
+            "Browse events within a series. Returns event tickers with titles, "
+            "status, strike dates, and market counts. "
+            "Drill-down: categories → series → events → markets."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "series": {
+                    "type": "string",
+                    "description": "Series ticker to browse (e.g., 'KXBTCD').",
+                },
+            },
+            "required": ["series"],
+        },
+    ),
+    Tool(
+        name="browse_markets",
+        description=(
+            "Browse markets within an event with live prices. Returns market tickers "
+            "with titles, status, close times, and live bid/ask/last/volume/OI from snap data. "
+            "Drill-down: categories → series → events → markets."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "event": {
+                    "type": "string",
+                    "description": "Event ticker to browse (e.g., 'KXBTCD-26FEB28').",
+                },
+            },
+            "required": ["event"],
         },
     ),
     Tool(
@@ -499,6 +569,14 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             date_str=arguments.get("date"),
             feed=arguments.get("feed"),
         )
+    elif name == "browse_categories":
+        return browse_categories(cfg)
+    elif name == "browse_series":
+        return browse_series(cfg, category=arguments["category"])
+    elif name == "browse_events":
+        return browse_events(cfg, series=arguments["series"])
+    elif name == "browse_markets":
+        return browse_markets(cfg, event=arguments["event"])
     elif name == "secmaster_stats":
         return secmaster_stats(cfg)
     elif name == "search_markets":

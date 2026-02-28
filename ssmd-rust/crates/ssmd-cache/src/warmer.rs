@@ -124,6 +124,152 @@ impl CacheWarmer {
         Ok(count)
     }
 
+    /// Build monitor index hashes from Postgres aggregations.
+    /// Creates:
+    ///   monitor:categories          → { cat: {"event_count":N,"series_count":N} }
+    ///   monitor:series:{category}   → { series: {"title":"...","active_events":N,"active_markets":N} }
+    ///   monitor:events:{series}     → { event: {"title":"...","status":"...","strike_date":"...","market_count":N} }
+    ///   monitor:markets:{event}     → { market: {"title":"...","status":"...","close_time":"..."} }
+    pub async fn warm_monitor_indexes(&self, cache: &RedisCache) -> Result<u64> {
+        let start = std::time::Instant::now();
+
+        // 1. Categories: aggregate from events → series → category
+        let cat_rows = self.client
+            .query(
+                r#"
+                SELECT e.category,
+                       COUNT(DISTINCT e.event_ticker) AS event_count,
+                       COUNT(DISTINCT e.series_ticker) AS series_count
+                FROM events e
+                WHERE e.status = 'active' AND e.category IS NOT NULL
+                GROUP BY e.category
+                "#,
+                &[],
+            )
+            .await?;
+
+        let mut total_keys: u64 = 0;
+        for row in &cat_rows {
+            let category: String = row.get(0);
+            let event_count: i64 = row.get(1);
+            let series_count: i64 = row.get(2);
+            let val = serde_json::json!({
+                "event_count": event_count,
+                "series_count": series_count,
+            });
+            cache.hset("monitor:categories", &category, &val.to_string()).await?;
+        }
+        total_keys += cat_rows.len() as u64;
+        tracing::info!(categories = cat_rows.len(), "Warmed monitor:categories");
+
+        // 2. Series per category: active events + active markets counts
+        let series_rows = self.client
+            .query(
+                r#"
+                SELECT e.category, s.ticker, s.title,
+                       COUNT(DISTINCT e.event_ticker) AS active_events,
+                       COUNT(DISTINCT m.ticker) AS active_markets
+                FROM series s
+                JOIN events e ON e.series_ticker = s.ticker AND e.status = 'active'
+                LEFT JOIN markets m ON m.event_ticker = e.event_ticker AND m.status = 'active'
+                WHERE e.category IS NOT NULL
+                GROUP BY e.category, s.ticker, s.title
+                "#,
+                &[],
+            )
+            .await?;
+
+        for row in &series_rows {
+            let category: String = row.get(0);
+            let ticker: String = row.get(1);
+            let title: Option<String> = row.get(2);
+            let active_events: i64 = row.get(3);
+            let active_markets: i64 = row.get(4);
+            let val = serde_json::json!({
+                "title": title.unwrap_or_default(),
+                "active_events": active_events,
+                "active_markets": active_markets,
+            });
+            let hash_key = format!("monitor:series:{}", category);
+            cache.hset(&hash_key, &ticker, &val.to_string()).await?;
+        }
+        total_keys += series_rows.len() as u64;
+        tracing::info!(series_entries = series_rows.len(), "Warmed monitor:series:*");
+
+        // 3. Events per series: title, status, strike_date, market_count
+        let event_rows = self.client
+            .query(
+                r#"
+                SELECT e.series_ticker, e.event_ticker, e.title, e.status, e.strike_date,
+                       COUNT(m.ticker) AS market_count
+                FROM events e
+                LEFT JOIN markets m ON m.event_ticker = e.event_ticker AND m.status = 'active'
+                WHERE e.status = 'active'
+                GROUP BY e.series_ticker, e.event_ticker, e.title, e.status, e.strike_date
+                "#,
+                &[],
+            )
+            .await?;
+
+        for row in &event_rows {
+            let series_ticker: String = row.get(0);
+            let event_ticker: String = row.get(1);
+            let title: Option<String> = row.get(2);
+            let status: String = row.get(3);
+            let strike_date: Option<chrono::NaiveDateTime> = row.get(4);
+            let market_count: i64 = row.get(5);
+            let val = serde_json::json!({
+                "title": title.unwrap_or_default(),
+                "status": status,
+                "strike_date": strike_date.map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+                "market_count": market_count,
+            });
+            let hash_key = format!("monitor:events:{}", series_ticker);
+            cache.hset(&hash_key, &event_ticker, &val.to_string()).await?;
+        }
+        total_keys += event_rows.len() as u64;
+        tracing::info!(event_entries = event_rows.len(), "Warmed monitor:events:*");
+
+        // 4. Markets per event: title, status, close_time
+        let market_rows = self.client
+            .query(
+                r#"
+                SELECT m.event_ticker, m.ticker, m.title, m.status, m.close_time
+                FROM markets m
+                JOIN events e ON m.event_ticker = e.event_ticker
+                WHERE m.status = 'active' AND e.status = 'active'
+                "#,
+                &[],
+            )
+            .await?;
+
+        for row in &market_rows {
+            let event_ticker: String = row.get(0);
+            let market_ticker: String = row.get(1);
+            let title: Option<String> = row.get(2);
+            let status: String = row.get(3);
+            let close_time: Option<chrono::NaiveDateTime> = row.get(4);
+            let val = serde_json::json!({
+                "title": title.unwrap_or_default(),
+                "status": status,
+                "close_time": close_time.map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+            });
+            let hash_key = format!("monitor:markets:{}", event_ticker);
+            cache.hset(&hash_key, &market_ticker, &val.to_string()).await?;
+        }
+        total_keys += market_rows.len() as u64;
+        tracing::info!(market_entries = market_rows.len(), "Warmed monitor:markets:*");
+
+        let elapsed = start.elapsed();
+        tracing::info!(
+            total_keys,
+            elapsed_ms = elapsed.as_millis(),
+            "Monitor index warming complete"
+        );
+
+        Ok(total_keys)
+    }
+
     /// Warm all tables
     pub async fn warm_all(&self, cache: &RedisCache) -> Result<String> {
         let start = std::time::Instant::now();
@@ -138,12 +284,16 @@ impl CacheWarmer {
         let events = self.warm_events(cache).await?;
         let fees = self.warm_fees(cache).await?;
 
+        // Build monitor index hashes from the warmed data
+        let indexes = self.warm_monitor_indexes(cache).await?;
+
         let elapsed = start.elapsed();
         tracing::info!(
             series,
             markets,
             events,
             fees,
+            indexes,
             elapsed_ms = elapsed.as_millis(),
             "Cache warming complete"
         );

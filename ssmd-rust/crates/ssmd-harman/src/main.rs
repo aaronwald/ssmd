@@ -6,7 +6,7 @@ use clap::Parser;
 use dashmap::DashMap;
 use tracing::{error, info};
 
-use ssmd_harman::{api, shutdown, AppState};
+use ssmd_harman::{api, shutdown, AppState, MonitorMetrics};
 use ssmd_harman_ems::{Ems, EmsMetrics};
 use ssmd_harman_oms::runner::OmsRunner;
 use ssmd_harman_oms::{Oms, OmsMetrics};
@@ -124,6 +124,7 @@ async fn main() {
 
     let oms_metrics = OmsMetrics::new(&registry);
     let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
+    let monitor_metrics = MonitorMetrics::new(&registry);
 
     let reconcile_interval = if args.reconcile_interval_secs > 0 {
         Some(Duration::from_secs(args.reconcile_interval_secs))
@@ -138,6 +139,30 @@ async fn main() {
     if let Some(interval) = reconcile_interval {
         info!(interval_secs = interval.as_secs(), "auto-reconcile enabled");
     }
+
+    // Optional Redis connection for monitor data
+    let redis_conn = match std::env::var("REDIS_URL") {
+        Ok(url) => match redis::Client::open(url.as_str()) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(conn) => {
+                    info!("Connected to Redis for monitor data");
+                    Some(conn)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to connect to Redis, monitor endpoints will return empty");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "Invalid Redis URL, monitor endpoints will return empty");
+                None
+            }
+        },
+        Err(_) => {
+            info!("REDIS_URL not set, monitor endpoints will return empty");
+            None
+        }
+    };
 
     let state = Arc::new(AppState {
         ems,
@@ -157,6 +182,8 @@ async fn main() {
         key_sessions: DashMap::new(),
         ticker_cache: tokio::sync::RwLock::new(None),
         pump_semaphore: tokio::sync::Semaphore::new(1),
+        redis_conn,
+        monitor_metrics,
     });
 
     // Run recovery before starting API server

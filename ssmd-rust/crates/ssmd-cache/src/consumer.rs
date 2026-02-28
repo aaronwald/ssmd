@@ -251,6 +251,7 @@ impl CdcConsumer {
 
     /// Handle market CDC events with series grouping and TTL
     /// Uses L1 (in-memory) then L2 (PostgreSQL) lookup for event→series mapping
+    /// Also updates monitor:markets:{event} hash index
     async fn handle_market_event(
         &mut self,
         event: &CdcEvent,
@@ -284,6 +285,22 @@ impl CdcConsumer {
                             *skipped_expired += 1;
                         }
                     }
+
+                    // Update monitor:markets:{event} hash index
+                    let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
+                    if status == "active" {
+                        let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        let close_time = data.get("close_time").and_then(|v| v.as_str());
+                        let val = serde_json::json!({
+                            "title": title,
+                            "status": status,
+                            "close_time": close_time,
+                        });
+                        let hash_key = format!("monitor:markets:{}", event_ticker);
+                        if let Err(e) = cache.hset(&hash_key, market_ticker, &val.to_string()).await {
+                            tracing::warn!(error = %e, "Failed to update monitor:markets index");
+                        }
+                    }
                 }
             }
             "delete" => {
@@ -299,6 +316,7 @@ impl CdcConsumer {
     }
 
     /// Handle event CDC events and update series lookup
+    /// Also updates monitor:events:{series} hash index
     async fn handle_event_event(
         &mut self,
         event: &CdcEvent,
@@ -320,6 +338,24 @@ impl CdcConsumer {
                     // Store event data with TTL logic
                     if !cache.set_event(series_ticker, event_ticker, data).await? {
                         *skipped_expired += 1;
+                    }
+
+                    // Update monitor:events:{series} hash index
+                    let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
+                    if status == "active" {
+                        let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        let strike_date = data.get("strike_date").and_then(|v| v.as_str());
+                        // Count markets for this event (we don't have it in CDC data, use 0 as placeholder)
+                        let val = serde_json::json!({
+                            "title": title,
+                            "status": status,
+                            "strike_date": strike_date,
+                            "market_count": 0,
+                        });
+                        let hash_key = format!("monitor:events:{}", series_ticker);
+                        if let Err(e) = cache.hset(&hash_key, event_ticker, &val.to_string()).await {
+                            tracing::warn!(error = %e, "Failed to update monitor:events index");
+                        }
                     }
                 }
             }
