@@ -15,21 +15,25 @@ export function TickerInput({
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(-1);
+  const [degraded, setDegraded] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (value.length < 1) {
       setSuggestions([]);
+      setDegraded(false);
       return;
     }
     const timer = setTimeout(async () => {
       try {
         const res = await searchTickers(value);
         setSuggestions(res.tickers);
-        setOpen(res.tickers.length > 0);
+        setDegraded(res.degraded === true);
+        setOpen(res.tickers.length > 0 || res.degraded === true);
         setHighlighted(-1);
       } catch {
         setSuggestions([]);
+        setDegraded(true);
       }
     }, 150);
     return () => clearTimeout(timer);
@@ -79,8 +83,13 @@ export function TickerInput({
           "px-3 py-2 rounded-lg bg-bg-surface border border-border text-sm font-mono focus:border-accent outline-none w-full"
         }
       />
-      {open && suggestions.length > 0 && (
+      {open && (degraded || suggestions.length > 0) && (
         <ul className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-lg bg-bg-raised border border-border shadow-lg">
+          {degraded && (
+            <li className="px-3 py-1.5 text-xs text-yellow-500">
+              Ticker search unavailable — type exact ticker
+            </li>
+          )}
           {suggestions.map((t, i) => (
             <li
               key={t}

@@ -118,7 +118,7 @@ export const massCancel = () =>
 
 // Ticker search (secmaster)
 export const searchTickers = (q: string) =>
-  request<{ tickers: string[] }>(`/v1/tickers?q=${encodeURIComponent(q)}`);
+  request<{ tickers: string[]; degraded?: boolean }>(`/v1/tickers?q=${encodeURIComponent(q)}`);
 
 // Market data (snap) — returns normalized snapshots keyed by ticker
 export const getSnapMap = async (feed: string = "kalshi"): Promise<Map<string, NormalizedSnapshot>> => {

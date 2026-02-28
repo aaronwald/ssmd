@@ -283,6 +283,15 @@ Environment variables:
         }
       }
 
+      // Handle 'closed' events - transition market from active to closed
+      if (eventType === "closed") {
+        const updated = await updateMarketStatus(db, marketTicker, "closed");
+        if (updated) {
+          marketsUpdated++;
+          log(`[closed] market=${marketTicker} status=closed`);
+        }
+      }
+
       // Always insert lifecycle event (existing behavior)
       const record = toDbRecord(raw);
       await insertLifecycleEvent(db, record);

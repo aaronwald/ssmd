@@ -991,7 +991,14 @@ async fn list_tickers_handler(
         }
     };
 
-    let url = format!("{}/v1/markets?status=active&limit=500", base_url);
+    // Fetch markets with 2h lookback for recently-closed markets (post-expiry order entry).
+    // as_of shifts the point-in-time filter so close_time > as_of includes recently expired markets.
+    let two_hours_ago = chrono::Utc::now() - chrono::Duration::hours(2);
+    let as_of = two_hours_ago.format("%Y-%m-%dT%H:%M:%SZ");
+    let url = format!(
+        "{}/v1/markets?status=active&limit=2000&as_of={}",
+        base_url, as_of
+    );
     let mut req = state.http_client.get(&url).timeout(Duration::from_secs(10));
     // Use DATA_TS_API_KEY if configured, otherwise try forwarding user's auth
     if let Ok(key) = std::env::var("DATA_TS_API_KEY") {
@@ -1006,14 +1013,14 @@ async fn list_tickers_handler(
         Err(e) => {
             tracing::warn!(error = %e, "failed to fetch tickers from data-ts, returning empty");
             let filtered = filter_tickers(&[], prefix, 50);
-            return (StatusCode::OK, Json(serde_json::json!({"tickers": filtered}))).into_response();
+            return (StatusCode::OK, Json(serde_json::json!({"tickers": filtered, "degraded": true}))).into_response();
         }
     };
 
     if !resp.status().is_success() {
         tracing::warn!(status = %resp.status(), "data-ts returned error for markets, returning empty");
         let filtered = filter_tickers(&[], prefix, 50);
-        return (StatusCode::OK, Json(serde_json::json!({"tickers": filtered}))).into_response();
+        return (StatusCode::OK, Json(serde_json::json!({"tickers": filtered, "degraded": true}))).into_response();
     }
 
     let body: serde_json::Value = match resp.json().await {
@@ -1024,8 +1031,8 @@ async fn list_tickers_handler(
         }
     };
 
-    // Extract ticker strings from the markets array
-    let tickers: Vec<String> = body["markets"]
+    // Extract ticker strings from the markets array, sorted alphabetically
+    let mut tickers: Vec<String> = body["markets"]
         .as_array()
         .map(|arr| {
             arr.iter()
@@ -1033,6 +1040,7 @@ async fn list_tickers_handler(
                 .collect()
         })
         .unwrap_or_default();
+    tickers.sort_unstable();
 
     // Update cache
     {

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { Suspense, useState, useMemo } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { useOrders } from "@/lib/hooks";
 import { pump } from "@/lib/api";
 import { StateBadge } from "@/components/state-badge";
@@ -21,7 +22,25 @@ const stateFilters = [
 ];
 
 export default function OrdersPage() {
-  const [filter, setFilter] = useState("");
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-fg-subtle">Loading...</div>}>
+      <OrdersContent />
+    </Suspense>
+  );
+}
+
+function OrdersContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const filter = searchParams.get("state") ?? "";
+
+  function setFilter(value: string) {
+    const params = new URLSearchParams(searchParams.toString());
+    if (value) params.set("state", value);
+    else params.delete("state");
+    router.replace(`/orders?${params.toString()}`);
+  }
+
   const { data: orders, error } = useOrders(filter || undefined);
   const [pumpMsg, setPumpMsg] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
