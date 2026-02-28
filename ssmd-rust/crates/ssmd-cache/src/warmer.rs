@@ -585,7 +585,8 @@ impl CacheWarmer {
 
         let count = markets.len() as u64;
         let json = serde_json::to_string(&markets)?;
-        cache.set_raw_with_ttl("monitor:treemap", &json, 600).await?;
+        // Long TTL — warmer only runs on startup, no periodic refresh yet.
+        cache.set_raw_with_ttl("monitor:treemap", &json, 86400).await?;
 
         tracing::info!(count, "Warmed monitor:treemap");
         Ok(count)
