@@ -17,8 +17,7 @@ import type {
   MonitorMarket,
 } from "./types";
 
-const BASE_URL =
-  process.env.NEXT_PUBLIC_HARMAN_URL || "http://localhost:8080";
+const BASE_URL = process.env.NEXT_PUBLIC_HARMAN_URL || "";
 const TOKEN = process.env.NEXT_PUBLIC_HARMAN_TOKEN || "";
 
 async function request<T>(
@@ -114,7 +113,7 @@ export const resume = () =>
   request<void>("/v1/admin/resume", { method: "POST" });
 
 export const massCancel = () =>
-  request<void>("/v1/orders/mass-cancel", { method: "POST", body: JSON.stringify({ confirm: true }) });
+  request<void>("/v1/admin/mass-cancel", { method: "POST", body: JSON.stringify({ confirm: true }) });
 
 // Ticker search (secmaster)
 export const searchTickers = (q: string) =>

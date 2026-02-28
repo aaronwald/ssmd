@@ -1,0 +1,61 @@
+name: Build ssmd-harman-web
+
+on:
+  push:
+    tags:
+      - 'harman-web-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (default: sha-<commit>)'
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/ssmd-harman-web
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=match,pattern=harman-web-v(.*),group=1
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
+            type=sha,prefix=sha-,enable=${{ github.event_name == 'workflow_dispatch' && inputs.tag == '' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ssmd-harman-web
+          file: ./ssmd-harman-web/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NEXT_PUBLIC_HARMAN_URL=
+            NEXT_PUBLIC_HARMAN_TOKEN=${{ secrets.HARMAN_API_TOKEN }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
