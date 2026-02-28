@@ -505,7 +505,7 @@ pub async fn setup_test_db() -> Result<Pool, String> {
 
 /// Create a test session, returning its ID.
 pub async fn create_test_session(pool: &Pool) -> Result<i64, String> {
-    db::get_or_create_session(pool, "test", None)
+    db::get_or_create_session(pool, "test", "test", None)
         .await
 }
 

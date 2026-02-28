@@ -20,7 +20,7 @@ use harman::error::EnqueueError;
 use harman::state::OrderState;
 use harman::types::{Action, GroupState, Order, OrderGroup, OrderRequest, Side, TimeInForce};
 
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 use crate::{AppState, SessionContext};
 
@@ -32,10 +32,10 @@ fn extract_bearer(req: &Request) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
 }
 
-/// Hash a token for cache key (avoid storing raw tokens in memory)
-fn hash_token(token: &str) -> u64 {
+/// Compute a full SHA256 hex string for a token (used as auth cache key)
+fn token_cache_key(token: &str) -> String {
     let hash = Sha256::digest(token.as_bytes());
-    u64::from_le_bytes(hash[..8].try_into().unwrap())
+    hash.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Check if scopes include a required scope (with hierarchy)
@@ -81,7 +81,7 @@ async fn resolve_session(state: &AppState, key_prefix: &str) -> Result<i64, Stri
         return Ok(*id);
     }
     let session_id =
-        db::get_or_create_session(&state.pool, "kalshi", Some(key_prefix)).await?;
+        db::get_or_create_session(&state.pool, &state.exchange_type, &state.environment, Some(key_prefix)).await?;
     state
         .key_sessions
         .insert(key_prefix.to_string(), session_id);
@@ -123,10 +123,10 @@ async fn auth_middleware(
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     // Check cache (30s TTL)
-    let token_hash = hash_token(token);
+    let cache_key = token_cache_key(token);
     {
-        let cache = state.auth_cache.read().await;
-        if let Some(cached) = cache.get(&token_hash) {
+        let mut cache = state.auth_cache.write().await;
+        if let Some(cached) = cache.get(&cache_key) {
             if cached.cached_at.elapsed() < Duration::from_secs(30) {
                 let session_id = resolve_session(&state, &cached.key_prefix)
                     .await
@@ -174,8 +174,8 @@ async fn auth_middleware(
     // Cache result
     {
         let mut cache = state.auth_cache.write().await;
-        cache.insert(
-            token_hash,
+        cache.put(
+            cache_key,
             crate::CachedAuth {
                 key_prefix: body.key_prefix.clone(),
                 scopes: body.scopes.clone(),
@@ -204,7 +204,8 @@ async fn auth_middleware(
 pub fn router(state: Arc<AppState>) -> Router {
     let public = Router::new()
         .route("/health", get(health))
-        .route("/metrics", get(metrics));
+        .route("/metrics", get(metrics))
+        .route("/v1/info", get(info_handler));
 
     let authenticated = Router::new()
         // harman:write
@@ -216,6 +217,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/groups/oco", post(create_oco_group))
         .route("/v1/groups/:id", delete(cancel_group_handler))
         // harman:read
+        .route("/v1/me", get(me_handler))
         .route("/v1/orders", get(list_orders))
         .route("/v1/orders/:id", get(get_order))
         .route("/v1/groups", get(list_groups_handler))
@@ -229,9 +231,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/monitor/series", get(monitor_series_handler))
         .route("/v1/monitor/events", get(monitor_events_handler))
         .route("/v1/monitor/markets", get(monitor_markets_handler))
-        .route("/v1/monitor/treemap", get(monitor_treemap_handler))
         // harman:admin
-        .route("/v1/orders/mass-cancel", post(mass_cancel))
+        .route("/v1/admin/mass-cancel", post(mass_cancel))
         .route("/v1/admin/pump", post(pump_handler))
         .route("/v1/admin/reconcile", post(reconcile_handler))
         .route("/v1/admin/resume", post(resume_handler))
@@ -242,10 +243,22 @@ pub fn router(state: Arc<AppState>) -> Router {
             auth_middleware,
         ));
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = match std::env::var("ALLOWED_ORIGINS") {
+        Ok(origins) if !origins.is_empty() => {
+            let allowed: Vec<axum::http::HeaderValue> = origins
+                .split(',')
+                .filter_map(|o| o.trim().parse().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list(allowed))
+                .allow_methods(Any)
+                .allow_headers(Any)
+        }
+        _ => CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any),
+    };
 
     public.merge(authenticated).layer(cors).with_state(state)
 }
@@ -761,6 +774,41 @@ async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
+/// GET /v1/info — public endpoint, returns exchange/environment/version
+async fn info_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "exchange": state.exchange_type,
+            "environment": state.environment,
+            "version": env!("CARGO_PKG_VERSION"),
+        })),
+    )
+        .into_response()
+}
+
+/// GET /v1/me — requires harman:read, returns caller's session info
+async fn me_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:read") {
+        return e.into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "key_prefix": ctx.key_prefix,
+            "scopes": ctx.scopes,
+            "session_id": ctx.session_id,
+            "exchange": state.exchange_type,
+            "environment": state.environment,
+        })),
+    )
+        .into_response()
+}
+
 /// GET /v1/admin/positions
 ///
 /// Returns both exchange positions (from Kalshi API) and local positions
@@ -770,7 +818,7 @@ async fn positions_handler(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SessionContext>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_scope(&ctx, "harman:read") {
+    if let Err(e) = require_scope(&ctx, "harman:admin") {
         return e.into_response();
     }
 
@@ -994,11 +1042,12 @@ async fn list_tickers_handler(
 
     // Fetch markets with 2h lookback for recently-closed markets (post-expiry order entry).
     // as_of shifts the point-in-time filter so close_time > as_of includes recently expired markets.
+    // Filter by the connected exchange feed.
     let two_hours_ago = chrono::Utc::now() - chrono::Duration::hours(2);
     let as_of = two_hours_ago.format("%Y-%m-%dT%H:%M:%SZ");
     let url = format!(
-        "{}/v1/markets?status=active&limit=2000&as_of={}",
-        base_url, as_of
+        "{}/v1/markets?status=active&limit=2000&as_of={}&feed={}",
+        base_url, as_of, state.exchange_type
     );
     let mut req = state.http_client.get(&url).timeout(Duration::from_secs(10));
     // Use DATA_TS_API_KEY if configured, otherwise try forwarding user's auth
@@ -1089,7 +1138,7 @@ async fn snap_handler(
         return e.into_response();
     }
 
-    let feed = query.feed.as_deref().unwrap_or("kalshi");
+    let feed = query.feed.as_deref().unwrap_or(&state.exchange_type);
 
     let base_url = match &state.auth_validate_url {
         Some(url) => url.replace("/v1/auth/validate", ""),
@@ -1358,15 +1407,11 @@ async fn monitor_markets_handler(
 
     // Enrich with live snap data if available
     if !markets.is_empty() {
-        // Build snap keys based on the exchange field in each market entry
+        // Build snap keys using the connected exchange type
         let snap_keys: Vec<String> = markets
             .iter()
-            .map(|(ticker, market)| {
-                let exchange = market
-                    .get("exchange")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("kalshi");
-                format!("snap:{}:{}", exchange, ticker)
+            .map(|(ticker, _market)| {
+                format!("snap:{}:{}", state.exchange_type, ticker)
             })
             .collect();
         let snap_timer = state.monitor_metrics.redis_duration_seconds.start_timer();
@@ -1393,55 +1438,22 @@ async fn monitor_markets_handler(
                     // Snap data is nested: {"type":"ticker","msg":{...prices...}}
                     let msg = snap.get("msg").unwrap_or(&snap);
                     let market = &mut markets[i].1;
-                    let exchange = market
-                        .get("exchange")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("kalshi");
 
-                    match exchange {
-                        "kraken-futures" => {
-                            if let Some(bid) = msg.get("bid").and_then(|v| v.as_f64()) {
-                                market["bid"] = serde_json::json!(bid);
-                            }
-                            if let Some(ask) = msg.get("ask").and_then(|v| v.as_f64()) {
-                                market["ask"] = serde_json::json!(ask);
-                            }
-                            if let Some(last) = msg.get("last").and_then(|v| v.as_f64()) {
-                                market["last"] = serde_json::json!(last);
-                            }
-                            if let Some(fr) = msg.get("funding_rate") {
-                                market["funding_rate"] = fr.clone();
-                            }
-                        }
-                        "polymarket" => {
-                            if let Some(bb) = msg.get("best_bid").and_then(|v| v.as_f64()) {
-                                market["best_bid"] = serde_json::json!(bb);
-                            }
-                            if let Some(ba) = msg.get("best_ask").and_then(|v| v.as_f64()) {
-                                market["best_ask"] = serde_json::json!(ba);
-                            }
-                            if let Some(spread) = msg.get("spread") {
-                                market["spread"] = spread.clone();
-                            }
-                        }
-                        _ => {
-                            // Kalshi: convert cents to dollars
-                            if let Some(yb) = msg.get("yes_bid").and_then(|v| v.as_f64()) {
-                                market["yes_bid"] = serde_json::json!(yb / 100.0);
-                            }
-                            if let Some(ya) = msg.get("yes_ask").and_then(|v| v.as_f64()) {
-                                market["yes_ask"] = serde_json::json!(ya / 100.0);
-                            }
-                            if let Some(lp) = msg.get("last_price").or_else(|| msg.get("price")).and_then(|v| v.as_f64()) {
-                                market["last"] = serde_json::json!(lp / 100.0);
-                            }
-                            if let Some(vol) = msg.get("volume") {
-                                market["volume"] = vol.clone();
-                            }
-                            if let Some(oi) = msg.get("open_interest") {
-                                market["open_interest"] = oi.clone();
-                            }
-                        }
+                    // Kalshi: convert cents to dollars
+                    if let Some(yb) = msg.get("yes_bid").and_then(|v| v.as_f64()) {
+                        market["yes_bid"] = serde_json::json!(yb / 100.0);
+                    }
+                    if let Some(ya) = msg.get("yes_ask").and_then(|v| v.as_f64()) {
+                        market["yes_ask"] = serde_json::json!(ya / 100.0);
+                    }
+                    if let Some(lp) = msg.get("last_price").or_else(|| msg.get("price")).and_then(|v| v.as_f64()) {
+                        market["last"] = serde_json::json!(lp / 100.0);
+                    }
+                    if let Some(vol) = msg.get("volume") {
+                        market["volume"] = vol.clone();
+                    }
+                    if let Some(oi) = msg.get("open_interest") {
+                        market["open_interest"] = oi.clone();
                     }
                 }
             }
@@ -1451,142 +1463,6 @@ async fn monitor_markets_handler(
     let market_values: Vec<serde_json::Value> = markets.into_iter().map(|(_, v)| v).collect();
     state.monitor_metrics.requests_total.with_label_values(&["markets", "ok"]).inc();
     (StatusCode::OK, Json(serde_json::json!({"markets": market_values}))).into_response()
-}
-
-/// GET /v1/monitor/treemap — flat market list with volume for treemap visualization
-async fn monitor_treemap_handler(
-    State(state): State<Arc<AppState>>,
-    Extension(ctx): Extension<SessionContext>,
-) -> impl IntoResponse {
-    if let Err(e) = require_scope(&ctx, "harman:read") {
-        state.monitor_metrics.requests_total.with_label_values(&["treemap", "forbidden"]).inc();
-        return e.into_response();
-    }
-    let Some(ref conn) = state.redis_conn else {
-        state.monitor_metrics.requests_total.with_label_values(&["treemap", "ok"]).inc();
-        return (StatusCode::OK, Json(serde_json::json!({"markets": []}))).into_response();
-    };
-    let mut conn = conn.clone();
-
-    // Read the pre-built treemap JSON array from Redis
-    let timer = state.monitor_metrics.redis_duration_seconds.start_timer();
-    let raw: Option<String> = match redis::cmd("GET")
-        .arg("monitor:treemap")
-        .query_async(&mut conn)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            timer.observe_duration();
-            state.monitor_metrics.redis_errors_total.inc();
-            tracing::warn!(error = %e, "Redis GET monitor:treemap failed");
-            state.monitor_metrics.requests_total.with_label_values(&["treemap", "ok"]).inc();
-            return (StatusCode::OK, Json(serde_json::json!({"markets": []}))).into_response();
-        }
-    };
-    timer.observe_duration();
-
-    let Some(raw_json) = raw else {
-        state.monitor_metrics.requests_total.with_label_values(&["treemap", "ok"]).inc();
-        return (StatusCode::OK, Json(serde_json::json!({"markets": []}))).into_response();
-    };
-
-    let mut markets: Vec<serde_json::Value> = match serde_json::from_str(&raw_json) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to parse monitor:treemap JSON");
-            state.monitor_metrics.requests_total.with_label_values(&["treemap", "ok"]).inc();
-            return (StatusCode::OK, Json(serde_json::json!({"markets": []}))).into_response();
-        }
-    };
-
-    // Enrich with live snap data — exchange-aware key prefixes and price formats
-    if !markets.is_empty() {
-        let snap_keys: Vec<String> = markets
-            .iter()
-            .map(|m| {
-                let ticker = m.get("ticker").and_then(|v| v.as_str()).unwrap_or("");
-                let exchange = m.get("exchange").and_then(|v| v.as_str()).unwrap_or("kalshi");
-                match exchange {
-                    "kraken" => format!("snap:kraken-futures:{}", ticker),
-                    "polymarket" => format!("snap:polymarket:{}", ticker),
-                    _ => format!("snap:kalshi:{}", ticker),
-                }
-            })
-            .collect();
-        let snap_timer = state.monitor_metrics.redis_duration_seconds.start_timer();
-        let snap_results: Vec<Option<String>> = match redis::cmd("MGET")
-            .arg(&snap_keys)
-            .query_async(&mut conn)
-            .await
-        {
-            Ok(r) => {
-                snap_timer.observe_duration();
-                r
-            }
-            Err(e) => {
-                snap_timer.observe_duration();
-                state.monitor_metrics.redis_errors_total.inc();
-                tracing::warn!(error = %e, "Redis MGET snap keys failed for treemap");
-                vec![None; markets.len()]
-            }
-        };
-
-        for (i, snap_str) in snap_results.into_iter().enumerate() {
-            if let Some(s) = snap_str {
-                if let Ok(snap) = serde_json::from_str::<serde_json::Value>(&s) {
-                    let msg = snap.get("msg").unwrap_or(&snap);
-                    let market = &mut markets[i];
-                    let exchange = market.get("exchange").and_then(|v| v.as_str()).unwrap_or("kalshi");
-                    match exchange {
-                        "kalshi" => {
-                            if let Some(yb) = msg.get("yes_bid").and_then(|v| v.as_f64()) {
-                                market["yes_bid"] = serde_json::json!(yb / 100.0);
-                            }
-                            if let Some(ya) = msg.get("yes_ask").and_then(|v| v.as_f64()) {
-                                market["yes_ask"] = serde_json::json!(ya / 100.0);
-                            }
-                            if let Some(lp) = msg.get("last_price").or_else(|| msg.get("price")).and_then(|v| v.as_f64()) {
-                                market["last"] = serde_json::json!(lp / 100.0);
-                            }
-                        }
-                        "kraken" => {
-                            if let Some(bid) = msg.get("bid").and_then(|v| v.as_f64()) {
-                                market["yes_bid"] = serde_json::json!(bid);
-                            }
-                            if let Some(ask) = msg.get("ask").and_then(|v| v.as_f64()) {
-                                market["yes_ask"] = serde_json::json!(ask);
-                            }
-                            if let Some(last) = msg.get("last").and_then(|v| v.as_f64()) {
-                                market["last"] = serde_json::json!(last);
-                            }
-                        }
-                        "polymarket" => {
-                            if let Some(bb) = msg.get("best_bid").and_then(|v| v.as_f64()) {
-                                market["yes_bid"] = serde_json::json!(bb);
-                            }
-                            if let Some(ba) = msg.get("best_ask").and_then(|v| v.as_f64()) {
-                                market["yes_ask"] = serde_json::json!(ba);
-                            }
-                            if let Some(p) = msg.get("price").and_then(|v| v.as_f64()) {
-                                market["last"] = serde_json::json!(p);
-                            }
-                        }
-                        _ => {}
-                    }
-                    if let Some(vol) = msg.get("volume") {
-                        market["snap_volume"] = vol.clone();
-                    }
-                    if let Some(oi) = msg.get("open_interest") {
-                        market["snap_open_interest"] = oi.clone();
-                    }
-                }
-            }
-        }
-    }
-
-    state.monitor_metrics.requests_total.with_label_values(&["treemap", "ok"]).inc();
-    (StatusCode::OK, Json(serde_json::json!({"markets": markets}))).into_response()
 }
 
 fn order_to_json(order: &Order) -> serde_json::Value {

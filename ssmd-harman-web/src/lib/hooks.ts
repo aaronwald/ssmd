@@ -14,7 +14,6 @@ import {
   getSeries,
   getEvents,
   getMarkets,
-  getTreemap,
 } from "./api";
 
 const REFRESH_INTERVAL = 2500;
@@ -90,6 +89,3 @@ export function useMarkets(event: string | null) {
   );
 }
 
-export function useTreemap() {
-  return useSWR("treemap", getTreemap, { refreshInterval: LIVE_REFRESH });
-}

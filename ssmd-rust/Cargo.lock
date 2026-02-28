@@ -3784,6 +3784,7 @@ dependencies = [
  "dashmap",
  "deadpool-postgres",
  "harman",
+ "lru",
  "prometheus",
  "redis",
  "reqwest 0.12.28",

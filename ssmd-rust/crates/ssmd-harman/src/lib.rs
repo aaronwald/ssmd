@@ -2,12 +2,13 @@ pub mod api;
 pub mod pump;
 pub mod shutdown;
 
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
 
 use dashmap::DashMap;
 use deadpool_postgres::Pool;
+use lru::LruCache;
 use tokio::sync::{RwLock, Semaphore};
 
 use ssmd_harman_ems::Ems;
@@ -102,7 +103,7 @@ pub struct AppState {
     // Per-session state
     pub session_semaphores: DashMap<i64, Arc<Semaphore>>,
     // Caches
-    pub auth_cache: RwLock<HashMap<u64, CachedAuth>>,
+    pub auth_cache: RwLock<LruCache<String, CachedAuth>>,
     pub key_sessions: DashMap<String, i64>,
     /// Cached ticker list from secmaster (via data-ts), refreshed every 5 minutes
     pub ticker_cache: RwLock<Option<(std::time::Instant, Vec<String>)>>,
@@ -112,4 +113,14 @@ pub struct AppState {
     pub redis_conn: Option<redis::aio::MultiplexedConnection>,
     /// Prometheus metrics for monitor endpoints
     pub monitor_metrics: MonitorMetrics,
+    /// Exchange type (e.g., "kalshi")
+    pub exchange_type: String,
+    /// Exchange environment (e.g., "demo" or "prod")
+    pub environment: String,
+}
+
+impl AppState {
+    pub fn new_auth_cache() -> LruCache<String, CachedAuth> {
+        LruCache::new(NonZeroUsize::new(512).unwrap())
+    }
 }

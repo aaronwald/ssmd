@@ -172,24 +172,6 @@ export interface MonitorEvent {
   market_count: number;
 }
 
-export type PriceType = "probability" | "asset_price";
-export type Exchange = "kalshi" | "polymarket" | "kraken";
-
-export interface TreemapMarket {
-  exchange: string;
-  category: string;
-  series: string;
-  event: string;
-  ticker: string;
-  title: string;
-  volume: number;
-  open_interest: number;
-  close_time: string | null;
-  yes_bid: number | null;
-  yes_ask: number | null;
-  last: number | null;
-}
-
 export interface MonitorMarket {
   ticker: string;
   title: string;
@@ -200,6 +182,4 @@ export interface MonitorMarket {
   last: number | null;
   volume: number | null;
   open_interest: number | null;
-  exchange?: Exchange;
-  price_type?: PriceType;
 }

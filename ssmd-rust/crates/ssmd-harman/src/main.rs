@@ -1,9 +1,11 @@
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
 use dashmap::DashMap;
+use lru::LruCache;
+use tokio::sync::RwLock;
 use tracing::{error, info};
 
 use ssmd_harman::{api, shutdown, AppState, MonitorMetrics};
@@ -71,7 +73,30 @@ async fn main() {
         info!("API key validation disabled (AUTH_VALIDATE_URL not set), static tokens only");
     }
 
-    info!(listen_addr = %args.listen_addr, "ssmd-harman starting");
+    // Exchange type and environment
+    let exchange_type = std::env::var("EXCHANGE_TYPE").unwrap_or_else(|_| "kalshi".to_string());
+    let environment = std::env::var("EXCHANGE_ENVIRONMENT").unwrap_or_else(|_| "demo".to_string());
+
+    // Startup env validation: detect base URL / environment mismatch
+    let base_url_lower = args.kalshi_base_url.to_lowercase();
+    if environment == "prod" && base_url_lower.contains("demo") {
+        error!(
+            environment = %environment,
+            base_url = %args.kalshi_base_url,
+            "FATAL: EXCHANGE_ENVIRONMENT=prod but KALSHI_BASE_URL contains 'demo'"
+        );
+        std::process::exit(1);
+    }
+    if environment == "demo" && !base_url_lower.contains("demo") {
+        error!(
+            environment = %environment,
+            base_url = %args.kalshi_base_url,
+            "FATAL: EXCHANGE_ENVIRONMENT=demo but KALSHI_BASE_URL does not contain 'demo'"
+        );
+        std::process::exit(1);
+    }
+
+    info!(listen_addr = %args.listen_addr, exchange_type = %exchange_type, environment = %environment, "ssmd-harman starting");
 
     // Create DB pool
     let pool = harman::db::create_pool(&args.database_url).expect("failed to create DB pool");
@@ -111,8 +136,23 @@ async fn main() {
             .unwrap_or(rust_decimal::Decimal::new(100, 0)),
     };
 
+    // Reset stale processing items (watchdog: clear items stuck in processing state)
+    if let Ok(client) = pool.get().await {
+        let _ = client
+            .execute(
+                "UPDATE order_queue SET processing = FALSE WHERE processing = TRUE AND created_at < NOW() - INTERVAL '60 seconds'",
+                &[],
+            )
+            .await
+            .map(|n| {
+                if n > 0 {
+                    tracing::warn!(count = n, "reset stale processing order_queue items");
+                }
+            });
+    }
+
     // Get or create startup session (key_prefix = None for backward compat)
-    let startup_session_id = harman::db::get_or_create_session(&pool, "kalshi", None)
+    let startup_session_id = harman::db::get_or_create_session(&pool, &exchange_type, &environment, None)
         .await
         .expect("failed to get or create session");
     info!(startup_session_id, "startup session initialized");
@@ -178,12 +218,14 @@ async fn main() {
         auto_pump: args.auto_pump,
         pump_trigger,
         session_semaphores: DashMap::new(),
-        auth_cache: tokio::sync::RwLock::new(HashMap::new()),
+        auth_cache: RwLock::new(LruCache::new(NonZeroUsize::new(512).unwrap())),
         key_sessions: DashMap::new(),
         ticker_cache: tokio::sync::RwLock::new(None),
         pump_semaphore: tokio::sync::Semaphore::new(1),
         redis_conn,
         monitor_metrics,
+        exchange_type,
+        environment,
     });
 
     // Run recovery before starting API server

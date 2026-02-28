@@ -187,6 +187,9 @@ func (r *HarmanReconciler) constructDeployment(harman *ssmdv1alpha1.Harman) *app
 		{Name: "LISTEN_ADDR", Value: listenAddr},
 		{Name: "MAX_NOTIONAL", Value: maxNotional},
 		{Name: "KALSHI_BASE_URL", Value: baseURL},
+		{Name: "EXCHANGE_TYPE", Value: string(harman.Spec.Exchange.Type)},
+		{Name: "EXCHANGE_ENVIRONMENT", Value: string(harman.Spec.Exchange.Environment)},
+		{Name: "EXCHANGE_BASE_URL", Value: baseURL},
 		{Name: "RUST_LOG", Value: "ssmd_harman=info,harman=info"},
 		// Database secret
 		{

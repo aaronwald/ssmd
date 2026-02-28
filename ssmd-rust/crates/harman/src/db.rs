@@ -149,6 +149,24 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 005_order_groups applied");
     }
 
+    // Check if 006 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '006_session_environment'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 006: {}", e))?;
+
+    if row.is_none() {
+        let migration_006 = include_str!("../migrations/006_session_environment.sql");
+        client
+            .batch_execute(migration_006)
+            .await
+            .map_err(|e| format!("migration 006 failed: {}", e))?;
+        info!("migration 006_session_environment applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
@@ -554,6 +572,7 @@ pub async fn record_fill(
 pub async fn get_or_create_session(
     pool: &Pool,
     exchange: &str,
+    environment: &str,
     key_prefix: Option<&str>,
 ) -> Result<i64, String> {
     let mut client = pool
@@ -567,10 +586,10 @@ pub async fn get_or_create_session(
         .map_err(|e| format!("begin tx: {}", e))?;
 
     // Advisory lock scoped to this transaction — serializes concurrent session creation
-    // for the same exchange+prefix. Released automatically on commit.
+    // for the same exchange+env+prefix. Released automatically on commit.
     let lock_key = match key_prefix {
-        Some(prefix) => format!("{}:{}", exchange, prefix),
-        None => exchange.to_string(),
+        Some(prefix) => format!("{}:{}:{}", exchange, environment, prefix),
+        None => format!("{}:{}", exchange, environment),
     };
     tx.execute(
         "SELECT pg_advisory_xact_lock(hashtext($1))",
@@ -583,15 +602,15 @@ pub async fn get_or_create_session(
     let row = match key_prefix {
         Some(prefix) => {
             tx.query_opt(
-                "SELECT id FROM sessions WHERE exchange = $1 AND api_key_prefix = $2 AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
-                &[&exchange, &prefix],
+                "SELECT id FROM sessions WHERE exchange = $1 AND environment = $2 AND api_key_prefix = $3 AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
+                &[&exchange, &environment, &prefix],
             )
             .await
         }
         None => {
             tx.query_opt(
-                "SELECT id FROM sessions WHERE exchange = $1 AND api_key_prefix IS NULL AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
-                &[&exchange],
+                "SELECT id FROM sessions WHERE exchange = $1 AND environment = $2 AND api_key_prefix IS NULL AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
+                &[&exchange, &environment],
             )
             .await
         }
@@ -603,15 +622,15 @@ pub async fn get_or_create_session(
         tx.commit()
             .await
             .map_err(|e| format!("commit: {}", e))?;
-        info!(session_id = id, exchange, key_prefix, "using existing session");
+        info!(session_id = id, exchange, environment, key_prefix, "using existing session");
         return Ok(id);
     }
 
     // Create a new session
     let row = tx
         .query_one(
-            "INSERT INTO sessions (exchange, api_key_prefix) VALUES ($1, $2) RETURNING id",
-            &[&exchange, &key_prefix],
+            "INSERT INTO sessions (exchange, environment, api_key_prefix) VALUES ($1, $2, $3) RETURNING id",
+            &[&exchange, &environment, &key_prefix],
         )
         .await
         .map_err(|e| format!("create session: {:?}", e))?;
@@ -620,7 +639,7 @@ pub async fn get_or_create_session(
     tx.commit()
         .await
         .map_err(|e| format!("commit: {}", e))?;
-    info!(session_id = id, exchange, key_prefix, "created new session");
+    info!(session_id = id, exchange, environment, key_prefix, "created new session");
     Ok(id)
 }
 

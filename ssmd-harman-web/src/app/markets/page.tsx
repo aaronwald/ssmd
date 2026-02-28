@@ -3,7 +3,6 @@
 import { Suspense, useState, useMemo, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useCategories, useSeries, useEvents, useMarkets } from "@/lib/hooks";
-import type { PriceType } from "@/lib/types";
 
 type SortKey = "ticker" | "title" | "yes_bid" | "yes_ask" | "last" | "volume" | "close_time";
 type SortDir = "asc" | "desc";
@@ -100,24 +99,13 @@ function MarketsContent() {
     }
   }
 
-  // Detect price type from the first market (all markets in an event share the same exchange)
-  const priceType: PriceType = markets?.[0]?.price_type ?? "probability";
-  const exchange = markets?.[0]?.exchange;
-
   const fmtPrice = (v: number | null) => {
     if (v == null) return "-";
-    if (priceType === "asset_price") {
-      return "$" + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
     return `$${v.toFixed(2)}`;
   };
   const fmtSpread = (bid: number | null, ask: number | null) => {
     if (bid == null || ask == null) return "-";
-    const spread = ask - bid;
-    if (priceType === "asset_price") {
-      return "$" + spread.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-    return `$${spread.toFixed(2)}`;
+    return `$${(ask - bid).toFixed(2)}`;
   };
   const fmtInt = (v: number | null) => v != null ? v.toLocaleString() : "-";
   const fmtTime = (v: string | null) =>
@@ -134,7 +122,6 @@ function MarketsContent() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold">Markets</h1>
-          {exchange && <ExchangeBadge exchange={exchange} />}
         </div>
         <span className="text-xs text-fg-muted">
           {filtered ? `${filtered.length} markets` : event ? "Loading..." : "Select an event"}
@@ -270,21 +257,6 @@ function SortTh({ k, current, dir, onClick, align, children }: {
     >
       {children}{arrow}
     </th>
-  );
-}
-
-const exchangeStyles: Record<string, string> = {
-  kalshi: "bg-accent/15 text-accent",
-  polymarket: "bg-purple/15 text-purple",
-  kraken: "bg-orange/15 text-orange",
-};
-
-function ExchangeBadge({ exchange }: { exchange: string }) {
-  const style = exchangeStyles[exchange] ?? "bg-fg-subtle/15 text-fg-subtle";
-  return (
-    <span className={`inline-block rounded-md px-2 py-0.5 text-xs font-medium font-mono ${style}`}>
-      {exchange}
-    </span>
   );
 }
 

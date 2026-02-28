@@ -11,12 +11,13 @@
 //! Requires a PostgreSQL database. Set DATABASE_URL to run.
 //! Run with: cargo test -p ssmd-harman --test crash_tests -- --ignored
 
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use harman::db;
+use lru::LruCache;
 use harman::risk::RiskLimits;
 use harman::state::OrderState;
 use harman::test_helpers::*;
@@ -62,12 +63,14 @@ async fn build_test_state(
         auto_pump: false,
         pump_trigger,
         session_semaphores: DashMap::new(),
-        auth_cache: tokio::sync::RwLock::new(HashMap::new()),
+        auth_cache: tokio::sync::RwLock::new(LruCache::new(NonZeroUsize::new(512).unwrap())),
         key_sessions: DashMap::new(),
         pump_semaphore: tokio::sync::Semaphore::new(1),
         ticker_cache: tokio::sync::RwLock::new(None),
         redis_conn: None,
         monitor_metrics: ssmd_harman::MonitorMetrics::new(&prometheus::Registry::new()),
+        exchange_type: "kalshi".to_string(),
+        environment: "demo".to_string(),
     })
 }
 
@@ -76,7 +79,7 @@ async fn build_test_state(
 async fn setup() -> (deadpool_postgres::Pool, i64) {
     let pool = setup_test_db().await.expect("setup_test_db failed");
     let unique_name = format!("test-{}", Uuid::new_v4());
-    let session_id = db::get_or_create_session(&pool, &unique_name, None)
+    let session_id = db::get_or_create_session(&pool, &unique_name, "demo", None)
         .await
         .unwrap_or_else(|e| panic!("create session '{}' failed: {}", unique_name, e));
     (pool, session_id)
