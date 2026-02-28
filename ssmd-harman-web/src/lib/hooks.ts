@@ -16,9 +16,9 @@ import {
   getMarkets,
 } from "./api";
 
-const REFRESH_INTERVAL = 5000;
+const REFRESH_INTERVAL = 2500;
 const METADATA_REFRESH = 60000; // 60s for metadata (categories, series, events)
-const LIVE_REFRESH = 5000; // 5s for live prices (markets)
+const LIVE_REFRESH = 2500; // 2.5s for live prices (markets)
 
 export function useHealth() {
   return useSWR("health", getHealth, { refreshInterval: REFRESH_INTERVAL });
