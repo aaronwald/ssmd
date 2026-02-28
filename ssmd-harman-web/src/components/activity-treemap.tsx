@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useMemo } from "react";
+import { useEffect, useRef, useMemo, useState } from "react";
 import { useTreemap } from "@/lib/hooks";
 
 // Use inline builds — these bundle WASM as base64 and self-initialize
@@ -64,44 +64,43 @@ const D3FC_THEME_VARS: Record<string, string> = {
   "--d3fc-tooltip--color": "white",
 };
 
+function toColumnData(data: any[]) {
+  const cols: Record<string, unknown[]> = {
+    category: [],
+    series: [],
+    event: [],
+    ticker: [],
+    title: [],
+    volume: [],
+    open_interest: [],
+    close_time: [],
+    yes_bid: [],
+    yes_ask: [],
+    last: [],
+  };
+  for (const m of data) {
+    cols.category.push(m.category);
+    cols.series.push(m.series);
+    cols.event.push(m.event);
+    cols.ticker.push(m.ticker);
+    cols.title.push(m.title);
+    cols.volume.push(m.volume ?? 0);
+    cols.open_interest.push(m.open_interest ?? 0);
+    cols.close_time.push(m.close_time ?? "");
+    cols.yes_bid.push(m.yes_bid ?? null);
+    cols.yes_ask.push(m.yes_ask ?? null);
+    cols.last.push(m.last ?? null);
+  }
+  return cols;
+}
+
 export default function ActivityTreemap() {
   const { data, error } = useTreemap();
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<HTMLPerspectiveViewerElement | null>(null);
   const tableRef = useRef<any>(null);
   const clientRef = useRef<any>(null);
-
-  // Convert SWR data to column-oriented format for Perspective
-  const columnData = useMemo(() => {
-    if (!data || data.length === 0) return null;
-    const cols: Record<string, unknown[]> = {
-      category: [],
-      series: [],
-      event: [],
-      ticker: [],
-      title: [],
-      volume: [],
-      open_interest: [],
-      close_time: [],
-      yes_bid: [],
-      yes_ask: [],
-      last: [],
-    };
-    for (const m of data) {
-      cols.category.push(m.category);
-      cols.series.push(m.series);
-      cols.event.push(m.event);
-      cols.ticker.push(m.ticker);
-      cols.title.push(m.title);
-      cols.volume.push(m.volume ?? 0);
-      cols.open_interest.push(m.open_interest ?? 0);
-      cols.close_time.push(m.close_time ?? "");
-      cols.yes_bid.push(m.yes_bid ?? null);
-      cols.yes_ask.push(m.yes_ask ?? null);
-      cols.last.push(m.last ?? null);
-    }
-    return cols;
-  }, [data]);
+  const [tableReady, setTableReady] = useState(false);
 
   // Initialize Perspective viewer element + client + table on mount
   useEffect(() => {
@@ -125,16 +124,23 @@ export default function ActivityTreemap() {
     viewerRef.current = viewer;
 
     async function init() {
-      const client = await perspective.worker();
-      if (cancelled) return;
-      clientRef.current = client;
+      try {
+        const client = await perspective.worker();
+        if (cancelled) return;
+        clientRef.current = client;
 
-      const table = await client.table(SCHEMA as any);
-      if (cancelled) return;
-      tableRef.current = table;
+        const table = await client.table(SCHEMA as any);
+        if (cancelled) return;
+        tableRef.current = table;
 
-      await viewer.load(table);
-      await viewer.restore(VIEWER_CONFIG);
+        await viewer.load(table);
+        await viewer.restore(VIEWER_CONFIG);
+        if (cancelled) return;
+
+        setTableReady(true);
+      } catch (err) {
+        console.error("Perspective init failed:", err);
+      }
     }
 
     init();
@@ -148,15 +154,22 @@ export default function ActivityTreemap() {
     };
   }, []);
 
-  // Update table data when SWR data changes
+  // Update table data when BOTH table is ready AND data is available.
+  // Using tableReady state (not ref) ensures this effect re-runs
+  // when the table becomes ready, even if data arrived first.
   useEffect(() => {
     async function update() {
       const table = tableRef.current;
-      if (!table || !columnData) return;
-      await table.replace(columnData);
+      if (!table || !tableReady || !data || data.length === 0) return;
+      try {
+        const cols = toColumnData(data);
+        await table.replace(cols);
+      } catch (err) {
+        console.error("Perspective table.replace failed:", err);
+      }
     }
     update();
-  }, [columnData]);
+  }, [tableReady, data]);
 
   const totalVolume = useMemo(() => {
     if (!data) return 0;
