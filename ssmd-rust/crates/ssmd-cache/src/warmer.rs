@@ -540,20 +540,64 @@ impl CacheWarmer {
     }
 
     /// Build flat treemap data for the activity view.
-    /// Stores as a single `monitor:treemap` Redis key (JSON array) with 10-min TTL.
+    /// UNION across Kalshi, Kraken, and Polymarket for a unified volume treemap.
+    /// Stores as a single `monitor:treemap` Redis key (JSON array) with 24h TTL.
     pub async fn warm_treemap(&self, cache: &RedisCache) -> Result<u64> {
         let rows = self.client
             .query(
                 r#"
-                SELECT e.category, e.series_ticker, e.event_ticker,
-                       m.ticker, m.title, m.volume, m.open_interest,
-                       m.close_time::text
-                FROM markets m
-                JOIN events e ON m.event_ticker = e.event_ticker
-                WHERE m.status = 'active'
-                  AND m.close_time > NOW()
-                  AND e.category IS NOT NULL
-                ORDER BY e.category, e.series_ticker, m.volume DESC NULLS LAST
+                SELECT exchange, category, series, event, ticker, title,
+                       volume, open_interest, close_time
+                FROM (
+                    -- Kalshi markets
+                    SELECT 'kalshi' AS exchange,
+                           e.category,
+                           e.series_ticker AS series,
+                           e.event_ticker AS event,
+                           m.ticker,
+                           m.title,
+                           COALESCE(m.volume, 0)::bigint AS volume,
+                           COALESCE(m.open_interest, 0)::bigint AS open_interest,
+                           m.close_time::text
+                    FROM markets m
+                    JOIN events e ON m.event_ticker = e.event_ticker
+                    WHERE m.status = 'active'
+                      AND m.close_time > NOW()
+                      AND e.category IS NOT NULL
+
+                    UNION ALL
+
+                    -- Kraken futures pairs
+                    SELECT 'kraken' AS exchange,
+                           'Futures' AS category,
+                           p.base AS series,
+                           p.pair_id AS event,
+                           p.pair_id AS ticker,
+                           (p.base || '/' || p.quote || ' ' || p.market_type) AS title,
+                           COALESCE(p.volume_24h, 0)::bigint AS volume,
+                           COALESCE(p.open_interest, 0)::bigint AS open_interest,
+                           NULL AS close_time
+                    FROM pairs p
+                    WHERE p.deleted_at IS NULL
+                      AND p.status = 'active'
+
+                    UNION ALL
+
+                    -- Polymarket conditions
+                    SELECT 'polymarket' AS exchange,
+                           COALESCE(pc.category, 'Other') AS category,
+                           LEFT(pc.question, 80) AS series,
+                           pc.condition_id AS event,
+                           pc.condition_id AS ticker,
+                           pc.question AS title,
+                           COALESCE(pc.volume, 0)::bigint AS volume,
+                           0::bigint AS open_interest,
+                           pc.end_date::text AS close_time
+                    FROM polymarket_conditions pc
+                    WHERE pc.deleted_at IS NULL
+                      AND pc.active = true
+                ) all_markets
+                ORDER BY exchange, category, series, volume DESC NULLS LAST
                 "#,
                 &[],
             )
@@ -562,22 +606,24 @@ impl CacheWarmer {
         let markets: Vec<serde_json::Value> = rows
             .iter()
             .map(|row| {
-                let category: String = row.get(0);
-                let series: String = row.get(1);
-                let event: String = row.get(2);
-                let ticker: String = row.get(3);
-                let title: Option<String> = row.get(4);
-                let volume: Option<i64> = row.get(5);
-                let open_interest: Option<i64> = row.get(6);
-                let close_time: Option<String> = row.get(7);
+                let exchange: String = row.get(0);
+                let category: String = row.get(1);
+                let series: String = row.get(2);
+                let event: String = row.get(3);
+                let ticker: String = row.get(4);
+                let title: Option<String> = row.get(5);
+                let volume: i64 = row.get(6);
+                let open_interest: i64 = row.get(7);
+                let close_time: Option<String> = row.get(8);
                 serde_json::json!({
+                    "exchange": exchange,
                     "category": category,
                     "series": series,
                     "event": event,
                     "ticker": ticker,
                     "title": title.unwrap_or_default(),
-                    "volume": volume.unwrap_or(0),
-                    "open_interest": open_interest.unwrap_or(0),
+                    "volume": volume,
+                    "open_interest": open_interest,
                     "close_time": close_time,
                 })
             })

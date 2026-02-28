@@ -11,6 +11,7 @@ import type { HTMLPerspectiveViewerElement } from "@finos/perspective-viewer";
 
 // Schema for the Perspective table
 const SCHEMA = {
+  exchange: "string",
   category: "string",
   series: "string",
   event: "string",
@@ -24,10 +25,10 @@ const SCHEMA = {
   last: "float",
 };
 
-// Treemap config: group by category→series, size by volume, color by last price
+// Treemap config: group by exchange→category→series, size by volume, color by last price
 const VIEWER_CONFIG = {
   plugin: "Treemap",
-  group_by: ["category", "series"],
+  group_by: ["exchange", "category", "series"],
   columns: ["volume", "last"],
   settings: true,
 };
@@ -66,6 +67,7 @@ const D3FC_THEME_VARS: Record<string, string> = {
 
 function toColumnData(data: any[]) {
   const cols: Record<string, unknown[]> = {
+    exchange: [],
     category: [],
     series: [],
     event: [],
@@ -79,6 +81,7 @@ function toColumnData(data: any[]) {
     last: [],
   };
   for (const m of data) {
+    cols.exchange.push(m.exchange ?? "kalshi");
     cols.category.push(m.category);
     cols.series.push(m.series);
     cols.event.push(m.event);

@@ -176,6 +176,7 @@ export type PriceType = "probability" | "asset_price";
 export type Exchange = "kalshi" | "polymarket" | "kraken";
 
 export interface TreemapMarket {
+  exchange: string;
   category: string;
   series: string;
   event: string;
