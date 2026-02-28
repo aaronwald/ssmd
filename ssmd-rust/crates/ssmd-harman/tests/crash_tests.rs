@@ -78,10 +78,10 @@ async fn build_test_state(
 /// Each test gets its own session to avoid cross-test data contamination.
 async fn setup() -> (deadpool_postgres::Pool, i64) {
     let pool = setup_test_db().await.expect("setup_test_db failed");
-    let unique_name = format!("test-{}", Uuid::new_v4());
-    let session_id = db::get_or_create_session(&pool, &unique_name, "demo", None)
+    let unique_prefix = format!("test-{}", Uuid::new_v4());
+    let session_id = db::get_or_create_session(&pool, "test", "demo", Some(&unique_prefix))
         .await
-        .unwrap_or_else(|e| panic!("create session '{}' failed: {}", unique_name, e));
+        .unwrap_or_else(|e| panic!("create session '{}' failed: {}", unique_prefix, e));
     (pool, session_id)
 }
 

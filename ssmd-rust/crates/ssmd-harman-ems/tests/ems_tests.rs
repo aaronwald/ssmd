@@ -29,8 +29,8 @@ fn build_test_ems(mock: MockExchange, pool: deadpool_postgres::Pool) -> Ems {
 /// Setup helper: create pool, run migrations, create a unique test session.
 async fn setup() -> (deadpool_postgres::Pool, i64) {
     let pool = setup_test_db().await.expect("DATABASE_URL required");
-    let unique_name = format!("ems-test-{}", Uuid::new_v4());
-    let session_id = db::get_or_create_session(&pool, &unique_name, "test", None)
+    let unique_prefix = format!("ems-test-{}", Uuid::new_v4());
+    let session_id = db::get_or_create_session(&pool, "test", "demo", Some(&unique_prefix))
         .await
         .expect("create session");
     (pool, session_id)
