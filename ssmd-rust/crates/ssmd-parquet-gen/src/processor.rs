@@ -291,7 +291,13 @@ pub async fn process_date(
     Ok(all_stats)
 }
 
-/// Process all files for a single hour
+/// Process all files for a single hour.
+///
+/// Two-pass approach to reduce peak memory: pass 1 downloads and caches compressed
+/// files while classifying lines by type (counting only). Pass 2 processes one
+/// message type at a time, re-reading compressed data and collecting only the
+/// target type's lines before writing parquet. This keeps peak memory proportional
+/// to the largest single type rather than all types combined.
 #[allow(clippy::too_many_arguments)]
 async fn process_hour(
     gcs: &GcsClient,
@@ -307,12 +313,12 @@ async fn process_hour(
 ) -> Result<HourStats> {
     let mut stats = HourStats { hour_key: hour_key.to_string(), ..Default::default() };
     let hour_time_str = format!("{}00", hour_key);
-
-    // Collect all messages from all files in this hour
-    let mut messages_by_type: HashMap<String, Vec<(Vec<u8>, u64, i64)>> = HashMap::new();
-    let mut line_counter: u64 = 0;
     // Fallback for old JSONL files that lack archiver-injected metadata
     let fallback_received_at = hour_ts.timestamp_micros();
+
+    // === Pass 1: Download, cache compressed bytes, classify by type ===
+    let mut cached_files: Vec<Bytes> = Vec::new();
+    let mut type_counts: HashMap<String, usize> = HashMap::new();
 
     for file_path in files {
         info!(file = %file_path, "Downloading JSONL.gz");
@@ -326,8 +332,7 @@ async fn process_hour(
 
         stats.files_read += 1;
 
-        let line_result = for_each_gzip_line(&compressed, |line| {
-
+        let classify_result = for_each_gzip_line(&compressed, |line| {
             stats.lines_total += 1;
 
             if line.trim().is_empty() {
@@ -352,35 +357,24 @@ async fn process_hour(
                 }
             };
 
-            // Check if we have a schema for this type
             if registry.get(&msg_type).is_none() {
                 *stats.lines_no_schema.entry(msg_type).or_default() += 1;
                 return;
             }
 
-            line_counter += 1;
-
-            // Extract archiver-injected metadata, or fall back for old files
-            let msg_nats_seq = json.get("_nats_seq")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(line_counter);
-            let msg_received_at = json.get("_received_at")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(fallback_received_at);
-
-            messages_by_type
-                .entry(msg_type)
-                .or_default()
-                .push((line.as_bytes().to_vec(), msg_nats_seq, msg_received_at));
+            *type_counts.entry(msg_type).or_default() += 1;
         });
 
-        if let Err(e) = line_result {
+        if let Err(e) = classify_result {
             warn!(file = %file_path, error = %e, "Failed to read decompressed line, skipping file");
+            continue; // Don't cache files that failed to decompress
         }
+
+        cached_files.push(compressed);
     }
 
-    // Write parquet for each message type
-    for (msg_type, messages) in &messages_by_type {
+    // === Pass 2: Process one message type at a time ===
+    for (msg_type, count) in &type_counts {
         let schema = match registry.get(msg_type) {
             Some(s) => s,
             None => continue,
@@ -405,9 +399,47 @@ async fn process_hour(
             }
         }
 
+        // Collect messages for THIS type only, re-reading cached compressed data
+        let mut messages: Vec<(Vec<u8>, u64, i64)> = Vec::with_capacity(*count);
+        let mut seq: u64 = 0;
+
+        for compressed in &cached_files {
+            let _ = for_each_gzip_line(compressed, |line| {
+                if line.trim().is_empty() {
+                    return;
+                }
+
+                let json: serde_json::Value = match serde_json::from_str(line) {
+                    Ok(v) => v,
+                    Err(_) => return,
+                };
+
+                let detected = match detect_message_type(feed, &json) {
+                    Some(t) => t,
+                    None => return,
+                };
+
+                if detected != *msg_type {
+                    return;
+                }
+
+                seq += 1;
+                let nats_seq = json
+                    .get("_nats_seq")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(seq);
+                let recv_at = json
+                    .get("_received_at")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(fallback_received_at);
+
+                messages.push((line.as_bytes().to_vec(), nats_seq, recv_at));
+            });
+        }
+
         stats.parse_batch_input.insert(msg_type.clone(), messages.len());
 
-        let batch = match schema.parse_batch(messages) {
+        let batch = match schema.parse_batch(&messages) {
             Ok(b) => b,
             Err(e) => {
                 warn!(msg_type = %msg_type, error = %e, "Failed to parse batch, skipping");
@@ -426,6 +458,9 @@ async fn process_hour(
         if dropped > 0 {
             stats.parse_batch_dropped.insert(msg_type.clone(), dropped);
         }
+
+        // Drop messages before writing parquet — batch owns the Arrow arrays now
+        drop(messages);
 
         let parquet_bytes = write_parquet_to_bytes(&batch, schema)?;
         let bytes_len = parquet_bytes.len();
