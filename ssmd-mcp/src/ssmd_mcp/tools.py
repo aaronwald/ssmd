@@ -243,6 +243,28 @@ def search_conditions(
     return json.dumps(result, default=str)
 
 
+def search_lifecycle(
+    cfg: Config,
+    status: str | None = None,
+    since: str | None = None,
+    feed: str | None = None,
+    limit: int | None = None,
+) -> str:
+    """Search markets by lifecycle status across all exchanges."""
+    params: dict[str, Any] = {}
+    if status:
+        params["status"] = status
+    if since:
+        params["since"] = since
+    if feed:
+        params["feed"] = feed
+    clamped = _clamp_limit(limit)
+    if clamped is not None:
+        params["limit"] = clamped
+    result = api_get(cfg, "/v1/secmaster/lifecycle", params)
+    return json.dumps(result, default=str)
+
+
 def get_fees(
     cfg: Config,
     series: str | None = None,

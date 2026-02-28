@@ -40,7 +40,7 @@ export const events = pgTable("events", {
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
 
-// Markets table
+// Markets table (prices in dollars, 0.00-1.00 range — migration 0026)
 export const markets = pgTable("markets", {
   ticker: varchar("ticker", { length: 128 }).primaryKey(),
   eventTicker: varchar("event_ticker", { length: 128 }).notNull()
@@ -48,14 +48,25 @@ export const markets = pgTable("markets", {
   title: text("title").notNull(),
   status: varchar("status", { length: 16 }).notNull().default("open"),
   closeTime: timestamp("close_time", { withTimezone: true }),
-  yesBid: integer("yes_bid"),
-  yesAsk: integer("yes_ask"),
-  noBid: integer("no_bid"),
-  noAsk: integer("no_ask"),
-  lastPrice: integer("last_price"),
+  yesBid: numeric("yes_bid", { precision: 8, scale: 4 }),
+  yesAsk: numeric("yes_ask", { precision: 8, scale: 4 }),
+  noBid: numeric("no_bid", { precision: 8, scale: 4 }),
+  noAsk: numeric("no_ask", { precision: 8, scale: 4 }),
+  lastPrice: numeric("last_price", { precision: 8, scale: 4 }),
   volume: bigint("volume", { mode: "number" }),
   volume24h: bigint("volume_24h", { mode: "number" }),
   openInterest: bigint("open_interest", { mode: "number" }),
+  // Enrichment columns (migration 0028)
+  floorStrike: numeric("floor_strike"),
+  capStrike: numeric("cap_strike"),
+  strikeType: varchar("strike_type", { length: 32 }),
+  result: varchar("result", { length: 16 }),
+  expirationValue: text("expiration_value"),
+  yesSubTitle: text("yes_sub_title"),
+  noSubTitle: text("no_sub_title"),
+  canCloseEarly: boolean("can_close_early"),
+  marketType: varchar("market_type", { length: 16 }),
+  openTime: timestamp("open_time", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
@@ -195,6 +206,12 @@ export const polymarketConditions = pgTable("polymarket_conditions", {
   outcomes: text("outcomes").array().notNull().default([]),
   status: varchar("status", { length: 16 }).notNull().default("active"),
   active: boolean("active").notNull().default(true),
+  acceptingOrders: boolean("accepting_orders"),
+  eventId: varchar("event_id", { length: 32 }),
+  negRisk: boolean("neg_risk"),
+  description: text("description"),
+  orderPriceMinTickSize: numeric("order_price_min_tick_size", { precision: 8, scale: 6 }),
+  orderMinSize: numeric("order_min_size", { precision: 12, scale: 2 }),
   endDate: timestamp("end_date", { withTimezone: true }),
   resolutionDate: timestamp("resolution_date", { withTimezone: true }),
   winningOutcome: varchar("winning_outcome", { length: 128 }),

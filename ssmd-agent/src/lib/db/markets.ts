@@ -12,8 +12,14 @@ export interface UpsertResult {
   skipped: number;
 }
 
+/** Convert a nullable number to a string for Drizzle numeric columns */
+function numToStr(n: number | null | undefined): string | null {
+  return n !== null && n !== undefined ? String(n) : null;
+}
+
 /**
- * Convert API market type (snake_case) to Drizzle schema type (camelCase)
+ * Convert API market type (snake_case) to Drizzle schema type (camelCase).
+ * Price values are now dollars (NUMERIC in DB).
  */
 function toNewMarket(m: ApiMarket): NewMarket {
   return {
@@ -22,19 +28,29 @@ function toNewMarket(m: ApiMarket): NewMarket {
     title: m.title,
     status: m.status,
     closeTime: m.close_time ? new Date(m.close_time) : null,
-    yesBid: m.yes_bid ?? null,
-    yesAsk: m.yes_ask ?? null,
-    noBid: m.no_bid ?? null,
-    noAsk: m.no_ask ?? null,
-    lastPrice: m.last_price ?? null,
+    yesBid: numToStr(m.yes_bid),
+    yesAsk: numToStr(m.yes_ask),
+    noBid: numToStr(m.no_bid),
+    noAsk: numToStr(m.no_ask),
+    lastPrice: numToStr(m.last_price),
     volume: m.volume ?? 0,
     volume24h: m.volume_24h ?? 0,
     openInterest: m.open_interest ?? 0,
+    floorStrike: numToStr(m.floor_strike),
+    capStrike: numToStr(m.cap_strike),
+    strikeType: m.strike_type ?? null,
+    result: m.result ?? null,
+    expirationValue: m.expiration_value ?? null,
+    yesSubTitle: m.yes_sub_title ?? null,
+    noSubTitle: m.no_sub_title ?? null,
+    canCloseEarly: m.can_close_early ?? null,
+    marketType: m.market_type ?? null,
+    openTime: m.open_time ? new Date(m.open_time) : null,
   };
 }
 
-// PostgreSQL has a 65534 parameter limit. Markets have ~14 fields, so max safe batch is ~3000.
-const MARKETS_BATCH_SIZE = 3000;
+// PostgreSQL has a 65534 parameter limit. Markets have ~24 fields, so max safe batch is ~2500.
+const MARKETS_BATCH_SIZE = 2500;
 
 /**
  * Upsert a batch of markets. Caller handles batching (e.g., API pagination).
@@ -88,6 +104,16 @@ export async function upsertMarkets(
           volume: sql`excluded.volume`,
           volume24h: sql`excluded.volume_24h`,
           openInterest: sql`excluded.open_interest`,
+          floorStrike: sql`excluded.floor_strike`,
+          capStrike: sql`excluded.cap_strike`,
+          strikeType: sql`excluded.strike_type`,
+          result: sql`excluded.result`,
+          expirationValue: sql`excluded.expiration_value`,
+          yesSubTitle: sql`excluded.yes_sub_title`,
+          noSubTitle: sql`excluded.no_sub_title`,
+          canCloseEarly: sql`excluded.can_close_early`,
+          marketType: sql`excluded.market_type`,
+          openTime: sql`excluded.open_time`,
           // updated_at is handled by trigger (only updates when data changes)
           deletedAt: sql`NULL`,
         },
@@ -276,6 +302,16 @@ export async function listMarkets(
           volume: markets.volume,
           volume24h: markets.volume24h,
           openInterest: markets.openInterest,
+          floorStrike: markets.floorStrike,
+          capStrike: markets.capStrike,
+          strikeType: markets.strikeType,
+          result: markets.result,
+          expirationValue: markets.expirationValue,
+          yesSubTitle: markets.yesSubTitle,
+          noSubTitle: markets.noSubTitle,
+          canCloseEarly: markets.canCloseEarly,
+          marketType: markets.marketType,
+          openTime: markets.openTime,
           createdAt: markets.createdAt,
           updatedAt: markets.updatedAt,
           deletedAt: markets.deletedAt,
@@ -305,6 +341,16 @@ export async function listMarkets(
         volume: markets.volume,
         volume24h: markets.volume24h,
         openInterest: markets.openInterest,
+        floorStrike: markets.floorStrike,
+        capStrike: markets.capStrike,
+        strikeType: markets.strikeType,
+        result: markets.result,
+        expirationValue: markets.expirationValue,
+        yesSubTitle: markets.yesSubTitle,
+        noSubTitle: markets.noSubTitle,
+        canCloseEarly: markets.canCloseEarly,
+        marketType: markets.marketType,
+        openTime: markets.openTime,
         createdAt: markets.createdAt,
         updatedAt: markets.updatedAt,
         deletedAt: markets.deletedAt,

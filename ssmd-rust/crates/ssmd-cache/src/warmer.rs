@@ -137,6 +137,8 @@ impl CacheWarmer {
     ///   monitor:series:{category}   → { series: {"title":"...","active_events":N,"active_markets":N} }
     ///   monitor:events:{series}     → { event: {"title":"...","status":"...","strike_date":"...","market_count":N} }
     ///   monitor:markets:{event}     → { market: {"title":"...","status":"...","close_time":"..."} }
+    ///
+    /// Also warms Kraken pairs and Polymarket conditions into the same hierarchy.
     pub async fn warm_monitor_indexes(&self, cache: &RedisCache) -> Result<u64> {
         let start = std::time::Instant::now();
 
@@ -174,7 +176,7 @@ impl CacheWarmer {
             cache.hset("monitor:categories", &category, &val.to_string()).await?;
         }
         total_keys += cat_rows.len() as u64;
-        tracing::info!(categories = cat_rows.len(), "Warmed monitor:categories");
+        tracing::info!(categories = cat_rows.len(), "Warmed monitor:categories (Kalshi)");
 
         // 2. Series per category: only series with live events/markets
         let series_rows = self.client
@@ -283,6 +285,12 @@ impl CacheWarmer {
         total_keys += market_rows.len() as u64;
         tracing::info!(market_entries = market_rows.len(), "Warmed monitor:markets:*");
 
+        // 5. Kraken Futures pairs → merged into monitor hierarchy
+        total_keys += self.warm_pairs_monitor(cache).await?;
+
+        // 6. Polymarket conditions/tokens → merged into monitor hierarchy
+        total_keys += self.warm_polymarket_monitor(cache).await?;
+
         let elapsed = start.elapsed();
         tracing::info!(
             total_keys,
@@ -291,6 +299,296 @@ impl CacheWarmer {
         );
 
         Ok(total_keys)
+    }
+
+    /// Warm Kraken pairs into the monitor hierarchy.
+    ///
+    /// Hierarchy mapping:
+    ///   Category: "Kraken Futures"
+    ///   Series:   base currency group (BTC, ETH, etc.)
+    ///   Event:    "{base}-perps" synthetic event for perpetuals
+    ///   Market:   "kraken:{pair_id}" (e.g., "kraken:PF_XBTUSD")
+    async fn warm_pairs_monitor(&self, cache: &RedisCache) -> Result<u64> {
+        let rows = self.client
+            .query(
+                r#"
+                SELECT pair_id, base, quote, market_type, status,
+                       mark_price::text, funding_rate::text, open_interest::text,
+                       contract_type, tradeable, suspended, ws_name
+                FROM pairs
+                WHERE deleted_at IS NULL
+                  AND status = 'active'
+                  AND exchange = 'kraken'
+                "#,
+                &[],
+            )
+            .await?;
+
+        if rows.is_empty() {
+            tracing::info!("No active Kraken pairs to warm");
+            return Ok(0);
+        }
+
+        // Group by base currency for series/event aggregation
+        let mut base_groups: std::collections::HashMap<String, Vec<&tokio_postgres::Row>> =
+            std::collections::HashMap::new();
+        for row in &rows {
+            let base: String = row.get(1);
+            base_groups.entry(base).or_default().push(row);
+        }
+
+        let mut total_keys: u64 = 0;
+
+        // Category: "Kraken Futures"
+        let cat_val = serde_json::json!({
+            "instrument_count": rows.len(),
+            "base_count": base_groups.len(),
+        });
+        cache.hset("monitor:categories", "Kraken Futures", &cat_val.to_string()).await?;
+        total_keys += 1;
+
+        // Series + Events + Markets per base currency
+        for (base, group) in &base_groups {
+            // Series: base currency under "Kraken Futures" category
+            let active_pairs: usize = group.len();
+            let series_val = serde_json::json!({
+                "title": format!("{} Perpetuals", base),
+                "active_pairs": active_pairs,
+            });
+            cache.hset("monitor:series:Kraken Futures", base, &series_val.to_string()).await?;
+            total_keys += 1;
+
+            // Event: synthetic "{base}-perps"
+            let event_key = format!("{}-perps", base);
+            let event_val = serde_json::json!({
+                "title": format!("Active {} Perps", base),
+                "pair_count": active_pairs,
+            });
+            let events_hash = format!("monitor:events:{}", base);
+            cache.hset(&events_hash, &event_key, &event_val.to_string()).await?;
+            total_keys += 1;
+
+            // Markets: each pair under the synthetic event
+            let markets_hash = format!("monitor:markets:{}", event_key);
+            for row in group {
+                let pair_id: String = row.get(0);
+                let market_type: String = row.get(3);
+                let status: String = row.get(4);
+                let mark_price: Option<String> = row.get(5);
+                let funding_rate: Option<String> = row.get(6);
+                let open_interest: Option<String> = row.get(7);
+                let contract_type: Option<String> = row.get(8);
+                let tradeable: Option<bool> = row.get(9);
+                let suspended: Option<bool> = row.get(10);
+
+                let market_key = format!("kraken:{}", pair_id);
+                let market_val = serde_json::json!({
+                    "pair_id": pair_id,
+                    "market_type": market_type,
+                    "status": status,
+                    "mark_price": mark_price,
+                    "funding_rate": funding_rate,
+                    "open_interest": open_interest,
+                    "contract_type": contract_type,
+                    "tradeable": tradeable,
+                    "suspended": suspended,
+                    "exchange": "kraken",
+                    "price_type": "asset_price",
+                });
+                cache.hset(&markets_hash, &market_key, &market_val.to_string()).await?;
+                total_keys += 1;
+            }
+        }
+
+        tracing::info!(
+            pairs = rows.len(),
+            base_groups = base_groups.len(),
+            "Warmed Kraken pairs into monitor hierarchy"
+        );
+
+        Ok(total_keys)
+    }
+
+    /// Warm Polymarket conditions and tokens into the monitor hierarchy.
+    ///
+    /// Hierarchy mapping:
+    ///   Category: condition.category (merged with Kalshi categories where overlapping)
+    ///   Series:   "PM:{category}" synthetic series
+    ///   Event:    condition_id
+    ///   Market:   token_id
+    async fn warm_polymarket_monitor(&self, cache: &RedisCache) -> Result<u64> {
+        // Query active conditions with their tokens
+        let condition_rows = self.client
+            .query(
+                r#"
+                SELECT c.condition_id, c.question, c.category, c.status,
+                       c.end_date::text, c.accepting_orders, c.event_id,
+                       COUNT(t.token_id) AS token_count
+                FROM polymarket_conditions c
+                LEFT JOIN polymarket_tokens t ON t.condition_id = c.condition_id
+                WHERE c.deleted_at IS NULL
+                  AND c.status = 'active'
+                GROUP BY c.condition_id, c.question, c.category, c.status,
+                         c.end_date, c.accepting_orders, c.event_id
+                "#,
+                &[],
+            )
+            .await?;
+
+        if condition_rows.is_empty() {
+            tracing::info!("No active Polymarket conditions to warm");
+            return Ok(0);
+        }
+
+        // Group by category for aggregation
+        let mut cat_groups: std::collections::HashMap<String, Vec<&tokio_postgres::Row>> =
+            std::collections::HashMap::new();
+        for row in &condition_rows {
+            let category: Option<String> = row.get(2);
+            let cat = category.unwrap_or_else(|| "Uncategorized".to_string());
+            cat_groups.entry(cat).or_default().push(row);
+        }
+
+        let mut total_keys: u64 = 0;
+
+        // Categories: merge PM condition counts into monitor:categories
+        for (category, group) in &cat_groups {
+            let pm_val = serde_json::json!({
+                "pm_condition_count": group.len(),
+            });
+            cache.hset("monitor:categories", category, &pm_val.to_string()).await?;
+            total_keys += 1;
+
+            // Series: "PM:{category}" under each category
+            let series_key = format!("PM:{}", category);
+            let series_val = serde_json::json!({
+                "title": format!("Polymarket {}", category),
+                "active_conditions": group.len(),
+            });
+            let series_hash = format!("monitor:series:{}", category);
+            cache.hset(&series_hash, &series_key, &series_val.to_string()).await?;
+            total_keys += 1;
+
+            // Events: each condition is an event under the PM series
+            let events_hash = format!("monitor:events:{}", series_key);
+            for row in group {
+                let condition_id: String = row.get(0);
+                let question: String = row.get(1);
+                let status: String = row.get(3);
+                let end_date: Option<String> = row.get(4);
+                let accepting_orders: Option<bool> = row.get(5);
+                let event_id: Option<String> = row.get(6);
+                let token_count: i64 = row.get(7);
+
+                let event_val = serde_json::json!({
+                    "title": question,
+                    "status": status,
+                    "end_date": end_date,
+                    "accepting_orders": accepting_orders,
+                    "event_id": event_id,
+                    "token_count": token_count,
+                    "exchange": "polymarket",
+                    "price_type": "probability",
+                });
+                cache.hset(&events_hash, &condition_id, &event_val.to_string()).await?;
+                total_keys += 1;
+            }
+        }
+
+        // Markets: tokens under each condition
+        let token_rows = self.client
+            .query(
+                r#"
+                SELECT t.token_id, t.condition_id, t.outcome, t.outcome_index,
+                       t.price::text
+                FROM polymarket_tokens t
+                JOIN polymarket_conditions c ON c.condition_id = t.condition_id
+                WHERE c.deleted_at IS NULL
+                  AND c.status = 'active'
+                "#,
+                &[],
+            )
+            .await?;
+
+        for row in &token_rows {
+            let token_id: String = row.get(0);
+            let condition_id: String = row.get(1);
+            let outcome: String = row.get(2);
+            let outcome_index: i32 = row.get(3);
+            let price: Option<String> = row.get(4);
+
+            let market_val = serde_json::json!({
+                "outcome": outcome,
+                "outcome_index": outcome_index,
+                "price": price,
+                "exchange": "polymarket",
+                "price_type": "probability",
+            });
+            let markets_hash = format!("monitor:markets:{}", condition_id);
+            cache.hset(&markets_hash, &token_id, &market_val.to_string()).await?;
+            total_keys += 1;
+        }
+
+        tracing::info!(
+            conditions = condition_rows.len(),
+            tokens = token_rows.len(),
+            categories = cat_groups.len(),
+            "Warmed Polymarket conditions into monitor hierarchy"
+        );
+
+        Ok(total_keys)
+    }
+
+    /// Warm pairs table into Redis (Kraken futures)
+    /// Key: secmaster:pair:{pair_id}
+    pub async fn warm_pairs(&self, cache: &RedisCache) -> Result<u64> {
+        let rows = self.client
+            .query(
+                r#"
+                SELECT pair_id, row_to_json(pairs.*)
+                FROM pairs
+                WHERE deleted_at IS NULL
+                "#,
+                &[],
+            )
+            .await?;
+
+        let mut count = 0;
+        for row in rows {
+            let pair_id: String = row.get(0);
+            let json: serde_json::Value = row.get(1);
+            cache.set("pair", &pair_id, &json).await?;
+            count += 1;
+        }
+
+        tracing::info!(count, "Warmed pairs");
+        Ok(count)
+    }
+
+    /// Warm polymarket_conditions table into Redis
+    /// Key: secmaster:polymarket_condition:{condition_id}
+    pub async fn warm_polymarket_conditions(&self, cache: &RedisCache) -> Result<u64> {
+        let rows = self.client
+            .query(
+                r#"
+                SELECT condition_id, row_to_json(polymarket_conditions.*)
+                FROM polymarket_conditions
+                WHERE deleted_at IS NULL
+                "#,
+                &[],
+            )
+            .await?;
+
+        let mut count = 0;
+        for row in rows {
+            let condition_id: String = row.get(0);
+            let json: serde_json::Value = row.get(1);
+            cache.set("polymarket_condition", &condition_id, &json).await?;
+            count += 1;
+        }
+
+        tracing::info!(count, "Warmed polymarket conditions");
+        Ok(count)
     }
 
     /// Warm all tables
@@ -306,6 +604,8 @@ impl CacheWarmer {
         let markets = self.warm_markets(cache).await?;
         let events = self.warm_events(cache).await?;
         let fees = self.warm_fees(cache).await?;
+        let pairs = self.warm_pairs(cache).await?;
+        let pm_conditions = self.warm_polymarket_conditions(cache).await?;
 
         // Build monitor index hashes from the warmed data
         let indexes = self.warm_monitor_indexes(cache).await?;
@@ -316,6 +616,8 @@ impl CacheWarmer {
             markets,
             events,
             fees,
+            pairs,
+            pm_conditions,
             indexes,
             elapsed_ms = elapsed.as_millis(),
             "Cache warming complete"

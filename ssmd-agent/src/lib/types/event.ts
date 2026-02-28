@@ -45,11 +45,25 @@ export interface KalshiEvent {
   series_ticker: string | null;
   strike_date: string | null;
   mutually_exclusive: boolean;
+  /** Event status from API (e.g., "open", "closed", "settled") */
+  status?: string;
   // Additional fields from API that we don't store
   sub_title?: string;
   event_type?: string;
   // Nested markets when with_nested_markets=true
   markets?: import("./market.ts").KalshiMarket[];
+}
+
+/**
+ * Map Kalshi API status to our status enum.
+ * Kalshi uses "open" for active events; we normalize to "active".
+ */
+function mapEventStatus(status: string | undefined): "active" | "closed" | "settled" {
+  if (!status) return "active";
+  if (status === "open" || status === "active") return "active";
+  if (status === "closed") return "closed";
+  if (status === "settled") return "settled";
+  return "active";
 }
 
 /**
@@ -63,6 +77,6 @@ export function fromKalshiEvent(ke: KalshiEvent): Event {
     series_ticker: ke.series_ticker ?? null,
     strike_date: ke.strike_date ?? null,
     mutually_exclusive: ke.mutually_exclusive ?? false,
-    status: "active",
+    status: mapEventStatus(ke.status),
   };
 }

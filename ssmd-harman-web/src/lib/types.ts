@@ -172,6 +172,9 @@ export interface MonitorEvent {
   market_count: number;
 }
 
+export type PriceType = "probability" | "asset_price";
+export type Exchange = "kalshi" | "polymarket" | "kraken";
+
 export interface MonitorMarket {
   ticker: string;
   title: string;
@@ -182,4 +185,6 @@ export interface MonitorMarket {
   last: number | null;
   volume: number | null;
   open_interest: number | null;
+  exchange?: Exchange;
+  price_type?: PriceType;
 }

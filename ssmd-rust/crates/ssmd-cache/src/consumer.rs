@@ -209,6 +209,12 @@ impl CdcConsumer {
                             "series_fees" => {
                                 self.handle_fee_event(&event, &key, cache).await?;
                             }
+                            "pairs" => {
+                                self.handle_pairs_event(&event, &key, cache).await?;
+                            }
+                            "polymarket_conditions" => {
+                                self.handle_polymarket_condition_event(&event, &key, cache).await?;
+                            }
                             _ => {
                                 // Unknown table, use generic handler
                                 match event.op.as_str() {
@@ -407,6 +413,121 @@ impl CdcConsumer {
             }
             "delete" => {
                 cache.delete("fee", series_ticker).await?;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    /// Handle pairs CDC events (Kraken futures)
+    /// Updates secmaster:pair:{pair_id} and monitor hierarchy
+    async fn handle_pairs_event(
+        &self,
+        event: &CdcEvent,
+        pair_id: &str,
+        cache: &RedisCache,
+    ) -> Result<()> {
+        match event.op.as_str() {
+            "insert" | "update" => {
+                if let Some(data) = &event.data {
+                    // Update secmaster record
+                    cache.set("pair", pair_id, data).await?;
+
+                    // Update monitor hierarchy if active
+                    let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
+                    let deleted_at = data.get("deleted_at");
+                    let is_active = status == "active"
+                        && (deleted_at.is_none() || deleted_at == Some(&serde_json::Value::Null));
+
+                    if is_active {
+                        let base = data.get("base").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
+                        let market_type = data.get("market_type").and_then(|v| v.as_str()).unwrap_or("perpetual");
+                        let contract_type = data.get("contract_type").and_then(|v| v.as_str());
+                        let tradeable = data.get("tradeable").and_then(|v| v.as_bool());
+                        let suspended = data.get("suspended").and_then(|v| v.as_bool());
+
+                        let market_key = format!("kraken:{}", pair_id);
+                        let event_key = format!("{}-perps", base);
+                        let markets_hash = format!("monitor:markets:{}", event_key);
+
+                        let market_val = serde_json::json!({
+                            "pair_id": pair_id,
+                            "market_type": market_type,
+                            "status": status,
+                            "mark_price": data.get("mark_price"),
+                            "funding_rate": data.get("funding_rate"),
+                            "open_interest": data.get("open_interest"),
+                            "contract_type": contract_type,
+                            "tradeable": tradeable,
+                            "suspended": suspended,
+                            "exchange": "kraken",
+                            "price_type": "asset_price",
+                        });
+                        if let Err(e) = cache.hset(&markets_hash, &market_key, &market_val.to_string()).await {
+                            tracing::warn!(error = %e, "Failed to update monitor:markets for Kraken pair");
+                        }
+                    }
+                }
+            }
+            "delete" => {
+                cache.delete("pair", pair_id).await?;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    /// Handle polymarket_conditions CDC events
+    /// Updates secmaster:polymarket_condition:{condition_id} and monitor hierarchy
+    async fn handle_polymarket_condition_event(
+        &self,
+        event: &CdcEvent,
+        condition_id: &str,
+        cache: &RedisCache,
+    ) -> Result<()> {
+        match event.op.as_str() {
+            "insert" | "update" => {
+                if let Some(data) = &event.data {
+                    // Update secmaster record
+                    cache.set("polymarket_condition", condition_id, data).await?;
+
+                    // Update monitor hierarchy if active
+                    let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
+                    let deleted_at = data.get("deleted_at");
+                    let is_active = status == "active"
+                        && (deleted_at.is_none() || deleted_at == Some(&serde_json::Value::Null));
+
+                    if is_active {
+                        let category = data.get("category")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Uncategorized");
+                        let question = data.get("question").and_then(|v| v.as_str()).unwrap_or("");
+                        let end_date = data.get("end_date").and_then(|v| v.as_str());
+                        let accepting_orders = data.get("accepting_orders").and_then(|v| v.as_bool());
+                        let event_id = data.get("event_id").and_then(|v| v.as_str());
+
+                        let series_key = format!("PM:{}", category);
+                        let events_hash = format!("monitor:events:{}", series_key);
+
+                        let event_val = serde_json::json!({
+                            "title": question,
+                            "status": status,
+                            "end_date": end_date,
+                            "accepting_orders": accepting_orders,
+                            "event_id": event_id,
+                            "exchange": "polymarket",
+                            "price_type": "probability",
+                        });
+                        if let Err(e) = cache.hset(&events_hash, condition_id, &event_val.to_string()).await {
+                            tracing::warn!(error = %e, "Failed to update monitor:events for Polymarket condition");
+                        }
+                    }
+                }
+            }
+            "delete" => {
+                cache.delete("polymarket_condition", condition_id).await?;
             }
             _ => {}
         }

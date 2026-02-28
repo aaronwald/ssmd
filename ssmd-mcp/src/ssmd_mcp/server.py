@@ -27,6 +27,7 @@ from ssmd_mcp.tools import (
     search_events,
     search_pairs,
     search_conditions,
+    search_lifecycle,
     get_fees,
     list_api_keys,
     query_key_usage,
@@ -455,6 +456,38 @@ TOOLS = [
         },
     ),
     Tool(
+        name="search_lifecycle",
+        description=(
+            "Search markets by lifecycle status across all exchanges (Kalshi, Kraken, Polymarket). "
+            "Filter by status (active/closed/settled), time window (since), and feed. "
+            "Returns unified results with exchange, id, title, status, and updatedAt. "
+            "Requires secmaster:read scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Filter by market status (e.g., active, closed, settled, suspended).",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "ISO datetime lower bound for updated_at (e.g., '2026-02-28T00:00:00Z'). Only returns markets updated after this time.",
+                },
+                "feed": {
+                    "type": "string",
+                    "enum": ["kalshi", "kraken-futures", "polymarket"],
+                    "description": "Optional: filter to a single exchange.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return. Default 100, max 500.",
+                    "default": 100,
+                },
+            },
+        },
+    ),
+    Tool(
         name="get_fees",
         description=(
             "Get fee schedules from the secmaster database. Without a series parameter, "
@@ -616,6 +649,14 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             cfg,
             category=arguments.get("category"),
             status=arguments.get("status"),
+            limit=arguments.get("limit"),
+        )
+    elif name == "search_lifecycle":
+        return search_lifecycle(
+            cfg,
+            status=arguments.get("status"),
+            since=arguments.get("since"),
+            feed=arguments.get("feed"),
             limit=arguments.get("limit"),
         )
     elif name == "get_fees":

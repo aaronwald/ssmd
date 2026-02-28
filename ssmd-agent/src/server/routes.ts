@@ -71,7 +71,7 @@ import {
   VOLUME_UNITS,
 } from "../lib/duckdb/queries.ts";
 import { VALID_DATA_FEEDS, FEED_PATHS } from "../lib/duckdb/feed-config.ts";
-import { and, inArray, isNull, eq, gte, lt, lte } from "drizzle-orm";
+import { and, inArray, isNull, eq, gte, lt, lte, desc, sql } from "drizzle-orm";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
 const USAGE_CACHE_TTL = 120; // 2 minutes
@@ -294,6 +294,98 @@ route("GET", "/v1/secmaster/markets/active-by-category", async (req, ctx) => {
     : 7;
   const timeseries = await getActiveMarketsByCategoryTimeseries(ctx.db, days);
   return json({ timeseries });
+}, true, "secmaster:read", "public");
+
+// Lifecycle search — query markets by status across all exchanges
+route("GET", "/v1/secmaster/lifecycle", async (req, ctx) => {
+  const url = new URL(req.url);
+  const status = url.searchParams.get("status") ?? undefined;
+  const since = url.searchParams.get("since") ?? undefined;
+  const feed = url.searchParams.get("feed") ?? undefined;
+  const limit = url.searchParams.get("limit")
+    ? Math.min(Math.max(parseInt(url.searchParams.get("limit")!), 1), 500)
+    : 100;
+
+  if (feed && !VALID_FEEDS.includes(feed)) {
+    return json({ error: `Invalid feed: ${feed}. Valid feeds: ${VALID_FEEDS.join(", ")}` }, 400);
+  }
+
+  // deno-lint-ignore no-explicit-any
+  const results: any[] = [];
+
+  // Query Kalshi markets
+  if (!feed || feed === "kalshi") {
+    const conds = [isNull(markets.deletedAt)];
+    if (status) conds.push(eq(markets.status, status));
+    if (since) conds.push(gte(markets.updatedAt, new Date(since)));
+
+    const kalshiRows = await ctx.db
+      .select({
+        id: markets.ticker,
+        title: markets.title,
+        status: markets.status,
+        updatedAt: markets.updatedAt,
+      })
+      .from(markets)
+      .where(and(...conds))
+      .orderBy(desc(markets.updatedAt))
+      .limit(limit);
+
+    for (const row of kalshiRows) {
+      results.push({ exchange: "kalshi", ...row });
+    }
+  }
+
+  // Query Kraken pairs
+  if (!feed || feed === "kraken-futures") {
+    const conds = [isNull(pairs.deletedAt)];
+    if (status) conds.push(eq(pairs.status, status));
+    if (since) conds.push(gte(pairs.updatedAt, new Date(since)));
+
+    const krakenRows = await ctx.db
+      .select({
+        id: pairs.pairId,
+        title: pairs.wsName,
+        status: pairs.status,
+        updatedAt: pairs.updatedAt,
+      })
+      .from(pairs)
+      .where(and(...conds))
+      .orderBy(desc(pairs.updatedAt))
+      .limit(limit);
+
+    for (const row of krakenRows) {
+      results.push({ exchange: "kraken-futures", ...row });
+    }
+  }
+
+  // Query Polymarket conditions
+  if (!feed || feed === "polymarket") {
+    const conds = [isNull(polymarketConditions.deletedAt)];
+    if (status) conds.push(eq(polymarketConditions.status, status));
+    if (since) conds.push(gte(polymarketConditions.updatedAt, new Date(since)));
+
+    const polyRows = await ctx.db
+      .select({
+        id: polymarketConditions.conditionId,
+        title: polymarketConditions.question,
+        status: polymarketConditions.status,
+        updatedAt: polymarketConditions.updatedAt,
+      })
+      .from(polymarketConditions)
+      .where(and(...conds))
+      .orderBy(desc(polymarketConditions.updatedAt))
+      .limit(limit);
+
+    for (const row of polyRows) {
+      results.push({ exchange: "polymarket", ...row });
+    }
+  }
+
+  // Sort combined results by updatedAt descending, then trim to limit
+  results.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+
+  return json({ results: results.slice(0, limit) });
 }, true, "secmaster:read", "public");
 
 // Series endpoints
@@ -796,6 +888,7 @@ function endpointTier(_method: string, path: string): string {
   if (path.startsWith("/v1/data/download")) return "data_download";
   if (path.startsWith("/v1/data/")) return "data_query";
   if (path.startsWith("/v1/markets/lookup")) return "market_lookup";
+  if (path.startsWith("/v1/secmaster/")) return "secmaster";
   if (path.startsWith("/v1/events") || path.startsWith("/v1/markets") || path.startsWith("/v1/series") ||
       path.startsWith("/v1/pairs") || path.startsWith("/v1/conditions") || path.startsWith("/v1/fees")) return "secmaster";
   if (path.startsWith("/v1/chat/completions")) return "llm_chat";
@@ -2040,11 +2133,14 @@ route("GET", "/v1/monitor/markets", async (req) => {
     }
   }
 
-  // Merge snap data for live prices
+  // Merge snap data for live prices (exchange-aware)
   if (tickers.length > 0) {
-    const snapKeys = tickers.map((t) => `snap:kalshi:${t}`);
+    const snapKeys = tickers.map((t) => {
+      const market = marketMap.get(t);
+      const exchange = market?.exchange ?? "kalshi";
+      return `snap:${exchange}:${t}`;
+    });
     const snapValues = await redis.mget(...snapKeys);
-    const kalshiPriceFields = ["yes_bid", "yes_ask", "last_price"];
 
     for (let i = 0; i < tickers.length; i++) {
       const snapRaw = snapValues[i];
@@ -2053,14 +2149,27 @@ route("GET", "/v1/monitor/markets", async (req) => {
         const snap = JSON.parse(snapRaw);
         const market = marketMap.get(tickers[i]);
         if (!market) continue;
-        // Convert cents to dollars for Kalshi prices
-        for (const field of kalshiPriceFields) {
-          if (typeof snap[field] === "number") {
-            market[field === "last_price" ? "last" : field] = snap[field] / 100;
+        const exchange = market.exchange ?? "kalshi";
+
+        if (exchange === "kraken-futures") {
+          if (typeof snap.bid === "number") market.bid = snap.bid;
+          if (typeof snap.ask === "number") market.ask = snap.ask;
+          if (typeof snap.last === "number") market.last = snap.last;
+          if (snap.funding_rate != null) market.funding_rate = snap.funding_rate;
+        } else if (exchange === "polymarket") {
+          if (typeof snap.best_bid === "number") market.best_bid = snap.best_bid;
+          if (typeof snap.best_ask === "number") market.best_ask = snap.best_ask;
+          if (snap.spread != null) market.spread = snap.spread;
+        } else {
+          // Kalshi: convert cents to dollars
+          for (const field of ["yes_bid", "yes_ask", "last_price"]) {
+            if (typeof snap[field] === "number") {
+              market[field === "last_price" ? "last" : field] = snap[field] / 100;
+            }
           }
+          if (typeof snap.volume === "number") market.volume = snap.volume;
+          if (typeof snap.open_interest === "number") market.open_interest = snap.open_interest;
         }
-        if (typeof snap.volume === "number") market.volume = snap.volume;
-        if (typeof snap.open_interest === "number") market.open_interest = snap.open_interest;
       } catch {
         // skip unparseable snap
       }

@@ -26,6 +26,7 @@ interface GammaEventMarket {
   conditionId?: string;
   questionID?: string;
   question?: string;
+  description?: string;
   slug?: string;
   category?: string;
   outcomes?: string;
@@ -33,6 +34,10 @@ interface GammaEventMarket {
   clobTokenIds?: string;
   active?: boolean;
   closed?: boolean;
+  acceptingOrders?: boolean;
+  negRisk?: boolean;
+  orderPriceMinTickSize?: number;
+  orderMinSize?: number;
   endDate?: string;
   resolutionDate?: string;
   winningOutcome?: string;
@@ -48,6 +53,7 @@ interface GammaEvent {
   tags?: GammaTag[];
   active?: boolean;
   closed?: boolean;
+  negRisk?: boolean;
   markets?: GammaEventMarket[];
 }
 
@@ -70,10 +76,25 @@ function parseStringifiedArray(value: string | undefined): string[] {
 
 /**
  * Map Gamma API status fields to our internal status.
+ *
+ * Lifecycle:
+ *   active + acceptingOrders  → "active"
+ *   active + !acceptingOrders → "suspended"
+ *   closed + !winningOutcome  → "closed"     (no longer trading, not yet resolved)
+ *   closed + winningOutcome   → "settled"     (resolved with outcome)
+ *   !active + !closed         → "inactive"
  */
-function mapStatus(active: boolean | undefined, closed: boolean | undefined): string {
-  if (closed) return "resolved";
+function mapStatus(
+  active: boolean | undefined,
+  closed: boolean | undefined,
+  acceptingOrders: boolean | undefined,
+  winningOutcome: string | null | undefined,
+): string {
+  if (closed) {
+    return winningOutcome ? "settled" : "closed";
+  }
   if (active === false) return "inactive";
+  if (acceptingOrders === false) return "suspended";
   return "active";
 }
 
@@ -215,11 +236,13 @@ export async function runPolymarketSync(
 
           const outcomes = parseStringifiedArray(market.outcomes);
           const outcomePrices = parseStringifiedArray(market.outcomePrices);
-          const status = mapStatus(market.active, market.closed);
+          const status = mapStatus(market.active, market.closed, market.acceptingOrders, market.winningOutcome);
 
           seenConditionIds.add(conditionId);
 
           // Upsert condition (dedup: last occurrence wins)
+          // negRisk: prefer market-level, fall back to event-level
+          const negRisk = market.negRisk ?? event.negRisk ?? null;
           conditionMap.set(conditionId, {
             conditionId,
             question: market.question ?? "",
@@ -229,6 +252,12 @@ export async function runPolymarketSync(
             outcomes,
             status,
             active: market.active ?? true,
+            acceptingOrders: market.acceptingOrders ?? null,
+            eventId: event.id,
+            negRisk,
+            description: market.description ?? null,
+            orderPriceMinTickSize: market.orderPriceMinTickSize?.toString() ?? null,
+            orderMinSize: market.orderMinSize?.toString() ?? null,
             endDate: market.endDate ? new Date(market.endDate) : null,
             resolutionDate: market.resolutionDate ? new Date(market.resolutionDate) : null,
             winningOutcome: market.winningOutcome ?? null,

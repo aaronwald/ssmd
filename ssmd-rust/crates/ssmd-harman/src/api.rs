@@ -1349,9 +1349,16 @@ async fn monitor_markets_handler(
 
     // Enrich with live snap data if available
     if !markets.is_empty() {
+        // Build snap keys based on the exchange field in each market entry
         let snap_keys: Vec<String> = markets
             .iter()
-            .map(|(ticker, _)| format!("snap:kalshi:{}", ticker))
+            .map(|(ticker, market)| {
+                let exchange = market
+                    .get("exchange")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("kalshi");
+                format!("snap:{}:{}", exchange, ticker)
+            })
             .collect();
         let snap_timer = state.monitor_metrics.redis_duration_seconds.start_timer();
         let snap_results: Vec<Option<String>> = match redis::cmd("MGET")
@@ -1377,21 +1384,55 @@ async fn monitor_markets_handler(
                     // Snap data is nested: {"type":"ticker","msg":{...prices...}}
                     let msg = snap.get("msg").unwrap_or(&snap);
                     let market = &mut markets[i].1;
-                    // Convert Kalshi prices from cents to dollars
-                    if let Some(yb) = msg.get("yes_bid").and_then(|v| v.as_f64()) {
-                        market["yes_bid"] = serde_json::json!(yb / 100.0);
-                    }
-                    if let Some(ya) = msg.get("yes_ask").and_then(|v| v.as_f64()) {
-                        market["yes_ask"] = serde_json::json!(ya / 100.0);
-                    }
-                    if let Some(lp) = msg.get("last_price").or_else(|| msg.get("price")).and_then(|v| v.as_f64()) {
-                        market["last"] = serde_json::json!(lp / 100.0);
-                    }
-                    if let Some(vol) = msg.get("volume") {
-                        market["volume"] = vol.clone();
-                    }
-                    if let Some(oi) = msg.get("open_interest") {
-                        market["open_interest"] = oi.clone();
+                    let exchange = market
+                        .get("exchange")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("kalshi");
+
+                    match exchange {
+                        "kraken-futures" => {
+                            if let Some(bid) = msg.get("bid").and_then(|v| v.as_f64()) {
+                                market["bid"] = serde_json::json!(bid);
+                            }
+                            if let Some(ask) = msg.get("ask").and_then(|v| v.as_f64()) {
+                                market["ask"] = serde_json::json!(ask);
+                            }
+                            if let Some(last) = msg.get("last").and_then(|v| v.as_f64()) {
+                                market["last"] = serde_json::json!(last);
+                            }
+                            if let Some(fr) = msg.get("funding_rate") {
+                                market["funding_rate"] = fr.clone();
+                            }
+                        }
+                        "polymarket" => {
+                            if let Some(bb) = msg.get("best_bid").and_then(|v| v.as_f64()) {
+                                market["best_bid"] = serde_json::json!(bb);
+                            }
+                            if let Some(ba) = msg.get("best_ask").and_then(|v| v.as_f64()) {
+                                market["best_ask"] = serde_json::json!(ba);
+                            }
+                            if let Some(spread) = msg.get("spread") {
+                                market["spread"] = spread.clone();
+                            }
+                        }
+                        _ => {
+                            // Kalshi: convert cents to dollars
+                            if let Some(yb) = msg.get("yes_bid").and_then(|v| v.as_f64()) {
+                                market["yes_bid"] = serde_json::json!(yb / 100.0);
+                            }
+                            if let Some(ya) = msg.get("yes_ask").and_then(|v| v.as_f64()) {
+                                market["yes_ask"] = serde_json::json!(ya / 100.0);
+                            }
+                            if let Some(lp) = msg.get("last_price").or_else(|| msg.get("price")).and_then(|v| v.as_f64()) {
+                                market["last"] = serde_json::json!(lp / 100.0);
+                            }
+                            if let Some(vol) = msg.get("volume") {
+                                market["volume"] = vol.clone();
+                            }
+                            if let Some(oi) = msg.get("open_interest") {
+                                market["open_interest"] = oi.clone();
+                            }
+                        }
                     }
                 }
             }

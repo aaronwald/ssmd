@@ -81,3 +81,36 @@ Deno.test("fromKalshiEvent converts API response", () => {
   // Extra fields should be stripped
   assertEquals("sub_title" in event, false);
 });
+
+Deno.test("fromKalshiEvent maps status from API", () => {
+  // Kalshi uses "open" for active events
+  const openEvent = fromKalshiEvent({
+    event_ticker: "A", title: "A", category: "C",
+    series_ticker: null, strike_date: null, mutually_exclusive: false,
+    status: "open",
+  });
+  assertEquals(openEvent.status, "active");
+
+  // Closed events
+  const closedEvent = fromKalshiEvent({
+    event_ticker: "B", title: "B", category: "C",
+    series_ticker: null, strike_date: null, mutually_exclusive: false,
+    status: "closed",
+  });
+  assertEquals(closedEvent.status, "closed");
+
+  // Settled events
+  const settledEvent = fromKalshiEvent({
+    event_ticker: "C", title: "C", category: "C",
+    series_ticker: null, strike_date: null, mutually_exclusive: false,
+    status: "settled",
+  });
+  assertEquals(settledEvent.status, "settled");
+
+  // No status defaults to active
+  const noStatusEvent = fromKalshiEvent({
+    event_ticker: "D", title: "D", category: "C",
+    series_ticker: null, strike_date: null, mutually_exclusive: false,
+  });
+  assertEquals(noStatusEvent.status, "active");
+});

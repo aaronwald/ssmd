@@ -3,7 +3,7 @@
 import { Suspense, useState, useMemo, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useCategories, useSeries, useEvents, useMarkets } from "@/lib/hooks";
-import type { MonitorMarket } from "@/lib/types";
+import type { PriceType } from "@/lib/types";
 
 type SortKey = "ticker" | "title" | "yes_bid" | "yes_ask" | "last" | "volume" | "close_time";
 type SortDir = "asc" | "desc";
@@ -100,9 +100,25 @@ function MarketsContent() {
     }
   }
 
-  const fmtPrice = (v: number | null) => v != null ? `$${v.toFixed(2)}` : "-";
-  const fmtSpread = (bid: number | null, ask: number | null) =>
-    bid != null && ask != null ? `$${(ask - bid).toFixed(2)}` : "-";
+  // Detect price type from the first market (all markets in an event share the same exchange)
+  const priceType: PriceType = markets?.[0]?.price_type ?? "probability";
+  const exchange = markets?.[0]?.exchange;
+
+  const fmtPrice = (v: number | null) => {
+    if (v == null) return "-";
+    if (priceType === "asset_price") {
+      return "$" + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    return `$${v.toFixed(2)}`;
+  };
+  const fmtSpread = (bid: number | null, ask: number | null) => {
+    if (bid == null || ask == null) return "-";
+    const spread = ask - bid;
+    if (priceType === "asset_price") {
+      return "$" + spread.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    return `$${spread.toFixed(2)}`;
+  };
   const fmtInt = (v: number | null) => v != null ? v.toLocaleString() : "-";
   const fmtTime = (v: string | null) =>
     v ? new Date(v).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
@@ -116,7 +132,10 @@ function MarketsContent() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">Markets</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-xl font-bold">Markets</h1>
+          {exchange && <ExchangeBadge exchange={exchange} />}
+        </div>
         <span className="text-xs text-fg-muted">
           {filtered ? `${filtered.length} markets` : event ? "Loading..." : "Select an event"}
         </span>
@@ -189,6 +208,7 @@ function MarketsContent() {
                 <tr className="text-left text-xs text-fg-muted border-b border-border">
                   <SortTh k="ticker" current={sortKey} dir={sortDir} onClick={handleSort}>Ticker</SortTh>
                   <SortTh k="title" current={sortKey} dir={sortDir} onClick={handleSort}>Strike</SortTh>
+                  <th className="px-4 py-2">Status</th>
                   <SortTh k="yes_bid" current={sortKey} dir={sortDir} onClick={handleSort} align="right">Bid</SortTh>
                   <SortTh k="yes_ask" current={sortKey} dir={sortDir} onClick={handleSort} align="right">Ask</SortTh>
                   <th className="px-4 py-2 text-right">Spread</th>
@@ -204,6 +224,7 @@ function MarketsContent() {
                     <tr key={m.ticker} className="border-b border-border-subtle hover:bg-bg-surface-hover">
                       <td className="px-4 py-2 font-mono text-xs">{m.ticker}</td>
                       <td className="px-4 py-2 font-mono" title={m.title ?? undefined}>{fmtStrike(m.ticker)}</td>
+                      <td className="px-4 py-2"><MarketStatusBadge status={m.status} /></td>
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_bid)}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_ask)}</td>
                       <td className="px-4 py-2 font-mono text-right text-fg-muted">{fmtSpread(m.yes_bid, m.yes_ask)}</td>
@@ -215,7 +236,7 @@ function MarketsContent() {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={9} className="px-4 py-8 text-center text-fg-subtle text-sm">
+                    <td colSpan={10} className="px-4 py-8 text-center text-fg-subtle text-sm">
                       {filtered ? "No markets match filters" : "Loading..."}
                     </td>
                   </tr>
@@ -249,5 +270,38 @@ function SortTh({ k, current, dir, onClick, align, children }: {
     >
       {children}{arrow}
     </th>
+  );
+}
+
+const exchangeStyles: Record<string, string> = {
+  kalshi: "bg-accent/15 text-accent",
+  polymarket: "bg-purple/15 text-purple",
+  kraken: "bg-orange/15 text-orange",
+};
+
+function ExchangeBadge({ exchange }: { exchange: string }) {
+  const style = exchangeStyles[exchange] ?? "bg-fg-subtle/15 text-fg-subtle";
+  return (
+    <span className={`inline-block rounded-md px-2 py-0.5 text-xs font-medium font-mono ${style}`}>
+      {exchange}
+    </span>
+  );
+}
+
+const marketStatusStyles: Record<string, string> = {
+  active: "bg-green/15 text-green",
+  suspended: "bg-yellow/15 text-yellow",
+  closed: "bg-fg-subtle/15 text-fg-subtle",
+  settled: "bg-emerald/15 text-emerald",
+  inactive: "bg-slate/15 text-slate",
+  determined: "bg-blue-light/15 text-blue-light",
+};
+
+function MarketStatusBadge({ status }: { status: string }) {
+  const style = marketStatusStyles[status] ?? "bg-fg-subtle/15 text-fg-subtle";
+  return (
+    <span className={`inline-block rounded-md px-2 py-0.5 text-xs font-medium font-mono ${style}`}>
+      {status}
+    </span>
   );
 }

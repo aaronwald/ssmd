@@ -5,6 +5,7 @@ import { getDb, closeDb } from "../../lib/db/client.ts";
 import { bulkUpsertEvents, softDeleteMissingEvents, upsertEvents } from "../../lib/db/events.ts";
 import { bulkUpsertMarkets, softDeleteMissingMarkets } from "../../lib/db/markets.ts";
 import { getAllActiveSeries, getSeriesByTags, getSeriesByCategory } from "../../lib/db/series.ts";
+import { getSettingValue, upsertSetting } from "../../lib/db/settings.ts";
 import { createKalshiClient } from "../../lib/api/kalshi.ts";
 
 const API_TIMEOUT_MS = 10000;
@@ -141,8 +142,14 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
         // Incremental sync: fetch markets in multiple passes
         const now = Math.floor(Date.now() / 1000);
         const sevenDaysAgo = now - 7 * 24 * 60 * 60;
-        const twoDaysAgo = now - 2 * 24 * 60 * 60;
         const fortyEightHoursFromNow = now + 48 * 60 * 60;
+
+        // Anchor-based lookback for settled/closed: use last successful sync timestamp
+        // Falls back to 7 days ago on first run (covers any backlog)
+        const SETTLED_ANCHOR_KEY = "secmaster.sync.last_settled_ts";
+        const CLOSED_ANCHOR_KEY = "secmaster.sync.last_closed_ts";
+        const settledAnchor = await getSettingValue<number>(db, SETTLED_ANCHOR_KEY, sevenDaysAgo);
+        const closedAnchor = await getSettingValue<number>(db, CLOSED_ANCHOR_KEY, sevenDaysAgo);
 
         // Pass 1: Markets closing in next 48 hours (any status)
         // This captures all markets relevant for closeWithinHours connectors
@@ -182,11 +189,11 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
           }
         }
 
-        // Pass 3: Recently settled markets (status updates)
-        console.log(`  Fetching markets settled in last 2 days...`);
+        // Pass 3: Settled markets since last sync (anchor-based)
+        console.log(`  Fetching settled markets since ${new Date(settledAnchor * 1000).toISOString()}...`);
         for await (const batch of client.fetchAllMarkets({
           status: "settled",
-          minSettledTs: twoDaysAgo,
+          minSettledTs: settledAnchor,
           mveFilter: "exclude",
         })) {
           result.markets.fetched += batch.length;
@@ -200,11 +207,11 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
           }
         }
 
-        // Pass 4: Recently closed markets (status updates)
-        console.log(`  Fetching markets closed in last 2 days...`);
+        // Pass 4: Closed markets since last sync (anchor-based)
+        console.log(`  Fetching closed markets since ${new Date(closedAnchor * 1000).toISOString()}...`);
         for await (const batch of client.fetchAllMarkets({
           status: "closed",
-          minCloseTs: twoDaysAgo,
+          minCloseTs: closedAnchor,
           maxCloseTs: now,
           mveFilter: "exclude",
         })) {
@@ -217,6 +224,12 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
             result.markets.skipped += batchResult.skipped;
             batchCount++;
           }
+        }
+
+        // Update anchors on successful sync (not dry-run)
+        if (!options.dryRun) {
+          await upsertSetting(db, SETTLED_ANCHOR_KEY, now);
+          await upsertSetting(db, CLOSED_ANCHOR_KEY, now);
         }
       } else {
         // Full sync: fetch all markets
@@ -658,7 +671,7 @@ async function listMarkets(flags: Record<string, unknown>): Promise<void> {
   // Rows
   for (const m of markets) {
     const title = m.title.length > titleWidth ? m.title.slice(0, titleWidth - 3) + "..." : m.title;
-    const lastPrice = m.lastPrice !== null ? `${m.lastPrice}¢` : "-";
+    const lastPrice = m.lastPrice !== null ? `$${Number(m.lastPrice).toFixed(2)}` : "-";
     const vol = m.volume24h !== null ? m.volume24h.toLocaleString() : "-";
     console.log(
       m.ticker.padEnd(tickerWidth) + "  " +
@@ -697,7 +710,7 @@ async function showMarket(ticker: string): Promise<void> {
   console.log(`Title:      ${m.title}`);
   console.log(`Event:      ${m.eventTicker}`);
   console.log(`Status:     ${m.status}`);
-  console.log(`Last Price: ${m.lastPrice}¢`);
+  console.log(`Last Price: $${Number(m.lastPrice).toFixed(2)}`);
   console.log(`Volume 24h: ${m.volume24h?.toLocaleString() ?? "-"}`);
   if (m.closeTime) console.log(`Closes:     ${m.closeTime}`);
   console.log(`Updated:    ${m.updatedAt}`);

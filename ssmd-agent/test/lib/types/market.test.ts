@@ -66,7 +66,7 @@ Deno.test("MarketSchema allows null price fields", () => {
   assertEquals(result.yes_ask, null);
 });
 
-Deno.test("fromKalshiMarket converts API response", () => {
+Deno.test("fromKalshiMarket converts API response with cents fallback", () => {
   const kalshiMarket: KalshiMarket = {
     ticker: "KXBTC-24DEC31-T100K",
     event_ticker: "KXBTC-24DEC31",
@@ -83,17 +83,41 @@ Deno.test("fromKalshiMarket converts API response", () => {
     open_interest: 2000,
     close_time: "2024-12-31T23:59:59Z",
     can_close_early: false,
+    result: "yes",
   };
 
   const market = fromKalshiMarket(kalshiMarket);
 
   assertEquals(market.ticker, "KXBTC-24DEC31-T100K");
   assertEquals(market.title, "Yes");
-  assertEquals(market.yes_bid, 45);
+  // Cents are converted to dollars: 45 cents -> $0.45
+  assertEquals(market.yes_bid, 0.45);
+  assertEquals(market.yes_ask, 0.47);
   assertEquals(market.volume, 10000);
-  // Extra fields should be stripped
-  assertEquals("result" in market, false);
-  assertEquals("can_close_early" in market, false);
+  // Enrichment fields are included
+  assertEquals(market.can_close_early, false);
+  assertEquals(market.result, "yes");
+});
+
+Deno.test("fromKalshiMarket prefers _dollars fields over cents", () => {
+  const kalshiMarket: KalshiMarket = {
+    ticker: "KXBTC-24DEC31-T100K",
+    event_ticker: "KXBTC-24DEC31",
+    status: "active",
+    yes_bid: 45,
+    yes_bid_dollars: "0.5500",
+    yes_ask: 47,
+    yes_ask_dollars: "0.5700",
+    last_price: 46,
+    last_price_dollars: "0.5600",
+  };
+
+  const market = fromKalshiMarket(kalshiMarket);
+
+  // _dollars fields take precedence over cents
+  assertEquals(market.yes_bid, 0.55);
+  assertEquals(market.yes_ask, 0.57);
+  assertEquals(market.last_price, 0.56);
 });
 
 Deno.test("fromKalshiMarket uses subtitle as fallback title", () => {
