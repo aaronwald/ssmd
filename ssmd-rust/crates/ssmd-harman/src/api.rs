@@ -1383,7 +1383,7 @@ async fn monitor_markets_handler(
                         market["yes_ask"] = serde_json::json!(ya / 100.0);
                     }
                     if let Some(lp) = snap.get("last_price").and_then(|v| v.as_f64()) {
-                        market["last_price"] = serde_json::json!(lp / 100.0);
+                        market["last"] = serde_json::json!(lp / 100.0);
                     }
                     if let Some(vol) = snap.get("volume") {
                         market["volume"] = vol.clone();

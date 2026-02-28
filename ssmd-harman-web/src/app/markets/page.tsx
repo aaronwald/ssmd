@@ -52,7 +52,12 @@ export default function MarketsPage() {
       let cmp = 0;
       switch (sortKey) {
         case "ticker": cmp = a.ticker.localeCompare(b.ticker); break;
-        case "title": cmp = (a.title ?? "").localeCompare(b.title ?? ""); break;
+        case "title": {
+          const sa = a.ticker.match(/-T(\d+(?:\.\d+)?)$/)?.[1] ?? "0";
+          const sb = b.ticker.match(/-T(\d+(?:\.\d+)?)$/)?.[1] ?? "0";
+          cmp = Number(sa) - Number(sb);
+          break;
+        }
         case "yes_bid": cmp = (a.yes_bid ?? 0) - (b.yes_bid ?? 0); break;
         case "yes_ask": cmp = (a.yes_ask ?? 0) - (b.yes_ask ?? 0); break;
         case "last": cmp = (a.last ?? 0) - (b.last ?? 0); break;
@@ -78,6 +83,12 @@ export default function MarketsPage() {
   const fmtInt = (v: number | null) => v != null ? v.toLocaleString() : "-";
   const fmtTime = (v: string | null) =>
     v ? new Date(v).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
+  /** Extract strike price from ticker (e.g. "KXBTCD-26MAR0617-T67749.99" → "$67,749.99") */
+  const fmtStrike = (ticker: string) => {
+    const m = ticker.match(/-T(\d+(?:\.\d+)?)$/);
+    if (!m) return ticker;
+    return "$" + Number(m[1]).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
 
   return (
     <div className="space-y-6">
@@ -154,7 +165,7 @@ export default function MarketsPage() {
               <thead>
                 <tr className="text-left text-xs text-fg-muted border-b border-border">
                   <SortTh k="ticker" current={sortKey} dir={sortDir} onClick={handleSort}>Ticker</SortTh>
-                  <SortTh k="title" current={sortKey} dir={sortDir} onClick={handleSort}>Title</SortTh>
+                  <SortTh k="title" current={sortKey} dir={sortDir} onClick={handleSort}>Strike</SortTh>
                   <SortTh k="yes_bid" current={sortKey} dir={sortDir} onClick={handleSort} align="right">Bid</SortTh>
                   <SortTh k="yes_ask" current={sortKey} dir={sortDir} onClick={handleSort} align="right">Ask</SortTh>
                   <th className="px-4 py-2 text-right">Spread</th>
@@ -169,7 +180,7 @@ export default function MarketsPage() {
                   filtered.map((m) => (
                     <tr key={m.ticker} className="border-b border-border-subtle hover:bg-bg-surface-hover">
                       <td className="px-4 py-2 font-mono text-xs">{m.ticker}</td>
-                      <td className="px-4 py-2 max-w-xs truncate" title={m.title ?? undefined}>{m.title ?? "-"}</td>
+                      <td className="px-4 py-2 font-mono" title={m.title ?? undefined}>{fmtStrike(m.ticker)}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_bid)}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_ask)}</td>
                       <td className="px-4 py-2 font-mono text-right text-fg-muted">{fmtSpread(m.yes_bid, m.yes_ask)}</td>
