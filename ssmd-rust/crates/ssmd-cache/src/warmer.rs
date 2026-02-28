@@ -600,7 +600,8 @@ impl CacheWarmer {
                       AND pc.active = true
                       AND COALESCE(pc.volume, 0) > 0
                 ) all_markets
-                ORDER BY exchange, category, series, volume DESC NULLS LAST
+                ORDER BY volume DESC NULLS LAST
+                LIMIT 3000
                 "#,
                 &[],
             )
