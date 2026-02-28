@@ -32,6 +32,38 @@ const VIEWER_CONFIG = {
   settings: true,
 };
 
+// d3fc reads these CSS variables via getComputedStyle() in JS (not CSS fallbacks).
+// Without a loaded Perspective theme, d3.color("") returns null and crashes.
+// Set the pro-dark theme variables directly on the host element.
+const D3FC_THEME_VARS: Record<string, string> = {
+  "--d3fc-series": "rgb(71, 120, 194)",
+  "--d3fc-series-1": "rgb(71, 120, 194)",
+  "--d3fc-series-2": "rgb(204, 120, 48)",
+  "--d3fc-series-3": "rgb(158, 84, 192)",
+  "--d3fc-series-4": "rgb(51, 150, 153)",
+  "--d3fc-series-5": "rgb(102, 114, 143)",
+  "--d3fc-series-6": "rgb(211, 103, 189)",
+  "--d3fc-series-7": "rgb(109, 124, 77)",
+  "--d3fc-series-8": "rgb(221, 99, 103)",
+  "--d3fc-series-9": "rgb(120, 104, 206)",
+  "--d3fc-series-10": "rgb(23, 166, 123)",
+  "--d3fc-full--gradient":
+    "linear-gradient(#dd6367 0%, #242526 50%, #3289c8 100%)",
+  "--d3fc-positive--gradient":
+    "linear-gradient(#242526 0%, #3289c8 100%)",
+  "--d3fc-negative--gradient":
+    "linear-gradient(#dd6367 0%, #242526 100%)",
+  "--d3fc-gridline--color": "#3b3f46",
+  "--d3fc-axis-ticks--color": "#c5c9d0",
+  "--d3fc-axis--lines": "#61656e",
+  "--d3fc-legend--text": "#c5c9d0",
+  "--d3fc-treedata--labels": "white",
+  "--d3fc-treedata--hover-highlight": "white",
+  "--d3fc-tooltip--background": "rgba(42, 44, 47, 1)",
+  "--d3fc-tooltip--border-color": "#242526",
+  "--d3fc-tooltip--color": "white",
+};
+
 export default function ActivityTreemap() {
   const { data, error } = useTreemap();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -84,7 +116,11 @@ export default function ActivityTreemap() {
     ) as unknown as HTMLPerspectiveViewerElement;
     viewer.style.width = "100%";
     viewer.style.height = "100%";
-    viewer.className = "perspective-viewer-material-dark";
+    // Apply d3fc theme CSS variables on the host element so they cascade
+    // into the Shadow DOM where d3fc reads them via getComputedStyle()
+    for (const [prop, val] of Object.entries(D3FC_THEME_VARS)) {
+      (viewer as unknown as HTMLElement).style.setProperty(prop, val);
+    }
     container.appendChild(viewer as unknown as HTMLElement);
     viewerRef.current = viewer;
 
