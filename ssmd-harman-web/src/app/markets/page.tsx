@@ -3,7 +3,7 @@
 import { Suspense, useState, useMemo, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useCategories, useSeries, useEvents, useMarkets } from "@/lib/hooks";
-import type { MonitorCategory } from "@/lib/types";
+import type { MonitorCategory, MonitorSeries, MonitorEvent } from "@/lib/types";
 
 type SortKey = "ticker" | "title" | "yes_bid" | "yes_ask" | "last" | "volume" | "close_time";
 type SortDir = "asc" | "desc";
@@ -17,6 +17,20 @@ function categoryExchange(cat: MonitorCategory): Exchange | null {
   // Polymarket categories are identified when drilling into series (PM: prefix),
   // but at category level we can't distinguish — return null to show in "all".
   return null;
+}
+
+function seriesCount(s: MonitorSeries): string {
+  if (s.active_events != null) return `${s.active_events} events`;
+  if (s.active_pairs != null) return `${s.active_pairs} pairs`;
+  if (s.active_conditions != null) return `${s.active_conditions} conditions`;
+  return "0";
+}
+
+function eventCount(ev: MonitorEvent): string {
+  if (ev.market_count != null) return `${ev.market_count} markets`;
+  if (ev.pair_count != null) return `${ev.pair_count} pairs`;
+  if (ev.token_count != null) return `${ev.token_count} tokens`;
+  return "0";
 }
 
 export default function MarketsPage() {
@@ -194,7 +208,7 @@ function MarketsContent() {
           <option value="">Select Series</option>
           {seriesList?.map((s) => (
             <option key={s.ticker} value={s.ticker}>
-              {s.ticker} — {s.title} ({s.active_events} events)
+              {s.ticker} — {s.title} ({seriesCount(s)})
             </option>
           ))}
         </select>
@@ -208,7 +222,7 @@ function MarketsContent() {
           <option value="">Select Event</option>
           {events?.map((ev) => (
             <option key={ev.ticker} value={ev.ticker}>
-              {ev.ticker} — {ev.title} ({ev.market_count} markets)
+              {ev.title} ({eventCount(ev)})
             </option>
           ))}
         </select>

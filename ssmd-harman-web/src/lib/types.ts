@@ -160,17 +160,28 @@ export interface MonitorCategory {
 export interface MonitorSeries {
   ticker: string;
   title: string;
-  active_events: number;
-  active_markets: number;
+  active_events?: number;
+  active_markets?: number;
+  // Kraken
+  active_pairs?: number;
+  // Polymarket
+  active_conditions?: number;
 }
 
 export interface MonitorEvent {
   ticker: string;
   title: string;
-  status: string;
-  strike_date: string | null;
-  market_count: number;
+  status?: string;
+  strike_date?: string | null;
+  market_count?: number;
   exchange?: string;
+  // Kraken
+  pair_count?: number;
+  // Polymarket
+  token_count?: number;
+  accepting_orders?: boolean;
+  end_date?: string | null;
+  price_type?: string;
 }
 
 export interface MonitorMarket {
