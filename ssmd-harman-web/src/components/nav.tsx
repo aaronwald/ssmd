@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useInstance } from "../lib/instance-context";
@@ -52,7 +52,21 @@ function NavLinks() {
 
 function InstanceBadge() {
   const { instance, instances, setInstance } = useInstance();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
   const current = instances.find((i) => i.id === instance);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
   if (!current) return null;
 
   const envColor =
@@ -63,30 +77,36 @@ function InstanceBadge() {
         : "bg-blue-900/50 text-blue-400 border-blue-700";
 
   return (
-    <div className="relative group">
+    <div className="relative" ref={ref}>
       <button
+        onClick={() => setOpen(!open)}
         className={`text-xs font-mono px-2 py-0.5 rounded-full border ${envColor}`}
       >
-        {current.exchange} ({current.environment})
+        {current.exchange} ({current.environment}) ▾
       </button>
-      <div className="absolute top-full left-0 mt-1 hidden group-hover:block bg-bg-raised border border-border rounded shadow-lg z-50 min-w-[200px]">
-        {instances.map((inst) => (
-          <button
-            key={inst.id}
-            onClick={() => setInstance(inst.id)}
-            className={`block w-full text-left px-3 py-2 text-sm hover:bg-bg ${
-              inst.id === instance
-                ? "text-accent font-medium"
-                : "text-fg-muted"
-            }`}
-          >
-            {inst.exchange} ({inst.environment})
-            {!inst.healthy && (
-              <span className="text-red-400 ml-2">offline</span>
-            )}
-          </button>
-        ))}
-      </div>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 bg-bg-raised border border-border rounded shadow-lg z-50 min-w-[200px]">
+          {instances.map((inst) => (
+            <button
+              key={inst.id}
+              onClick={() => {
+                setInstance(inst.id);
+                setOpen(false);
+              }}
+              className={`block w-full text-left px-3 py-2 text-sm hover:bg-bg ${
+                inst.id === instance
+                  ? "text-accent font-medium"
+                  : "text-fg-muted"
+              }`}
+            >
+              {inst.exchange} ({inst.environment})
+              {!inst.healthy && (
+                <span className="text-red-400 ml-2">offline</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
