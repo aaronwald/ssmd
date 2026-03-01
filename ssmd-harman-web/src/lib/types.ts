@@ -170,6 +170,7 @@ export interface MonitorEvent {
   status: string;
   strike_date: string | null;
   market_count: number;
+  exchange?: string;
 }
 
 export interface MonitorMarket {
@@ -182,6 +183,15 @@ export interface MonitorMarket {
   last: number | null;
   volume: number | null;
   open_interest: number | null;
+  exchange?: string;
+  // Kraken fields
+  bid?: number | null;
+  ask?: number | null;
+  funding_rate?: number | null;
+  // Polymarket fields
+  best_bid?: number | null;
+  best_ask?: number | null;
+  spread?: number | null;
 }
 
 export interface InfoResponse {

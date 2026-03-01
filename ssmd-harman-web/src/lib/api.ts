@@ -56,6 +56,31 @@ async function request<T>(
   return res.json();
 }
 
+/** Fetch from data-ts (global market data — not instance-scoped). */
+async function dataRequest<T>(
+  path: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string>),
+  };
+
+  const res = await fetch(`/api/data${path}`, {
+    ...options,
+    headers,
+    credentials: "include",
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+  }
+
+  if (res.status === 204) return undefined as T;
+  return res.json();
+}
+
 // Read endpoints — API wraps lists in envelope keys
 export const listOrders = async (state?: string): Promise<Order[]> => {
   const res = await request<{ orders: Order[] }>(`/v1/orders${state ? `?state=${state}` : ""}`);
@@ -147,24 +172,24 @@ export const getSnapMap = async (feed: string = "kalshi"): Promise<Map<string, N
   return map;
 };
 
-// Monitor hierarchy endpoints (reads from Redis cache)
+// Monitor hierarchy endpoints — global market data via data-ts
 export const getCategories = async (): Promise<MonitorCategory[]> => {
-  const res = await request<{ categories: MonitorCategory[] }>("/v1/monitor/categories");
+  const res = await dataRequest<{ categories: MonitorCategory[] }>("/monitor/categories");
   return res.categories;
 };
 
 export const getSeries = async (category: string): Promise<MonitorSeries[]> => {
-  const res = await request<{ series: MonitorSeries[] }>(`/v1/monitor/series?category=${encodeURIComponent(category)}`);
+  const res = await dataRequest<{ series: MonitorSeries[] }>(`/monitor/series?category=${encodeURIComponent(category)}`);
   return res.series;
 };
 
 export const getEvents = async (series: string): Promise<MonitorEvent[]> => {
-  const res = await request<{ events: MonitorEvent[] }>(`/v1/monitor/events?series=${encodeURIComponent(series)}`);
+  const res = await dataRequest<{ events: MonitorEvent[] }>(`/monitor/events?series=${encodeURIComponent(series)}`);
   return res.events;
 };
 
 export const getMarkets = async (event: string): Promise<MonitorMarket[]> => {
-  const res = await request<{ markets: MonitorMarket[] }>(`/v1/monitor/markets?event=${encodeURIComponent(event)}`);
+  const res = await dataRequest<{ markets: MonitorMarket[] }>(`/monitor/markets?event=${encodeURIComponent(event)}`);
   return res.markets;
 };
 

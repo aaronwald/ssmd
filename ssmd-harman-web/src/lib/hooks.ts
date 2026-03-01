@@ -83,16 +83,16 @@ export function useSnapMap(feed: string = "kalshi") {
   });
 }
 
-// Monitor hierarchy hooks — tiered refresh rates
+// Monitor hierarchy hooks — global market data (not instance-scoped)
 export function useCategories() {
-  return useSWR(instanceKey("monitor-categories"), getCategories, {
+  return useSWR("data-categories", getCategories, {
     refreshInterval: METADATA_REFRESH,
   });
 }
 
 export function useSeries(category: string | null) {
   return useSWR(
-    category ? instanceKey(`monitor-series-${category}`) : null,
+    category ? `data-series-${category}` : null,
     () => getSeries(category!),
     { refreshInterval: METADATA_REFRESH }
   );
@@ -100,7 +100,7 @@ export function useSeries(category: string | null) {
 
 export function useEvents(series: string | null) {
   return useSWR(
-    series ? instanceKey(`monitor-events-${series}`) : null,
+    series ? `data-events-${series}` : null,
     () => getEvents(series!),
     { refreshInterval: METADATA_REFRESH }
   );
@@ -108,7 +108,7 @@ export function useEvents(series: string | null) {
 
 export function useMarkets(event: string | null) {
   return useSWR(
-    event ? instanceKey(`monitor-markets-${event}`) : null,
+    event ? `data-markets-${event}` : null,
     () => getMarkets(event!),
     { refreshInterval: LIVE_REFRESH }
   );

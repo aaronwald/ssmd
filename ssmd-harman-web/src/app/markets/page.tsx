@@ -3,9 +3,21 @@
 import { Suspense, useState, useMemo, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useCategories, useSeries, useEvents, useMarkets } from "@/lib/hooks";
+import type { MonitorCategory } from "@/lib/types";
 
 type SortKey = "ticker" | "title" | "yes_bid" | "yes_ask" | "last" | "volume" | "close_time";
 type SortDir = "asc" | "desc";
+type Exchange = "" | "kalshi" | "kraken" | "polymarket";
+
+/** Known category → exchange mappings for client-side filtering. */
+const KRAKEN_CATEGORY = "Kraken Futures";
+
+function categoryExchange(cat: MonitorCategory): Exchange | null {
+  if (cat.name === KRAKEN_CATEGORY) return "kraken";
+  // Polymarket categories are identified when drilling into series (PM: prefix),
+  // but at category level we can't distinguish — return null to show in "all".
+  return null;
+}
 
 export default function MarketsPage() {
   return (
@@ -20,6 +32,7 @@ function MarketsContent() {
   const router = useRouter();
 
   // Read filter state from URL params
+  const exchange = (searchParams.get("exchange") ?? "") as Exchange;
   const category = searchParams.get("category");
   const series = searchParams.get("series");
   const event = searchParams.get("event");
@@ -32,6 +45,20 @@ function MarketsContent() {
   const { data: events } = useEvents(series);
   const { data: markets, error } = useMarkets(event);
 
+  // Filter categories by exchange
+  const filteredCategories = useMemo(() => {
+    if (!categories) return undefined;
+    if (!exchange) return categories;
+    return categories.filter((c) => {
+      const ex = categoryExchange(c);
+      if (exchange === "kraken") return ex === "kraken";
+      if (exchange === "polymarket") return ex === null && c.name !== KRAKEN_CATEGORY;
+      // kalshi: exclude Kraken category
+      if (exchange === "kalshi") return ex === null && c.name !== KRAKEN_CATEGORY;
+      return true;
+    });
+  }, [categories, exchange]);
+
   // Update URL params helper
   const setParams = useCallback((updates: Record<string, string | null>) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -41,6 +68,10 @@ function MarketsContent() {
     }
     router.replace(`/markets?${params.toString()}`);
   }, [searchParams, router]);
+
+  const handleExchangeChange = (val: string) => {
+    setParams({ exchange: val || null, category: null, series: null, event: null, q: null });
+  };
 
   const handleCategoryChange = (val: string) => {
     setParams({ category: val || null, series: null, event: null, q: null });
@@ -131,12 +162,23 @@ function MarketsContent() {
       {/* Cascading filters */}
       <div className="flex items-center gap-3 flex-wrap">
         <select
+          value={exchange}
+          onChange={(e) => handleExchangeChange(e.target.value)}
+          className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
+        >
+          <option value="">All Exchanges</option>
+          <option value="kalshi">Kalshi</option>
+          <option value="kraken">Kraken</option>
+          <option value="polymarket">Polymarket</option>
+        </select>
+
+        <select
           value={category ?? ""}
           onChange={(e) => handleCategoryChange(e.target.value)}
           className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
         >
           <option value="">Select Category</option>
-          {categories?.map((c) => (
+          {filteredCategories?.map((c) => (
             <option key={c.name} value={c.name}>
               {c.name} ({c.event_count} events, {c.series_count} series)
             </option>
