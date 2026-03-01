@@ -30,11 +30,17 @@ function seriesExchange(s: MonitorSeries): Exchange {
   return "kalshi";
 }
 
-function categoryCount(c: MonitorCategory): string {
+function categoryCount(c: MonitorCategory, exchange: Exchange): string {
   const parts: string[] = [];
-  if (c.event_count != null) parts.push(`${c.event_count} events`);
-  if (c.instrument_count != null) parts.push(`${c.instrument_count} instruments`);
-  if (c.pm_condition_count != null) parts.push(`${c.pm_condition_count} conditions`);
+  if (!exchange || exchange === "kalshi") {
+    if (c.event_count != null) parts.push(`${c.event_count} events`);
+  }
+  if (!exchange || exchange === "kraken") {
+    if (c.instrument_count != null) parts.push(`${c.instrument_count} instruments`);
+  }
+  if (!exchange || exchange === "polymarket") {
+    if (c.pm_condition_count != null) parts.push(`${c.pm_condition_count} conditions`);
+  }
   return parts.join(", ") || "";
 }
 
@@ -187,6 +193,23 @@ function MarketsContent() {
     if (!m) return ticker;
     return "$" + Number(m[1]).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   };
+  /** Display ticker — PM: outcome, Kraken: strip prefix, Kalshi: as-is */
+  // deno-lint-ignore no-explicit-any
+  const fmtTicker = (m: any) => {
+    if (m.exchange === "polymarket") return m.outcome ?? m.ticker;
+    if (m.exchange === "kraken-futures") {
+      const t: string = m.ticker;
+      return t.startsWith("kraken:") ? t.slice(7) : t;
+    }
+    return m.ticker;
+  };
+  /** Display title/strike — PM: probability, Kraken: mark price, Kalshi: strike */
+  // deno-lint-ignore no-explicit-any
+  const fmtTitle = (m: any) => {
+    if (m.exchange === "polymarket") return m.price ?? "-";
+    if (m.exchange === "kraken-futures") return m.mark_price ? `$${Number(m.mark_price).toLocaleString()}` : "-";
+    return fmtStrike(m.ticker);
+  };
 
   return (
     <div className="space-y-6">
@@ -220,7 +243,7 @@ function MarketsContent() {
           <option value="">Select Category</option>
           {filteredCategories?.map((c) => (
             <option key={c.name} value={c.name}>
-              {c.name} ({categoryCount(c)})
+              {c.name} ({categoryCount(c, exchange)})
             </option>
           ))}
         </select>
@@ -291,8 +314,8 @@ function MarketsContent() {
                 {filtered && filtered.length > 0 ? (
                   filtered.map((m) => (
                     <tr key={m.ticker} className="border-b border-border-subtle hover:bg-bg-surface-hover">
-                      <td className="px-4 py-2 font-mono text-xs">{m.ticker}</td>
-                      <td className="px-4 py-2 font-mono" title={m.title ?? undefined}>{m.outcome ?? fmtStrike(m.ticker)}</td>
+                      <td className="px-4 py-2 font-mono text-xs">{fmtTicker(m)}</td>
+                      <td className="px-4 py-2 font-mono" title={m.title ?? undefined}>{fmtTitle(m)}</td>
                       <td className="px-4 py-2"><MarketStatusBadge status={m.status} /></td>
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_bid ?? m.bid ?? m.best_bid ?? null)}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_ask ?? m.ask ?? m.best_ask ?? null)}</td>
