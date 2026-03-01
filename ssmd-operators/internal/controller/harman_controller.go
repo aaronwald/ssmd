@@ -465,13 +465,8 @@ func (r *HarmanReconciler) deploymentNeedsUpdate(current, desired *appsv1.Deploy
 		return true
 	}
 
-	// Check resource requirements (use sorted env comparison can't help here, use field-level)
-	cr := currentContainer.Resources
-	dr := desiredContainer.Resources
-	if !cr.Requests.Cpu().Equal(*dr.Requests.Cpu()) ||
-		!cr.Requests.Memory().Equal(*dr.Requests.Memory()) ||
-		!cr.Limits.Cpu().Equal(*dr.Limits.Cpu()) ||
-		!cr.Limits.Memory().Equal(*dr.Limits.Memory()) {
+	// Check resource requirements (Autopilot-safe: only check desired fields)
+	if !resourcesMatch(currentContainer.Resources, desiredContainer.Resources) {
 		return true
 	}
 

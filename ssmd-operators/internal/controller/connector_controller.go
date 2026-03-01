@@ -651,8 +651,8 @@ func (r *ConnectorReconciler) deploymentNeedsUpdate(current, desired *appsv1.Dep
 		return true
 	}
 
-	// Check resource requirements
-	if !reflect.DeepEqual(currentContainer.Resources, desiredContainer.Resources) {
+	// Check resource requirements (Autopilot-safe: only check desired fields)
+	if !resourcesMatch(currentContainer.Resources, desiredContainer.Resources) {
 		return true
 	}
 

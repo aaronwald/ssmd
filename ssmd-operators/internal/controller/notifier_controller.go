@@ -376,8 +376,8 @@ func (r *NotifierReconciler) deploymentNeedsUpdate(current, desired *appsv1.Depl
 		return true
 	}
 
-	// Check resource requirements
-	if !reflect.DeepEqual(currentContainer.Resources, desiredContainer.Resources) {
+	// Check resource requirements (Autopilot-safe: only check desired fields)
+	if !resourcesMatch(currentContainer.Resources, desiredContainer.Resources) {
 		return true
 	}
 
