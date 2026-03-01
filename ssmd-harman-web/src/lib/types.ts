@@ -153,8 +153,14 @@ export interface NormalizedSnapshot {
 /** Monitor hierarchy types */
 export interface MonitorCategory {
   name: string;
-  event_count: number;
-  series_count: number;
+  // Kalshi
+  event_count?: number;
+  series_count?: number;
+  // Kraken
+  base_count?: number;
+  instrument_count?: number;
+  // Polymarket
+  pm_condition_count?: number;
 }
 
 export interface MonitorSeries {

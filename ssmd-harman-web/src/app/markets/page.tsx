@@ -9,14 +9,25 @@ type SortKey = "ticker" | "title" | "yes_bid" | "yes_ask" | "last" | "volume" | 
 type SortDir = "asc" | "desc";
 type Exchange = "" | "kalshi" | "kraken" | "polymarket";
 
-/** Known category → exchange mappings for client-side filtering. */
-const KRAKEN_CATEGORY = "Kraken Futures";
-
+/** Detect exchange from field names present on monitor objects. */
 function categoryExchange(cat: MonitorCategory): Exchange | null {
-  if (cat.name === KRAKEN_CATEGORY) return "kraken";
-  // Polymarket categories are identified when drilling into series (PM: prefix),
-  // but at category level we can't distinguish — return null to show in "all".
+  if (cat.base_count != null || cat.instrument_count != null) return "kraken";
+  if (cat.pm_condition_count != null) return "polymarket";
+  if (cat.event_count != null || cat.series_count != null) return "kalshi";
   return null;
+}
+
+function seriesExchange(s: MonitorSeries): Exchange {
+  if (s.active_pairs != null) return "kraken";
+  if (s.active_conditions != null) return "polymarket";
+  return "kalshi";
+}
+
+function categoryCount(c: MonitorCategory): string {
+  if (c.event_count != null) return `${c.event_count} events`;
+  if (c.instrument_count != null) return `${c.instrument_count} instruments`;
+  if (c.pm_condition_count != null) return `${c.pm_condition_count} conditions`;
+  return "";
 }
 
 function seriesCount(s: MonitorSeries): string {
@@ -59,19 +70,30 @@ function MarketsContent() {
   const { data: events } = useEvents(series);
   const { data: markets, error } = useMarkets(event);
 
-  // Filter categories by exchange
+  // Filter categories by exchange.
+  // Categories can be exclusive (Kraken Futures) or shared (Crypto has both Kalshi + PM series).
+  // For shared categories we keep them and filter at the series level.
   const filteredCategories = useMemo(() => {
     if (!categories) return undefined;
     if (!exchange) return categories;
     return categories.filter((c) => {
       const ex = categoryExchange(c);
-      if (exchange === "kraken") return ex === "kraken";
-      if (exchange === "polymarket") return ex === null && c.name !== KRAKEN_CATEGORY;
-      // kalshi: exclude Kraken category
-      if (exchange === "kalshi") return ex === null && c.name !== KRAKEN_CATEGORY;
-      return true;
+      if (ex === null) return true; // unknown shape, keep
+      if (ex === exchange) return true; // exact match
+      // For kalshi: Crypto category has pm_condition_count but also Kalshi series inside.
+      // Show it — series filtering will handle the rest.
+      if (exchange === "kalshi" && ex === "polymarket") return true;
+      if (exchange === "polymarket" && ex === "kalshi") return true;
+      return false;
     });
   }, [categories, exchange]);
+
+  // Filter series by exchange (categories are shared, e.g. Crypto has both Kalshi and PM series)
+  const filteredSeries = useMemo(() => {
+    if (!seriesList) return undefined;
+    if (!exchange) return seriesList;
+    return seriesList.filter((s) => seriesExchange(s) === exchange);
+  }, [seriesList, exchange]);
 
   // Update URL params helper
   const setParams = useCallback((updates: Record<string, string | null>) => {
@@ -194,7 +216,7 @@ function MarketsContent() {
           <option value="">Select Category</option>
           {filteredCategories?.map((c) => (
             <option key={c.name} value={c.name}>
-              {c.name} ({c.event_count} events, {c.series_count} series)
+              {c.name} ({categoryCount(c)})
             </option>
           ))}
         </select>
@@ -206,7 +228,7 @@ function MarketsContent() {
           className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none disabled:opacity-50"
         >
           <option value="">Select Series</option>
-          {seriesList?.map((s) => (
+          {filteredSeries?.map((s) => (
             <option key={s.ticker} value={s.ticker}>
               {s.ticker} — {s.title} ({seriesCount(s)})
             </option>
