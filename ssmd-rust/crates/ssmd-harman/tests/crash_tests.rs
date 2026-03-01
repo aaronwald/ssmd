@@ -46,8 +46,8 @@ async fn build_test_state(
         ems_metrics,
     ));
     let oms_metrics = OmsMetrics::new(&registry);
-    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
-    let runner = Arc::new(OmsRunner::new(oms.clone(), None, session_id));
+    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics, session_id));
+    let runner = Arc::new(OmsRunner::new(oms.clone(), None, session_id, "kalshi".to_string(), "demo".to_string()));
     let pump_trigger = runner.pump_trigger();
     Arc::new(AppState {
         ems,
@@ -71,6 +71,11 @@ async fn build_test_state(
         monitor_metrics: ssmd_harman::MonitorMetrics::new(&prometheus::Registry::new()),
         exchange_type: "kalshi".to_string(),
         environment: "demo".to_string(),
+        cf_jwks_url: None,
+        cf_aud: None,
+        cf_jwks: tokio::sync::RwLock::new(None),
+        data_ts_api_key: None,
+        data_ts_base_url: None,
     })
 }
 
@@ -1567,7 +1572,7 @@ async fn test_staged_legs_excluded_from_risk() {
     let limits = RiskLimits { max_notional: Decimal::from(5) };
     let ems = Arc::new(ssmd_harman_ems::Ems::new(pool.clone(), exchange.clone(), limits, ems_metrics));
     let oms_metrics = OmsMetrics::new(&registry);
-    let oms = Arc::new(ssmd_harman_oms::Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
+    let oms = Arc::new(ssmd_harman_oms::Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics, session_id));
 
     // Bracket: entry=$2.50 (pending), TP=$4.00 (staged), SL=$1.00 (staged)
     // If staged legs were counted: total = $7.50 > $5 → rejected
