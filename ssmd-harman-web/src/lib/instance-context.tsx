@@ -48,9 +48,9 @@ export function InstanceProvider({ children }: { children: ReactNode }) {
           setInstanceState(saved);
           setApiInstance(saved);
         } else {
-          // Auto-select if there's exactly one healthy instance
+          // Auto-select first healthy instance
           const healthy = insts.filter((i) => i.healthy);
-          if (healthy.length === 1) {
+          if (healthy.length > 0) {
             setInstanceState(healthy[0].id);
             setApiInstance(healthy[0].id);
             sessionStorage.setItem("harman-instance", healthy[0].id);

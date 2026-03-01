@@ -72,7 +72,7 @@ import {
   VOLUME_UNITS,
 } from "../lib/duckdb/queries.ts";
 import { VALID_DATA_FEEDS, FEED_PATHS } from "../lib/duckdb/feed-config.ts";
-import { and, inArray, isNull, eq, gte, lt, lte, desc, sql } from "drizzle-orm";
+import { and, inArray, isNull, eq, gte, lt, lte, desc, sql, ilike } from "drizzle-orm";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
 const USAGE_CACHE_TTL = 120; // 2 minutes
@@ -2236,8 +2236,8 @@ route("GET", "/v1/monitor/markets", async (req) => {
   return json({ markets: [...marketMap.values()] });
 }, true, "datasets:read", "public");
 
-// Monitor search — search treemap (plain JSON array key) by ticker or title
-route("GET", "/v1/monitor/search", async (req) => {
+// Monitor search — treemap + DB fallback for Polymarket conditions
+route("GET", "/v1/monitor/search", async (req, ctx) => {
   const url = new URL(req.url);
   const q = url.searchParams.get("q");
   if (!q || q.trim().length === 0) {
@@ -2247,29 +2247,65 @@ route("GET", "/v1/monitor/search", async (req) => {
   const limit = Math.min(parseInt(url.searchParams.get("limit") || "50") || 50, 200);
 
   const redis = await getRedis();
-  const raw = await redis.get("monitor:treemap");
-  if (!raw) {
-    return json({ results: [], count: 0, query: q });
-  }
 
-  // deno-lint-ignore no-explicit-any
-  let entries: any[];
-  try {
-    entries = JSON.parse(raw);
-  } catch {
-    return json({ results: [], count: 0, query: q });
-  }
-
-  const query = q.toLowerCase();
   // deno-lint-ignore no-explicit-any
   const results: any[] = [];
-  for (const entry of entries) {
-    if (results.length >= limit) break;
-    const ticker = (entry.ticker || "").toLowerCase();
-    const title = (entry.title || "").toLowerCase();
-    if (!ticker.includes(query) && !title.includes(query)) continue;
-    if (exchange && entry.exchange !== exchange) continue;
-    results.push({ ...entry });
+  const seen = new Set<string>();
+
+  // 1. Search treemap (Kalshi + Kraken + some Polymarket)
+  const raw = await redis.get("monitor:treemap");
+  if (raw) {
+    try {
+      const entries = JSON.parse(raw);
+      const query = q.toLowerCase();
+      for (const entry of entries) {
+        if (results.length >= limit) break;
+        const ticker = (entry.ticker || "").toLowerCase();
+        const title = (entry.title || "").toLowerCase();
+        if (!ticker.includes(query) && !title.includes(query)) continue;
+        if (exchange && entry.exchange !== exchange) continue;
+        results.push({ ...entry });
+        seen.add(entry.ticker);
+      }
+    } catch { /* skip unparseable treemap */ }
+  }
+
+  // 2. DB fallback for Polymarket — treemap is volume-capped at 3000 entries
+  if (results.length < limit && (!exchange || exchange === "polymarket")) {
+    try {
+      const dbRows = await ctx.db
+        .select({
+          conditionId: polymarketConditions.conditionId,
+          question: polymarketConditions.question,
+          category: polymarketConditions.category,
+          volume: polymarketConditions.volume,
+          endDate: polymarketConditions.endDate,
+        })
+        .from(polymarketConditions)
+        .where(and(
+          isNull(polymarketConditions.deletedAt),
+          eq(polymarketConditions.active, true),
+          ilike(polymarketConditions.question, `%${q}%`),
+        ))
+        .orderBy(desc(polymarketConditions.volume))
+        .limit(limit - results.length);
+
+      for (const row of dbRows) {
+        if (seen.has(row.conditionId)) continue;
+        results.push({
+          exchange: "polymarket",
+          category: row.category || "Other",
+          series: (row.question || "").slice(0, 80),
+          event: row.conditionId,
+          ticker: row.conditionId,
+          title: row.question,
+          volume: Number(row.volume || 0),
+          open_interest: 0,
+          close_time: row.endDate?.toISOString() ?? null,
+        });
+        seen.add(row.conditionId);
+      }
+    } catch { /* DB fallback non-fatal */ }
   }
 
   // Enrich with live snap data
@@ -2281,10 +2317,10 @@ route("GET", "/v1/monitor/search", async (req) => {
     try {
       const snapValues = await redis.mget(...snapKeys);
       for (let i = 0; i < results.length; i++) {
-        const raw = snapValues[i];
-        if (!raw) continue;
+        const snapRaw = snapValues[i];
+        if (!snapRaw) continue;
         try {
-          const snap = JSON.parse(raw);
+          const snap = JSON.parse(snapRaw);
           const msg = snap.msg ?? snap;
           // Kalshi fields
           if (msg.yes_bid != null) results[i].yes_bid = msg.yes_bid;
