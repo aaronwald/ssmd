@@ -73,7 +73,8 @@ func TestResourcesMatch_AutopilotAddsExtra(t *testing.T) {
 	}
 }
 
-func TestResourcesMatch_DesiredValueDiffers(t *testing.T) {
+func TestResourcesMatch_AutopilotBumpsUp(t *testing.T) {
+	// Autopilot bumped CPU from 250m to 500m — current >= desired, should match
 	current := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("500m"),
@@ -86,8 +87,27 @@ func TestResourcesMatch_DesiredValueDiffers(t *testing.T) {
 			corev1.ResourceMemory: resource.MustParse("128Mi"),
 		},
 	}
+	if !resourcesMatch(current, desired) {
+		t.Error("expected resources to match (current >= desired after Autopilot bump)")
+	}
+}
+
+func TestResourcesMatch_CurrentBelowDesired(t *testing.T) {
+	// Desired is higher than current — should NOT match (need update)
+	current := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+	}
+	desired := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("250m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+	}
 	if resourcesMatch(current, desired) {
-		t.Error("expected resources to NOT match (CPU differs)")
+		t.Error("expected resources to NOT match (current < desired)")
 	}
 }
 

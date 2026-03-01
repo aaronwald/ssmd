@@ -603,6 +603,9 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 						RunAsUser:    int64Ptr(1000),
 						RunAsGroup:   int64Ptr(1000),
 						FSGroup:      int64Ptr(1000),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
 					},
 					ImagePullSecrets: []corev1.LocalObjectReference{
 						{Name: "ghcr-secret"},
