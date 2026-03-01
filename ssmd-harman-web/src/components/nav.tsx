@@ -10,6 +10,7 @@ const links = [
   { href: "/", label: "Dashboard" },
   { href: "/markets", label: "Markets" },
   { href: "/orders", label: "Orders" },
+  { href: "/docs", label: "Docs" },
 ];
 
 // NavLinks reads useSearchParams so it must be wrapped in Suspense.
@@ -150,6 +151,7 @@ export function Nav() {
     <nav className="sticky top-0 z-50 border-b border-border bg-bg-raised px-6 py-3 flex items-center gap-8">
       <Link href="/" className="font-mono text-lg font-bold text-fg">
         harman<span className="text-accent">.</span>oms
+        <span className="text-xs font-normal text-fg-muted ml-1.5">by Algoe</span>
       </Link>
       <VarshtatIcon />
       <div className="flex gap-6">

@@ -115,14 +115,15 @@ function MarketsContent() {
   const watchlist = useWatchlist();
   const { data: watchlistData } = useWatchlistData(watchlist.items);
 
-  // Auto-set exchange from instance info on first load
-  const effectiveExchange = exchange || (info?.exchange as Exchange) || "";
+  // Use the explicit exchange selection — no silent fallback to instance exchange.
+  // "All" in the dropdown = empty string = show all exchanges.
+  const effectiveExchange = exchange;
 
   const { data: categories } = useCategories();
   const { data: seriesList } = useSeries(category);
   const { data: events } = useEvents(series);
   const { data: markets, error } = useMarkets(event);
-  const { data: searchResults } = useMarketSearch(search && !event ? search : null, effectiveExchange || undefined);
+  const { data: searchResults } = useMarketSearch(search && !event ? search : null, exchange || undefined);
   const { data: positions } = usePositions();
 
   // Build position set for overlay
@@ -282,14 +283,26 @@ function MarketsContent() {
         </span>
       </div>
 
-      {/* Search bar — always visible */}
-      <input
-        type="text"
-        placeholder="Search markets by ticker or title..."
-        value={search}
-        onChange={(e) => handleSearchChange(e.target.value)}
-        className="w-full rounded-md border border-border bg-bg-surface px-4 py-2 text-sm text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"
-      />
+      {/* Search bar + exchange filter — always visible */}
+      <div className="flex gap-2">
+        <select
+          value={exchange}
+          onChange={(e) => setParams({ exchange: e.target.value || null })}
+          className="rounded-md border border-border bg-bg-surface px-3 py-2 text-sm text-fg focus:border-accent focus:outline-none shrink-0"
+        >
+          <option value="">All</option>
+          <option value="kalshi">Kalshi</option>
+          <option value="kraken">Kraken</option>
+          <option value="polymarket">Polymarket</option>
+        </select>
+        <input
+          type="text"
+          placeholder="Search markets by ticker or title..."
+          value={search}
+          onChange={(e) => handleSearchChange(e.target.value)}
+          className="w-full rounded-md border border-border bg-bg-surface px-4 py-2 text-sm text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"
+        />
+      </div>
 
       {/* Watchlist panel — between search and cascade */}
       {watchlist.items.length > 0 && (
@@ -346,17 +359,6 @@ function MarketsContent() {
           {event ? ` / ${event}` : ""}
         </summary>
         <div className="flex items-center gap-3 flex-wrap mt-3">
-          <select
-            value={exchange}
-            onChange={(e) => handleExchangeChange(e.target.value)}
-            className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
-          >
-            <option value="">All Exchanges</option>
-            <option value="kalshi">Kalshi</option>
-            <option value="kraken">Kraken</option>
-            <option value="polymarket">Polymarket</option>
-          </select>
-
           <select
             value={category ?? ""}
             onChange={(e) => handleCategoryChange(e.target.value)}
