@@ -4,6 +4,7 @@ import { useState } from "react";
 import { cancelOrder, amendOrder, decreaseOrder } from "@/lib/api";
 import type { Order, OrderState } from "@/lib/types";
 import { useSWRConfig } from "swr";
+import { matchInstanceKey } from "@/lib/hooks";
 
 const cancellableStates: OrderState[] = [
   "pending",
@@ -34,7 +35,7 @@ export function OrderActions({ order }: { order: Order }) {
     setError("");
     try {
       await cancelOrder(order.id);
-      mutate((key: string) => typeof key === "string" && key.startsWith("orders"));
+      mutate(matchInstanceKey("orders"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Cancel failed");
     } finally {
@@ -48,7 +49,7 @@ export function OrderActions({ order }: { order: Order }) {
     try {
       await amendOrder(order.id, { new_price_dollars: newPrice, new_quantity: newQty });
       setMode("idle");
-      mutate((key: string) => typeof key === "string" && key.startsWith("orders"));
+      mutate(matchInstanceKey("orders"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Amend failed");
     } finally {
@@ -62,7 +63,7 @@ export function OrderActions({ order }: { order: Order }) {
     try {
       await decreaseOrder(order.id, { reduce_by: newQty });
       setMode("idle");
-      mutate((key: string) => typeof key === "string" && key.startsWith("orders"));
+      mutate(matchInstanceKey("orders"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Decrease failed");
     } finally {

@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { createBracket } from "@/lib/api";
 import type { Side, Action, TimeInForce } from "@/lib/types";
 import { useSWRConfig } from "swr";
+import { matchInstanceKey } from "@/lib/hooks";
 import { TickerInput } from "./ticker-input";
 
 function LegFields({
@@ -92,7 +93,7 @@ export function CreateBracketForm() {
         take_profit: { client_order_id: uuidv4(), ticker, side: tpSide, action: tpAction, quantity: tpQty, price_dollars: tpPrice, time_in_force: tpTif },
         stop_loss: { client_order_id: uuidv4(), ticker, side: slSide, action: slAction, quantity: slQty, price_dollars: slPrice, time_in_force: slTif },
       });
-      mutate((key: string) => typeof key === "string" && key.startsWith("groups"));
+      mutate(matchInstanceKey("groups"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create bracket");
     } finally {

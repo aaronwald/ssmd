@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { createOrder } from "@/lib/api";
 import type { Side, Action, TimeInForce } from "@/lib/types";
 import { useSWRConfig } from "swr";
+import { matchInstanceKey } from "@/lib/hooks";
 import { TickerInput } from "./ticker-input";
 
 export function CreateOrderForm() {
@@ -35,7 +36,7 @@ export function CreateOrderForm() {
       setTicker("");
       setQuantity("");
       setPrice("");
-      mutate((key: string) => typeof key === "string" && key.startsWith("orders"));
+      mutate(matchInstanceKey("orders"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create order");
     } finally {

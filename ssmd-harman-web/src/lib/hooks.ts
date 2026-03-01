@@ -28,6 +28,11 @@ function instanceKey(key: string): string | null {
   return inst ? `${inst}:${key}` : null;
 }
 
+/** SWR mutate matcher: matches any instance-prefixed key ending with `:suffix` (or `:suffix-*`). */
+export function matchInstanceKey(suffix: string): (key: string) => boolean {
+  return (key: string) => typeof key === "string" && key.includes(`:${suffix}`);
+}
+
 export function useHealth() {
   return useSWR(instanceKey("health"), getHealth, {
     refreshInterval: REFRESH_INTERVAL,

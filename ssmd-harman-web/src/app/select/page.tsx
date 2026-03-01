@@ -2,14 +2,12 @@
 
 import { useRouter } from "next/navigation";
 import { useInstance } from "@/lib/instance-context";
-import { setApiInstance } from "@/lib/api";
 
 export default function SelectInstance() {
   const { instances, loading, setInstance } = useInstance();
   const router = useRouter();
 
   const handleSelect = (id: string) => {
-    setApiInstance(id);
     setInstance(id);
     router.push("/");
   };

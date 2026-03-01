@@ -7,6 +7,7 @@ import { StateBadge } from "@/components/state-badge";
 import { CreateBracketForm } from "@/components/create-bracket-form";
 import { CreateOcoForm } from "@/components/create-oco-form";
 import { useSWRConfig } from "swr";
+import { matchInstanceKey } from "@/lib/hooks";
 
 const stateFilters = [
   { value: "", label: "All" },
@@ -25,7 +26,7 @@ export default function GroupsPage() {
   async function handleCancel(id: number) {
     try {
       await cancelGroup(id);
-      mutate((key: string) => typeof key === "string" && key.startsWith("groups"));
+      mutate(matchInstanceKey("groups"));
     } catch {
       // Error handling is inline
     }

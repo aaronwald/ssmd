@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { createOco } from "@/lib/api";
 import type { Side, Action, TimeInForce } from "@/lib/types";
 import { useSWRConfig } from "swr";
+import { matchInstanceKey } from "@/lib/hooks";
 import { TickerInput } from "./ticker-input";
 
 export function CreateOcoForm() {
@@ -34,7 +35,7 @@ export function CreateOcoForm() {
         leg1: { client_order_id: uuidv4(), ticker, side: l1Side, action: l1Action, quantity: l1Qty, price_dollars: l1Price, time_in_force: l1Tif },
         leg2: { client_order_id: uuidv4(), ticker, side: l2Side, action: l2Action, quantity: l2Qty, price_dollars: l2Price, time_in_force: l2Tif },
       });
-      mutate((key: string) => typeof key === "string" && key.startsWith("groups"));
+      mutate(matchInstanceKey("groups"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create OCO");
     } finally {
