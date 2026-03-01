@@ -2289,6 +2289,7 @@ route("GET", "/v1/monitor/search", async (req, ctx) => {
         .innerJoin(events, eq(markets.eventTicker, events.eventTicker))
         .where(and(
           isNull(markets.deletedAt),
+          sql`${markets.status} != 'settled'`,
           sql`(${markets.ticker} ILIKE ${'%' + q + '%'} OR ${markets.title} ILIKE ${'%' + q + '%'} OR ${events.eventTicker} ILIKE ${'%' + q + '%'})`,
         ))
         .orderBy(desc(markets.volume))
