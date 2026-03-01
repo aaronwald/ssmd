@@ -23,6 +23,20 @@ pub enum AuthError {
 }
 
 impl KalshiCredentials {
+    /// Create dummy credentials for test exchange (no real signing needed).
+    ///
+    /// Generates a minimal 2048-bit RSA key so the struct is valid, but the
+    /// test-exchange server ignores auth headers entirely.
+    pub fn dummy() -> Self {
+        let mut rng = rand_core::OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048)
+            .expect("failed to generate dummy RSA key");
+        Self {
+            api_key: "test-dummy-key".to_string(),
+            private_key,
+        }
+    }
+
     /// Create new credentials from an API key and PEM-encoded private key
     ///
     /// Supports both PKCS#8 (-----BEGIN PRIVATE KEY-----) and

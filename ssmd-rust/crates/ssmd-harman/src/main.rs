@@ -89,25 +89,6 @@ async fn main() {
         info!("Cloudflare Access JWT auth disabled (CF_JWKS_URL/CF_AUD not set)");
     }
 
-    // Startup env validation: detect base URL / environment mismatch
-    let base_url_lower = args.kalshi_base_url.to_lowercase();
-    if environment == "prod" && base_url_lower.contains("demo") {
-        error!(
-            environment = %environment,
-            base_url = %args.kalshi_base_url,
-            "FATAL: EXCHANGE_ENVIRONMENT=prod but KALSHI_BASE_URL contains 'demo'"
-        );
-        std::process::exit(1);
-    }
-    if environment == "demo" && !base_url_lower.contains("demo") {
-        error!(
-            environment = %environment,
-            base_url = %args.kalshi_base_url,
-            "FATAL: EXCHANGE_ENVIRONMENT=demo but KALSHI_BASE_URL does not contain 'demo'"
-        );
-        std::process::exit(1);
-    }
-
     info!(listen_addr = %args.listen_addr, exchange_type = %exchange_type, environment = %environment, "ssmd-harman starting");
 
     // Create DB pool
@@ -118,17 +99,59 @@ async fn main() {
         .await
         .expect("migration failed");
 
-    // Create exchange client
-    let kalshi_config = ssmd_connector_lib::kalshi::config::KalshiConfig::from_env()
-        .expect("Kalshi credentials not configured");
-    let credentials = ssmd_connector_lib::kalshi::auth::KalshiCredentials::new(
-        kalshi_config.api_key,
-        &kalshi_config.private_key_pem,
-    )
-    .expect("invalid Kalshi credentials");
-    let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = Arc::new(
-        ssmd_exchange_kalshi::client::KalshiClient::new(credentials, args.kalshi_base_url),
-    );
+    // Create exchange client based on EXCHANGE_TYPE
+    let exchange_base_url = std::env::var("EXCHANGE_BASE_URL")
+        .unwrap_or_else(|_| args.kalshi_base_url.clone());
+
+    let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = match exchange_type.as_str() {
+        "kalshi" => {
+            // Startup env validation: detect base URL / environment mismatch
+            let base_url_lower = args.kalshi_base_url.to_lowercase();
+            if environment == "prod" && base_url_lower.contains("demo") {
+                error!(
+                    environment = %environment,
+                    base_url = %args.kalshi_base_url,
+                    "FATAL: EXCHANGE_ENVIRONMENT=prod but KALSHI_BASE_URL contains 'demo'"
+                );
+                std::process::exit(1);
+            }
+            if environment == "demo" && !base_url_lower.contains("demo") {
+                error!(
+                    environment = %environment,
+                    base_url = %args.kalshi_base_url,
+                    "FATAL: EXCHANGE_ENVIRONMENT=demo but KALSHI_BASE_URL does not contain 'demo'"
+                );
+                std::process::exit(1);
+            }
+
+            let kalshi_config = ssmd_connector_lib::kalshi::config::KalshiConfig::from_env()
+                .expect("Kalshi credentials not configured");
+            let credentials = ssmd_connector_lib::kalshi::auth::KalshiCredentials::new(
+                kalshi_config.api_key,
+                &kalshi_config.private_key_pem,
+            )
+            .expect("invalid Kalshi credentials");
+            Arc::new(ssmd_exchange_kalshi::client::KalshiClient::new(
+                credentials,
+                args.kalshi_base_url.clone(),
+            ))
+        }
+        "test" => {
+            // Test exchange — uses Kalshi protocol against harman-test-exchange.
+            // No real credentials needed; dummy RSA key satisfies the type system
+            // and the test-exchange ignores auth headers entirely.
+            info!(base_url = %exchange_base_url, "using test exchange (Kalshi protocol)");
+            let credentials = ssmd_connector_lib::kalshi::auth::KalshiCredentials::dummy();
+            Arc::new(ssmd_exchange_kalshi::client::KalshiClient::new(
+                credentials,
+                exchange_base_url.clone(),
+            ))
+        }
+        other => {
+            error!(exchange_type = %other, "unsupported EXCHANGE_TYPE (expected: kalshi, test)");
+            std::process::exit(1);
+        }
+    };
 
     // Check balance on startup
     match exchange.get_balance().await {
