@@ -3,7 +3,8 @@
 import { Suspense, useState, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useOrders } from "@/lib/hooks";
-import { pump } from "@/lib/api";
+import { pump, reconcile, resume, massCancel } from "@/lib/api";
+import { InstanceBadge } from "@/components/nav";
 import { StateBadge } from "@/components/state-badge";
 import { OrderActions } from "@/components/order-actions";
 import { CreateOrderForm } from "@/components/create-order-form";
@@ -42,7 +43,7 @@ function OrdersContent() {
   }
 
   const { data: orders, error } = useOrders(filter || undefined);
-  const [pumpMsg, setPumpMsg] = useState("");
+  const [actionMsg, setActionMsg] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -71,20 +72,23 @@ function OrdersContent() {
     });
   }, [orders, sortKey, sortDir]);
 
-  async function handlePump() {
-    setPumpMsg("");
+  async function runAction(label: string, fn: () => Promise<void>) {
+    setActionMsg("");
     try {
-      await pump();
-      setPumpMsg("Pump completed");
+      await fn();
+      setActionMsg(`${label} completed`);
     } catch (err) {
-      setPumpMsg(`Pump failed: ${err instanceof Error ? err.message : "unknown"}`);
+      setActionMsg(`${label} failed: ${err instanceof Error ? err.message : "unknown"}`);
     }
   }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">Orders</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-xl font-bold">Orders</h1>
+          <InstanceBadge />
+        </div>
         <div className="flex items-center gap-3">
           <select
             value={filter}
@@ -95,12 +99,21 @@ function OrdersContent() {
               <option key={f.value} value={f.value}>{f.label}</option>
             ))}
           </select>
-          <button onClick={handlePump} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-fg hover:bg-accent-hover transition-colors">
+          <button onClick={() => runAction("Pump", pump)} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-fg hover:bg-accent-hover transition-colors">
             Pump
+          </button>
+          <button onClick={() => runAction("Reconcile", reconcile)} className="rounded-md border border-border px-3 py-1.5 text-sm text-fg-muted hover:text-fg transition-colors">
+            Reconcile
+          </button>
+          <button onClick={() => runAction("Resume", resume)} className="rounded-md bg-green/20 text-green px-3 py-1.5 text-sm hover:bg-green/30 transition-colors">
+            Resume
+          </button>
+          <button onClick={() => runAction("Mass Cancel", massCancel)} className="rounded-md bg-red/20 text-red px-3 py-1.5 text-sm hover:bg-red/30 transition-colors">
+            Mass Cancel
           </button>
         </div>
       </div>
-      {pumpMsg && <p className="text-xs text-fg-muted">{pumpMsg}</p>}
+      {actionMsg && <p className="text-xs text-fg-muted">{actionMsg}</p>}
 
       <CreateOrderForm />
 

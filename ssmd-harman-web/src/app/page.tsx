@@ -1,12 +1,11 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { StatusDot } from "@/components/status-dot";
 import { RiskGauge } from "@/components/risk-gauge";
 import { SnapAgeDot } from "@/components/snap-age-dot";
 import { useHealth, usePositions, useRisk, useSnapMap, useInfo } from "@/lib/hooks";
-import { reconcile, resume, massCancel } from "@/lib/api";
 import type { ExchangePosition, LocalPosition, NormalizedSnapshot } from "@/lib/types";
 
 export default function Dashboard() {
@@ -16,7 +15,6 @@ export default function Dashboard() {
   const { data: info } = useInfo();
   const feed = info?.exchange ?? "kalshi";
   const { data: snapMap, error: snapError } = useSnapMap(feed);
-  const [actionMsg, setActionMsg] = useState("");
   const [hideZero, setHideZero] = useState(false);
 
   const filteredExchange = useMemo(() => {
@@ -33,16 +31,6 @@ export default function Dashboard() {
 
   const snapFor = (ticker: string): NormalizedSnapshot | undefined =>
     snapMap?.get(ticker);
-
-  async function runAction(label: string, fn: () => Promise<void>) {
-    setActionMsg("");
-    try {
-      await fn();
-      setActionMsg(`${label} completed`);
-    } catch (err) {
-      setActionMsg(`${label} failed: ${err instanceof Error ? err.message : "unknown error"}`);
-    }
-  }
 
   const healthStatus = health
     ? health.status === "healthy"
@@ -81,23 +69,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Quick actions */}
-      <div className="bg-bg-raised border border-border rounded-lg p-4 space-y-3">
-        <h2 className="text-sm font-medium text-fg-muted">Quick Actions</h2>
-        <div className="flex gap-3">
-          <button onClick={() => runAction("Reconcile", reconcile)} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-fg hover:bg-accent-hover transition-colors">
-            Reconcile
-          </button>
-          <button onClick={() => runAction("Resume", resume)} className="rounded-md bg-green/20 text-green px-4 py-1.5 text-sm font-medium hover:bg-green/30 transition-colors">
-            Resume
-          </button>
-          <button onClick={() => runAction("Mass Cancel", massCancel)} className="rounded-md bg-red/20 text-red px-4 py-1.5 text-sm font-medium hover:bg-red/30 transition-colors">
-            Mass Cancel
-          </button>
-        </div>
-        {actionMsg && <p className="text-xs text-fg-muted">{actionMsg}</p>}
-      </div>
-
       {/* Positions */}
       <div className="bg-bg-raised border border-border rounded-lg p-4 space-y-3">
         <div className="flex items-center justify-between">
@@ -117,7 +88,7 @@ export default function Dashboard() {
             {/* Exchange positions */}
             {filteredExchange.length > 0 && (
             <div>
-              <h3 className="text-xs font-medium text-fg-muted mb-2">Exchange</h3>
+              <h3 className="text-xs font-medium text-fg-muted mb-2 capitalize">{info?.exchange ?? "Exchange"} Positions</h3>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>

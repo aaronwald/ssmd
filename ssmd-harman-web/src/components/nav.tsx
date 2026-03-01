@@ -48,7 +48,7 @@ function NavLinks() {
   );
 }
 
-function InstanceBadge() {
+export function InstanceBadge() {
   const { instance, instances, setInstance } = useInstance();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -118,9 +118,10 @@ function VarshtatIcon() {
       title="varshtat market data"
       className="text-fg-muted hover:text-accent transition-colors"
     >
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 9l4-4 4 4 4-4 4 4" />
-        <path d="M3 15l4-4 4 4 4-4 4 4" />
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M2 20V13l4-3.5L12 6l6 3.5 4 3.5v7z"/>
+        <path d="M4 20v-5h3.5v5M9.5 20v-5h5v5M16.5 20v-5H20v5"/>
+        <rect x="10" y="10" width="4" height="2.5" rx="0.3"/>
       </svg>
     </a>
   );
@@ -151,7 +152,6 @@ export function Nav() {
         harman<span className="text-accent">.</span>oms
       </Link>
       <VarshtatIcon />
-      <InstanceBadge />
       <div className="flex gap-6">
         <Suspense
           fallback={
