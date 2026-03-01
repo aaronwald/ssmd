@@ -1682,13 +1682,50 @@ async fn monitor_categories_handler(
         }
     };
     timer.observe_duration();
-    let categories: Vec<serde_json::Value> = result
+    let exchange = &state.exchange_type;
+
+    // Category data may be overwritten across exchanges (e.g., Polymarket overwrites
+    // Kalshi's "Crypto" entry). Instead of trusting the category-level fields, use the
+    // category names as candidates and check each one's series hash for exchange-matching
+    // entries via a Redis pipeline.
+    let category_names: Vec<String> = result.keys().cloned().collect();
+    let mut pipe = redis::pipe();
+    for name in &category_names {
+        pipe.cmd("HGETALL").arg(format!("monitor:series:{}", name));
+    }
+    let series_results: Vec<std::collections::HashMap<String, String>> = match pipe
+        .query_async::<Vec<std::collections::HashMap<String, String>>>(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "Redis pipeline for category series check failed");
+            state.monitor_metrics.requests_total.with_label_values(&["categories", "ok"]).inc();
+            return (StatusCode::OK, Json(serde_json::json!({"categories": []}))).into_response();
+        }
+    };
+
+    let categories: Vec<serde_json::Value> = category_names
         .into_iter()
-        .map(|(name, val)| {
-            let mut obj: serde_json::Value =
-                serde_json::from_str(&val).unwrap_or(serde_json::json!({}));
-            obj["name"] = serde_json::json!(name);
-            obj
+        .zip(series_results.into_iter())
+        .filter_map(|(name, series_hash)| {
+            // Count exchange-matching series in this category
+            let matching: usize = series_hash.iter().filter(|(ticker, val)| {
+                let obj: serde_json::Value = serde_json::from_str(val).unwrap_or_default();
+                match exchange.as_str() {
+                    "kalshi" => obj.get("active_events").is_some() || obj.get("active_markets").is_some(),
+                    "polymarket" => obj.get("active_conditions").is_some() || ticker.starts_with("PM:"),
+                    "kraken" => obj.get("active_pairs").is_some(),
+                    _ => false,
+                }
+            }).count();
+            if matching == 0 {
+                return None;
+            }
+            Some(serde_json::json!({
+                "name": name,
+                "series_count": matching,
+            }))
         })
         .collect();
     state.monitor_metrics.requests_total.with_label_values(&["categories", "ok"]).inc();
@@ -1735,13 +1772,29 @@ async fn monitor_series_handler(
         }
     };
     timer.observe_duration();
+    let exchange = &state.exchange_type;
     let series: Vec<serde_json::Value> = result
         .into_iter()
-        .map(|(ticker, val)| {
+        .filter_map(|(ticker, val)| {
             let mut obj: serde_json::Value =
                 serde_json::from_str(&val).unwrap_or(serde_json::json!({}));
+            // Filter series by exchange: Kalshi has active_events/active_markets,
+            // Polymarket uses PM: prefix with active_conditions,
+            // Kraken has active_pairs
+            let dominated_by = if obj.get("active_events").is_some() || obj.get("active_markets").is_some() {
+                "kalshi"
+            } else if obj.get("active_conditions").is_some() || ticker.starts_with("PM:") {
+                "polymarket"
+            } else if obj.get("active_pairs").is_some() {
+                "kraken"
+            } else {
+                return None;
+            };
+            if dominated_by != exchange {
+                return None;
+            }
             obj["ticker"] = serde_json::json!(ticker);
-            obj
+            Some(obj)
         })
         .collect();
     state.monitor_metrics.requests_total.with_label_values(&["series", "ok"]).inc();
@@ -1788,13 +1841,20 @@ async fn monitor_events_handler(
         }
     };
     timer.observe_duration();
+    let exchange = &state.exchange_type;
     let events: Vec<serde_json::Value> = result
         .into_iter()
-        .map(|(ticker, val)| {
+        .filter_map(|(ticker, val)| {
             let mut obj: serde_json::Value =
                 serde_json::from_str(&val).unwrap_or(serde_json::json!({}));
+            // Events with explicit "exchange" field are Polymarket/Kraken;
+            // Kalshi events have no exchange field (implied by series key)
+            let entry_exchange = obj.get("exchange").and_then(|v| v.as_str()).unwrap_or("kalshi");
+            if entry_exchange != exchange {
+                return None;
+            }
             obj["ticker"] = serde_json::json!(ticker);
-            obj
+            Some(obj)
         })
         .collect();
     state.monitor_metrics.requests_total.with_label_values(&["events", "ok"]).inc();
@@ -1842,14 +1902,21 @@ async fn monitor_markets_handler(
     };
     timer.observe_duration();
 
-    // Collect tickers and parse market objects
+    // Collect tickers and parse market objects, filtering by exchange
+    let exchange = &state.exchange_type;
     let mut markets: Vec<(String, serde_json::Value)> = result
         .into_iter()
-        .map(|(ticker, val)| {
+        .filter_map(|(ticker, val)| {
             let mut obj: serde_json::Value =
                 serde_json::from_str(&val).unwrap_or(serde_json::json!({}));
+            // Markets with explicit "exchange" field are Polymarket/Kraken;
+            // Kalshi markets have no exchange field
+            let entry_exchange = obj.get("exchange").and_then(|v| v.as_str()).unwrap_or("kalshi");
+            if entry_exchange != exchange {
+                return None;
+            }
             obj["ticker"] = serde_json::json!(&ticker);
-            (ticker, obj)
+            Some((ticker, obj))
         })
         .collect();
 
