@@ -1478,28 +1478,30 @@ async fn list_tickers_handler(
     }
 
     // Cache miss — fetch from data-ts
-    let base_url = match &state.auth_validate_url {
-        Some(url) => url.replace("/v1/auth/validate", ""),
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "data-ts not configured"})),
-            ).into_response();
-        }
+    let base_url = if let Some(url) = &state.data_ts_base_url {
+        url.clone()
+    } else if let Some(url) = &state.auth_validate_url {
+        url.replace("/v1/auth/validate", "")
+    } else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "data-ts not configured"})),
+        ).into_response();
     };
 
     // Fetch markets with 2h lookback for recently-closed markets (post-expiry order entry).
     // as_of shifts the point-in-time filter so close_time > as_of includes recently expired markets.
-    // Filter by the connected exchange feed.
+    // Filter by the connected exchange feed. Test exchange uses Kalshi protocol, so use kalshi tickers.
+    let feed = if state.exchange_type == "test" { "kalshi" } else { &state.exchange_type };
     let two_hours_ago = chrono::Utc::now() - chrono::Duration::hours(2);
     let as_of = two_hours_ago.format("%Y-%m-%dT%H:%M:%SZ");
     let url = format!(
         "{}/v1/markets?status=active&limit=2000&as_of={}&feed={}",
-        base_url, as_of, state.exchange_type
+        base_url, as_of, feed
     );
     let mut req = state.http_client.get(&url).timeout(Duration::from_secs(10));
     // Use DATA_TS_API_KEY if configured, otherwise try forwarding user's auth
-    if let Ok(key) = std::env::var("DATA_TS_API_KEY") {
+    if let Some(key) = &state.data_ts_api_key {
         req = req.header("authorization", format!("Bearer {}", key));
     } else if let Some(auth) = headers.get("authorization") {
         if let Ok(val) = auth.to_str() {
