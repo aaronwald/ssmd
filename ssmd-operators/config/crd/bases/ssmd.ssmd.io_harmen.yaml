@@ -448,6 +448,9 @@ spec:
                 - Running
                 - Failed
                 type: string
+              service:
+                description: Service is the name of the created Service
+                type: string
             type: object
         required:
         - spec
