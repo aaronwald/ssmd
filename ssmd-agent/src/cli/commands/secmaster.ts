@@ -341,8 +341,12 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
 
       try {
         for (const status of statuses) {
-          // Build filters - only include minCloseTs if provided (e.g., for crypto to skip historical)
-          const filters = options.minCloseTs ? { minCloseTs: options.minCloseTs } : undefined;
+          // min_close_ts is only compatible with status=closed per Kalshi API docs.
+          // For status=open: no timestamp filter (open events are by definition current).
+          // For status=settled: no timestamp filter (settled count is bounded).
+          const filters = (status === "closed" && options.minCloseTs)
+            ? { minCloseTs: options.minCloseTs }
+            : undefined;
           for await (const batch of client.fetchEventsBySeries(s.ticker, status, filters)) {
             result.events.fetched += batch.events.length;
             result.markets.fetched += batch.markets.length;
