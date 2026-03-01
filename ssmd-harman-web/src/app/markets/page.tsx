@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useMemo, useCallback } from "react";
+import { Suspense, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useCategories, useSeries, useEvents, useMarkets, useMarketSearch, useInfo, usePositions, useWatchlist, useWatchlistData } from "@/lib/hooks";
 import type { MonitorCategory, MonitorSeries, MonitorEvent, MonitorMarket, WatchlistItem, WatchlistResult } from "@/lib/types";
@@ -110,6 +110,20 @@ function MarketsContent() {
   const [sortKey, setSortKey] = useState<SortKey>("ticker");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [slideOverMarket, setSlideOverMarket] = useState<MonitorMarket | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // Cmd+P focuses search input
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "p") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // Watchlist
   const watchlist = useWatchlist();
@@ -296,8 +310,9 @@ function MarketsContent() {
           <option value="polymarket">Polymarket</option>
         </select>
         <input
+          ref={searchRef}
           type="text"
-          placeholder="Search markets by ticker or title..."
+          placeholder="Search markets by ticker or title... (⌘P)"
           value={search}
           onChange={(e) => handleSearchChange(e.target.value)}
           className="w-full rounded-md border border-border bg-bg-surface px-4 py-2 text-sm text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"

@@ -4,6 +4,7 @@ use crate::Result;
 /// TTL for settled markets: 1 day in seconds
 const SETTLED_TTL_SECS: i64 = 86400;
 
+#[derive(Clone)]
 pub struct RedisCache {
     conn: redis::aio::MultiplexedConnection,
 }

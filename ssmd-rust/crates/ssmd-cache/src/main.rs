@@ -67,6 +67,30 @@ async fn main() -> anyhow::Result<()> {
     let fees = cache.count("secmaster:fee:*").await?;
     tracing::info!(series, fees, "Cache populated");
 
+    // Spawn periodic treemap + monitor index refresh (every 5 minutes)
+    let refresh_cache = cache.clone();
+    let refresh_db_url = config.database_url.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        interval.tick().await; // skip first tick — warm_all already ran
+        loop {
+            interval.tick().await;
+            match CacheWarmer::connect(&refresh_db_url).await {
+                Ok(warmer) => {
+                    match warmer.warm_monitor_indexes(&refresh_cache).await {
+                        Ok(keys) => tracing::info!(keys, "Periodic monitor index refresh"),
+                        Err(e) => tracing::error!(error = %e, "Monitor index refresh failed"),
+                    }
+                    match warmer.warm_treemap(&refresh_cache).await {
+                        Ok(count) => tracing::info!(count, "Periodic treemap refresh"),
+                        Err(e) => tracing::error!(error = %e, "Treemap refresh failed"),
+                    }
+                }
+                Err(e) => tracing::error!(error = %e, "DB connect failed for periodic refresh"),
+            }
+        }
+    });
+
     // Start consuming CDC events
     let mut consumer = CdcConsumer::new(
         &config.nats_url,

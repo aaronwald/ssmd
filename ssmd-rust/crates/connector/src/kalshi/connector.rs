@@ -659,11 +659,13 @@ impl Connector for KalshiConnector {
                             ).await {
                                 Ok(consumer) => {
                                     if let Err(e) = consumer.run(new_market_tx).await {
-                                        error!(error = %e, "CDC consumer error");
+                                        error!(error = %e, "CDC consumer error — exiting for restart");
+                                        std::process::exit(1);
                                     }
                                 }
                                 Err(e) => {
-                                    error!(error = %e, "Failed to start CDC consumer");
+                                    error!(error = %e, "Failed to start CDC consumer — exiting for restart");
+                                    std::process::exit(1);
                                 }
                             }
                         });

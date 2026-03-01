@@ -7,7 +7,7 @@ use crate::kalshi::connector::ShardCommand;
 use crate::kalshi::websocket::MAX_MARKETS_PER_SUBSCRIPTION;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Manages shards and routes dynamic subscriptions from CDC
 pub struct ShardManager {
@@ -126,13 +126,11 @@ impl ShardManager {
             let shard_id = match self.find_shard_with_capacity() {
                 Some(id) => id,
                 None => {
-                    warn!(
+                    error!(
                         pending = remaining.len(),
-                        "All shards at capacity, cannot subscribe to new markets"
+                        "All shards at capacity — exiting for restart with fresh subscriptions"
                     );
-                    // Put remaining tickers back for later
-                    self.pending_tickers.extend(remaining);
-                    return;
+                    std::process::exit(1);
                 }
             };
 
