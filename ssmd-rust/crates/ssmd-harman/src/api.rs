@@ -122,11 +122,23 @@ async fn resolve_session(state: &AppState, key_prefix: &str) -> Result<i64, Stri
     Ok(session_id)
 }
 
-/// Extract CF Access JWT from header
-fn extract_cf_jwt(req: &Request) -> Option<&str> {
-    req.headers()
-        .get("cf-access-jwt-assertion")
-        .and_then(|v| v.to_str().ok())
+/// Extract CF Access JWT from header or CF_Authorization cookie.
+/// Cloudflare sets the header on direct page loads but only the cookie on XHR/fetch.
+fn extract_cf_jwt(req: &Request) -> Option<String> {
+    // Prefer the header (set by CF proxy on initial page requests)
+    if let Some(v) = req.headers().get("cf-access-jwt-assertion").and_then(|v| v.to_str().ok()) {
+        return Some(v.to_string());
+    }
+    // Fall back to CF_Authorization cookie (set on browser fetch/XHR requests)
+    if let Some(cookies) = req.headers().get("cookie").and_then(|v| v.to_str().ok()) {
+        for part in cookies.split(';') {
+            let part = part.trim();
+            if let Some(val) = part.strip_prefix("CF_Authorization=") {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Fetch or refresh JWKS from Cloudflare Access (5-min TTL)
@@ -330,7 +342,7 @@ async fn auth_middleware(
     // Path 4: Cloudflare Access JWT
     if let Some(cf_jwt) = extract_cf_jwt(&req) {
         if state.cf_jwks_url.is_some() && state.cf_aud.is_some() {
-            let email = validate_cf_jwt(&state, cf_jwt).await?;
+            let email = validate_cf_jwt(&state, &cf_jwt).await?;
             let (key_prefix, scopes) = lookup_email(&state, &email).await?;
             let session_id = resolve_session(&state, &key_prefix).await.map_err(|e| {
                 tracing::error!(error = %e, key_prefix = %key_prefix, email = %email, "resolve_session failed (cf)");
