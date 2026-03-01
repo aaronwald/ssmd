@@ -2152,43 +2152,81 @@ route("GET", "/v1/monitor/markets", async (req) => {
 
   // Merge snap data for live prices (exchange-aware)
   if (tickers.length > 0) {
-    const snapKeys = tickers.map((t) => {
+    // Build snap keys — handle per-exchange format differences
+    const nonPmTickers: string[] = [];
+    const snapKeys: string[] = [];
+    for (const t of tickers) {
       const market = marketMap.get(t);
       const exchange = market?.exchange ?? "kalshi";
-      return `snap:${exchange}:${t}`;
-    });
-    const snapValues = await redis.mget(...snapKeys);
 
-    for (let i = 0; i < tickers.length; i++) {
-      const snapRaw = snapValues[i];
-      if (!snapRaw) continue;
+      if (exchange === "kraken-futures" || exchange === "kraken") {
+        // Monitor stores "kraken:PF_XBTUSD" — strip prefix, use "kraken-futures" feed
+        const rawTicker = t.startsWith("kraken:") ? t.slice(7) : t;
+        snapKeys.push(`snap:kraken-futures:${rawTicker}`);
+        nonPmTickers.push(t);
+      } else if (exchange === "polymarket") {
+        // PM tokens handled separately via condition-level lookup below
+      } else {
+        snapKeys.push(`snap:${exchange}:${t}`);
+        nonPmTickers.push(t);
+      }
+    }
+
+    if (snapKeys.length > 0) {
+      const snapValues = await redis.mget(...snapKeys);
+      for (let i = 0; i < nonPmTickers.length; i++) {
+        const snapRaw = snapValues[i];
+        if (!snapRaw) continue;
+        try {
+          const snap = JSON.parse(snapRaw);
+          const market = marketMap.get(nonPmTickers[i]);
+          if (!market) continue;
+          const exchange = market.exchange ?? "kalshi";
+
+          if (exchange === "kraken-futures" || exchange === "kraken") {
+            if (typeof snap.bid === "number") market.bid = snap.bid;
+            if (typeof snap.ask === "number") market.ask = snap.ask;
+            if (typeof snap.last === "number") market.last = snap.last;
+            if (snap.funding_rate != null) market.funding_rate = snap.funding_rate;
+          } else {
+            // Kalshi: convert cents to dollars
+            for (const field of ["yes_bid", "yes_ask", "price"]) {
+              if (typeof snap[field] === "number") {
+                market[field === "price" ? "last" : field] = snap[field] / 100;
+              }
+            }
+            if (typeof snap.volume === "number") market.volume = snap.volume;
+            if (typeof snap.open_interest === "number") market.open_interest = snap.open_interest;
+          }
+        } catch {
+          // skip unparseable snap
+        }
+      }
+    }
+
+    // Polymarket: single snap lookup by condition_id (= event ticker from URL)
+    const hasPmMarkets = tickers.some((t) => marketMap.get(t)?.exchange === "polymarket");
+    if (hasPmMarkets && event) {
       try {
-        const snap = JSON.parse(snapRaw);
-        const market = marketMap.get(tickers[i]);
-        if (!market) continue;
-        const exchange = market.exchange ?? "kalshi";
-
-        if (exchange === "kraken-futures") {
-          if (typeof snap.bid === "number") market.bid = snap.bid;
-          if (typeof snap.ask === "number") market.ask = snap.ask;
-          if (typeof snap.last === "number") market.last = snap.last;
-          if (snap.funding_rate != null) market.funding_rate = snap.funding_rate;
-        } else if (exchange === "polymarket") {
-          if (typeof snap.best_bid === "number") market.best_bid = snap.best_bid;
-          if (typeof snap.best_ask === "number") market.best_ask = snap.best_ask;
-          if (snap.spread != null) market.spread = snap.spread;
-        } else {
-          // Kalshi: convert cents to dollars
-          for (const field of ["yes_bid", "yes_ask", "last_price"]) {
-            if (typeof snap[field] === "number") {
-              market[field === "last_price" ? "last" : field] = snap[field] / 100;
+        const conditionSnap = await redis.get(`snap:polymarket:${event}`);
+        if (conditionSnap) {
+          const snap = JSON.parse(conditionSnap);
+          const priceChanges = snap.price_changes ?? [];
+          for (const pc of priceChanges) {
+            // Match asset_id to token_id (market key)
+            const market = marketMap.get(pc.asset_id);
+            if (market) {
+              market.best_bid = pc.best_bid != null ? Number(pc.best_bid) : null;
+              market.best_ask = pc.best_ask != null ? Number(pc.best_ask) : null;
+              market.last = pc.price != null ? Number(pc.price) : null;
+              if (pc.best_bid != null && pc.best_ask != null) {
+                market.spread = Number(pc.best_ask) - Number(pc.best_bid);
+              }
             }
           }
-          if (typeof snap.volume === "number") market.volume = snap.volume;
-          if (typeof snap.open_interest === "number") market.open_interest = snap.open_interest;
         }
       } catch {
-        // skip unparseable snap
+        // skip unparseable PM snap
       }
     }
   }

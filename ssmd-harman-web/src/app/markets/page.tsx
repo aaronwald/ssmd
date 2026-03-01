@@ -9,11 +9,18 @@ type SortKey = "ticker" | "title" | "yes_bid" | "yes_ask" | "last" | "volume" | 
 type SortDir = "asc" | "desc";
 type Exchange = "" | "kalshi" | "kraken" | "polymarket";
 
-/** Detect exchange from field names present on monitor objects. */
+/** Detect exchange from field names present on monitor objects.
+ * Shared categories (e.g. "Crypto") have both Kalshi and PM fields after merge fix.
+ * Returns null for shared categories — they should show for all exchanges. */
 function categoryExchange(cat: MonitorCategory): Exchange | null {
-  if (cat.base_count != null || cat.instrument_count != null) return "kraken";
-  if (cat.pm_condition_count != null) return "polymarket";
-  if (cat.event_count != null || cat.series_count != null) return "kalshi";
+  const hasKalshi = cat.event_count != null || cat.series_count != null;
+  const hasKraken = cat.base_count != null || cat.instrument_count != null;
+  const hasPM = cat.pm_condition_count != null;
+
+  if (hasKraken) return "kraken";
+  if (hasKalshi && hasPM) return null; // shared category
+  if (hasPM) return "polymarket";
+  if (hasKalshi) return "kalshi";
   return null;
 }
 
@@ -24,10 +31,11 @@ function seriesExchange(s: MonitorSeries): Exchange {
 }
 
 function categoryCount(c: MonitorCategory): string {
-  if (c.event_count != null) return `${c.event_count} events`;
-  if (c.instrument_count != null) return `${c.instrument_count} instruments`;
-  if (c.pm_condition_count != null) return `${c.pm_condition_count} conditions`;
-  return "";
+  const parts: string[] = [];
+  if (c.event_count != null) parts.push(`${c.event_count} events`);
+  if (c.instrument_count != null) parts.push(`${c.instrument_count} instruments`);
+  if (c.pm_condition_count != null) parts.push(`${c.pm_condition_count} conditions`);
+  return parts.join(", ") || "";
 }
 
 function seriesCount(s: MonitorSeries): string {
@@ -72,18 +80,14 @@ function MarketsContent() {
 
   // Filter categories by exchange.
   // Categories can be exclusive (Kraken Futures) or shared (Crypto has both Kalshi + PM series).
-  // For shared categories we keep them and filter at the series level.
+  // Shared categories (ex === null) are shown for all exchanges; series-level filtering handles the rest.
   const filteredCategories = useMemo(() => {
     if (!categories) return undefined;
     if (!exchange) return categories;
     return categories.filter((c) => {
       const ex = categoryExchange(c);
-      if (ex === null) return true; // unknown shape, keep
+      if (ex === null) return true; // shared category (has both Kalshi + PM), keep for all
       if (ex === exchange) return true; // exact match
-      // For kalshi: Crypto category has pm_condition_count but also Kalshi series inside.
-      // Show it — series filtering will handle the rest.
-      if (exchange === "kalshi" && ex === "polymarket") return true;
-      if (exchange === "polymarket" && ex === "kalshi") return true;
       return false;
     });
   }, [categories, exchange]);
@@ -288,11 +292,11 @@ function MarketsContent() {
                   filtered.map((m) => (
                     <tr key={m.ticker} className="border-b border-border-subtle hover:bg-bg-surface-hover">
                       <td className="px-4 py-2 font-mono text-xs">{m.ticker}</td>
-                      <td className="px-4 py-2 font-mono" title={m.title ?? undefined}>{fmtStrike(m.ticker)}</td>
+                      <td className="px-4 py-2 font-mono" title={m.title ?? undefined}>{m.outcome ?? fmtStrike(m.ticker)}</td>
                       <td className="px-4 py-2"><MarketStatusBadge status={m.status} /></td>
-                      <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_bid)}</td>
-                      <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_ask)}</td>
-                      <td className="px-4 py-2 font-mono text-right text-fg-muted">{fmtSpread(m.yes_bid, m.yes_ask)}</td>
+                      <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_bid ?? m.bid ?? m.best_bid ?? null)}</td>
+                      <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_ask ?? m.ask ?? m.best_ask ?? null)}</td>
+                      <td className="px-4 py-2 font-mono text-right text-fg-muted">{fmtSpread(m.yes_bid ?? m.bid ?? m.best_bid ?? null, m.yes_ask ?? m.ask ?? m.best_ask ?? null)}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.last)}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtInt(m.volume)}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtInt(m.open_interest)}</td>

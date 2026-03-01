@@ -230,6 +230,13 @@ impl RedisCache {
         Ok(result)
     }
 
+    /// HGET a single field from a hash key
+    pub async fn hget(&self, hash_key: &str, field: &str) -> Result<Option<String>> {
+        let mut conn = self.conn.clone();
+        let result: Option<String> = conn.hget(hash_key, field).await?;
+        Ok(result)
+    }
+
     /// HSET a field in a hash key
     pub async fn hset(&self, hash_key: &str, field: &str, value: &str) -> Result<()> {
         let mut conn = self.conn.clone();

@@ -392,7 +392,7 @@ impl CacheWarmer {
                     "contract_type": contract_type,
                     "tradeable": tradeable,
                     "suspended": suspended,
-                    "exchange": "kraken",
+                    "exchange": "kraken-futures",
                     "price_type": "asset_price",
                 });
                 cache.hset(&markets_hash, &market_key, &market_val.to_string()).await?;
@@ -452,11 +452,14 @@ impl CacheWarmer {
         let mut total_keys: u64 = 0;
 
         // Categories: merge PM condition counts into monitor:categories
+        // Read-merge-write to preserve existing Kalshi fields (event_count, series_count)
         for (category, group) in &cat_groups {
-            let pm_val = serde_json::json!({
-                "pm_condition_count": group.len(),
-            });
-            cache.hset("monitor:categories", category, &pm_val.to_string()).await?;
+            let existing = cache.hget("monitor:categories", category).await?;
+            let mut val: serde_json::Value = existing
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            val["pm_condition_count"] = serde_json::json!(group.len());
+            cache.hset("monitor:categories", category, &val.to_string()).await?;
             total_keys += 1;
 
             // Series: "PM:{category}" under each category

@@ -461,7 +461,7 @@ impl CdcConsumer {
                             "contract_type": contract_type,
                             "tradeable": tradeable,
                             "suspended": suspended,
-                            "exchange": "kraken",
+                            "exchange": "kraken-futures",
                             "price_type": "asset_price",
                         });
                         if let Err(e) = cache.hset(&markets_hash, &market_key, &market_val.to_string()).await {

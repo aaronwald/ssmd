@@ -209,6 +209,8 @@ export interface MonitorMarket {
   best_bid?: number | null;
   best_ask?: number | null;
   spread?: number | null;
+  outcome?: string;
+  outcome_index?: number;
 }
 
 export interface InfoResponse {
