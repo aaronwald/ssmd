@@ -26,111 +26,12 @@ impl CacheWarmer {
         Ok(row.get(0))
     }
 
-    /// Warm markets table into Redis (only live markets with close_time in the future)
-    /// Key structure: secmaster:series:SERIES:event:EVENT:market:MARKET
-    pub async fn warm_markets(&self, cache: &RedisCache) -> Result<u64> {
-        let rows = self.client
-            .query(
-                r#"
-                SELECT m.ticker, m.event_ticker, e.series_ticker, row_to_json(m.*)
-                FROM markets m
-                JOIN events e ON m.event_ticker = e.event_ticker
-                WHERE m.status = 'active'
-                  AND m.close_time > NOW()
-                "#,
-                &[],
-            )
-            .await?;
-
-        let mut count = 0;
-        for row in rows {
-            let market_ticker: String = row.get(0);
-            let event_ticker: String = row.get(1);
-            let series_ticker: String = row.get(2);
-            let json: serde_json::Value = row.get(3);
-
-            if cache.set_market(&series_ticker, &event_ticker, &market_ticker, &json).await? {
-                count += 1;
-            }
-        }
-
-        tracing::info!(count, "Warmed live markets");
-        Ok(count)
-    }
-
-    /// Warm events into Redis — only events that have at least one live market
-    /// Key structure: secmaster:series:SERIES:event:EVENT
-    pub async fn warm_events(&self, cache: &RedisCache) -> Result<u64> {
-        let rows = self.client
-            .query(
-                r#"
-                SELECT event_ticker, series_ticker, row_to_json(events.*)
-                FROM events
-                WHERE status = 'active'
-                  AND EXISTS (
-                    SELECT 1 FROM markets m
-                    WHERE m.event_ticker = events.event_ticker
-                      AND m.status = 'active'
-                      AND m.close_time > NOW()
-                  )
-                "#,
-                &[],
-            )
-            .await?;
-
-        let mut count = 0;
-        for row in rows {
-            let event_ticker: String = row.get(0);
-            let series_ticker: String = row.get(1);
-            let json: serde_json::Value = row.get(2);
-            if cache.set_event(&series_ticker, &event_ticker, &json).await? {
-                count += 1;
-            }
-        }
-
-        tracing::info!(count, "Warmed live events");
-        Ok(count)
-    }
-
-    /// Warm series table into Redis
-    /// Key structure: secmaster:series:SERIES_TICKER
-    pub async fn warm_series(&self, cache: &RedisCache) -> Result<u64> {
-        let rows = self.client
-            .query("SELECT ticker, row_to_json(series.*) FROM series", &[])
-            .await?;
-
-        let mut count = 0;
-        for row in rows {
-            let ticker: String = row.get(0);
-            let json: serde_json::Value = row.get(1);
-            cache.set_series(&ticker, &json).await?;
-            count += 1;
-        }
-
-        tracing::info!(count, "Warmed series");
-        Ok(count)
-    }
-
-    /// Warm series_fees table into Redis
-    pub async fn warm_fees(&self, cache: &RedisCache) -> Result<u64> {
-        let rows = self.client
-            .query("SELECT series_ticker, row_to_json(series_fees.*) FROM series_fees", &[])
-            .await?;
-
-        let mut count = 0;
-        for row in rows {
-            let series_ticker: String = row.get(0);
-            let json: serde_json::Value = row.get(1);
-            cache.set("fee", &series_ticker, &json).await?;
-            count += 1;
-        }
-
-        tracing::info!(count, "Warmed fees");
-        Ok(count)
-    }
-
     /// Build monitor index hashes for hierarchical browsing.
     /// Only includes live data: events with at least one market whose close_time > NOW().
+    ///
+    /// Uses DEL-before-repopulate: clears all monitor:* keys first, then rebuilds from
+    /// Postgres with `WHERE status = 'active'`. This provides a 5-minute bound on stale
+    /// data even if CDC misses a lifecycle transition.
     ///
     /// Creates:
     ///   monitor:categories          → { cat: {"event_count":N,"series_count":N} }
@@ -141,6 +42,10 @@ impl CacheWarmer {
     /// Also warms Kraken pairs and Polymarket conditions into the same hierarchy.
     pub async fn warm_monitor_indexes(&self, cache: &RedisCache) -> Result<u64> {
         let start = std::time::Instant::now();
+
+        // DEL all monitor:* keys before repopulating — clean slate every refresh
+        let deleted = cache.del_pattern("monitor:*").await?;
+        tracing::info!(deleted, "Cleared stale monitor keys");
 
         // 1. Categories: only categories that have events with live markets
         let cat_rows = self.client
@@ -542,162 +447,7 @@ impl CacheWarmer {
         Ok(total_keys)
     }
 
-    /// Build flat treemap data for the activity view.
-    /// UNION across Kalshi, Kraken, and Polymarket for a unified volume treemap.
-    /// Stores as a single `monitor:treemap` Redis key (JSON array) with 24h TTL.
-    pub async fn warm_treemap(&self, cache: &RedisCache) -> Result<u64> {
-        let rows = self.client
-            .query(
-                r#"
-                SELECT exchange, category, series, event, ticker, title,
-                       volume, open_interest, close_time
-                FROM (
-                    -- Kalshi markets
-                    SELECT 'kalshi' AS exchange,
-                           e.category,
-                           e.series_ticker AS series,
-                           e.event_ticker AS event,
-                           m.ticker,
-                           m.title,
-                           COALESCE(m.volume, 0)::bigint AS volume,
-                           COALESCE(m.open_interest, 0)::bigint AS open_interest,
-                           m.close_time::text
-                    FROM markets m
-                    JOIN events e ON m.event_ticker = e.event_ticker
-                    WHERE m.status = 'active'
-                      AND m.close_time > NOW()
-                      AND e.category IS NOT NULL
-
-                    UNION ALL
-
-                    -- Kraken futures (perpetuals only, with volume)
-                    SELECT 'kraken' AS exchange,
-                           'Futures' AS category,
-                           p.base AS series,
-                           p.pair_id AS event,
-                           p.pair_id AS ticker,
-                           (p.base || '/' || p.quote || ' ' || p.market_type) AS title,
-                           COALESCE(p.volume_24h, 0)::bigint AS volume,
-                           COALESCE(p.open_interest, 0)::bigint AS open_interest,
-                           NULL AS close_time
-                    FROM pairs p
-                    WHERE p.deleted_at IS NULL
-                      AND p.status = 'active'
-                      AND p.market_type = 'perpetual'
-                      AND COALESCE(p.volume_24h, 0) > 0
-
-                    UNION ALL
-
-                    -- Polymarket conditions (with volume only)
-                    SELECT 'polymarket' AS exchange,
-                           COALESCE(pc.category, 'Other') AS category,
-                           LEFT(pc.question, 80) AS series,
-                           pc.condition_id AS event,
-                           pc.condition_id AS ticker,
-                           pc.question AS title,
-                           COALESCE(pc.volume, 0)::bigint AS volume,
-                           0::bigint AS open_interest,
-                           pc.end_date::text AS close_time
-                    FROM polymarket_conditions pc
-                    WHERE pc.deleted_at IS NULL
-                      AND pc.active = true
-                      AND COALESCE(pc.volume, 0) > 0
-                ) all_markets
-                ORDER BY volume DESC NULLS LAST
-                LIMIT 3000
-                "#,
-                &[],
-            )
-            .await?;
-
-        let markets: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|row| {
-                let exchange: String = row.get(0);
-                let category: String = row.get(1);
-                let series: String = row.get(2);
-                let event: String = row.get(3);
-                let ticker: String = row.get(4);
-                let title: Option<String> = row.get(5);
-                let volume: i64 = row.get(6);
-                let open_interest: i64 = row.get(7);
-                let close_time: Option<String> = row.get(8);
-                serde_json::json!({
-                    "exchange": exchange,
-                    "category": category,
-                    "series": series,
-                    "event": event,
-                    "ticker": ticker,
-                    "title": title.unwrap_or_default(),
-                    "volume": volume,
-                    "open_interest": open_interest,
-                    "close_time": close_time,
-                })
-            })
-            .collect();
-
-        let count = markets.len() as u64;
-        let json = serde_json::to_string(&markets)?;
-        // Long TTL — warmer only runs on startup, no periodic refresh yet.
-        cache.set_raw_with_ttl("monitor:treemap", &json, 86400).await?;
-
-        tracing::info!(count, "Warmed monitor:treemap");
-        Ok(count)
-    }
-
-    /// Warm pairs table into Redis (Kraken futures)
-    /// Key: secmaster:pair:{pair_id}
-    pub async fn warm_pairs(&self, cache: &RedisCache) -> Result<u64> {
-        let rows = self.client
-            .query(
-                r#"
-                SELECT pair_id, row_to_json(pairs.*)
-                FROM pairs
-                WHERE deleted_at IS NULL
-                "#,
-                &[],
-            )
-            .await?;
-
-        let mut count = 0;
-        for row in rows {
-            let pair_id: String = row.get(0);
-            let json: serde_json::Value = row.get(1);
-            cache.set("pair", &pair_id, &json).await?;
-            count += 1;
-        }
-
-        tracing::info!(count, "Warmed pairs");
-        Ok(count)
-    }
-
-    /// Warm polymarket_conditions table into Redis
-    /// Key: secmaster:polymarket_condition:{condition_id}
-    pub async fn warm_polymarket_conditions(&self, cache: &RedisCache) -> Result<u64> {
-        let rows = self.client
-            .query(
-                r#"
-                SELECT condition_id, row_to_json(polymarket_conditions.*)
-                FROM polymarket_conditions
-                WHERE deleted_at IS NULL
-                "#,
-                &[],
-            )
-            .await?;
-
-        let mut count = 0;
-        for row in rows {
-            let condition_id: String = row.get(0);
-            let json: serde_json::Value = row.get(1);
-            cache.set("polymarket_condition", &condition_id, &json).await?;
-            count += 1;
-        }
-
-        tracing::info!(count, "Warmed polymarket conditions");
-        Ok(count)
-    }
-
-    /// Warm all tables
+    /// Warm cache on startup — only monitor indexes (the tradable universe).
     pub async fn warm_all(&self, cache: &RedisCache) -> Result<String> {
         let start = std::time::Instant::now();
 
@@ -705,30 +455,12 @@ impl CacheWarmer {
         let lsn = self.current_lsn().await?;
         tracing::info!(lsn = %lsn, "Snapshot LSN");
 
-        // Warm each table (series first so markets can reference them)
-        let series = self.warm_series(cache).await?;
-        let markets = self.warm_markets(cache).await?;
-        let events = self.warm_events(cache).await?;
-        let fees = self.warm_fees(cache).await?;
-        let pairs = self.warm_pairs(cache).await?;
-        let pm_conditions = self.warm_polymarket_conditions(cache).await?;
-
-        // Build monitor index hashes from the warmed data
+        // Build monitor index hashes (the only data consumers actually read)
         let indexes = self.warm_monitor_indexes(cache).await?;
-
-        // Build flat treemap data for activity view
-        let treemap = self.warm_treemap(cache).await?;
 
         let elapsed = start.elapsed();
         tracing::info!(
-            series,
-            markets,
-            events,
-            fees,
-            pairs,
-            pm_conditions,
             indexes,
-            treemap,
             elapsed_ms = elapsed.as_millis(),
             "Cache warming complete"
         );

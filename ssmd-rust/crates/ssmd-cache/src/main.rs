@@ -62,12 +62,7 @@ async fn main() -> anyhow::Result<()> {
     let warmer = CacheWarmer::connect(&config.database_url).await?;
     let snapshot_lsn = warmer.warm_all(&cache).await?;
 
-    // Log cache stats
-    let series = cache.count("secmaster:series:*").await?;
-    let fees = cache.count("secmaster:fee:*").await?;
-    tracing::info!(series, fees, "Cache populated");
-
-    // Spawn periodic treemap + monitor index refresh (every 5 minutes)
+    // Spawn periodic monitor index refresh (every 5 minutes)
     let refresh_cache = cache.clone();
     let refresh_db_url = config.database_url.clone();
     tokio::spawn(async move {
@@ -80,10 +75,6 @@ async fn main() -> anyhow::Result<()> {
                     match warmer.warm_monitor_indexes(&refresh_cache).await {
                         Ok(keys) => tracing::info!(keys, "Periodic monitor index refresh"),
                         Err(e) => tracing::error!(error = %e, "Monitor index refresh failed"),
-                    }
-                    match warmer.warm_treemap(&refresh_cache).await {
-                        Ok(count) => tracing::info!(count, "Periodic treemap refresh"),
-                        Err(e) => tracing::error!(error = %e, "Treemap refresh failed"),
                     }
                 }
                 Err(e) => tracing::error!(error = %e, "DB connect failed for periodic refresh"),

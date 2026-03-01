@@ -137,13 +137,13 @@ impl CdcConsumer {
         })
     }
 
-    /// Process CDC events and update cache
+    /// Process CDC events and update monitor hashes in Redis.
+    /// Only writes to monitor:* hash keys — no secmaster:* individual keys.
     pub async fn run(&mut self, cache: &RedisCache) -> Result<()> {
         tracing::info!(snapshot_lsn = %self.snapshot_lsn, "Starting CDC consumer");
 
         let mut processed: u64 = 0;
         let mut skipped_lsn: u64 = 0;
-        let mut skipped_expired: u64 = 0;
         let mut last_lsn: Option<Lsn> = None;
         let mut last_event_time = Instant::now();
         let mut gaps_detected: u64 = 0;
@@ -198,16 +198,10 @@ impl CdcConsumer {
                     if let Some(key) = key {
                         match event.table.as_str() {
                             "markets" => {
-                                self.handle_market_event(&event, &key, cache, &mut skipped_expired).await?;
+                                self.handle_market_event(&event, &key, cache).await?;
                             }
                             "events" => {
-                                self.handle_event_event(&event, &key, cache, &mut skipped_expired).await?;
-                            }
-                            "series" => {
-                                self.handle_series_event(&event, &key, cache).await?;
-                            }
-                            "series_fees" => {
-                                self.handle_fee_event(&event, &key, cache).await?;
+                                self.handle_event_event(&event, &key, cache).await?;
                             }
                             "pairs" => {
                                 self.handle_pairs_event(&event, &key, cache).await?;
@@ -216,28 +210,16 @@ impl CdcConsumer {
                                 self.handle_polymarket_condition_event(&event, &key, cache).await?;
                             }
                             _ => {
-                                // Unknown table, use generic handler
-                                match event.op.as_str() {
-                                    "insert" | "update" => {
-                                        if let Some(data) = &event.data {
-                                            cache.set(&event.table, &key, data).await?;
-                                        }
-                                    }
-                                    "delete" => {
-                                        cache.delete(&event.table, &key).await?;
-                                    }
-                                    _ => {}
-                                }
+                                // Other tables (series, series_fees, etc.) — no cache action needed
                             }
                         }
                     }
 
                     processed += 1;
-                    if processed % 100 == 0 {
+                    if processed.is_multiple_of(100) {
                         tracing::info!(
                             processed,
                             skipped_lsn,
-                            skipped_expired,
                             gaps_detected,
                             last_lsn = ?last_lsn,
                             "CDC events processed"
@@ -255,45 +237,24 @@ impl CdcConsumer {
         Ok(())
     }
 
-    /// Handle market CDC events with series grouping and TTL
-    /// Uses L1 (in-memory) then L2 (PostgreSQL) lookup for event→series mapping
-    /// Also updates monitor:markets:{event} hash index
+    /// Handle market CDC events — update monitor:markets:{event} hash.
+    /// HSET on active status, HDEL on terminal status (settled, closed, etc.)
     async fn handle_market_event(
         &mut self,
         event: &CdcEvent,
         market_ticker: &str,
         cache: &RedisCache,
-        skipped_expired: &mut u64,
     ) -> Result<()> {
         match event.op.as_str() {
             "insert" | "update" => {
                 if let Some(data) = &event.data {
-                    // Get event_ticker from market data
                     let event_ticker = data.get("event_ticker")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
 
-                    // Get series_ticker (L1: in-memory, L2: PostgreSQL)
-                    let series_ticker = self.event_series_lookup.get_series(event_ticker).await;
-
-                    if let Some(series_ticker) = series_ticker {
-                        if !cache.set_market(&series_ticker, event_ticker, market_ticker, data).await? {
-                            *skipped_expired += 1;
-                        }
-                    } else {
-                        // Fallback: store under "unknown" series if event not found
-                        tracing::warn!(
-                            market_ticker,
-                            event_ticker,
-                            "Series lookup failed (event not in DB), storing under 'unknown'"
-                        );
-                        if !cache.set_market("unknown", event_ticker, market_ticker, data).await? {
-                            *skipped_expired += 1;
-                        }
-                    }
-
-                    // Update monitor:markets:{event} hash index
                     let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
+                    let hash_key = format!("monitor:markets:{}", event_ticker);
+
                     if status == "active" {
                         let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
                         let close_time = data.get("close_time").and_then(|v| v.as_str());
@@ -302,18 +263,20 @@ impl CdcConsumer {
                             "status": status,
                             "close_time": close_time,
                         });
-                        let hash_key = format!("monitor:markets:{}", event_ticker);
                         if let Err(e) = cache.hset(&hash_key, market_ticker, &val.to_string()).await {
                             tracing::warn!(error = %e, "Failed to update monitor:markets index");
                         }
+                    } else {
+                        // Terminal status — remove from monitor hash
+                        if let Err(e) = cache.hdel(&hash_key, market_ticker).await {
+                            tracing::warn!(error = %e, "Failed to HDEL from monitor:markets");
+                        }
+                        tracing::debug!(market_ticker, status, "HDEL market from monitor");
                     }
                 }
             }
             "delete" => {
-                // For delete, we need the series_ticker and event_ticker but don't have them in the event
-                // The safest approach is to delete from all possible locations
-                // In practice, we could track this in the lookup cache
-                tracing::debug!(market_ticker, "Market delete - cannot determine series/event");
+                tracing::debug!(market_ticker, "Market delete - cannot determine event");
             }
             _ => {}
         }
@@ -321,14 +284,14 @@ impl CdcConsumer {
         Ok(())
     }
 
-    /// Handle event CDC events and update series lookup
-    /// Also updates monitor:events:{series} hash index
+    /// Handle event CDC events — update monitor:events:{series} hash.
+    /// HSET on active status, HDEL on terminal status.
+    /// Also updates the event→series lookup cache.
     async fn handle_event_event(
         &mut self,
         event: &CdcEvent,
         event_ticker: &str,
         cache: &RedisCache,
-        skipped_expired: &mut u64,
     ) -> Result<()> {
         match event.op.as_str() {
             "insert" | "update" => {
@@ -336,38 +299,35 @@ impl CdcConsumer {
                     // Update our lookup cache
                     self.event_series_lookup.update_from_event(event_ticker, data);
 
-                    // Get series_ticker from event data
                     let series_ticker = data.get("series_ticker")
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown");
 
-                    // Store event data with TTL logic
-                    if !cache.set_event(series_ticker, event_ticker, data).await? {
-                        *skipped_expired += 1;
-                    }
-
-                    // Update monitor:events:{series} hash index
                     let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
+                    let hash_key = format!("monitor:events:{}", series_ticker);
+
                     if status == "active" {
                         let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
                         let strike_date = data.get("strike_date").and_then(|v| v.as_str());
-                        // Count markets for this event (we don't have it in CDC data, use 0 as placeholder)
                         let val = serde_json::json!({
                             "title": title,
                             "status": status,
                             "strike_date": strike_date,
                             "market_count": 0,
                         });
-                        let hash_key = format!("monitor:events:{}", series_ticker);
                         if let Err(e) = cache.hset(&hash_key, event_ticker, &val.to_string()).await {
                             tracing::warn!(error = %e, "Failed to update monitor:events index");
                         }
+                    } else {
+                        // Terminal status — remove from monitor hash
+                        if let Err(e) = cache.hdel(&hash_key, event_ticker).await {
+                            tracing::warn!(error = %e, "Failed to HDEL from monitor:events");
+                        }
+                        tracing::debug!(event_ticker, status, "HDEL event from monitor");
                     }
                 }
             }
             "delete" => {
-                // For delete, we don't have the series_ticker
-                // Would need to track this in a lookup cache
                 tracing::debug!(event_ticker, "Event delete - cannot determine series");
             }
             _ => {}
@@ -376,52 +336,8 @@ impl CdcConsumer {
         Ok(())
     }
 
-    /// Handle series CDC events
-    async fn handle_series_event(
-        &self,
-        event: &CdcEvent,
-        series_ticker: &str,
-        cache: &RedisCache,
-    ) -> Result<()> {
-        match event.op.as_str() {
-            "insert" | "update" => {
-                if let Some(data) = &event.data {
-                    cache.set_series(series_ticker, data).await?;
-                }
-            }
-            "delete" => {
-                cache.delete("series", series_ticker).await?;
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
-
-    /// Handle series_fees CDC events
-    async fn handle_fee_event(
-        &self,
-        event: &CdcEvent,
-        series_ticker: &str,
-        cache: &RedisCache,
-    ) -> Result<()> {
-        match event.op.as_str() {
-            "insert" | "update" => {
-                if let Some(data) = &event.data {
-                    cache.set("fee", series_ticker, data).await?;
-                }
-            }
-            "delete" => {
-                cache.delete("fee", series_ticker).await?;
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
-
-    /// Handle pairs CDC events (Kraken futures)
-    /// Updates secmaster:pair:{pair_id} and monitor hierarchy
+    /// Handle pairs CDC events (Kraken futures) — update monitor hierarchy.
+    /// HSET on active status, HDEL on terminal/deleted status.
     async fn handle_pairs_event(
         &self,
         event: &CdcEvent,
@@ -431,25 +347,20 @@ impl CdcConsumer {
         match event.op.as_str() {
             "insert" | "update" => {
                 if let Some(data) = &event.data {
-                    // Update secmaster record
-                    cache.set("pair", pair_id, data).await?;
-
-                    // Update monitor hierarchy if active
                     let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
                     let deleted_at = data.get("deleted_at");
                     let is_active = status == "active"
                         && (deleted_at.is_none() || deleted_at == Some(&serde_json::Value::Null));
 
+                    let base = data.get("base").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
+                    let event_key = format!("{}-perps", base);
+                    let markets_hash = format!("monitor:markets:{}", event_key);
+
                     if is_active {
-                        let base = data.get("base").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
                         let market_type = data.get("market_type").and_then(|v| v.as_str()).unwrap_or("perpetual");
                         let contract_type = data.get("contract_type").and_then(|v| v.as_str());
                         let tradeable = data.get("tradeable").and_then(|v| v.as_bool());
                         let suspended = data.get("suspended").and_then(|v| v.as_bool());
-
-                        let market_key = pair_id.clone();
-                        let event_key = format!("{}-perps", base);
-                        let markets_hash = format!("monitor:markets:{}", event_key);
 
                         let market_val = serde_json::json!({
                             "pair_id": pair_id,
@@ -464,14 +375,20 @@ impl CdcConsumer {
                             "exchange": "kraken-futures",
                             "price_type": "asset_price",
                         });
-                        if let Err(e) = cache.hset(&markets_hash, &market_key, &market_val.to_string()).await {
+                        if let Err(e) = cache.hset(&markets_hash, pair_id, &market_val.to_string()).await {
                             tracing::warn!(error = %e, "Failed to update monitor:markets for Kraken pair");
                         }
+                    } else {
+                        // Not active — remove from monitor hash
+                        if let Err(e) = cache.hdel(&markets_hash, pair_id).await {
+                            tracing::warn!(error = %e, "Failed to HDEL Kraken pair from monitor");
+                        }
+                        tracing::debug!(pair_id, status, "HDEL Kraken pair from monitor");
                     }
                 }
             }
             "delete" => {
-                cache.delete("pair", pair_id).await?;
+                tracing::debug!(pair_id, "Pair delete - periodic refresh will clean up");
             }
             _ => {}
         }
@@ -479,8 +396,8 @@ impl CdcConsumer {
         Ok(())
     }
 
-    /// Handle polymarket_conditions CDC events
-    /// Updates secmaster:polymarket_condition:{condition_id} and monitor hierarchy
+    /// Handle polymarket_conditions CDC events — update monitor hierarchy.
+    /// HSET on active status, HDEL on terminal/deleted status.
     async fn handle_polymarket_condition_event(
         &self,
         event: &CdcEvent,
@@ -490,26 +407,22 @@ impl CdcConsumer {
         match event.op.as_str() {
             "insert" | "update" => {
                 if let Some(data) = &event.data {
-                    // Update secmaster record
-                    cache.set("polymarket_condition", condition_id, data).await?;
-
-                    // Update monitor hierarchy if active
                     let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
                     let deleted_at = data.get("deleted_at");
                     let is_active = status == "active"
                         && (deleted_at.is_none() || deleted_at == Some(&serde_json::Value::Null));
 
+                    let category = data.get("category")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Uncategorized");
+                    let series_key = format!("PM:{}", category);
+                    let events_hash = format!("monitor:events:{}", series_key);
+
                     if is_active {
-                        let category = data.get("category")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Uncategorized");
                         let question = data.get("question").and_then(|v| v.as_str()).unwrap_or("");
                         let end_date = data.get("end_date").and_then(|v| v.as_str());
                         let accepting_orders = data.get("accepting_orders").and_then(|v| v.as_bool());
                         let event_id = data.get("event_id").and_then(|v| v.as_str());
-
-                        let series_key = format!("PM:{}", category);
-                        let events_hash = format!("monitor:events:{}", series_key);
 
                         let event_val = serde_json::json!({
                             "title": question,
@@ -523,11 +436,17 @@ impl CdcConsumer {
                         if let Err(e) = cache.hset(&events_hash, condition_id, &event_val.to_string()).await {
                             tracing::warn!(error = %e, "Failed to update monitor:events for Polymarket condition");
                         }
+                    } else {
+                        // Not active — remove from monitor hash
+                        if let Err(e) = cache.hdel(&events_hash, condition_id).await {
+                            tracing::warn!(error = %e, "Failed to HDEL Polymarket condition from monitor");
+                        }
+                        tracing::debug!(condition_id, status, "HDEL Polymarket condition from monitor");
                     }
                 }
             }
             "delete" => {
-                cache.delete("polymarket_condition", condition_id).await?;
+                tracing::debug!(condition_id, "Polymarket condition delete - periodic refresh will clean up");
             }
             _ => {}
         }

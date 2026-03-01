@@ -3698,7 +3698,6 @@ dependencies = [
  "anyhow",
  "async-nats",
  "axum",
- "chrono",
  "clap",
  "futures-util",
  "lru",
