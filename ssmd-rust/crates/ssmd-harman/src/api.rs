@@ -497,6 +497,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             auth_middleware,
         ));
 
+    use axum::http::{Method, header};
+    let cors_methods = vec![Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS];
+    let cors_headers = vec![header::CONTENT_TYPE, header::AUTHORIZATION, header::ACCEPT];
+
     let cors = match std::env::var("ALLOWED_ORIGINS") {
         Ok(origins) if !origins.is_empty() => {
             let allowed: Vec<axum::http::HeaderValue> = origins
@@ -505,14 +509,14 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .collect();
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list(allowed))
-                .allow_methods(Any)
-                .allow_headers(Any)
+                .allow_methods(cors_methods)
+                .allow_headers(cors_headers)
                 .allow_credentials(true)
         }
         _ => CorsLayer::new()
             .allow_origin(AllowOrigin::mirror_request())
-            .allow_methods(Any)
-            .allow_headers(Any)
+            .allow_methods(cors_methods)
+            .allow_headers(cors_headers)
             .allow_credentials(true),
     };
 
