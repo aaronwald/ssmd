@@ -211,6 +211,9 @@ export interface MonitorMarket {
   spread?: number | null;
   outcome?: string;
   outcome_index?: number;
+  price?: string | null;
+  price_type?: string;
+  mark_price?: string | null;
 }
 
 export interface InfoResponse {

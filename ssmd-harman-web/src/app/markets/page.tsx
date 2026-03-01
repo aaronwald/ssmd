@@ -320,7 +320,7 @@ function MarketsContent() {
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_bid ?? m.bid ?? m.best_bid ?? null)}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_ask ?? m.ask ?? m.best_ask ?? null)}</td>
                       <td className="px-4 py-2 font-mono text-right text-fg-muted">{fmtSpread(m.yes_bid ?? m.bid ?? m.best_bid ?? null, m.yes_ask ?? m.ask ?? m.best_ask ?? null)}</td>
-                      <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.last)}</td>
+                      <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.last ?? (m.price != null ? Number(m.price) : null))}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtInt(m.volume)}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtInt(m.open_interest)}</td>
                       <td className="px-4 py-2 text-xs text-fg-muted font-mono">{fmtTime(m.close_time)}</td>
