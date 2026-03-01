@@ -8,7 +8,6 @@ import { useMe } from "../lib/hooks";
 
 const links = [
   { href: "/", label: "Dashboard" },
-  { href: "/markets", label: "Markets" },
   { href: "/orders", label: "Orders" },
   { href: "/docs", label: "Docs" },
 ];
@@ -19,10 +18,6 @@ function NavLinks() {
   const searchParams = useSearchParams();
 
   function buildHref(href: string) {
-    if (href === "/markets" && pathname === "/markets") {
-      const qs = searchParams.toString();
-      return qs ? `/markets?${qs}` : "/markets";
-    }
     if (href === "/orders" && pathname === "/orders") {
       const qs = searchParams.toString();
       return qs ? `/orders?${qs}` : "/orders";
