@@ -2,13 +2,13 @@
 
 import { Suspense, useState, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { useOrders } from "@/lib/hooks";
+import { useOrders, usePositions } from "@/lib/hooks";
 import { pump, reconcile, resume, massCancel } from "@/lib/api";
 import { InstanceBadge } from "@/components/nav";
 import { StateBadge } from "@/components/state-badge";
 import { OrderActions } from "@/components/order-actions";
 import { CreateOrderForm } from "@/components/create-order-form";
-import type { Order } from "@/lib/types";
+import type { Order, LocalPosition } from "@/lib/types";
 
 type SortKey = "id" | "ticker" | "quantity" | "price_dollars" | "state" | "created_at";
 type SortDir = "asc" | "desc";
@@ -43,9 +43,19 @@ function OrdersContent() {
   }
 
   const { data: orders, error } = useOrders(filter || undefined);
+  const { data: positions } = usePositions();
   const [actionMsg, setActionMsg] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  // Build ticker → local position map for quick lookup
+  const posMap = useMemo(() => {
+    const m = new Map<string, LocalPosition>();
+    if (positions) {
+      for (const p of positions.local) m.set(p.ticker, p);
+    }
+    return m;
+  }, [positions]);
 
   function handleSort(key: SortKey) {
     if (sortKey === key) {
@@ -130,6 +140,7 @@ function OrdersContent() {
                 <th className="px-4 py-2">Action</th>
                 <SortTh k="quantity" current={sortKey} dir={sortDir} onClick={handleSort} align="right">Qty</SortTh>
                 <th className="px-4 py-2 text-right">Filled</th>
+                <th className="px-4 py-2 text-right" title="Net position from fills">Pos</th>
                 <SortTh k="price_dollars" current={sortKey} dir={sortDir} onClick={handleSort} align="right">Price</SortTh>
                 <th className="px-4 py-2">TIF</th>
                 <SortTh k="state" current={sortKey} dir={sortDir} onClick={handleSort}>State</SortTh>
@@ -140,7 +151,10 @@ function OrdersContent() {
             </thead>
             <tbody>
               {sortedOrders && sortedOrders.length > 0 ? (
-                sortedOrders.map((o) => (
+                sortedOrders.map((o) => {
+                  const pos = posMap.get(o.ticker);
+                  const netQty = pos ? parseFloat(pos.net_quantity) : 0;
+                  return (
                   <tr key={o.id} className="border-b border-border-subtle hover:bg-bg-surface-hover">
                     <td className="px-4 py-2 font-mono text-fg-muted">{o.id}</td>
                     <td className="px-4 py-2 font-mono">{o.ticker}</td>
@@ -148,6 +162,7 @@ function OrdersContent() {
                     <td className="px-4 py-2 uppercase">{o.action}</td>
                     <td className="px-4 py-2 font-mono text-right">{o.quantity}</td>
                     <td className="px-4 py-2 font-mono text-right">{o.filled_quantity}</td>
+                    <td className={`px-4 py-2 font-mono text-right ${netQty > 0 ? "text-green" : netQty < 0 ? "text-red" : "text-fg-subtle"}`}>{pos ? pos.net_quantity : "—"}</td>
                     <td className="px-4 py-2 font-mono text-right">${o.price_dollars}</td>
                     <td className="px-4 py-2 uppercase text-xs">{o.time_in_force}</td>
                     <td className="px-4 py-2"><StateBadge state={o.state} /></td>
@@ -155,10 +170,11 @@ function OrdersContent() {
                     <td className="px-4 py-2 text-xs text-fg-muted font-mono">{new Date(o.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
                     <td className="px-4 py-2"><OrderActions order={o} /></td>
                   </tr>
-                ))
+                  );
+                })
               ) : (
                 <tr>
-                  <td colSpan={12} className="px-4 py-8 text-center text-fg-subtle text-sm">
+                  <td colSpan={13} className="px-4 py-8 text-center text-fg-subtle text-sm">
                     {sortedOrders ? "No orders" : "Loading..."}
                   </td>
                 </tr>
