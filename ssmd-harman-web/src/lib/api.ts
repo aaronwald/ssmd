@@ -15,10 +15,10 @@ import type {
   MonitorSeries,
   MonitorEvent,
   MonitorMarket,
+  InfoResponse,
 } from "./types";
 
 const BASE_URL = process.env.NEXT_PUBLIC_HARMAN_URL || "";
-const TOKEN = process.env.NEXT_PUBLIC_HARMAN_TOKEN || "";
 
 async function request<T>(
   path: string,
@@ -26,13 +26,13 @@ async function request<T>(
 ): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
     ...(options.headers as Record<string, string>),
   };
 
   const res = await fetch(`${BASE_URL}${path}`, {
     ...options,
     headers,
+    credentials: "include",
   });
 
   if (!res.ok) {
@@ -155,4 +155,8 @@ export const getMarkets = async (event: string): Promise<MonitorMarket[]> => {
   const res = await request<{ markets: MonitorMarket[] }>(`/v1/monitor/markets?event=${encodeURIComponent(event)}`);
   return res.markets;
 };
+
+// Info endpoint (public, no auth)
+export const getInfo = () =>
+  request<InfoResponse>("/v1/info");
 

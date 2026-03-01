@@ -38,6 +38,8 @@ redis = { workspace = true }
 sha2 = "0.10"
 lru = "0.12"
 tower-http = { workspace = true }
+jsonwebtoken = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

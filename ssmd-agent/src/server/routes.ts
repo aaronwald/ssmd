@@ -18,6 +18,7 @@ import {
   listCurrentFees,
   getFeeStats,
   getApiKeyByPrefix,
+  getApiKeyByEmail,
   createApiKey,
   listApiKeysByUser,
   listAllApiKeys,
@@ -862,6 +863,22 @@ route("GET", "/v1/auth/validate", (req, _ctx) => {
   const auth = (req as Request & { auth: AuthInfo }).auth;
   return Promise.resolve(json({ valid: true, scopes: auth.scopes, key_prefix: auth.keyPrefix }));
 }, true, undefined, "internal");
+
+// Auth email lookup endpoint (for CF JWT → API key resolution)
+route("GET", "/v1/auth/lookup", async (req, ctx) => {
+  const url = new URL(req.url);
+  const email = url.searchParams.get("email");
+  if (!email) {
+    return json({ error: "email query parameter is required" }, 400);
+  }
+
+  const key = await getApiKeyByEmail(ctx.db, email);
+  if (!key) {
+    return json({ found: false });
+  }
+
+  return json({ found: true, key_prefix: key.keyPrefix, scopes: key.scopes });
+}, true, "admin:read", "internal");
 
 // Settings endpoints
 route("GET", "/v1/settings", async (_req, ctx) => {

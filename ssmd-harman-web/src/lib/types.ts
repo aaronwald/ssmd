@@ -183,3 +183,9 @@ export interface MonitorMarket {
   volume: number | null;
   open_interest: number | null;
 }
+
+export interface InfoResponse {
+  exchange: string;
+  environment: string;
+  version: string;
+}

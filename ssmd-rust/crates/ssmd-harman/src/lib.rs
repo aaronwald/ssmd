@@ -64,6 +64,13 @@ impl MonitorMetrics {
     }
 }
 
+/// Cloudflare Access JWKS key (RSA)
+pub struct CfJwk {
+    pub kid: String,
+    pub n: String,
+    pub e: String,
+}
+
 /// Cached auth validation result from data-ts
 pub struct CachedAuth {
     pub key_prefix: String,
@@ -117,6 +124,12 @@ pub struct AppState {
     pub exchange_type: String,
     /// Exchange environment (e.g., "demo" or "prod")
     pub environment: String,
+    // Cloudflare Access JWT auth (Path 4)
+    pub cf_jwks_url: Option<String>,
+    pub cf_aud: Option<String>,
+    pub cf_jwks: RwLock<Option<(Instant, Vec<CfJwk>)>>,
+    pub data_ts_api_key: Option<String>,
+    pub data_ts_base_url: Option<String>,
 }
 
 impl AppState {

@@ -77,6 +77,18 @@ async fn main() {
     let exchange_type = std::env::var("EXCHANGE_TYPE").unwrap_or_else(|_| "kalshi".to_string());
     let environment = std::env::var("EXCHANGE_ENVIRONMENT").unwrap_or_else(|_| "demo".to_string());
 
+    // Cloudflare Access JWT config
+    let cf_jwks_url = std::env::var("CF_JWKS_URL").ok();
+    let cf_aud = std::env::var("CF_AUD").ok();
+    let data_ts_api_key = std::env::var("DATA_TS_API_KEY").ok();
+    let data_ts_base_url = std::env::var("DATA_TS_BASE_URL").ok();
+
+    if cf_jwks_url.is_some() && cf_aud.is_some() {
+        info!("Cloudflare Access JWT auth enabled");
+    } else {
+        info!("Cloudflare Access JWT auth disabled (CF_JWKS_URL/CF_AUD not set)");
+    }
+
     // Startup env validation: detect base URL / environment mismatch
     let base_url_lower = args.kalshi_base_url.to_lowercase();
     if environment == "prod" && base_url_lower.contains("demo") {
@@ -226,6 +238,11 @@ async fn main() {
         monitor_metrics,
         exchange_type,
         environment,
+        cf_jwks_url,
+        cf_aud,
+        cf_jwks: RwLock::new(None),
+        data_ts_api_key,
+        data_ts_base_url,
     });
 
     // Run recovery before starting API server

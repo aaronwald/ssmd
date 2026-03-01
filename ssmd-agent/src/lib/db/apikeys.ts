@@ -23,6 +23,27 @@ export async function getApiKeyByPrefix(
 }
 
 /**
+ * Get API key by user email (for CF JWT auth lookup).
+ * Returns active (non-revoked, non-disabled) keys only.
+ */
+export async function getApiKeyByEmail(
+  db: Database,
+  email: string
+): Promise<ApiKey | null> {
+  const result = await db
+    .select()
+    .from(apiKeys)
+    .where(and(
+      eq(apiKeys.userEmail, email),
+      isNull(apiKeys.revokedAt),
+      isNull(apiKeys.disabledAt)
+    ))
+    .limit(1);
+
+  return result[0] ?? null;
+}
+
+/**
  * Create a new API key.
  */
 export async function createApiKey(

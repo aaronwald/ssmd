@@ -109,6 +109,7 @@ export {
 // API key operations
 export {
   getApiKeyByPrefix,
+  getApiKeyByEmail,
   createApiKey,
   listApiKeysByUser,
   listAllApiKeys,

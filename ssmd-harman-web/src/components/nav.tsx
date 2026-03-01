@@ -3,6 +3,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
+import { useInfo } from "../lib/hooks";
 
 const links = [
   { href: "/", label: "Dashboard" },
@@ -49,12 +50,28 @@ function NavLinks() {
   );
 }
 
+function EnvironmentBadge() {
+  const { data } = useInfo();
+  if (!data) return null;
+  const isDemo = data.environment === "demo";
+  return (
+    <span className={`text-xs font-mono px-2 py-0.5 rounded-full ${
+      isDemo
+        ? "bg-green-900/50 text-green-400 border border-green-700"
+        : "bg-red-900/50 text-red-400 border border-red-700"
+    }`}>
+      {data.environment.toUpperCase()}
+    </span>
+  );
+}
+
 export function Nav() {
   return (
     <nav className="sticky top-0 z-50 border-b border-border bg-bg-raised px-6 py-3 flex items-center gap-8">
       <Link href="/" className="font-mono text-lg font-bold text-fg">
         harman<span className="text-accent">.</span>oms
       </Link>
+      <EnvironmentBadge />
       <div className="flex gap-6">
         <Suspense fallback={
           <>

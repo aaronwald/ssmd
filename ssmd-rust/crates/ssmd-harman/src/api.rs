@@ -22,6 +22,9 @@ use harman::types::{Action, GroupState, Order, OrderGroup, OrderRequest, Side, T
 
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
+use base64::Engine;
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+
 use crate::{AppState, SessionContext};
 
 /// Extract bearer token from Authorization header
@@ -75,6 +78,37 @@ struct ValidateResponse {
     key_prefix: String,
 }
 
+/// CF Access JWKS response
+#[derive(Deserialize)]
+struct JwksResponse {
+    keys: Vec<JwksKey>,
+}
+
+#[derive(Deserialize)]
+struct JwksKey {
+    kid: String,
+    n: String,
+    e: String,
+    #[allow(dead_code)]
+    kty: String,
+}
+
+/// CF JWT claims
+#[derive(Deserialize)]
+struct CfClaims {
+    email: String,
+    #[allow(dead_code)]
+    aud: serde_json::Value,
+}
+
+/// data-ts /v1/auth/lookup response
+#[derive(Deserialize)]
+struct LookupResponse {
+    found: bool,
+    key_prefix: Option<String>,
+    scopes: Option<Vec<String>>,
+}
+
 /// Resolve key_prefix → session_id (DashMap cache → DB)
 async fn resolve_session(state: &AppState, key_prefix: &str) -> Result<i64, String> {
     if let Some(id) = state.key_sessions.get(key_prefix) {
@@ -88,12 +122,231 @@ async fn resolve_session(state: &AppState, key_prefix: &str) -> Result<i64, Stri
     Ok(session_id)
 }
 
+/// Extract CF Access JWT from header
+fn extract_cf_jwt(req: &Request) -> Option<&str> {
+    req.headers()
+        .get("cf-access-jwt-assertion")
+        .and_then(|v| v.to_str().ok())
+}
+
+/// Fetch or refresh JWKS from Cloudflare Access (5-min TTL)
+async fn get_or_refresh_jwks(
+    state: &AppState,
+    force: bool,
+) -> Result<(), StatusCode> {
+    let jwks_url = state.cf_jwks_url.as_ref().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Check if cache is fresh
+    if !force {
+        let cache = state.cf_jwks.read().await;
+        if let Some((fetched_at, _)) = cache.as_ref() {
+            if fetched_at.elapsed() < Duration::from_secs(300) {
+                return Ok(());
+            }
+        }
+    }
+
+    // Fetch JWKS
+    let resp = state
+        .http_client
+        .get(jwks_url)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "JWKS fetch failed");
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    let jwks: JwksResponse = resp.json().await.map_err(|e| {
+        tracing::error!(error = %e, "JWKS response parse failed");
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let keys: Vec<crate::CfJwk> = jwks
+        .keys
+        .into_iter()
+        .map(|k| crate::CfJwk {
+            kid: k.kid,
+            n: k.n,
+            e: k.e,
+        })
+        .collect();
+
+    tracing::info!(key_count = keys.len(), "JWKS refreshed");
+    let mut cache = state.cf_jwks.write().await;
+    *cache = Some((std::time::Instant::now(), keys));
+    Ok(())
+}
+
+/// Validate CF Access JWT and return email
+async fn validate_cf_jwt(state: &AppState, token: &str) -> Result<String, StatusCode> {
+    let cf_aud = state.cf_aud.as_ref().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Decode header to get kid
+    let header = decode_header(token).map_err(|e| {
+        tracing::warn!(error = %e, "CF JWT header decode failed");
+        StatusCode::UNAUTHORIZED
+    })?;
+
+    let kid = header.kid.ok_or_else(|| {
+        tracing::warn!("CF JWT missing kid");
+        StatusCode::UNAUTHORIZED
+    })?;
+
+    // Ensure JWKS is loaded
+    get_or_refresh_jwks(state, false).await?;
+
+    // Find matching key (try refresh once if kid not found)
+    let decoding_key = {
+        let cache = state.cf_jwks.read().await;
+        let keys = cache.as_ref().map(|(_, k)| k).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        keys.iter().find(|k| k.kid == kid).map(|k| {
+            let n_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(&k.n)
+                .unwrap_or_default();
+            let e_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(&k.e)
+                .unwrap_or_default();
+            DecodingKey::from_rsa_raw_components(&n_bytes, &e_bytes)
+        })
+    };
+
+    let decoding_key = match decoding_key {
+        Some(dk) => dk,
+        None => {
+            // kid not found — refresh JWKS once (key rotation)
+            tracing::info!(kid = %kid, "kid not found in JWKS, refreshing");
+            get_or_refresh_jwks(state, true).await?;
+            let cache = state.cf_jwks.read().await;
+            let keys = cache.as_ref().map(|(_, k)| k).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+            keys.iter()
+                .find(|k| k.kid == kid)
+                .map(|k| {
+                    let n_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(&k.n)
+                        .unwrap_or_default();
+                    let e_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(&k.e)
+                        .unwrap_or_default();
+                    DecodingKey::from_rsa_raw_components(&n_bytes, &e_bytes)
+                })
+                .ok_or_else(|| {
+                    tracing::warn!(kid = %kid, "kid not found after JWKS refresh");
+                    StatusCode::UNAUTHORIZED
+                })?
+        }
+    };
+
+    // Validate JWT
+    let mut validation = Validation::new(Algorithm::RS256);
+    // CF Access uses the audience as an array containing the AUD value
+    validation.set_audience(&[cf_aud]);
+
+    let token_data = decode::<CfClaims>(token, &decoding_key, &validation).map_err(|e| {
+        tracing::warn!(error = %e, "CF JWT validation failed");
+        StatusCode::UNAUTHORIZED
+    })?;
+
+    Ok(token_data.claims.email)
+}
+
+/// Look up email -> API key via data-ts, with auth_cache caching
+async fn lookup_email(state: &AppState, email: &str) -> Result<(String, Vec<String>), StatusCode> {
+    let cache_key = format!("cf:{}", email);
+
+    // Check cache (30s TTL)
+    {
+        let mut cache = state.auth_cache.write().await;
+        if let Some(cached) = cache.get(&cache_key) {
+            if cached.cached_at.elapsed() < Duration::from_secs(30) {
+                return Ok((cached.key_prefix.clone(), cached.scopes.clone()));
+            }
+        }
+    }
+
+    let base_url = state.data_ts_base_url.as_ref().ok_or_else(|| {
+        tracing::error!("DATA_TS_BASE_URL not configured");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let api_key = state.data_ts_api_key.as_ref().ok_or_else(|| {
+        tracing::error!("DATA_TS_API_KEY not configured");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let resp = state
+        .http_client
+        .get(format!("{}/v1/auth/lookup", base_url))
+        .query(&[("email", email)])
+        .bearer_auth(api_key)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "email lookup HTTP request failed");
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    if !resp.status().is_success() {
+        tracing::warn!(status = %resp.status(), email = %email, "email lookup rejected by data-ts");
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let body: LookupResponse = resp.json().await.map_err(|e| {
+        tracing::error!(error = %e, "email lookup response parse failed");
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    if !body.found {
+        tracing::warn!(email = %email, "no API key found for CF-authenticated email");
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let key_prefix = body.key_prefix.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let scopes = body.scopes.unwrap_or_default();
+
+    // Cache result
+    {
+        let mut cache = state.auth_cache.write().await;
+        cache.put(
+            cache_key,
+            crate::CachedAuth {
+                key_prefix: key_prefix.clone(),
+                scopes: scopes.clone(),
+                cached_at: std::time::Instant::now(),
+            },
+        );
+    }
+
+    Ok((key_prefix, scopes))
+}
+
 /// Unified auth middleware: static tokens (backward compat) + API key validation via data-ts
 async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    // Path 4: Cloudflare Access JWT
+    if let Some(cf_jwt) = extract_cf_jwt(&req) {
+        if state.cf_jwks_url.is_some() && state.cf_aud.is_some() {
+            let email = validate_cf_jwt(&state, cf_jwt).await?;
+            let (key_prefix, scopes) = lookup_email(&state, &email).await?;
+            let session_id = resolve_session(&state, &key_prefix).await.map_err(|e| {
+                tracing::error!(error = %e, key_prefix = %key_prefix, email = %email, "resolve_session failed (cf)");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            tracing::debug!(email = %email, key_prefix = %key_prefix, session_id, "CF JWT auth success");
+            req.extensions_mut().insert(SessionContext {
+                session_id,
+                scopes,
+                key_prefix,
+            });
+            return Ok(next.run(req).await);
+        }
+    }
+
+    // Paths 1-3: Bearer token auth
     let token = extract_bearer(&req).ok_or(StatusCode::UNAUTHORIZED)?;
 
     // Path 1: Static API token (backward compat)
@@ -238,6 +491,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/admin/resume", post(resume_handler))
         .route("/v1/admin/positions", get(positions_handler))
         .route("/v1/admin/risk", get(risk_handler))
+        .route("/v1/admin/cache/invalidate", post(cache_invalidate_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -253,11 +507,13 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .allow_origin(AllowOrigin::list(allowed))
                 .allow_methods(Any)
                 .allow_headers(Any)
+                .allow_credentials(true)
         }
         _ => CorsLayer::new()
-            .allow_origin(Any)
+            .allow_origin(AllowOrigin::mirror_request())
             .allow_methods(Any)
-            .allow_headers(Any),
+            .allow_headers(Any)
+            .allow_credentials(true),
     };
 
     public.merge(authenticated).layer(cors).with_state(state)
@@ -863,6 +1119,26 @@ async fn risk_handler(
                 .into_response()
         }
     }
+}
+
+/// POST /v1/admin/cache/invalidate
+async fn cache_invalidate_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:admin") {
+        return e.into_response();
+    }
+
+    // Clear auth cache
+    {
+        let mut cache = state.auth_cache.write().await;
+        cache.clear();
+    }
+    // Clear key→session cache
+    state.key_sessions.clear();
+
+    (StatusCode::OK, Json(serde_json::json!({"cleared": true}))).into_response()
 }
 
 /// POST /v1/admin/pump
