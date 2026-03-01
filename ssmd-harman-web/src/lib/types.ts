@@ -276,3 +276,26 @@ export interface AdminUsersResponse {
   keys: AdminKey[];
   sessions: AdminSession[];
 }
+
+/** Watchlist types */
+export interface WatchlistItem {
+  ticker: string;
+  exchange: string;
+  title?: string;
+}
+
+export interface WatchlistResult {
+  ticker: string;
+  exchange: string;
+  yes_bid: number | null;
+  yes_ask: number | null;
+  last: number | null;
+  volume: number | null;
+  open_interest: number | null;
+  snap_at: number | null;
+}
+
+export interface WatchlistResponse {
+  results: WatchlistResult[];
+  count: number;
+}

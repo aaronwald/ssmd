@@ -47,3 +47,52 @@ export async function GET(
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }
+
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> }
+) {
+  if (!DATA_TS_URL) {
+    return NextResponse.json(
+      { error: "DATA_TS_URL not configured" },
+      { status: 503 }
+    );
+  }
+
+  const { path } = await params;
+  const targetPath = `/v1/${path.join("/")}`;
+  const url = `${DATA_TS_URL}${targetPath}${req.nextUrl.search}`;
+
+  try {
+    const body = await req.arrayBuffer();
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${DATA_TS_API_KEY}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body,
+      signal: AbortSignal.timeout(30000),
+    });
+
+    const responseHeaders = new Headers();
+    for (const [key, value] of res.headers.entries()) {
+      if (
+        ["transfer-encoding", "content-encoding"].includes(key.toLowerCase())
+      )
+        continue;
+      responseHeaders.set(key, value);
+    }
+
+    const resBody = await res.arrayBuffer();
+    return new NextResponse(resBody, {
+      status: res.status,
+      statusText: res.statusText,
+      headers: responseHeaders,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "proxy error";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
+}

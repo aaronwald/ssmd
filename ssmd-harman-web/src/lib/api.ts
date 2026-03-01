@@ -19,6 +19,8 @@ import type {
   InfoResponse,
   MeResponse,
   AdminUsersResponse,
+  WatchlistItem,
+  WatchlistResponse,
 } from "./types";
 
 // Dynamic instance routing — set via InstanceProvider
@@ -218,4 +220,11 @@ export const searchMonitorMarkets = async (q: string, exchange?: string, limit?:
 // Admin users endpoint
 export const getAdminUsers = () =>
   request<AdminUsersResponse>("/v1/admin/users");
+
+// Watchlist — batch snap lookup via data-ts
+export const fetchWatchlist = (items: WatchlistItem[]): Promise<WatchlistResponse> =>
+  dataRequest<WatchlistResponse>("/monitor/watchlist", {
+    method: "POST",
+    body: JSON.stringify({ items: items.map(({ ticker, exchange }) => ({ ticker, exchange })) }),
+  });
 

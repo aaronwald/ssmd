@@ -2305,6 +2305,93 @@ route("GET", "/v1/monitor/search", async (req) => {
   return json({ results, count: results.length, query: q });
 }, true, "datasets:read", "public");
 
+// Monitor watchlist — batch snap lookup for a list of tickers
+route("POST", "/v1/monitor/watchlist", async (req) => {
+  // deno-lint-ignore no-explicit-any
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid JSON in request body" }, 400);
+  }
+
+  const items = body?.items;
+  if (!Array.isArray(items)) {
+    return json({ error: "items must be an array" }, 400);
+  }
+  if (items.length > 200) {
+    return json({ error: "Maximum 200 items per request" }, 400);
+  }
+
+  const redis = await getRedis();
+
+  // Build snap keys, mapping exchange to feed name
+  const feedForExchange = (ex: string): string => {
+    if (ex === "kraken") return "kraken-futures";
+    return ex || "kalshi";
+  };
+
+  const snapKeys = items.map((item: { ticker: string; exchange?: string }) =>
+    `snap:${feedForExchange(item.exchange || "kalshi")}:${item.ticker}`
+  );
+
+  // deno-lint-ignore no-explicit-any
+  const results: any[] = [];
+
+  if (snapKeys.length > 0) {
+    try {
+      const snapValues = await redis.mget(...snapKeys);
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const exchange = item.exchange || "kalshi";
+        const feed = feedForExchange(exchange);
+        // deno-lint-ignore no-explicit-any
+        const entry: any = {
+          ticker: item.ticker, exchange,
+          yes_bid: null, yes_ask: null, last: null,
+          volume: null, open_interest: null, snap_at: null,
+        };
+
+        const raw = snapValues[i];
+        if (!raw) {
+          results.push(entry);
+          continue;
+        }
+
+        try {
+          const snap = JSON.parse(raw);
+
+          if (exchange === "kraken" || feed === "kraken-futures") {
+            if (typeof snap.bid === "number") entry.yes_bid = snap.bid;
+            if (typeof snap.ask === "number") entry.yes_ask = snap.ask;
+            if (typeof snap.last === "number") entry.last = snap.last;
+            if (snap._snap_at) entry.snap_at = snap._snap_at;
+          } else if (exchange === "polymarket") {
+            if (snap.best_bid != null) entry.yes_bid = Number(snap.best_bid);
+            if (snap.best_ask != null) entry.yes_ask = Number(snap.best_ask);
+            if (snap.price != null) entry.last = Number(snap.price);
+            if (snap._snap_at) entry.snap_at = snap._snap_at;
+          } else {
+            // Kalshi: snap data nested in msg, convert cents to dollars
+            const msg = snap.msg ?? snap;
+            if (typeof msg.yes_bid === "number") entry.yes_bid = msg.yes_bid / 100;
+            if (typeof msg.yes_ask === "number") entry.yes_ask = msg.yes_ask / 100;
+            if (typeof msg.price === "number") entry.last = msg.price / 100;
+            else if (msg.price_dollars != null) entry.last = Number(msg.price_dollars);
+            if (typeof msg.volume === "number") entry.volume = msg.volume;
+            if (typeof msg.open_interest === "number") entry.open_interest = msg.open_interest;
+            entry.snap_at = msg._snap_at ?? snap._snap_at ?? null;
+          }
+        } catch { /* skip unparseable snap */ }
+
+        results.push(entry);
+      }
+    } catch { /* redis mget non-fatal */ }
+  }
+
+  return json({ results, count: results.length });
+}, true, "datasets:read", "public");
+
 // Chat completions proxy (OpenRouter)
 route("POST", "/v1/chat/completions", async (req, ctx) => {
   if (!OPENROUTER_API_KEY) {

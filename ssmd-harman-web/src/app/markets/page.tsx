@@ -2,13 +2,20 @@
 
 import { Suspense, useState, useMemo, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { useCategories, useSeries, useEvents, useMarkets, useMarketSearch, useInfo, usePositions } from "@/lib/hooks";
-import type { MonitorCategory, MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
+import { useCategories, useSeries, useEvents, useMarkets, useMarketSearch, useInfo, usePositions, useWatchlist, useWatchlistData } from "@/lib/hooks";
+import type { MonitorCategory, MonitorSeries, MonitorEvent, MonitorMarket, WatchlistItem, WatchlistResult } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
 
 type SortKey = "ticker" | "title" | "yes_bid" | "yes_ask" | "last" | "volume" | "close_time";
 type SortDir = "asc" | "desc";
 type Exchange = "" | "kalshi" | "kraken" | "polymarket";
+
+const EXCHANGE_LABELS: Record<string, string> = {
+  kalshi: "Kalshi",
+  kraken: "Kraken",
+  "kraken-futures": "Kraken",
+  polymarket: "Polymarket",
+};
 
 /** Detect exchange from field names present on monitor objects. */
 function categoryExchange(cat: MonitorCategory): Exchange | null {
@@ -56,6 +63,31 @@ function eventCount(ev: MonitorEvent): string {
   return "0";
 }
 
+/** Staleness dot: green < 5min, yellow < 15min, red otherwise */
+function StalenessDot({ snapAt }: { snapAt: number | null }) {
+  if (snapAt == null) return <span className="text-red" title="No data">●</span>;
+  const age = Date.now() - snapAt;
+  if (age < 5 * 60_000) return <span className="text-green" title="Fresh">●</span>;
+  if (age < 15 * 60_000) return <span className="text-yellow" title="Stale">●</span>;
+  return <span className="text-red" title="Very stale">●</span>;
+}
+
+/** Convert a WatchlistResult to MonitorMarket shape for slide-over */
+function watchlistToMarket(r: WatchlistResult, title?: string): MonitorMarket {
+  return {
+    ticker: r.ticker,
+    title: title || r.ticker,
+    status: "active",
+    close_time: null,
+    yes_bid: r.yes_bid,
+    yes_ask: r.yes_ask,
+    last: r.last,
+    volume: r.volume,
+    open_interest: r.open_interest,
+    exchange: r.exchange,
+  };
+}
+
 export default function MarketsPage() {
   return (
     <Suspense fallback={<div className="p-8 text-center text-fg-subtle">Loading...</div>}>
@@ -78,6 +110,10 @@ function MarketsContent() {
   const [sortKey, setSortKey] = useState<SortKey>("ticker");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [slideOverMarket, setSlideOverMarket] = useState<MonitorMarket | null>(null);
+
+  // Watchlist
+  const watchlist = useWatchlist();
+  const { data: watchlistData } = useWatchlistData(watchlist.items);
 
   // Auto-set exchange from instance info on first load
   const effectiveExchange = exchange || (info?.exchange as Exchange) || "";
@@ -213,6 +249,27 @@ function MarketsContent() {
     return fmtStrike(m.ticker);
   };
 
+  // Toggle star for search result or cascade market
+  const toggleStar = (ticker: string, exchangeName: string, title?: string) => {
+    if (watchlist.has(ticker)) {
+      watchlist.remove(ticker);
+    } else {
+      watchlist.add({ ticker, exchange: exchangeName, title });
+    }
+  };
+
+  // Group watchlist items by exchange for display
+  const watchlistByExchange = useMemo(() => {
+    const groups: Record<string, { item: WatchlistItem; result?: WatchlistResult }[]> = {};
+    for (const item of watchlist.items) {
+      const ex = item.exchange;
+      if (!groups[ex]) groups[ex] = [];
+      const result = watchlistData?.results.find((r) => r.ticker === item.ticker);
+      groups[ex].push({ item, result });
+    }
+    return groups;
+  }, [watchlist.items, watchlistData]);
+
   // Show search results when searching without a cascade selection
   const showSearchResults = search && !event && searchResults?.results && searchResults.results.length > 0;
 
@@ -233,6 +290,53 @@ function MarketsContent() {
         onChange={(e) => handleSearchChange(e.target.value)}
         className="w-full rounded-md border border-border bg-bg-surface px-4 py-2 text-sm text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"
       />
+
+      {/* Watchlist panel — between search and cascade */}
+      {watchlist.items.length > 0 && (
+        <details open>
+          <summary className="text-xs text-fg-muted cursor-pointer hover:text-fg select-none flex items-center gap-2">
+            <span>Watchlist ({watchlist.items.length})</span>
+            <button
+              onClick={(e) => { e.preventDefault(); watchlist.clear(); }}
+              className="text-xs text-red hover:text-red/80 ml-auto"
+            >
+              Clear all
+            </button>
+          </summary>
+          <div className="mt-3 bg-bg-raised border border-border rounded-lg overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-fg-muted border-b border-border">
+                    <th className="px-4 py-2">Ticker</th>
+                    <th className="px-4 py-2">Title</th>
+                    <th className="px-4 py-2 text-right">Bid</th>
+                    <th className="px-4 py-2 text-right">Ask</th>
+                    <th className="px-4 py-2 text-right">Last</th>
+                    <th className="px-4 py-2 text-right">Volume</th>
+                    <th className="px-4 py-2 text-right">OI</th>
+                    <th className="px-4 py-2 w-4"></th>
+                    <th className="px-4 py-2 w-6"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(watchlistByExchange).map(([ex, entries]) => (
+                    <WatchlistExchangeGroup
+                      key={ex}
+                      exchange={ex}
+                      entries={entries}
+                      fmtPrice={fmtPrice}
+                      fmtInt={fmtInt}
+                      onRemove={watchlist.remove}
+                      onRowClick={(r, title) => setSlideOverMarket(watchlistToMarket(r, title))}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </details>
+      )}
 
       {/* Cascade filters — collapsible */}
       <details className="group">
@@ -307,6 +411,7 @@ function MarketsContent() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-fg-muted border-b border-border">
+                  <th className="px-4 py-2 w-6"></th>
                   <th className="px-4 py-2">Ticker</th>
                   <th className="px-4 py-2">Title</th>
                   <th className="px-4 py-2">Status</th>
@@ -322,6 +427,15 @@ function MarketsContent() {
                 {searchResults.results.map((r) => (
                   <tr key={r.ticker} className="border-b border-border-subtle hover:bg-bg-surface-hover cursor-pointer"
                     onClick={() => setSlideOverMarket(r as MonitorMarket)}>
+                    <td className="px-4 py-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleStar(r.ticker, r.exchange || "kalshi", r.title); }}
+                        className={`text-sm ${watchlist.has(r.ticker) ? "text-yellow" : "text-fg-subtle hover:text-yellow"}`}
+                        title={watchlist.has(r.ticker) ? "Remove from watchlist" : "Add to watchlist"}
+                      >
+                        {watchlist.has(r.ticker) ? "\u2605" : "\u2606"}
+                      </button>
+                    </td>
                     <td className="px-4 py-2 font-mono text-xs">
                       {r.ticker}
                       {positionTickers.has(r.ticker) && (
@@ -335,7 +449,7 @@ function MarketsContent() {
                     <td className="px-4 py-2 font-mono text-right">{fmtPrice(r.last ?? null)}</td>
                     <td className="px-4 py-2 font-mono text-right text-xs">{fmtInt(r.volume ?? null)}</td>
                     <td className="px-4 py-2 font-mono text-right text-xs">{fmtInt(r.open_interest ?? null)}</td>
-                    <td className="px-4 py-2 text-fg-muted">→</td>
+                    <td className="px-4 py-2 text-fg-muted">&rarr;</td>
                   </tr>
                 ))}
               </tbody>
@@ -351,6 +465,7 @@ function MarketsContent() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-fg-muted border-b border-border">
+                  <th className="px-4 py-2 w-6"></th>
                   <SortTh k="ticker" current={sortKey} dir={sortDir} onClick={handleSort}>Ticker</SortTh>
                   <SortTh k="title" current={sortKey} dir={sortDir} onClick={handleSort}>Strike</SortTh>
                   <th className="px-4 py-2">Status</th>
@@ -370,6 +485,15 @@ function MarketsContent() {
                     <tr key={m.ticker}
                       className="border-b border-border-subtle hover:bg-bg-surface-hover cursor-pointer"
                       onClick={() => setSlideOverMarket(m)}>
+                      <td className="px-4 py-2">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); toggleStar(m.ticker, m.exchange || "kalshi", m.title); }}
+                          className={`text-sm ${watchlist.has(m.ticker) ? "text-yellow" : "text-fg-subtle hover:text-yellow"}`}
+                          title={watchlist.has(m.ticker) ? "Remove from watchlist" : "Add to watchlist"}
+                        >
+                          {watchlist.has(m.ticker) ? "\u2605" : "\u2606"}
+                        </button>
+                      </td>
                       <td className="px-4 py-2 font-mono text-xs">
                         {fmtTicker(m)}
                         {positionTickers.has(m.ticker) && (
@@ -384,13 +508,13 @@ function MarketsContent() {
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.last ?? (m.price != null ? Number(m.price) : null))}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtInt(m.volume)}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtInt(m.open_interest)}</td>
-                      <td className="px-4 py-2 text-fg-muted">→</td>
+                      <td className="px-4 py-2 text-fg-muted">&rarr;</td>
                       <td className="px-4 py-2 text-xs text-fg-muted font-mono">{fmtTime(m.close_time)}</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={11} className="px-4 py-8 text-center text-fg-subtle text-sm">
+                    <td colSpan={12} className="px-4 py-8 text-center text-fg-subtle text-sm">
                       {filtered ? "No markets match filters" : "Loading..."}
                     </td>
                   </tr>
@@ -402,7 +526,7 @@ function MarketsContent() {
       )}
 
       {/* Prompt when nothing selected */}
-      {!event && !error && !showSearchResults && (
+      {!event && !error && !showSearchResults && watchlist.items.length === 0 && (
         <div className="bg-bg-raised border border-border rounded-lg p-8 text-center text-fg-subtle">
           <p className="text-sm">Search above or browse categories to view live market prices.</p>
         </div>
@@ -416,6 +540,58 @@ function MarketsContent() {
         />
       )}
     </div>
+  );
+}
+
+/** Watchlist rows grouped under an exchange header */
+function WatchlistExchangeGroup({
+  exchange,
+  entries,
+  fmtPrice,
+  fmtInt,
+  onRemove,
+  onRowClick,
+}: {
+  exchange: string;
+  entries: { item: WatchlistItem; result?: WatchlistResult }[];
+  fmtPrice: (v: number | null) => string;
+  fmtInt: (v: number | null) => string;
+  onRemove: (ticker: string) => void;
+  onRowClick: (r: WatchlistResult, title?: string) => void;
+}) {
+  return (
+    <>
+      <tr className="bg-bg-surface">
+        <td colSpan={9} className="px-4 py-1 text-xs font-medium text-fg-muted">
+          {EXCHANGE_LABELS[exchange] || exchange}
+        </td>
+      </tr>
+      {entries.map(({ item, result }) => (
+        <tr
+          key={item.ticker}
+          className="border-b border-border-subtle hover:bg-bg-surface-hover cursor-pointer"
+          onClick={() => result && onRowClick(result, item.title)}
+        >
+          <td className="px-4 py-2 font-mono text-xs">{item.ticker}</td>
+          <td className="px-4 py-2 text-xs text-fg-muted truncate max-w-[200px]">{item.title || "-"}</td>
+          <td className="px-4 py-2 font-mono text-right">{fmtPrice(result?.yes_bid ?? null)}</td>
+          <td className="px-4 py-2 font-mono text-right">{fmtPrice(result?.yes_ask ?? null)}</td>
+          <td className="px-4 py-2 font-mono text-right">{fmtPrice(result?.last ?? null)}</td>
+          <td className="px-4 py-2 font-mono text-right text-xs">{fmtInt(result?.volume ?? null)}</td>
+          <td className="px-4 py-2 font-mono text-right text-xs">{fmtInt(result?.open_interest ?? null)}</td>
+          <td className="px-4 py-2 text-center"><StalenessDot snapAt={result?.snap_at ?? null} /></td>
+          <td className="px-4 py-2">
+            <button
+              onClick={(e) => { e.stopPropagation(); onRemove(item.ticker); }}
+              className="text-fg-subtle hover:text-red text-sm"
+              title="Remove from watchlist"
+            >
+              &times;
+            </button>
+          </td>
+        </tr>
+      ))}
+    </>
   );
 }
 
