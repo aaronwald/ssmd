@@ -148,6 +148,8 @@ export interface NormalizedSnapshot {
   yesBid: number | null;
   yesAsk: number | null;
   last: number | null;
+  /** Epoch millis when snap was written to Redis (injected by snap service) */
+  snapAt: number | null;
 }
 
 /** Monitor hierarchy types */
@@ -220,4 +222,57 @@ export interface InfoResponse {
   exchange: string;
   environment: string;
   version: string;
+}
+
+export interface MeResponse {
+  key_prefix: string;
+  scopes: string[];
+  session_id: number;
+  exchange: string;
+  environment: string;
+  email: string | null;
+}
+
+export interface MonitorSearchResult {
+  ticker: string;
+  title?: string;
+  status?: string;
+  close_time?: string | null;
+  exchange?: string;
+  yes_bid?: number | null;
+  yes_ask?: number | null;
+  last?: number | null;
+  volume?: number | null;
+  open_interest?: number | null;
+}
+
+export interface MonitorSearchResponse {
+  results: MonitorSearchResult[];
+  count: number;
+  query: string;
+}
+
+export interface AdminKey {
+  prefix: string;
+  name: string;
+  email?: string;
+  scopes: string[];
+  rate_limit_tier?: string;
+  feeds?: string[];
+  expires_at?: string | null;
+  last_used_at?: string | null;
+}
+
+export interface AdminSession {
+  id: number;
+  key_prefix: string;
+  exchange: string;
+  environment: string;
+  suspended: boolean;
+  created_at?: string;
+}
+
+export interface AdminUsersResponse {
+  keys: AdminKey[];
+  sessions: AdminSession[];
 }

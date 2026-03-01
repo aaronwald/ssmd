@@ -40,12 +40,21 @@ export function InstanceProvider({ children }: { children: ReactNode }) {
     fetch("/api/instances")
       .then((r) => r.json())
       .then((data) => {
-        setInstances(data.instances || []);
+        const insts: Instance[] = data.instances || [];
+        setInstances(insts);
         // Restore from sessionStorage if available and valid
         const saved = sessionStorage.getItem("harman-instance");
-        if (saved && data.instances?.some((i: Instance) => i.id === saved)) {
+        if (saved && insts.some((i) => i.id === saved)) {
           setInstanceState(saved);
           setApiInstance(saved);
+        } else {
+          // Auto-select if there's exactly one healthy instance
+          const healthy = insts.filter((i) => i.healthy);
+          if (healthy.length === 1) {
+            setInstanceState(healthy[0].id);
+            setApiInstance(healthy[0].id);
+            sessionStorage.setItem("harman-instance", healthy[0].id);
+          }
         }
         setLoading(false);
       })

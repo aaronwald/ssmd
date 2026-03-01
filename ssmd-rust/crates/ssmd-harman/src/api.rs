@@ -341,6 +341,7 @@ async fn auth_middleware(
                 session_id,
                 scopes,
                 key_prefix,
+                email: Some(email),
             });
             return Ok(next.run(req).await);
         }
@@ -355,6 +356,7 @@ async fn auth_middleware(
             session_id: state.startup_session_id,
             scopes: vec!["harman:write".into()],
             key_prefix: "static-api".into(),
+            email: None,
         });
         return Ok(next.run(req).await);
     }
@@ -365,6 +367,7 @@ async fn auth_middleware(
             session_id: state.startup_session_id,
             scopes: vec!["harman:admin".into()],
             key_prefix: "static-admin".into(),
+            email: None,
         });
         return Ok(next.run(req).await);
     }
@@ -391,6 +394,7 @@ async fn auth_middleware(
                     session_id,
                     scopes: cached.scopes.clone(),
                     key_prefix: cached.key_prefix.clone(),
+                    email: None,
                 });
                 return Ok(next.run(req).await);
             }
@@ -448,6 +452,7 @@ async fn auth_middleware(
         session_id,
         scopes: body.scopes,
         key_prefix: body.key_prefix,
+        email: None,
     });
 
     Ok(next.run(req).await)
@@ -492,6 +497,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/admin/positions", get(positions_handler))
         .route("/v1/admin/risk", get(risk_handler))
         .route("/v1/admin/sessions", get(sessions_handler))
+        .route("/v1/admin/users", get(admin_users_handler))
         .route("/v1/admin/sessions/:id/risk", put(update_session_risk_handler))
         .route("/v1/admin/sessions/:id/resume", put(resume_session_handler))
         .route("/v1/admin/cache/invalidate", post(cache_invalidate_handler))
@@ -1067,6 +1073,7 @@ async fn me_handler(
             "session_id": ctx.session_id,
             "exchange": state.exchange_type,
             "environment": state.environment,
+            "email": ctx.email,
         })),
     )
         .into_response()
@@ -1305,6 +1312,100 @@ async fn sessions_handler(
                 .into_response()
         }
     }
+}
+
+/// GET /v1/admin/users — list API key users with session info
+async fn admin_users_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:admin") {
+        return e.into_response();
+    }
+
+    // Derive data-ts base URL
+    let base_url = match &state.data_ts_base_url {
+        Some(url) => url.clone(),
+        None => match &state.auth_validate_url {
+            Some(url) => url.replace("/v1/auth/validate", ""),
+            None => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({"error": "data-ts not configured"})),
+                )
+                    .into_response();
+            }
+        },
+    };
+
+    // Fetch API keys from data-ts
+    let mut req = state
+        .http_client
+        .get(format!("{}/v1/keys", base_url))
+        .timeout(Duration::from_secs(10));
+    if let Some(key) = &state.data_ts_api_key {
+        req = req.header("authorization", format!("Bearer {}", key));
+    }
+
+    let keys_value = match req.send().await {
+        Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to parse keys response");
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({"error": "failed to parse keys response"})),
+                )
+                    .into_response();
+            }
+        },
+        Ok(r) => {
+            tracing::warn!(status = %r.status(), "data-ts keys returned error");
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": "data-ts keys error"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to fetch keys from data-ts");
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": "data-ts unavailable"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Get local sessions
+    let oms = state.oms.clone();
+    let sessions = match db::list_sessions(
+        &state.pool,
+        &state.exchange_type,
+        &state.environment,
+        |id| oms.is_suspended(id),
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "list sessions failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "keys": keys_value.get("keys").cloned().unwrap_or(serde_json::json!([])),
+            "sessions": sessions,
+        })),
+    )
+        .into_response()
 }
 
 /// PUT /v1/admin/sessions/:id/risk
@@ -1616,18 +1717,19 @@ async fn snap_handler(
         Err(e) => {
             tracing::warn!(error = %e, "failed to fetch snap from data-ts");
             return (
-                StatusCode::OK,
-                Json(serde_json::json!({"feed": feed, "snapshots": [], "count": 0})),
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": "snap upstream unavailable", "feed": feed})),
             )
                 .into_response();
         }
     };
 
     if !resp.status().is_success() {
+        let status_code = resp.status().as_u16();
         tracing::warn!(status = %resp.status(), "data-ts snap returned error");
         return (
-            StatusCode::OK,
-            Json(serde_json::json!({"feed": feed, "snapshots": [], "count": 0})),
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": "snap upstream error", "feed": feed, "status": status_code})),
         )
             .into_response();
     }

@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import Link from "next/link";
 import { StatusDot } from "@/components/status-dot";
 import { RiskGauge } from "@/components/risk-gauge";
-import { useHealth, usePositions, useRisk, useSnapMap } from "@/lib/hooks";
+import { SnapAgeDot } from "@/components/snap-age-dot";
+import { useHealth, usePositions, useRisk, useSnapMap, useInfo } from "@/lib/hooks";
 import { reconcile, resume, massCancel } from "@/lib/api";
 import type { ExchangePosition, LocalPosition, NormalizedSnapshot } from "@/lib/types";
 
@@ -11,7 +13,9 @@ export default function Dashboard() {
   const { data: health } = useHealth();
   const { data: positions } = usePositions();
   const { data: risk } = useRisk();
-  const { data: snapMap } = useSnapMap("kalshi");
+  const { data: info } = useInfo();
+  const feed = info?.exchange ?? "kalshi";
+  const { data: snapMap, error: snapError } = useSnapMap(feed);
   const [actionMsg, setActionMsg] = useState("");
   const [hideZero, setHideZero] = useState(false);
 
@@ -69,6 +73,14 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Snap error banner */}
+      {snapError && (
+        <div className="bg-red/10 border border-red/30 rounded-lg p-3 flex items-center gap-2">
+          <span className="inline-block w-2 h-2 rounded-full bg-red" />
+          <span className="text-sm text-red">Snap feed unavailable — live prices may be stale</span>
+        </div>
+      )}
+
       {/* Quick actions */}
       <div className="bg-bg-raised border border-border rounded-lg p-4 space-y-3">
         <h2 className="text-sm font-medium text-fg-muted">Quick Actions</h2>
@@ -124,7 +136,10 @@ export default function Dashboard() {
                       const snap = snapFor(p.ticker);
                       return (
                         <tr key={p.ticker} className="border-b border-border-subtle">
-                          <td className="py-2 pr-4 font-mono">{p.ticker}</td>
+                          <td className="py-2 pr-4 font-mono">
+                            <Link href={`/markets?q=${encodeURIComponent(p.ticker)}`} className="text-accent hover:underline">{p.ticker}</Link>
+                            <SnapAgeDot snapAt={snap?.snapAt ?? null} />
+                          </td>
                           <td className="py-2 pr-4 uppercase">{p.side}</td>
                           <td className="py-2 pr-4 font-mono text-right">{p.quantity}</td>
                           <td className="py-2 pr-4 font-mono text-right">${p.market_value_dollars}</td>
@@ -162,7 +177,10 @@ export default function Dashboard() {
                         const mktVal = snap?.last != null ? netQty * snap.last : null;
                         return (
                           <tr key={p.ticker} className="border-b border-border-subtle">
-                            <td className="py-2 pr-4 font-mono">{p.ticker}</td>
+                            <td className="py-2 pr-4 font-mono">
+                              <Link href={`/markets?q=${encodeURIComponent(p.ticker)}`} className="text-accent hover:underline">{p.ticker}</Link>
+                              <SnapAgeDot snapAt={snap?.snapAt ?? null} />
+                            </td>
                             <td className={`py-2 pr-4 font-mono text-right ${netQty > 0 ? "text-green" : netQty < 0 ? "text-red" : "text-fg-subtle"}`}>{p.net_quantity}</td>
                             <td className="py-2 pr-4 font-mono text-right">{p.buy_filled}</td>
                             <td className="py-2 pr-4 font-mono text-right">{p.sell_filled}</td>

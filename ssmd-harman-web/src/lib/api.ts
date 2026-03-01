@@ -15,7 +15,10 @@ import type {
   MonitorSeries,
   MonitorEvent,
   MonitorMarket,
+  MonitorSearchResponse,
   InfoResponse,
+  MeResponse,
+  AdminUsersResponse,
 } from "./types";
 
 // Dynamic instance routing — set via InstanceProvider
@@ -167,7 +170,10 @@ export const getSnapMap = async (feed: string = "kalshi"): Promise<Map<string, N
     const yesBid = msg.yes_bid_dollars != null ? parseFloat(msg.yes_bid_dollars) : (msg.yes_bid != null ? msg.yes_bid / 100 : null);
     const yesAsk = msg.yes_ask_dollars != null ? parseFloat(msg.yes_ask_dollars) : (msg.yes_ask != null ? msg.yes_ask / 100 : null);
     const last = msg.price_dollars != null ? parseFloat(msg.price_dollars) : (msg.price != null ? msg.price / 100 : null);
-    map.set(ticker, { ticker, yesBid, yesAsk, last });
+    // Extract _snap_at timestamp injected by snap service
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapAt = (s as any)._snap_at ?? (msg as any)._snap_at ?? null;
+    map.set(ticker, { ticker, yesBid, yesAsk, last, snapAt: typeof snapAt === "number" ? snapAt : null });
   }
   return map;
 };
@@ -196,4 +202,20 @@ export const getMarkets = async (event: string): Promise<MonitorMarket[]> => {
 // Info endpoint (public, no auth)
 export const getInfo = () =>
   request<InfoResponse>("/v1/info");
+
+// Me endpoint — returns auth context for current user
+export const getMe = () =>
+  request<MeResponse>("/v1/me");
+
+// Monitor search — search treemap by query string
+export const searchMonitorMarkets = async (q: string, exchange?: string, limit?: number): Promise<MonitorSearchResponse> => {
+  const params = new URLSearchParams({ q });
+  if (exchange) params.set("exchange", exchange);
+  if (limit) params.set("limit", String(limit));
+  return dataRequest<MonitorSearchResponse>(`/monitor/search?${params.toString()}`);
+};
+
+// Admin users endpoint
+export const getAdminUsers = () =>
+  request<AdminUsersResponse>("/v1/admin/users");
 

@@ -4,14 +4,12 @@ import { Suspense, useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useInstance } from "../lib/instance-context";
+import { useMe } from "../lib/hooks";
 
 const links = [
   { href: "/", label: "Dashboard" },
-  { href: "/activity", label: "Activity" },
   { href: "/markets", label: "Markets" },
   { href: "/orders", label: "Orders" },
-  { href: "/groups", label: "Groups" },
-  { href: "/fills", label: "Fills" },
 ];
 
 // NavLinks reads useSearchParams so it must be wrapped in Suspense.
@@ -111,12 +109,48 @@ function InstanceBadge() {
   );
 }
 
+function VarshtatIcon() {
+  return (
+    <a
+      href="https://md.varshtat.com"
+      target="_blank"
+      rel="noopener noreferrer"
+      title="varshtat market data"
+      className="text-fg-muted hover:text-accent transition-colors"
+    >
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 9l4-4 4 4 4-4 4 4" />
+        <path d="M3 15l4-4 4 4 4-4 4 4" />
+      </svg>
+    </a>
+  );
+}
+
+function AdminLink() {
+  const { data: me } = useMe();
+  const pathname = usePathname();
+  if (!me) return null;
+  const hasAdmin = me.scopes.includes("harman:admin") || me.scopes.includes("*");
+  if (!hasAdmin) return null;
+  return (
+    <Link
+      href="/admin"
+      className={`text-sm transition-colors ${
+        pathname === "/admin" ? "text-accent font-medium" : "text-fg-muted hover:text-fg"
+      }`}
+    >
+      Admin
+    </Link>
+  );
+}
+
 export function Nav() {
   return (
     <nav className="sticky top-0 z-50 border-b border-border bg-bg-raised px-6 py-3 flex items-center gap-8">
       <Link href="/" className="font-mono text-lg font-bold text-fg">
         harman<span className="text-accent">.</span>oms
       </Link>
+      <VarshtatIcon />
       <InstanceBadge />
       <div className="flex gap-6">
         <Suspense
@@ -131,6 +165,9 @@ export function Nav() {
           }
         >
           <NavLinks />
+        </Suspense>
+        <Suspense fallback={null}>
+          <AdminLink />
         </Suspense>
       </div>
     </nav>

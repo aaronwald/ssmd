@@ -2236,6 +2236,45 @@ route("GET", "/v1/monitor/markets", async (req) => {
   return json({ markets: [...marketMap.values()] });
 }, true, "datasets:read", "public");
 
+// Monitor search — search treemap (plain JSON array key) by ticker or title
+route("GET", "/v1/monitor/search", async (req) => {
+  const url = new URL(req.url);
+  const q = url.searchParams.get("q");
+  if (!q || q.trim().length === 0) {
+    return json({ error: "q query parameter is required" }, 400);
+  }
+  const exchange = url.searchParams.get("exchange");
+  const limit = Math.min(parseInt(url.searchParams.get("limit") || "50") || 50, 200);
+
+  const redis = await getRedis();
+  const raw = await redis.get("monitor:treemap");
+  if (!raw) {
+    return json({ results: [], count: 0, query: q });
+  }
+
+  // deno-lint-ignore no-explicit-any
+  let entries: any[];
+  try {
+    entries = JSON.parse(raw);
+  } catch {
+    return json({ results: [], count: 0, query: q });
+  }
+
+  const query = q.toLowerCase();
+  // deno-lint-ignore no-explicit-any
+  const results: any[] = [];
+  for (const entry of entries) {
+    if (results.length >= limit) break;
+    const ticker = (entry.ticker || "").toLowerCase();
+    const title = (entry.title || "").toLowerCase();
+    if (!ticker.includes(query) && !title.includes(query)) continue;
+    if (exchange && entry.exchange !== exchange) continue;
+    results.push(entry);
+  }
+
+  return json({ results, count: results.length, query: q });
+}, true, "datasets:read", "public");
+
 // Chat completions proxy (OpenRouter)
 route("POST", "/v1/chat/completions", async (req, ctx) => {
   if (!OPENROUTER_API_KEY) {

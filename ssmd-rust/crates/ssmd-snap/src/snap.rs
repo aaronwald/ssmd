@@ -88,10 +88,10 @@ async fn run_snap_inner(
 
         metrics.messages_received.with_label_values(&[feed]).inc();
 
-        // Parse the ticker field to build the Redis key
+        // Parse payload, extract ticker, inject _snap_at in one pass
         let payload = &msg.payload;
-        let ticker = match extract_ticker(payload) {
-            Some(t) => t,
+        let (ticker, enriched) = match extract_and_enrich(payload) {
+            Some(v) => v,
             None => {
                 tracing::debug!(feed, "message missing ticker field, skipping");
                 metrics.errors.with_label_values(&[feed, "parse"]).inc();
@@ -104,7 +104,7 @@ async fn run_snap_inner(
         // Pipeline SET + EXPIRE in one round trip
         let mut conn = redis_conn.clone();
         let result: Result<(), redis::RedisError> = redis::pipe()
-            .set(&redis_key, payload.as_ref())
+            .set(&redis_key, &enriched)
             .expire(&redis_key, ttl_secs as i64)
             .query_async(&mut conn)
             .await;
@@ -123,11 +123,11 @@ async fn run_snap_inner(
     Ok(())
 }
 
-/// Extract the market_ticker (Kalshi), pair_id (Kraken), or token_id (Polymarket)
-/// from a JSON payload. Tries known field names at top level and inside "msg" wrapper.
-fn extract_ticker(payload: &[u8]) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    let obj = v.as_object()?;
+/// Extract ticker and inject `_snap_at` timestamp in a single JSON parse.
+/// Returns (ticker, enriched_payload_bytes) or None if no ticker found.
+fn extract_and_enrich(payload: &[u8]) -> Option<(String, Vec<u8>)> {
+    let mut v: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    let obj = v.as_object_mut()?;
 
     // Try known identifier fields across exchanges:
     //   Kalshi:     market_ticker
@@ -135,23 +135,45 @@ fn extract_ticker(payload: &[u8]) -> Option<String> {
     //   Polymarket: market (condition_id hex)
     let keys = &["market_ticker", "product_id", "market"];
 
+    let mut ticker: Option<String> = None;
+
     // Check top-level fields
     for key in keys {
         if let Some(val) = obj.get(*key).and_then(|v| v.as_str()) {
-            return Some(val.to_string());
+            ticker = Some(val.to_string());
+            break;
         }
     }
 
     // Check inside "msg" wrapper (Kalshi connector wraps ticker data)
-    if let Some(msg) = obj.get("msg").and_then(|v| v.as_object()) {
-        for key in keys {
-            if let Some(val) = msg.get(*key).and_then(|v| v.as_str()) {
-                return Some(val.to_string());
+    if ticker.is_none() {
+        if let Some(msg) = obj.get("msg").and_then(|v| v.as_object()) {
+            for key in keys {
+                if let Some(val) = msg.get(*key).and_then(|v| v.as_str()) {
+                    ticker = Some(val.to_string());
+                    break;
+                }
             }
         }
     }
 
-    None
+    let ticker = ticker?;
+
+    // Inject _snap_at timestamp (epoch millis) for staleness detection
+    let now_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    obj.insert("_snap_at".to_string(), serde_json::json!(now_millis));
+
+    let enriched = serde_json::to_vec(&v).ok()?;
+    Some((ticker, enriched))
+}
+
+/// Extract ticker only (used by tests, no enrichment).
+#[cfg(test)]
+fn extract_ticker(payload: &[u8]) -> Option<String> {
+    extract_and_enrich(payload).map(|(t, _)| t)
 }
 
 #[cfg(test)]
@@ -186,5 +208,21 @@ mod tests {
     fn test_extract_missing_ticker() {
         let payload = br#"{"volume":100}"#;
         assert_eq!(extract_ticker(payload), None);
+    }
+
+    #[test]
+    fn test_enrich_injects_snap_at() {
+        let payload = br#"{"market_ticker":"KXBTCD-26FEB21-T100250","yes_bid":50}"#;
+        let (ticker, enriched) = extract_and_enrich(payload).unwrap();
+        assert_eq!(ticker, "KXBTCD-26FEB21-T100250");
+        let v: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert!(v.get("_snap_at").unwrap().is_u64());
+        assert_eq!(v.get("market_ticker").unwrap().as_str().unwrap(), "KXBTCD-26FEB21-T100250");
+        assert_eq!(v.get("yes_bid").unwrap().as_i64().unwrap(), 50);
+    }
+
+    #[test]
+    fn test_enrich_invalid_json() {
+        assert!(extract_and_enrich(b"not json").is_none());
     }
 }

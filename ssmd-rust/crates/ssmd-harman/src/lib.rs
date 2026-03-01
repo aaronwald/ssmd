@@ -84,6 +84,7 @@ pub struct SessionContext {
     pub session_id: i64,
     pub scopes: Vec<String>,
     pub key_prefix: String,
+    pub email: Option<String>,
 }
 
 /// Shared application state

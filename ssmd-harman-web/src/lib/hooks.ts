@@ -14,7 +14,10 @@ import {
   getSeries,
   getEvents,
   getMarkets,
+  searchMonitorMarkets,
   getInfo,
+  getMe,
+  getAdminUsers,
   getApiInstance,
 } from "./api";
 
@@ -116,4 +119,22 @@ export function useMarkets(event: string | null) {
 
 export function useInfo() {
   return useSWR(instanceKey("info"), getInfo, { revalidateOnFocus: false });
+}
+
+export function useMe() {
+  return useSWR(instanceKey("me"), getMe, { revalidateOnFocus: false });
+}
+
+export function useMarketSearch(q: string | null, exchange?: string) {
+  return useSWR(
+    q && q.length >= 2 ? `data-search-${q}-${exchange ?? ""}` : null,
+    () => searchMonitorMarkets(q!, exchange),
+    { refreshInterval: LIVE_REFRESH, dedupingInterval: 500 }
+  );
+}
+
+export function useAdminUsers() {
+  return useSWR(instanceKey("admin-users"), getAdminUsers, {
+    refreshInterval: METADATA_REFRESH,
+  });
 }

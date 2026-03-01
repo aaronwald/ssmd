@@ -2,23 +2,21 @@
 
 import { Suspense, useState, useMemo, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { useCategories, useSeries, useEvents, useMarkets } from "@/lib/hooks";
-import type { MonitorCategory, MonitorSeries, MonitorEvent } from "@/lib/types";
+import { useCategories, useSeries, useEvents, useMarkets, useMarketSearch, useInfo, usePositions } from "@/lib/hooks";
+import type { MonitorCategory, MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
+import { MarketSlideOver } from "@/components/market-slide-over";
 
 type SortKey = "ticker" | "title" | "yes_bid" | "yes_ask" | "last" | "volume" | "close_time";
 type SortDir = "asc" | "desc";
 type Exchange = "" | "kalshi" | "kraken" | "polymarket";
 
-/** Detect exchange from field names present on monitor objects.
- * Shared categories (e.g. "Crypto") have both Kalshi and PM fields after merge fix.
- * Returns null for shared categories — they should show for all exchanges. */
+/** Detect exchange from field names present on monitor objects. */
 function categoryExchange(cat: MonitorCategory): Exchange | null {
   const hasKalshi = cat.event_count != null || cat.series_count != null;
   const hasKraken = cat.base_count != null || cat.instrument_count != null;
   const hasPM = cat.pm_condition_count != null;
-
   if (hasKraken) return "kraken";
-  if (hasKalshi && hasPM) return null; // shared category
+  if (hasKalshi && hasPM) return null;
   if (hasPM) return "polymarket";
   if (hasKalshi) return "kalshi";
   return null;
@@ -69,6 +67,7 @@ export default function MarketsPage() {
 function MarketsContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { data: info } = useInfo();
 
   // Read filter state from URL params
   const exchange = (searchParams.get("exchange") ?? "") as Exchange;
@@ -78,34 +77,44 @@ function MarketsContent() {
   const search = searchParams.get("q") ?? "";
   const [sortKey, setSortKey] = useState<SortKey>("ticker");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [slideOverMarket, setSlideOverMarket] = useState<MonitorMarket | null>(null);
+
+  // Auto-set exchange from instance info on first load
+  const effectiveExchange = exchange || (info?.exchange as Exchange) || "";
 
   const { data: categories } = useCategories();
   const { data: seriesList } = useSeries(category);
   const { data: events } = useEvents(series);
   const { data: markets, error } = useMarkets(event);
+  const { data: searchResults } = useMarketSearch(search && !event ? search : null, effectiveExchange || undefined);
+  const { data: positions } = usePositions();
 
-  // Filter categories by exchange.
-  // Categories can be exclusive (Kraken Futures) or shared (Crypto has both Kalshi + PM series).
-  // Shared categories (ex === null) are shown for all exchanges; series-level filtering handles the rest.
+  // Build position set for overlay
+  const positionTickers = useMemo(() => {
+    if (!positions) return new Set<string>();
+    const set = new Set<string>();
+    for (const p of positions.exchange) set.add(p.ticker);
+    for (const p of positions.local) set.add(p.ticker);
+    return set;
+  }, [positions]);
+
   const filteredCategories = useMemo(() => {
     if (!categories) return undefined;
-    if (!exchange) return categories;
+    if (!effectiveExchange) return categories;
     return categories.filter((c) => {
       const ex = categoryExchange(c);
-      if (ex === null) return true; // shared category (has both Kalshi + PM), keep for all
-      if (ex === exchange) return true; // exact match
+      if (ex === null) return true;
+      if (ex === effectiveExchange) return true;
       return false;
     });
-  }, [categories, exchange]);
+  }, [categories, effectiveExchange]);
 
-  // Filter series by exchange (categories are shared, e.g. Crypto has both Kalshi and PM series)
   const filteredSeries = useMemo(() => {
     if (!seriesList) return undefined;
-    if (!exchange) return seriesList;
-    return seriesList.filter((s) => seriesExchange(s) === exchange);
-  }, [seriesList, exchange]);
+    if (!effectiveExchange) return seriesList;
+    return seriesList.filter((s) => seriesExchange(s) === effectiveExchange);
+  }, [seriesList, effectiveExchange]);
 
-  // Update URL params helper
   const setParams = useCallback((updates: Record<string, string | null>) => {
     const params = new URLSearchParams(searchParams.toString());
     for (const [k, v] of Object.entries(updates)) {
@@ -118,24 +127,20 @@ function MarketsContent() {
   const handleExchangeChange = (val: string) => {
     setParams({ exchange: val || null, category: null, series: null, event: null, q: null });
   };
-
   const handleCategoryChange = (val: string) => {
     setParams({ category: val || null, series: null, event: null, q: null });
   };
-
   const handleSeriesChange = (val: string) => {
     setParams({ series: val || null, event: null, q: null });
   };
-
   const handleEventChange = (val: string) => {
     setParams({ event: val || null, q: null });
   };
-
   const handleSearchChange = (val: string) => {
     setParams({ q: val || null });
   };
 
-  // Filter + sort markets
+  // Filter + sort markets (from cascade or search)
   const filtered = useMemo(() => {
     if (!markets) return undefined;
     let result = markets;
@@ -187,14 +192,12 @@ function MarketsContent() {
   const fmtInt = (v: number | null) => v != null ? v.toLocaleString() : "-";
   const fmtTime = (v: string | null) =>
     v ? new Date(v).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
-  /** Extract strike price from ticker (e.g. "KXBTCD-26MAR0617-T67749.99" → "$67,749.99") */
   const fmtStrike = (ticker: string) => {
     const m = ticker.match(/-T(\d+(?:\.\d+)?)$/);
     if (!m) return ticker;
     return "$" + Number(m[1]).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   };
-  /** Display ticker — PM: outcome, Kraken: strip prefix, Kalshi: as-is */
-  // deno-lint-ignore no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fmtTicker = (m: any) => {
     if (m.exchange === "polymarket") return m.outcome ?? m.ticker;
     if (m.exchange === "kraken-futures") {
@@ -203,95 +206,139 @@ function MarketsContent() {
     }
     return m.ticker;
   };
-  /** Display title/strike — PM: probability, Kraken: mark price, Kalshi: strike */
-  // deno-lint-ignore no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fmtTitle = (m: any) => {
     if (m.exchange === "polymarket") return m.price ?? "-";
     if (m.exchange === "kraken-futures") return m.mark_price ? `$${Number(m.mark_price).toLocaleString()}` : "-";
     return fmtStrike(m.ticker);
   };
 
+  // Show search results when searching without a cascade selection
+  const showSearchResults = search && !event && searchResults?.results && searchResults.results.length > 0;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold">Markets</h1>
-        </div>
+        <h1 className="text-xl font-bold">Markets</h1>
         <span className="text-xs text-fg-muted">
-          {filtered ? `${filtered.length} markets` : event ? "Loading..." : "Select an event"}
+          {filtered ? `${filtered.length} markets` : event ? "Loading..." : showSearchResults ? `${searchResults.results.length} results` : "Search or browse"}
         </span>
       </div>
 
-      {/* Cascading filters */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <select
-          value={exchange}
-          onChange={(e) => handleExchangeChange(e.target.value)}
-          className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
-        >
-          <option value="">All Exchanges</option>
-          <option value="kalshi">Kalshi</option>
-          <option value="kraken">Kraken</option>
-          <option value="polymarket">Polymarket</option>
-        </select>
+      {/* Search bar — always visible */}
+      <input
+        type="text"
+        placeholder="Search markets by ticker or title..."
+        value={search}
+        onChange={(e) => handleSearchChange(e.target.value)}
+        className="w-full rounded-md border border-border bg-bg-surface px-4 py-2 text-sm text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"
+      />
 
-        <select
-          value={category ?? ""}
-          onChange={(e) => handleCategoryChange(e.target.value)}
-          className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
-        >
-          <option value="">Select Category</option>
-          {filteredCategories?.map((c) => (
-            <option key={c.name} value={c.name}>
-              {c.name} ({categoryCount(c, exchange)})
-            </option>
-          ))}
-        </select>
+      {/* Cascade filters — collapsible */}
+      <details className="group">
+        <summary className="text-xs text-fg-muted cursor-pointer hover:text-fg select-none">
+          Browse by category {category ? `— ${category}` : ""}
+          {series ? ` / ${series}` : ""}
+          {event ? ` / ${event}` : ""}
+        </summary>
+        <div className="flex items-center gap-3 flex-wrap mt-3">
+          <select
+            value={exchange}
+            onChange={(e) => handleExchangeChange(e.target.value)}
+            className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
+          >
+            <option value="">All Exchanges</option>
+            <option value="kalshi">Kalshi</option>
+            <option value="kraken">Kraken</option>
+            <option value="polymarket">Polymarket</option>
+          </select>
 
-        <select
-          value={series ?? ""}
-          onChange={(e) => handleSeriesChange(e.target.value)}
-          disabled={!category}
-          className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none disabled:opacity-50"
-        >
-          <option value="">Select Series</option>
-          {filteredSeries?.map((s) => (
-            <option key={s.ticker} value={s.ticker}>
-              {s.ticker} — {s.title} ({seriesCount(s)})
-            </option>
-          ))}
-        </select>
+          <select
+            value={category ?? ""}
+            onChange={(e) => handleCategoryChange(e.target.value)}
+            className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
+          >
+            <option value="">Select Category</option>
+            {filteredCategories?.map((c) => (
+              <option key={c.name} value={c.name}>
+                {c.name} ({categoryCount(c, effectiveExchange)})
+              </option>
+            ))}
+          </select>
 
-        <select
-          value={event ?? ""}
-          onChange={(e) => handleEventChange(e.target.value)}
-          disabled={!series}
-          className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none disabled:opacity-50"
-        >
-          <option value="">Select Event</option>
-          {events?.map((ev) => (
-            <option key={ev.ticker} value={ev.ticker}>
-              {ev.title} ({eventCount(ev)})
-            </option>
-          ))}
-        </select>
+          <select
+            value={series ?? ""}
+            onChange={(e) => handleSeriesChange(e.target.value)}
+            disabled={!category}
+            className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none disabled:opacity-50"
+          >
+            <option value="">Select Series</option>
+            {filteredSeries?.map((s) => (
+              <option key={s.ticker} value={s.ticker}>
+                {s.ticker} — {s.title} ({seriesCount(s)})
+              </option>
+            ))}
+          </select>
 
-        {event && (
-          <input
-            type="text"
-            placeholder="Search ticker or title..."
-            value={search}
-            onChange={(e) => handleSearchChange(e.target.value)}
-            className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none w-64"
-          />
-        )}
-      </div>
+          <select
+            value={event ?? ""}
+            onChange={(e) => handleEventChange(e.target.value)}
+            disabled={!series}
+            className="rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none disabled:opacity-50"
+          >
+            <option value="">Select Event</option>
+            {events?.map((ev) => (
+              <option key={ev.ticker} value={ev.ticker}>
+                {ev.title} ({eventCount(ev)})
+              </option>
+            ))}
+          </select>
+        </div>
+      </details>
 
       {error && (
         <p className="text-sm text-red">Error loading markets: {error.message}</p>
       )}
 
-      {/* Market table — only shown when event is selected */}
+      {/* Search results (when searching without cascade) */}
+      {showSearchResults && (
+        <div className="bg-bg-raised border border-border rounded-lg overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-fg-muted border-b border-border">
+                  <th className="px-4 py-2">Ticker</th>
+                  <th className="px-4 py-2">Title</th>
+                  <th className="px-4 py-2">Status</th>
+                  <th className="px-4 py-2">Exchange</th>
+                  <th className="px-4 py-2 text-right">Volume</th>
+                  <th className="px-4 py-2 w-6"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {searchResults.results.map((r) => (
+                  <tr key={r.ticker} className="border-b border-border-subtle hover:bg-bg-surface-hover cursor-pointer"
+                    onClick={() => setSlideOverMarket(r as MonitorMarket)}>
+                    <td className="px-4 py-2 font-mono text-xs">
+                      {r.ticker}
+                      {positionTickers.has(r.ticker) && (
+                        <span className="ml-1 text-accent text-xs" title="Has position">●</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-fg-muted truncate max-w-[200px]">{r.title || "-"}</td>
+                    <td className="px-4 py-2"><MarketStatusBadge status={r.status || "-"} /></td>
+                    <td className="px-4 py-2 text-xs text-fg-muted">{r.exchange || "-"}</td>
+                    <td className="px-4 py-2 font-mono text-right text-xs">{fmtInt(r.volume ?? null)}</td>
+                    <td className="px-4 py-2 text-fg-muted">→</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Market table — cascade view */}
       {event && (
         <div className="bg-bg-raised border border-border rounded-lg overflow-hidden">
           <div className="overflow-x-auto">
@@ -307,14 +354,22 @@ function MarketsContent() {
                   <SortTh k="last" current={sortKey} dir={sortDir} onClick={handleSort} align="right">Last</SortTh>
                   <SortTh k="volume" current={sortKey} dir={sortDir} onClick={handleSort} align="right">Volume</SortTh>
                   <th className="px-4 py-2 text-right">OI</th>
+                  <th className="px-4 py-2 w-4"></th>
                   <SortTh k="close_time" current={sortKey} dir={sortDir} onClick={handleSort}>Close</SortTh>
                 </tr>
               </thead>
               <tbody>
                 {filtered && filtered.length > 0 ? (
                   filtered.map((m) => (
-                    <tr key={m.ticker} className="border-b border-border-subtle hover:bg-bg-surface-hover">
-                      <td className="px-4 py-2 font-mono text-xs">{fmtTicker(m)}</td>
+                    <tr key={m.ticker}
+                      className="border-b border-border-subtle hover:bg-bg-surface-hover cursor-pointer"
+                      onClick={() => setSlideOverMarket(m)}>
+                      <td className="px-4 py-2 font-mono text-xs">
+                        {fmtTicker(m)}
+                        {positionTickers.has(m.ticker) && (
+                          <span className="ml-1 text-accent text-xs" title="Has position">●</span>
+                        )}
+                      </td>
                       <td className="px-4 py-2 font-mono" title={m.title ?? undefined}>{fmtTitle(m)}</td>
                       <td className="px-4 py-2"><MarketStatusBadge status={m.status} /></td>
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.yes_bid ?? m.bid ?? m.best_bid ?? null)}</td>
@@ -323,12 +378,13 @@ function MarketsContent() {
                       <td className="px-4 py-2 font-mono text-right">{fmtPrice(m.last ?? (m.price != null ? Number(m.price) : null))}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtInt(m.volume)}</td>
                       <td className="px-4 py-2 font-mono text-right">{fmtInt(m.open_interest)}</td>
+                      <td className="px-4 py-2 text-fg-muted">→</td>
                       <td className="px-4 py-2 text-xs text-fg-muted font-mono">{fmtTime(m.close_time)}</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={10} className="px-4 py-8 text-center text-fg-subtle text-sm">
+                    <td colSpan={11} className="px-4 py-8 text-center text-fg-subtle text-sm">
                       {filtered ? "No markets match filters" : "Loading..."}
                     </td>
                   </tr>
@@ -339,11 +395,19 @@ function MarketsContent() {
         </div>
       )}
 
-      {/* Prompt when no event selected */}
-      {!event && !error && (
+      {/* Prompt when nothing selected */}
+      {!event && !error && !showSearchResults && (
         <div className="bg-bg-raised border border-border rounded-lg p-8 text-center text-fg-subtle">
-          <p className="text-sm">Select a category, series, and event above to view live market prices.</p>
+          <p className="text-sm">Search above or browse categories to view live market prices.</p>
         </div>
+      )}
+
+      {/* Slide-over panel */}
+      {slideOverMarket && (
+        <MarketSlideOver
+          market={slideOverMarket}
+          onClose={() => setSlideOverMarket(null)}
+        />
       )}
     </div>
   );

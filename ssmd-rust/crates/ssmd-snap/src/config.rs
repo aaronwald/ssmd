@@ -17,7 +17,7 @@ pub struct Config {
     pub subscriptions: String,
 
     /// Redis key TTL in seconds
-    #[arg(long, env = "SNAP_TTL_SECS", default_value = "300")]
+    #[arg(long, env = "SNAP_TTL_SECS", default_value = "60")]
     pub ttl_secs: u64,
 
     /// Metrics/health listen address
