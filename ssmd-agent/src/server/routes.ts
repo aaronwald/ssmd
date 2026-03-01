@@ -2161,7 +2161,8 @@ route("GET", "/v1/monitor/markets", async (req) => {
 
       if (exchange === "kraken-futures" || exchange === "kraken") {
         // Monitor stores "kraken:PF_XBTUSD" — strip prefix, use "kraken-futures" feed
-        const rawTicker = t.startsWith("kraken:") ? t.slice(7) : t;
+        let rawTicker = t;
+        while (rawTicker.startsWith("kraken:")) rawTicker = rawTicker.slice(7);
         snapKeys.push(`snap:kraken-futures:${rawTicker}`);
         nonPmTickers.push(t);
       } else if (exchange === "polymarket") {
@@ -2189,14 +2190,15 @@ route("GET", "/v1/monitor/markets", async (req) => {
             if (typeof snap.last === "number") market.last = snap.last;
             if (snap.funding_rate != null) market.funding_rate = snap.funding_rate;
           } else {
-            // Kalshi: convert cents to dollars
+            // Kalshi: snap data is nested in msg object, convert cents to dollars
+            const snapData = snap.msg ?? snap;
             for (const field of ["yes_bid", "yes_ask", "price"]) {
-              if (typeof snap[field] === "number") {
-                market[field === "price" ? "last" : field] = snap[field] / 100;
+              if (typeof snapData[field] === "number") {
+                market[field === "price" ? "last" : field] = snapData[field] / 100;
               }
             }
-            if (typeof snap.volume === "number") market.volume = snap.volume;
-            if (typeof snap.open_interest === "number") market.open_interest = snap.open_interest;
+            if (typeof snapData.volume === "number") market.volume = snapData.volume;
+            if (typeof snapData.open_interest === "number") market.open_interest = snapData.open_interest;
           }
         } catch {
           // skip unparseable snap

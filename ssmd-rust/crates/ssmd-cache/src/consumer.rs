@@ -447,7 +447,7 @@ impl CdcConsumer {
                         let tradeable = data.get("tradeable").and_then(|v| v.as_bool());
                         let suspended = data.get("suspended").and_then(|v| v.as_bool());
 
-                        let market_key = format!("kraken:{}", pair_id);
+                        let market_key = pair_id.clone();
                         let event_key = format!("{}-perps", base);
                         let markets_hash = format!("monitor:markets:{}", event_key);
 

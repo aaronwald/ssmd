@@ -381,7 +381,7 @@ impl CacheWarmer {
                 let tradeable: Option<bool> = row.get(9);
                 let suspended: Option<bool> = row.get(10);
 
-                let market_key = format!("kraken:{}", pair_id);
+                let market_key = pair_id.clone();
                 let market_val = serde_json::json!({
                     "pair_id": pair_id,
                     "market_type": market_type,
