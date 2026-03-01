@@ -310,8 +310,11 @@ function MarketsContent() {
                   <th className="px-4 py-2">Ticker</th>
                   <th className="px-4 py-2">Title</th>
                   <th className="px-4 py-2">Status</th>
-                  <th className="px-4 py-2">Exchange</th>
+                  <th className="px-4 py-2 text-right">Bid</th>
+                  <th className="px-4 py-2 text-right">Ask</th>
+                  <th className="px-4 py-2 text-right">Last</th>
                   <th className="px-4 py-2 text-right">Volume</th>
+                  <th className="px-4 py-2 text-right">OI</th>
                   <th className="px-4 py-2 w-6"></th>
                 </tr>
               </thead>
@@ -327,8 +330,11 @@ function MarketsContent() {
                     </td>
                     <td className="px-4 py-2 text-xs text-fg-muted truncate max-w-[200px]">{r.title || "-"}</td>
                     <td className="px-4 py-2"><MarketStatusBadge status={r.status || "-"} /></td>
-                    <td className="px-4 py-2 text-xs text-fg-muted">{r.exchange || "-"}</td>
+                    <td className="px-4 py-2 font-mono text-right">{fmtPrice(r.yes_bid ?? null)}</td>
+                    <td className="px-4 py-2 font-mono text-right">{fmtPrice(r.yes_ask ?? null)}</td>
+                    <td className="px-4 py-2 font-mono text-right">{fmtPrice(r.last ?? null)}</td>
                     <td className="px-4 py-2 font-mono text-right text-xs">{fmtInt(r.volume ?? null)}</td>
+                    <td className="px-4 py-2 font-mono text-right text-xs">{fmtInt(r.open_interest ?? null)}</td>
                     <td className="px-4 py-2 text-fg-muted">→</td>
                   </tr>
                 ))}

@@ -2269,7 +2269,37 @@ route("GET", "/v1/monitor/search", async (req) => {
     const title = (entry.title || "").toLowerCase();
     if (!ticker.includes(query) && !title.includes(query)) continue;
     if (exchange && entry.exchange !== exchange) continue;
-    results.push(entry);
+    results.push({ ...entry });
+  }
+
+  // Enrich with live snap data
+  if (results.length > 0) {
+    const snapKeys = results.map((r) => {
+      const feed = r.exchange === "kraken" ? "kraken-futures" : (r.exchange || "kalshi");
+      return `snap:${feed}:${r.ticker}`;
+    });
+    try {
+      const snapValues = await redis.mget(...snapKeys);
+      for (let i = 0; i < results.length; i++) {
+        const raw = snapValues[i];
+        if (!raw) continue;
+        try {
+          const snap = JSON.parse(raw);
+          const msg = snap.msg ?? snap;
+          // Kalshi fields
+          if (msg.yes_bid != null) results[i].yes_bid = msg.yes_bid;
+          if (msg.yes_ask != null) results[i].yes_ask = msg.yes_ask;
+          if (msg.yes_bid_dollars != null) results[i].yes_bid_dollars = msg.yes_bid_dollars;
+          if (msg.yes_ask_dollars != null) results[i].yes_ask_dollars = msg.yes_ask_dollars;
+          if (msg.price_dollars != null) results[i].last = Number(msg.price_dollars);
+          else if (msg.price != null) results[i].last = msg.price;
+          // Kraken fields
+          if (msg.bid != null) results[i].bid = msg.bid;
+          if (msg.ask != null) results[i].ask = msg.ask;
+          if (msg.last != null) results[i].last = msg.last;
+        } catch { /* skip unparseable snap */ }
+      }
+    } catch { /* snap enrichment non-fatal */ }
   }
 
   return json({ results, count: results.length, query: q });
