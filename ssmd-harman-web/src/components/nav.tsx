@@ -3,7 +3,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { useInfo } from "../lib/hooks";
+import { useInstance } from "../lib/instance-context";
 
 const links = [
   { href: "/", label: "Dashboard" },
@@ -50,18 +50,44 @@ function NavLinks() {
   );
 }
 
-function EnvironmentBadge() {
-  const { data } = useInfo();
-  if (!data) return null;
-  const isDemo = data.environment === "demo";
+function InstanceBadge() {
+  const { instance, instances, setInstance } = useInstance();
+  const current = instances.find((i) => i.id === instance);
+  if (!current) return null;
+
+  const envColor =
+    current.environment === "prod"
+      ? "bg-red-900/50 text-red-400 border-red-700"
+      : current.environment === "demo"
+        ? "bg-green-900/50 text-green-400 border-green-700"
+        : "bg-blue-900/50 text-blue-400 border-blue-700";
+
   return (
-    <span className={`text-xs font-mono px-2 py-0.5 rounded-full ${
-      isDemo
-        ? "bg-green-900/50 text-green-400 border border-green-700"
-        : "bg-red-900/50 text-red-400 border border-red-700"
-    }`}>
-      {data.environment.toUpperCase()}
-    </span>
+    <div className="relative group">
+      <button
+        className={`text-xs font-mono px-2 py-0.5 rounded-full border ${envColor}`}
+      >
+        {current.exchange} ({current.environment})
+      </button>
+      <div className="absolute top-full left-0 mt-1 hidden group-hover:block bg-bg-raised border border-border rounded shadow-lg z-50 min-w-[200px]">
+        {instances.map((inst) => (
+          <button
+            key={inst.id}
+            onClick={() => setInstance(inst.id)}
+            className={`block w-full text-left px-3 py-2 text-sm hover:bg-bg ${
+              inst.id === instance
+                ? "text-accent font-medium"
+                : "text-fg-muted"
+            }`}
+          >
+            {inst.exchange} ({inst.environment})
+            {!inst.healthy && (
+              <span className="text-red-400 ml-2">offline</span>
+            )}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -71,15 +97,19 @@ export function Nav() {
       <Link href="/" className="font-mono text-lg font-bold text-fg">
         harman<span className="text-accent">.</span>oms
       </Link>
-      <EnvironmentBadge />
+      <InstanceBadge />
       <div className="flex gap-6">
-        <Suspense fallback={
-          <>
-            {links.map((link) => (
-              <span key={link.href} className="text-sm text-fg-muted">{link.label}</span>
-            ))}
-          </>
-        }>
+        <Suspense
+          fallback={
+            <>
+              {links.map((link) => (
+                <span key={link.href} className="text-sm text-fg-muted">
+                  {link.label}
+                </span>
+              ))}
+            </>
+          }
+        >
           <NavLinks />
         </Suspense>
       </div>

@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { Nav } from "@/components/nav";
+import { InstanceProvider } from "@/lib/instance-context";
+import { InstanceGate } from "@/components/instance-gate";
 import "./globals.css";
 
 const inter = Inter({
@@ -28,8 +30,12 @@ export default function RootLayout({
       <body
         className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased bg-bg text-fg`}
       >
-        <Nav />
-        <main className="px-6 py-4">{children}</main>
+        <InstanceProvider>
+          <Nav />
+          <main className="px-6 py-4">
+            <InstanceGate>{children}</InstanceGate>
+          </main>
+        </InstanceProvider>
       </body>
     </html>
   );

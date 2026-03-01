@@ -18,18 +18,30 @@ import type {
   InfoResponse,
 } from "./types";
 
-const BASE_URL = process.env.NEXT_PUBLIC_HARMAN_URL || "";
+// Dynamic instance routing — set via InstanceProvider
+let _currentInstance: string | null = null;
+
+export function setApiInstance(instance: string) {
+  _currentInstance = instance;
+}
+
+export function getApiInstance(): string | null {
+  return _currentInstance;
+}
 
 async function request<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
+  if (!_currentInstance) throw new Error("No harman instance selected");
+  const baseUrl = `/api/${_currentInstance}`;
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   };
 
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetch(`${baseUrl}${path}`, {
     ...options,
     headers,
     credentials: "include",
