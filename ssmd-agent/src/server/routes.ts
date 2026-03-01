@@ -2270,7 +2270,50 @@ route("GET", "/v1/monitor/search", async (req, ctx) => {
     } catch { /* skip unparseable treemap */ }
   }
 
-  // 2. DB fallback for Polymarket — treemap is volume-capped at 3000 entries
+  // 2. DB fallback for Kalshi — treemap is volume-capped at 3000 entries
+  if (results.length < limit && (!exchange || exchange === "kalshi")) {
+    try {
+      const dbRows = await ctx.db
+        .select({
+          ticker: markets.ticker,
+          eventTicker: markets.eventTicker,
+          title: markets.title,
+          status: markets.status,
+          closeTime: markets.closeTime,
+          volume: markets.volume,
+          openInterest: markets.openInterest,
+          category: events.category,
+          seriesTicker: events.seriesTicker,
+        })
+        .from(markets)
+        .innerJoin(events, eq(markets.eventTicker, events.eventTicker))
+        .where(and(
+          isNull(markets.deletedAt),
+          sql`(${markets.ticker} ILIKE ${'%' + q + '%'} OR ${markets.title} ILIKE ${'%' + q + '%'} OR ${events.eventTicker} ILIKE ${'%' + q + '%'})`,
+        ))
+        .orderBy(desc(markets.volume))
+        .limit(limit - results.length);
+
+      for (const row of dbRows) {
+        if (seen.has(row.ticker)) continue;
+        results.push({
+          exchange: "kalshi",
+          category: row.category || "Other",
+          series: row.seriesTicker || "",
+          event: row.eventTicker,
+          ticker: row.ticker,
+          title: row.title,
+          status: row.status,
+          volume: Number(row.volume || 0),
+          open_interest: Number(row.openInterest || 0),
+          close_time: row.closeTime?.toISOString() ?? null,
+        });
+        seen.add(row.ticker);
+      }
+    } catch { /* DB fallback non-fatal */ }
+  }
+
+  // 3. DB fallback for Polymarket — treemap is volume-capped at 3000 entries
   if (results.length < limit && (!exchange || exchange === "polymarket")) {
     try {
       const dbRows = await ctx.db
