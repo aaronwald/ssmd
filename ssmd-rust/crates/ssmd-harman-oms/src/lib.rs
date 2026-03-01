@@ -88,6 +88,8 @@ pub struct Oms {
     pub ems: Arc<Ems>,
     pub metrics: OmsMetrics,
     pub suspended_sessions: DashMap<i64, ()>,
+    /// Session for external fills/orders not attributed to any user session
+    pub system_session_id: i64,
 }
 
 impl Oms {
@@ -96,6 +98,7 @@ impl Oms {
         exchange: Arc<dyn ExchangeAdapter>,
         ems: Arc<Ems>,
         metrics: OmsMetrics,
+        system_session_id: i64,
     ) -> Self {
         Self {
             pool,
@@ -103,6 +106,7 @@ impl Oms {
             ems,
             metrics,
             suspended_sessions: DashMap::new(),
+            system_session_id,
         }
     }
 

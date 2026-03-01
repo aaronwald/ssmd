@@ -48,7 +48,7 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
         errors: vec![],
     };
 
-    match discover_external_orders(oms, session_id).await {
+    match discover_external_orders(oms, session_id, oms.system_session_id).await {
         Ok(count) => {
             if count > 0 {
                 info!(count, "imported external resting orders");
@@ -60,7 +60,7 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
         }
     }
 
-    match discover_fills(oms, session_id).await {
+    match discover_fills(oms, session_id, oms.system_session_id).await {
         Ok(count) => {
             result.fills_discovered = count;
             oms.metrics.reconciliation_fills_discovered.inc_by(count);
@@ -120,7 +120,7 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
 ///
 /// External resting orders (placed via exchange website) are imported as
 /// synthetic orders in 'acknowledged' state so they appear in the blotter.
-async fn discover_external_orders(oms: &Oms, session_id: i64) -> Result<u64, String> {
+async fn discover_external_orders(oms: &Oms, session_id: i64, system_session_id: i64) -> Result<u64, String> {
     let exchange_orders = oms
         .exchange
         .get_orders()
@@ -150,13 +150,13 @@ async fn discover_external_orders(oms: &Oms, session_id: i64) -> Result<u64, Str
             quantity = %order.quantity,
             price = %order.price_dollars,
             client_order_id = ?order.client_order_id,
-            "importing external resting order"
+            "importing external resting order to __system__ session"
         );
 
         match db::create_external_resting_order(
             &oms.pool,
             &db::ExternalOrderParams {
-                session_id,
+                session_id: system_session_id,
                 exchange_order_id: &order.exchange_order_id,
                 ticker: &order.ticker,
                 side: order.side,
@@ -188,7 +188,7 @@ async fn discover_external_orders(oms: &Oms, session_id: i64) -> Result<u64, Str
 /// After recording fills, update order states (Acknowledged → Filled/PartiallyFilled).
 ///
 /// Loads all orders once and builds a lookup to avoid N+1 queries.
-async fn discover_fills(oms: &Oms, session_id: i64) -> Result<u64, String> {
+async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> Result<u64, String> {
     let fills = oms
         .exchange
         .get_fills(None)
@@ -232,18 +232,19 @@ async fn discover_fills(oms: &Oms, session_id: i64) -> Result<u64, String> {
             }
         } else {
             // No matching local order — this is an external fill.
-            // Fills are sacrosanct: never drop fills. Import as synthetic order.
+            // Fills are sacrosanct: never drop fills. Import to __system__ session.
             info!(
                 trade_id = %fill.trade_id,
                 exchange_order_id = %fill.order_id,
                 ticker = %fill.ticker,
                 client_order_id = ?fill.client_order_id,
-                "importing external fill"
+                system_session_id,
+                "importing external fill to __system__ session"
             );
             match db::create_external_order(
                 &oms.pool,
                 &db::ExternalOrderParams {
-                    session_id,
+                    session_id: system_session_id,
                     exchange_order_id: &fill.order_id,
                     ticker: &fill.ticker,
                     side: fill.side,
@@ -258,7 +259,7 @@ async fn discover_fills(oms: &Oms, session_id: i64) -> Result<u64, String> {
                     let inserted = db::record_fill(
                         &oms.pool,
                         order_id,
-                        session_id,
+                        system_session_id,
                         &fill.trade_id,
                         fill.price_dollars,
                         fill.quantity,

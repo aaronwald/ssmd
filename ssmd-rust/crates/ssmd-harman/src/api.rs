@@ -3,7 +3,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Extension, Json, Router,
 };
 use rust_decimal::Decimal;
@@ -20,7 +20,7 @@ use harman::error::EnqueueError;
 use harman::state::OrderState;
 use harman::types::{Action, GroupState, Order, OrderGroup, OrderRequest, Side, TimeInForce};
 
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use base64::Engine;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
@@ -491,6 +491,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/admin/resume", post(resume_handler))
         .route("/v1/admin/positions", get(positions_handler))
         .route("/v1/admin/risk", get(risk_handler))
+        .route("/v1/admin/sessions", get(sessions_handler))
+        .route("/v1/admin/sessions/:id/risk", put(update_session_risk_handler))
+        .route("/v1/admin/sessions/:id/resume", put(resume_session_handler))
         .route("/v1/admin/cache/invalidate", post(cache_invalidate_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1071,26 +1074,56 @@ async fn me_handler(
 
 /// GET /v1/admin/positions
 ///
+/// Query parameters for positions endpoint
+#[derive(Deserialize)]
+struct PositionsQuery {
+    /// If true, returns all-sessions view (exchange + per-session breakdown + aggregate)
+    #[serde(default)]
+    all: bool,
+}
+
 /// Returns both exchange positions (from Kalshi API) and local positions
 /// (computed from filled orders in DB). This lets the user compare both
 /// views and spot discrepancies.
+/// With `?all=true`, returns per-session breakdown across all active sessions.
 async fn positions_handler(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SessionContext>,
+    Query(query): Query<PositionsQuery>,
 ) -> impl IntoResponse {
     if let Err(e) = require_scope(&ctx, "harman:admin") {
         return e.into_response();
     }
 
-    match state.oms.positions(ctx.session_id).await {
-        Ok(view) => (StatusCode::OK, Json(serde_json::json!(view))).into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "positions failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal error"})),
-            )
-                .into_response()
+    if query.all {
+        match ssmd_harman_oms::positions::all_positions(
+            &state.oms,
+            &state.exchange_type,
+            &state.environment,
+        )
+        .await
+        {
+            Ok(view) => (StatusCode::OK, Json(serde_json::json!(view))).into_response(),
+            Err(e) => {
+                tracing::error!(error = %e, "all positions failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "internal error"})),
+                )
+                    .into_response()
+            }
+        }
+    } else {
+        match state.oms.positions(ctx.session_id).await {
+            Ok(view) => (StatusCode::OK, Json(serde_json::json!(view))).into_response(),
+            Err(e) => {
+                tracing::error!(error = %e, "positions failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "internal error"})),
+                )
+                    .into_response()
+            }
         }
     }
 }
@@ -1104,25 +1137,45 @@ async fn risk_handler(
         return e.into_response();
     }
 
-    match db::compute_risk_state(&state.pool, ctx.session_id).await {
-        Ok(risk_state) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "max_notional": state.ems.risk_limits.max_notional.to_string(),
-                "open_notional": risk_state.open_notional.to_string(),
-                "available_notional": (state.ems.risk_limits.max_notional - risk_state.open_notional).to_string(),
-            })),
-        )
-            .into_response(),
+    let risk_state = match db::compute_risk_state(&state.pool, ctx.session_id).await {
+        Ok(rs) => rs,
         Err(e) => {
             tracing::error!(error = %e, "risk state query failed");
-            (
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal error"})),
             )
-                .into_response()
+                .into_response();
         }
-    }
+    };
+
+    let session_max = match db::get_session_max_notional(&state.pool, ctx.session_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "session risk query failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response();
+        }
+    };
+
+    let global = state.ems.risk_limits.max_notional;
+    let effective = session_max.unwrap_or(global);
+    let available = effective - risk_state.open_notional;
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "max_notional": effective.to_string(),
+            "global_max_notional": global.to_string(),
+            "open_notional": risk_state.open_notional.to_string(),
+            "available_notional": available.to_string(),
+            "session_id": ctx.session_id,
+        })),
+    )
+        .into_response()
 }
 
 /// POST /v1/admin/cache/invalidate
@@ -1218,6 +1271,121 @@ async fn resume_handler(
     (
         StatusCode::OK,
         Json(serde_json::json!({"resumed": true, "was_suspended": was_suspended})),
+    )
+        .into_response()
+}
+
+/// GET /v1/admin/sessions
+async fn sessions_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:admin") {
+        return e.into_response();
+    }
+
+    let oms = state.oms.clone();
+    match db::list_sessions(
+        &state.pool,
+        &state.exchange_type,
+        &state.environment,
+        |id| oms.is_suspended(id),
+    )
+    .await
+    {
+        Ok(sessions) => {
+            (StatusCode::OK, Json(serde_json::json!({"sessions": sessions}))).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "list sessions failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// PUT /v1/admin/sessions/:id/risk
+#[derive(Debug, Deserialize)]
+struct UpdateSessionRiskRequest {
+    max_notional: Option<String>,
+}
+
+async fn update_session_risk_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Path(session_id): Path<i64>,
+    Json(body): Json<UpdateSessionRiskRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:admin") {
+        return e.into_response();
+    }
+
+    let max_notional = match &body.max_notional {
+        Some(s) => match s.parse::<Decimal>() {
+            Ok(d) => Some(d),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "invalid max_notional"})),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+
+    match db::update_session_risk(&state.pool, session_id, max_notional).await {
+        Ok(true) => {
+            let global = state.ems.risk_limits.max_notional;
+            tracing::info!(session_id, ?max_notional, "session risk updated");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "session_id": session_id,
+                    "max_notional": max_notional.map(|d| d.to_string()),
+                    "global_max_notional": global.to_string(),
+                })),
+            )
+                .into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "session not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "update session risk failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// PUT /v1/admin/sessions/:id/resume
+async fn resume_session_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+    Path(session_id): Path<i64>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:admin") {
+        return e.into_response();
+    }
+
+    let was_suspended = state.oms.resume(session_id);
+    tracing::info!(session_id, was_suspended, "admin resumed session by id");
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "session_id": session_id,
+            "resumed": true,
+            "was_suspended": was_suspended,
+        })),
     )
         .into_response()
 }

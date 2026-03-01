@@ -167,6 +167,24 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 006_session_environment applied");
     }
 
+    // Check if 007 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '007_session_risk'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 007: {}", e))?;
+
+    if row.is_none() {
+        let migration_007 = include_str!("../migrations/007_session_risk.sql");
+        client
+            .batch_execute(migration_007)
+            .await
+            .map_err(|e| format!("migration 007 failed: {}", e))?;
+        info!("migration 007_session_risk applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
@@ -216,9 +234,23 @@ pub async fn enqueue_order(
 
     let risk_state = RiskState { open_notional };
 
+    // Query per-session risk limit; fall back to global
+    let session_row = tx
+        .query_one(
+            "SELECT max_notional FROM sessions WHERE id = $1",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| EnqueueError::Database(format!("session risk query: {}", e)))?;
+
+    let effective_limits = match session_row.get::<_, Option<Decimal>>("max_notional") {
+        Some(session_max) => RiskLimits { max_notional: session_max },
+        None => limits.clone(),
+    };
+
     // Risk check
     risk_state
-        .check_order(request, limits)
+        .check_order(request, &effective_limits)
         .map_err(EnqueueError::RiskCheck)?;
 
     // Insert order
@@ -909,6 +941,139 @@ pub async fn compute_risk_state(pool: &Pool, session_id: i64) -> Result<RiskStat
     })
 }
 
+/// Get the per-session max_notional override (NULL = use global)
+pub async fn get_session_max_notional(
+    pool: &Pool,
+    session_id: i64,
+) -> Result<Option<Decimal>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let row = client
+        .query_one(
+            "SELECT max_notional FROM sessions WHERE id = $1",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| format!("get session risk: {}", e))?;
+
+    Ok(row.get("max_notional"))
+}
+
+/// Session info returned by list_sessions
+#[derive(Debug, Serialize)]
+pub struct SessionInfo {
+    pub id: i64,
+    pub api_key_prefix: Option<String>,
+    pub display_name: Option<String>,
+    pub max_notional: Option<String>,
+    pub suspended: bool,
+    pub open_notional: String,
+    pub created_at: String,
+    pub closed_at: Option<String>,
+}
+
+/// List all sessions for an exchange+environment, with open_notional for each
+pub async fn list_sessions(
+    pool: &Pool,
+    exchange: &str,
+    environment: &str,
+    is_suspended: impl Fn(i64) -> bool,
+) -> Result<Vec<SessionInfo>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT id, api_key_prefix, display_name, max_notional, \
+                    created_at::text, closed_at::text \
+             FROM sessions \
+             WHERE exchange = $1 AND environment = $2 \
+             ORDER BY id",
+            &[&exchange, &environment],
+        )
+        .await
+        .map_err(|e| format!("list sessions: {}", e))?;
+
+    let mut sessions = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let id: i64 = row.get("id");
+        let max_notional: Option<Decimal> = row.get("max_notional");
+        let closed_at: Option<String> = row.get("closed_at");
+
+        // Compute open_notional for open sessions
+        let open_notional = if closed_at.is_none() {
+            match compute_risk_state(pool, id).await {
+                Ok(rs) => rs.open_notional,
+                Err(_) => Decimal::ZERO,
+            }
+        } else {
+            Decimal::ZERO
+        };
+
+        sessions.push(SessionInfo {
+            id,
+            api_key_prefix: row.get("api_key_prefix"),
+            display_name: row.get("display_name"),
+            max_notional: max_notional.map(|d| d.to_string()),
+            suspended: is_suspended(id),
+            open_notional: open_notional.to_string(),
+            created_at: row.get("created_at"),
+            closed_at,
+        });
+    }
+
+    Ok(sessions)
+}
+
+/// Update the per-session risk limit (NULL = reset to global)
+pub async fn update_session_risk(
+    pool: &Pool,
+    session_id: i64,
+    max_notional: Option<Decimal>,
+) -> Result<bool, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let count = client
+        .execute(
+            "UPDATE sessions SET max_notional = $2 WHERE id = $1",
+            &[&session_id, &max_notional],
+        )
+        .await
+        .map_err(|e| format!("update session risk: {}", e))?;
+
+    Ok(count > 0)
+}
+
+/// List active (open) session IDs for an exchange+environment
+pub async fn list_active_session_ids(
+    pool: &Pool,
+    exchange: &str,
+    environment: &str,
+) -> Result<Vec<i64>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT id FROM sessions WHERE exchange = $1 AND environment = $2 AND closed_at IS NULL ORDER BY id",
+            &[&exchange, &environment],
+        )
+        .await
+        .map_err(|e| format!("list active sessions: {}", e))?;
+
+    Ok(rows.iter().map(|r| r.get("id")).collect())
+}
+
 /// Enqueue a cancel action for an order
 pub async fn enqueue_cancel(pool: &Pool, order_id: i64, actor: &str) -> Result<(), String> {
     let client = pool
@@ -1347,6 +1512,57 @@ pub async fn compute_local_positions(
     Ok(positions)
 }
 
+/// Compute local positions aggregated across all active sessions for an exchange+environment.
+pub async fn compute_all_local_positions(
+    pool: &Pool,
+    exchange: &str,
+    environment: &str,
+) -> Result<Vec<LocalPosition>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT o.ticker, o.action, SUM(o.filled_quantity) as total_filled \
+             FROM prediction_orders o \
+             JOIN sessions s ON o.session_id = s.id \
+             WHERE s.exchange = $1 AND s.environment = $2 AND s.closed_at IS NULL AND o.filled_quantity > 0 \
+             GROUP BY o.ticker, o.action \
+             ORDER BY o.ticker",
+            &[&exchange, &environment],
+        )
+        .await
+        .map_err(|e| format!("compute all local positions: {}", e))?;
+
+    let mut map: std::collections::HashMap<String, (Decimal, Decimal)> =
+        std::collections::HashMap::new();
+    for row in &rows {
+        let ticker: String = row.get("ticker");
+        let action_str: String = row.get("action");
+        let total: Decimal = row.get("total_filled");
+        let entry = map.entry(ticker).or_insert((Decimal::ZERO, Decimal::ZERO));
+        match action_str.as_str() {
+            "buy" => entry.0 += total,
+            "sell" => entry.1 += total,
+            _ => {}
+        }
+    }
+
+    let mut positions: Vec<LocalPosition> = map
+        .into_iter()
+        .map(|(ticker, (buy, sell))| LocalPosition {
+            ticker,
+            net_quantity: buy - sell,
+            buy_filled: buy,
+            sell_filled: sell,
+        })
+        .collect();
+    positions.sort_by(|a, b| a.ticker.cmp(&b.ticker));
+    Ok(positions)
+}
+
 /// Parameters for creating a synthetic order from an external fill.
 pub struct ExternalOrderParams<'a> {
     pub session_id: i64,
@@ -1548,6 +1764,20 @@ pub async fn create_order_group(
 
     let open_notional: Decimal = risk_row.get::<_, Decimal>("open_notional");
 
+    // Query per-session risk limit; fall back to global
+    let session_row = tx
+        .query_one(
+            "SELECT max_notional FROM sessions WHERE id = $1",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| EnqueueError::Database(format!("session risk query: {}", e)))?;
+
+    let effective_max = match session_row.get::<_, Option<Decimal>>("max_notional") {
+        Some(session_max) => session_max,
+        None => risk_limits.max_notional,
+    };
+
     // Compute notional for pending legs only (staged legs excluded from risk)
     let mut pending_notional = Decimal::ZERO;
     for (req, _role, state) in legs {
@@ -1556,12 +1786,12 @@ pub async fn create_order_group(
         }
     }
 
-    if open_notional + pending_notional > risk_limits.max_notional {
+    if open_notional + pending_notional > effective_max {
         return Err(EnqueueError::RiskCheck(
             crate::error::RiskCheckError::MaxNotionalExceeded {
                 current: open_notional,
                 requested: pending_notional,
-                limit: risk_limits.max_notional,
+                limit: effective_max,
             },
         ));
     }

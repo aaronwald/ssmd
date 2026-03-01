@@ -338,3 +338,187 @@ func TestConstructDeployment_SecurityContext(t *testing.T) {
 		t.Error("expected ALL capabilities to be dropped")
 	}
 }
+
+// --- TestConstructService ---
+
+func TestConstructService_Basic(t *testing.T) {
+	r := newTestReconciler()
+	harman := newTestHarman(ssmdv1alpha1.ExchangeTypeKalshi, &corev1.LocalObjectReference{Name: "kalshi-secret"})
+
+	svc := r.constructService(harman)
+
+	if svc.Name != "harman-test" {
+		t.Errorf("service name = %q, want %q", svc.Name, "harman-test")
+	}
+	if svc.Namespace != "ssmd" {
+		t.Errorf("service namespace = %q, want %q", svc.Namespace, "ssmd")
+	}
+	if svc.Spec.Type != corev1.ServiceTypeClusterIP {
+		t.Errorf("service type = %q, want %q", svc.Spec.Type, corev1.ServiceTypeClusterIP)
+	}
+	if len(svc.Spec.Ports) != 1 {
+		t.Fatalf("expected 1 port, got %d", len(svc.Spec.Ports))
+	}
+	if svc.Spec.Ports[0].Port != 8080 {
+		t.Errorf("port = %d, want %d", svc.Spec.Ports[0].Port, 8080)
+	}
+	if svc.Spec.Ports[0].Name != "http" {
+		t.Errorf("port name = %q, want %q", svc.Spec.Ports[0].Name, "http")
+	}
+}
+
+func TestConstructService_Selector(t *testing.T) {
+	r := newTestReconciler()
+	harman := newTestHarman(ssmdv1alpha1.ExchangeTypeKalshi, &corev1.LocalObjectReference{Name: "kalshi-secret"})
+
+	svc := r.constructService(harman)
+
+	expectedSelector := map[string]string{
+		"app.kubernetes.io/name":     "ssmd-harman",
+		"app.kubernetes.io/instance": "harman-test",
+	}
+	for k, want := range expectedSelector {
+		got, ok := svc.Spec.Selector[k]
+		if !ok {
+			t.Errorf("missing selector key %q", k)
+		} else if got != want {
+			t.Errorf("selector %q = %q, want %q", k, got, want)
+		}
+	}
+}
+
+// --- TestEnvVarsEqual ---
+
+func TestEnvVarsEqual_SameOrder(t *testing.T) {
+	a := []corev1.EnvVar{
+		{Name: "A", Value: "1"},
+		{Name: "B", Value: "2"},
+	}
+	b := []corev1.EnvVar{
+		{Name: "A", Value: "1"},
+		{Name: "B", Value: "2"},
+	}
+	if !envVarsEqual(a, b) {
+		t.Error("expected equal for same-order env vars")
+	}
+}
+
+func TestEnvVarsEqual_DifferentOrder(t *testing.T) {
+	a := []corev1.EnvVar{
+		{Name: "B", Value: "2"},
+		{Name: "A", Value: "1"},
+	}
+	b := []corev1.EnvVar{
+		{Name: "A", Value: "1"},
+		{Name: "B", Value: "2"},
+	}
+	if !envVarsEqual(a, b) {
+		t.Error("expected equal for different-order env vars")
+	}
+}
+
+func TestEnvVarsEqual_DifferentValues(t *testing.T) {
+	a := []corev1.EnvVar{
+		{Name: "A", Value: "1"},
+	}
+	b := []corev1.EnvVar{
+		{Name: "A", Value: "2"},
+	}
+	if envVarsEqual(a, b) {
+		t.Error("expected not equal for different values")
+	}
+}
+
+func TestEnvVarsEqual_DifferentLengths(t *testing.T) {
+	a := []corev1.EnvVar{
+		{Name: "A", Value: "1"},
+	}
+	b := []corev1.EnvVar{
+		{Name: "A", Value: "1"},
+		{Name: "B", Value: "2"},
+	}
+	if envVarsEqual(a, b) {
+		t.Error("expected not equal for different lengths")
+	}
+}
+
+func TestEnvVarsEqual_SecretRefs(t *testing.T) {
+	a := []corev1.EnvVar{
+		{
+			Name: "SECRET",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "my-secret"},
+					Key:                  "key1",
+				},
+			},
+		},
+	}
+	b := []corev1.EnvVar{
+		{
+			Name: "SECRET",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "my-secret"},
+					Key:                  "key1",
+				},
+			},
+		},
+	}
+	if !envVarsEqual(a, b) {
+		t.Error("expected equal for matching secret refs")
+	}
+}
+
+func TestEnvVarsEqual_DifferentSecretRefs(t *testing.T) {
+	a := []corev1.EnvVar{
+		{
+			Name: "SECRET",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "secret-a"},
+					Key:                  "key1",
+				},
+			},
+		},
+	}
+	b := []corev1.EnvVar{
+		{
+			Name: "SECRET",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "secret-b"},
+					Key:                  "key1",
+				},
+			},
+		},
+	}
+	if envVarsEqual(a, b) {
+		t.Error("expected not equal for different secret refs")
+	}
+}
+
+// --- TestServiceNeedsUpdate ---
+
+func TestServiceNeedsUpdate_NoChange(t *testing.T) {
+	r := newTestReconciler()
+	harman := newTestHarman(ssmdv1alpha1.ExchangeTypeKalshi, &corev1.LocalObjectReference{Name: "kalshi-secret"})
+
+	svc := r.constructService(harman)
+	if r.serviceNeedsUpdate(svc, svc) {
+		t.Error("expected no update needed for identical services")
+	}
+}
+
+func TestServiceNeedsUpdate_DifferentSelector(t *testing.T) {
+	r := newTestReconciler()
+	harman := newTestHarman(ssmdv1alpha1.ExchangeTypeKalshi, &corev1.LocalObjectReference{Name: "kalshi-secret"})
+
+	current := r.constructService(harman)
+	desired := r.constructService(harman)
+	desired.Spec.Selector["app.kubernetes.io/instance"] = "different"
+
+	if !r.serviceNeedsUpdate(current, desired) {
+		t.Error("expected update needed for different selector")
+	}
+}

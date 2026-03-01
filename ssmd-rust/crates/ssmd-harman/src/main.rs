@@ -169,13 +169,19 @@ async fn main() {
         .expect("failed to get or create session");
     info!(startup_session_id, "startup session initialized");
 
+    // Get or create __system__ session for external fill/order attribution
+    let system_session_id = harman::db::get_or_create_session(&pool, &exchange_type, &environment, Some("__system__"))
+        .await
+        .expect("failed to get or create __system__ session");
+    info!(system_session_id, "system session initialized");
+
     // Create shared registry, EMS metrics first, then OMS metrics
     let registry = prometheus::Registry::new();
     let ems_metrics = EmsMetrics::new(&registry);
     let ems = Arc::new(Ems::new(pool.clone(), exchange.clone(), risk_limits, ems_metrics));
 
     let oms_metrics = OmsMetrics::new(&registry);
-    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
+    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics, system_session_id));
     let monitor_metrics = MonitorMetrics::new(&registry);
 
     let reconcile_interval = if args.reconcile_interval_secs > 0 {
@@ -183,7 +189,7 @@ async fn main() {
     } else {
         None
     };
-    let runner = Arc::new(OmsRunner::new(oms.clone(), reconcile_interval, startup_session_id));
+    let runner = Arc::new(OmsRunner::new(oms.clone(), reconcile_interval, startup_session_id, exchange_type.clone(), environment.clone()));
     let pump_trigger = runner.pump_trigger();
     if args.auto_pump {
         info!("auto-pump enabled");

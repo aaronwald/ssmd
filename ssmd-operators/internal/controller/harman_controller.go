@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"reflect"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -50,6 +49,7 @@ type HarmanReconciler struct {
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=harmans/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ssmd.ssmd.io,resources=harmans/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 
 // Reconcile moves the cluster state toward the desired state for a Harman
@@ -86,6 +86,11 @@ func (r *HarmanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return result, err
 	}
 
+	// Reconcile the Service
+	if result, err := r.reconcileService(ctx, harman); err != nil {
+		return result, err
+	}
+
 	// Update status
 	if err := r.updateStatus(ctx, harman); err != nil {
 		return ctrl.Result{}, err
@@ -100,6 +105,16 @@ func (r *HarmanReconciler) reconcileDelete(ctx context.Context, harman *ssmdv1al
 
 	if controllerutil.ContainsFinalizer(harman, harmanFinalizer) {
 		log.Info("Cleaning up Harman resources", "name", harman.Name)
+
+		// Delete the Service
+		svcName := r.serviceName(harman)
+		svc := &corev1.Service{}
+		if err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: harman.Namespace}, svc); err == nil {
+			if err := r.Delete(ctx, svc); err != nil && !errors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			log.Info("Deleted Service", "name", svcName)
+		}
 
 		// Delete the Deployment
 		deploymentName := r.deploymentName(harman)
@@ -391,6 +406,46 @@ func (r *HarmanReconciler) exchangeEnvVars(harman *ssmdv1alpha1.Harman) []corev1
 	}
 }
 
+// envVarsEqual compares two env var slices ignoring order.
+// Compares by name set and, for each name, value or secretKeyRef.
+func envVarsEqual(a, b []corev1.EnvVar) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	aMap := make(map[string]corev1.EnvVar, len(a))
+	for _, e := range a {
+		aMap[e.Name] = e
+	}
+	for _, be := range b {
+		ae, ok := aMap[be.Name]
+		if !ok {
+			return false
+		}
+		// Compare literal values
+		if ae.Value != be.Value {
+			return false
+		}
+		// Compare secret refs
+		if (ae.ValueFrom == nil) != (be.ValueFrom == nil) {
+			return false
+		}
+		if ae.ValueFrom != nil && be.ValueFrom != nil {
+			if (ae.ValueFrom.SecretKeyRef == nil) != (be.ValueFrom.SecretKeyRef == nil) {
+				return false
+			}
+			if ae.ValueFrom.SecretKeyRef != nil && be.ValueFrom.SecretKeyRef != nil {
+				if ae.ValueFrom.SecretKeyRef.LocalObjectReference.Name != be.ValueFrom.SecretKeyRef.LocalObjectReference.Name {
+					return false
+				}
+				if ae.ValueFrom.SecretKeyRef.Key != be.ValueFrom.SecretKeyRef.Key {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
 // deploymentNeedsUpdate checks if the Deployment needs to be updated
 func (r *HarmanReconciler) deploymentNeedsUpdate(current, desired *appsv1.Deployment) bool {
 	if len(current.Spec.Template.Spec.Containers) == 0 || len(desired.Spec.Template.Spec.Containers) == 0 {
@@ -405,13 +460,18 @@ func (r *HarmanReconciler) deploymentNeedsUpdate(current, desired *appsv1.Deploy
 		return true
 	}
 
-	// Check environment variables
-	if !reflect.DeepEqual(currentContainer.Env, desiredContainer.Env) {
+	// Check environment variables (order-independent)
+	if !envVarsEqual(currentContainer.Env, desiredContainer.Env) {
 		return true
 	}
 
-	// Check resource requirements
-	if !reflect.DeepEqual(currentContainer.Resources, desiredContainer.Resources) {
+	// Check resource requirements (use sorted env comparison can't help here, use field-level)
+	cr := currentContainer.Resources
+	dr := desiredContainer.Resources
+	if !cr.Requests.Cpu().Equal(*dr.Requests.Cpu()) ||
+		!cr.Requests.Memory().Equal(*dr.Requests.Memory()) ||
+		!cr.Limits.Cpu().Equal(*dr.Limits.Cpu()) ||
+		!cr.Limits.Memory().Equal(*dr.Limits.Memory()) {
 		return true
 	}
 
@@ -427,10 +487,12 @@ func (r *HarmanReconciler) updateStatus(ctx context.Context, harman *ssmdv1alpha
 	if errors.IsNotFound(err) {
 		harman.Status.Phase = ssmdv1alpha1.HarmanPhasePending
 		harman.Status.Deployment = ""
+		harman.Status.Service = ""
 	} else if err != nil {
 		return err
 	} else {
 		harman.Status.Deployment = deploymentName
+		harman.Status.Service = r.serviceName(harman)
 
 		// Determine phase from Deployment status
 		if deployment.Status.ReadyReplicas > 0 {
@@ -463,11 +525,110 @@ func (r *HarmanReconciler) deploymentName(harman *ssmdv1alpha1.Harman) string {
 	return harman.Name
 }
 
+// serviceName returns the Service name for a Harman
+func (r *HarmanReconciler) serviceName(harman *ssmdv1alpha1.Harman) string {
+	return harman.Name
+}
+
+// reconcileService ensures the Service exists and matches the desired state
+func (r *HarmanReconciler) reconcileService(ctx context.Context, harman *ssmdv1alpha1.Harman) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	svcName := r.serviceName(harman)
+	svc := &corev1.Service{}
+	err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: harman.Namespace}, svc)
+
+	if errors.IsNotFound(err) {
+		// Create new Service
+		svc = r.constructService(harman)
+		if err := controllerutil.SetControllerReference(harman, svc, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Creating Service", "name", svcName)
+		if err := r.Create(ctx, svc); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	} else if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Update existing Service if selector or ports changed
+	desired := r.constructService(harman)
+	if r.serviceNeedsUpdate(svc, desired) {
+		svc.Spec.Selector = desired.Spec.Selector
+		svc.Spec.Ports = desired.Spec.Ports
+		log.Info("Updating Service", "name", svcName)
+		if err := r.Update(ctx, svc); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// constructService builds the Service spec for a Harman
+func (r *HarmanReconciler) constructService(harman *ssmdv1alpha1.Harman) *corev1.Service {
+	labels := map[string]string{
+		"app.kubernetes.io/name":       "ssmd-harman",
+		"app.kubernetes.io/instance":   harman.Name,
+		"app.kubernetes.io/managed-by": "ssmd-operator",
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      r.serviceName(harman),
+			Namespace: harman.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeClusterIP,
+			Selector: map[string]string{
+				"app.kubernetes.io/name":     "ssmd-harman",
+				"app.kubernetes.io/instance": harman.Name,
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "http",
+					Port:       8080,
+					TargetPort: intstr.FromString("http"),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+}
+
+// serviceNeedsUpdate checks if the Service needs to be updated
+func (r *HarmanReconciler) serviceNeedsUpdate(current, desired *corev1.Service) bool {
+	// Check selector
+	if len(current.Spec.Selector) != len(desired.Spec.Selector) {
+		return true
+	}
+	for k, v := range desired.Spec.Selector {
+		if current.Spec.Selector[k] != v {
+			return true
+		}
+	}
+	// Check ports
+	if len(current.Spec.Ports) != len(desired.Spec.Ports) {
+		return true
+	}
+	for i := range desired.Spec.Ports {
+		if current.Spec.Ports[i].Port != desired.Spec.Ports[i].Port ||
+			current.Spec.Ports[i].Name != desired.Spec.Ports[i].Name {
+			return true
+		}
+	}
+	return false
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *HarmanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&ssmdv1alpha1.Harman{}).
 		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
 		Named("harman").
 		Complete(r)
 }

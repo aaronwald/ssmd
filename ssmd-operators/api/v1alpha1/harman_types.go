@@ -142,6 +142,10 @@ type HarmanStatus struct {
 	// +optional
 	Deployment string `json:"deployment,omitempty"`
 
+	// Service is the name of the created Service
+	// +optional
+	Service string `json:"service,omitempty"`
+
 	// Conditions represent the current state of the Harman
 	// +listType=map
 	// +listMapKey=type
