@@ -1584,3 +1584,83 @@ async fn test_staged_legs_excluded_from_risk() {
     let result = oms.create_bracket(session_id, entry, tp, sl).await;
     assert!(result.is_ok(), "bracket should pass risk check — staged legs excluded");
 }
+
+// =============================================================================
+// Test 38: Cross-session fill attribution
+//
+// Scenario: Session A has an order (exchange_order_id set). Session B runs
+// reconciliation first. Fills for session A's order should NOT be imported
+// as external fills into __system__; they should be attributed to session A.
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_reconciliation_cross_session_fill_attribution() {
+    let pool = setup_test_db().await.expect("setup_test_db failed");
+
+    // Create three distinct sessions: A (user), B (different user), system
+    let session_a = db::get_or_create_session(&pool, "test", "demo", Some(&format!("xsess-a-{}", Uuid::new_v4())))
+        .await.unwrap();
+    let session_b = db::get_or_create_session(&pool, "test", "demo", Some(&format!("xsess-b-{}", Uuid::new_v4())))
+        .await.unwrap();
+    let system_session = db::get_or_create_session(&pool, "test", "demo", Some(&format!("xsess-sys-{}", Uuid::new_v4())))
+        .await.unwrap();
+
+    // Session A has an acknowledged order with exchange_order_id
+    let order_a_id = insert_test_order(
+        &pool, session_a, OrderState::Acknowledged,
+        "KXTEST-XSESS-FILL", Some("exch-xsess-398"),
+    ).await.unwrap();
+
+    // Mock exchange returns fills for session A's order
+    let mock_state = Arc::new(tokio::sync::Mutex::new(MockExchangeState::default()));
+    {
+        let mut s = mock_state.lock().await;
+        s.fills.push(mock_fill(
+            "exch-xsess-398",
+            "KXTEST-XSESS-FILL",
+            Decimal::from(10),
+            Decimal::new(45, 2),
+        ));
+    }
+
+    // Build state with system_session_id set correctly
+    let registry = prometheus::Registry::new();
+    let ems_metrics = EmsMetrics::new(&registry);
+    let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = Arc::new(MockExchange::with_state(mock_state.clone()));
+    let ems = Arc::new(Ems::new(pool.clone(), exchange.clone(), RiskLimits::default(), ems_metrics));
+    let oms_metrics = OmsMetrics::new(&registry);
+    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems, oms_metrics, system_session));
+
+    // KEY: Reconcile session B FIRST (the bug scenario).
+    // Session B has no orders matching exch-xsess-398, but cross-session lookup
+    // should find it in session A and attribute the fill there.
+    let result_b = oms.reconcile(session_b).await;
+    assert!(result_b.errors.is_empty(), "session B errors: {:?}", result_b.errors);
+    assert_eq!(result_b.fills_discovered, 1, "fill should be discovered via cross-session lookup");
+
+    // Verify fill is recorded against session A's order (not __system__)
+    let client = pool.get().await.unwrap();
+    let row = client
+        .query_one(
+            "SELECT COUNT(*) as cnt FROM fills WHERE order_id = $1",
+            &[&order_a_id],
+        )
+        .await
+        .unwrap();
+    let fill_count: i64 = row.get("cnt");
+    assert_eq!(fill_count, 1, "fill should be attributed to session A's order");
+
+    // Verify NO external order was created in __system__
+    let sys_orders = db::list_orders(&pool, system_session, None).await.unwrap();
+    let has_external = sys_orders.iter().any(|o| o.exchange_order_id.as_deref() == Some("exch-xsess-398"));
+    assert!(!has_external, "no synthetic external order should exist in __system__");
+
+    // Order should transition to Filled (qty=10, fill=10)
+    assert_order_state(&pool, order_a_id, OrderState::Filled).await.unwrap();
+
+    // Now reconcile session A — fill already recorded, should be idempotent
+    let result_a = oms.reconcile(session_a).await;
+    assert!(result_a.errors.is_empty(), "session A errors: {:?}", result_a.errors);
+    assert_eq!(result_a.fills_discovered, 0, "fill already recorded, should be idempotent");
+}

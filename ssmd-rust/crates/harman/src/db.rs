@@ -2119,6 +2119,62 @@ pub async fn get_group(
     Ok(row.as_ref().map(row_to_group))
 }
 
+/// Check if an order with the given exchange_order_id exists in any session.
+///
+/// Used by reconciliation to avoid importing duplicate synthetic orders
+/// when the real order lives in a different session.
+pub async fn order_exists_in_any_session(
+    pool: &Pool,
+    exchange_order_id: &str,
+) -> Result<bool, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let row = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM prediction_orders WHERE exchange_order_id = $1) as exists",
+            &[&exchange_order_id],
+        )
+        .await
+        .map_err(|e| format!("order_exists_in_any_session: {}", e))?;
+
+    Ok(row.get("exists"))
+}
+
+/// Find orders by exchange_order_ids across all sessions, excluding specific sessions.
+///
+/// Used by reconciliation to attribute fills to orders in other sessions
+/// when the fill's order doesn't exist in the current session.
+pub async fn find_orders_by_exchange_ids(
+    pool: &Pool,
+    exchange_order_ids: &[&str],
+    exclude_session_ids: &[i64],
+) -> Result<Vec<Order>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT id, session_id, client_order_id, exchange_order_id, \
+                    ticker, side, action, quantity, price_dollars, \
+                    filled_quantity, time_in_force, state, cancel_reason, \
+                    group_id, leg_role, created_at, updated_at \
+             FROM prediction_orders \
+             WHERE exchange_order_id = ANY($1) \
+               AND session_id != ALL($2) \
+             ORDER BY id",
+            &[&exchange_order_ids, &exclude_session_ids],
+        )
+        .await
+        .map_err(|e| format!("find_orders_by_exchange_ids: {}", e))?;
+
+    Ok(rows.iter().map(row_to_order).collect())
+}
+
 fn row_to_order(row: &tokio_postgres::Row) -> Order {
     Order {
         id: row.get("id"),

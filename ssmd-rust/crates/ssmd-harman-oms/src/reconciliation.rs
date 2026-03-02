@@ -1,11 +1,11 @@
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 use harman::db;
 use harman::state::{self, OrderState};
-use harman::types::{Action, ExchangeOrderState, Side};
+use harman::types::{Action, ExchangeOrderState, Order, Side};
 use rust_decimal::Decimal;
 
 use crate::Oms;
@@ -89,6 +89,19 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
         }
     }
 
+    // Detect unattributed positions: exchange has quantity but we found zero fills.
+    // This indicates fills were likely mis-attributed to __system__ in a prior run.
+    if result.fills_discovered == 0 {
+        let has_unattributed = result.position_mismatches.iter().any(|m| {
+            let exchange_qty: Decimal = m.exchange_quantity.parse().unwrap_or(Decimal::ZERO);
+            let local_qty: Decimal = m.local_quantity.parse().unwrap_or(Decimal::ZERO);
+            exchange_qty.abs() > Decimal::ZERO && local_qty.is_zero()
+        });
+        if has_unattributed {
+            oms.metrics.reconciliation_unattributed_position.inc();
+        }
+    }
+
     // Check if any mismatch triggered suspension for this session
     result.suspended = oms.suspended_sessions.contains_key(&session_id);
 
@@ -142,6 +155,25 @@ async fn discover_external_orders(oms: &Oms, session_id: i64, system_session_id:
             continue;
         }
 
+        // Check if the order exists in another session (avoid duplicate synthetic imports)
+        match db::order_exists_in_any_session(&oms.pool, &order.exchange_order_id).await {
+            Ok(true) => {
+                debug!(
+                    exchange_order_id = %order.exchange_order_id,
+                    "order exists in another session, skipping external import"
+                );
+                continue;
+            }
+            Ok(false) => {} // truly external, proceed with import
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    exchange_order_id = %order.exchange_order_id,
+                    "cross-session order check failed, proceeding with import"
+                );
+            }
+        }
+
         info!(
             exchange_order_id = %order.exchange_order_id,
             ticker = %order.ticker,
@@ -188,6 +220,8 @@ async fn discover_external_orders(oms: &Oms, session_id: i64, system_session_id:
 /// After recording fills, update order states (Acknowledged → Filled/PartiallyFilled).
 ///
 /// Loads all orders once and builds a lookup to avoid N+1 queries.
+/// Performs cross-session lookup for fills whose orders live in other sessions,
+/// preventing mis-attribution of fills to __system__ as "external".
 async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> Result<u64, String> {
     let fills = oms
         .exchange
@@ -197,21 +231,64 @@ async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> R
 
     debug!(count = fills.len(), "fetched exchange fills");
 
-    let orders = db::list_orders(&oms.pool, session_id, None).await?;
+    let session_orders = db::list_orders(&oms.pool, session_id, None).await?;
+
+    // Collect exchange_order_ids that have no match in the current session
+    let local_eids: HashSet<&str> = session_orders
+        .iter()
+        .filter_map(|o| o.exchange_order_id.as_deref())
+        .collect();
+    let unmatched_eids: Vec<String> = fills
+        .iter()
+        .map(|f| f.order_id.clone())
+        .filter(|eid| !local_eids.contains(eid.as_str()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    // Cross-session lookup: find orders in other sessions (excludes current + system)
+    let cross_orders = if !unmatched_eids.is_empty() {
+        let eid_refs: Vec<&str> = unmatched_eids.iter().map(|s| s.as_str()).collect();
+        db::find_orders_by_exchange_ids(&oms.pool, &eid_refs, &[session_id, system_session_id]).await?
+    } else {
+        vec![]
+    };
+
+    if !cross_orders.is_empty() {
+        debug!(
+            count = cross_orders.len(),
+            "found orders in other sessions for unmatched fills"
+        );
+    }
+
+    // Build unified lookup: exchange_order_id → &Order (local takes priority)
+    let mut order_by_eid: HashMap<&str, &Order> =
+        HashMap::new();
+    for o in &session_orders {
+        if let Some(eid) = &o.exchange_order_id {
+            order_by_eid.insert(eid, o);
+        }
+    }
+    for o in &cross_orders {
+        if let Some(eid) = &o.exchange_order_id {
+            order_by_eid.entry(eid).or_insert(o); // local takes priority
+        }
+    }
 
     let mut count = 0u64;
     // Track which orders got new fills so we can update their states
-    let mut orders_with_new_fills: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    // Maps order_id → session_id (the order's actual session, not necessarily the function param)
+    let mut orders_with_new_fills: HashMap<i64, i64> =
+        HashMap::new();
 
     for fill in &fills {
-        if let Some(order) = orders
-            .iter()
-            .find(|o| o.exchange_order_id.as_deref() == Some(&fill.order_id))
-        {
+        if let Some(order) = order_by_eid.get(fill.order_id.as_str()) {
+            // Use the order's own session_id (may differ from function param for cross-session)
+            let order_session = order.session_id;
             let inserted = db::record_fill(
                 &oms.pool,
                 order.id,
-                session_id,
+                order_session,
                 &fill.trade_id,
                 fill.price_dollars,
                 fill.quantity,
@@ -221,17 +298,26 @@ async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> R
             .await?;
 
             if inserted {
-                info!(
-                    order_id = order.id,
-                    trade_id = %fill.trade_id,
-                    "recorded missing fill"
-                );
+                if order_session != session_id {
+                    info!(
+                        order_id = order.id,
+                        order_session_id = order_session,
+                        trade_id = %fill.trade_id,
+                        "recorded cross-session fill"
+                    );
+                } else {
+                    info!(
+                        order_id = order.id,
+                        trade_id = %fill.trade_id,
+                        "recorded missing fill"
+                    );
+                }
                 oms.ems.metrics.fills_recorded.inc();
-                orders_with_new_fills.insert(order.id);
+                orders_with_new_fills.insert(order.id, order_session);
                 count += 1;
             }
         } else {
-            // No matching local order — this is an external fill.
+            // No matching order in any session — this is a truly external fill.
             // Fills are sacrosanct: never drop fills. Import to __system__ session.
             info!(
                 trade_id = %fill.trade_id,
@@ -284,9 +370,15 @@ async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> R
         }
     }
 
+    // Build a combined lookup for order state updates (session + cross-session orders)
+    let all_orders: Vec<&Order> = session_orders
+        .iter()
+        .chain(cross_orders.iter())
+        .collect();
+
     // Update order states for orders that received new fills
-    for order_id in &orders_with_new_fills {
-        if let Some(order) = orders.iter().find(|o| o.id == *order_id) {
+    for (order_id, order_session) in &orders_with_new_fills {
+        if let Some(order) = all_orders.iter().find(|o| o.id == *order_id) {
             // Only update non-terminal orders
             if order.state.is_terminal() {
                 continue;
@@ -313,7 +405,7 @@ async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> R
                 if let Err(e) = db::update_order_state(
                     &oms.pool,
                     *order_id,
-                    session_id,
+                    *order_session,
                     new_state,
                     None,
                     Some(filled_qty),
