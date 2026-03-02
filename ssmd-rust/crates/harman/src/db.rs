@@ -1586,6 +1586,7 @@ pub async fn compute_local_positions(
             "SELECT ticker, action, SUM(filled_quantity) as total_filled \
              FROM prediction_orders \
              WHERE session_id = $1 AND filled_quantity > 0 \
+               AND ticker NOT IN (SELECT ticker FROM settlements WHERE session_id = $1) \
              GROUP BY ticker, action \
              ORDER BY ticker",
             &[&session_id],
@@ -1638,6 +1639,7 @@ pub async fn compute_all_local_positions(
              FROM prediction_orders o \
              JOIN sessions s ON o.session_id = s.id \
              WHERE s.exchange = $1 AND s.environment = $2 AND o.filled_quantity > 0 \
+               AND o.ticker NOT IN (SELECT ticker FROM settlements WHERE session_id = o.session_id) \
              GROUP BY o.ticker, o.action \
              ORDER BY o.ticker",
             &[&exchange, &environment],
