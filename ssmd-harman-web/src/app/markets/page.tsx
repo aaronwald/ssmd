@@ -2,7 +2,7 @@
 
 import { Suspense, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { useEventSearch, useOutcomeSearch, useInfo, usePositions, useWatchlist, useWatchlistData } from "@/lib/hooks";
+import { useEventSearch, useOutcomeSearch, useMarkets, useInfo, usePositions, useWatchlist, useWatchlistData } from "@/lib/hooks";
 import type { MonitorMarket, MonitorSearchResult, WatchlistItem, WatchlistResult } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
 
@@ -212,17 +212,16 @@ function MarketsContent() {
         </details>
       )}
 
-      {/* Series results */}
+      {/* Event results — expandable to show markets */}
       {hasSearch && hasEvents && (
-        <SearchResultsSection
-          title="Events"
+        <EventResultsSection
           results={seriesResults.results}
           positionTickers={positionTickers}
           watchlist={watchlist}
           toggleStar={toggleStar}
           fmtPrice={fmtPrice}
           fmtInt={fmtInt}
-          onRowClick={(r) => setSlideOverMarket(r as MonitorMarket)}
+          onMarketClick={(m) => setSlideOverMarket(m)}
         />
       )}
 
@@ -262,6 +261,143 @@ function MarketsContent() {
         />
       )}
     </div>
+  );
+}
+
+/** Events section — click an event to expand and see its markets */
+function EventResultsSection({
+  results,
+  positionTickers,
+  watchlist,
+  toggleStar,
+  fmtPrice,
+  fmtInt,
+  onMarketClick,
+}: {
+  results: MonitorSearchResult[];
+  positionTickers: Set<string>;
+  watchlist: { has: (ticker: string) => boolean };
+  toggleStar: (ticker: string, exchange: string, title?: string) => void;
+  fmtPrice: (v: number | null) => string;
+  fmtInt: (v: number | null) => string;
+  onMarketClick: (m: MonitorMarket) => void;
+}) {
+  const [expandedEvent, setExpandedEvent] = useState<string | null>(null);
+
+  return (
+    <div>
+      <h2 className="text-sm font-medium text-fg-muted mb-2">Events ({results.length})</h2>
+      <div className="bg-bg-raised border border-border rounded-lg overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-fg-muted border-b border-border">
+                <th className="px-4 py-2 w-6"></th>
+                <th className="px-4 py-2">Ticker</th>
+                <th className="px-4 py-2">Title</th>
+                <th className="px-4 py-2">Exchange</th>
+                <th className="px-4 py-2">Status</th>
+                <th className="px-4 py-2 w-6"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((r) => (
+                <ExpandableEventRow
+                  key={r.ticker}
+                  event={r}
+                  isExpanded={expandedEvent === r.ticker}
+                  onToggle={() => setExpandedEvent(expandedEvent === r.ticker ? null : r.ticker)}
+                  positionTickers={positionTickers}
+                  watchlist={watchlist}
+                  toggleStar={toggleStar}
+                  fmtPrice={fmtPrice}
+                  fmtInt={fmtInt}
+                  onMarketClick={onMarketClick}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Single event row that expands to show its markets */
+function ExpandableEventRow({
+  event,
+  isExpanded,
+  onToggle,
+  positionTickers,
+  watchlist,
+  toggleStar,
+  fmtPrice,
+  fmtInt,
+  onMarketClick,
+}: {
+  event: MonitorSearchResult;
+  isExpanded: boolean;
+  onToggle: () => void;
+  positionTickers: Set<string>;
+  watchlist: { has: (ticker: string) => boolean };
+  toggleStar: (ticker: string, exchange: string, title?: string) => void;
+  fmtPrice: (v: number | null) => string;
+  fmtInt: (v: number | null) => string;
+  onMarketClick: (m: MonitorMarket) => void;
+}) {
+  const { data: markets } = useMarkets(isExpanded ? event.ticker : null);
+
+  return (
+    <>
+      <tr
+        className="border-b border-border-subtle hover:bg-bg-surface-hover cursor-pointer"
+        onClick={onToggle}
+      >
+        <td className="px-4 py-2 text-fg-muted text-xs">{isExpanded ? "▼" : "▶"}</td>
+        <td className="px-4 py-2 font-mono text-xs">
+          {event.ticker}
+          {positionTickers.has(event.ticker) && (
+            <span className="ml-1 text-accent text-xs" title="Has position">●</span>
+          )}
+        </td>
+        <td className="px-4 py-2 text-xs text-fg-muted truncate max-w-[200px]">{event.title || "-"}</td>
+        <td className="px-4 py-2 text-xs text-fg-muted">{EXCHANGE_LABELS[event.exchange || ""] || event.exchange || "-"}</td>
+        <td className="px-4 py-2"><MarketStatusBadge status={event.status || "-"} /></td>
+        <td className="px-4 py-2 text-xs text-fg-muted">{isExpanded ? "" : `${event.volume ?? ""}`}</td>
+      </tr>
+      {isExpanded && markets && markets.map((m) => (
+        <tr
+          key={m.ticker}
+          className="border-b border-border-subtle hover:bg-bg-surface-hover cursor-pointer bg-bg-surface"
+          onClick={() => onMarketClick(m)}
+        >
+          <td className="px-4 py-2">
+            <button
+              onClick={(e) => { e.stopPropagation(); toggleStar(m.ticker, event.exchange || "kalshi", m.title); }}
+              className={`text-sm ${watchlist.has(m.ticker) ? "text-yellow" : "text-fg-subtle hover:text-yellow"}`}
+              title={watchlist.has(m.ticker) ? "Remove from watchlist" : "Add to watchlist"}
+            >
+              {watchlist.has(m.ticker) ? "\u2605" : "\u2606"}
+            </button>
+          </td>
+          <td className="pl-8 pr-4 py-2 font-mono text-xs">
+            {m.ticker}
+            {positionTickers.has(m.ticker) && (
+              <span className="ml-1 text-accent text-xs" title="Has position">●</span>
+            )}
+          </td>
+          <td className="px-4 py-2 text-xs text-fg-muted truncate max-w-[200px]">{m.title || "-"}</td>
+          <td className="px-4 py-2 font-mono text-right text-xs">{fmtPrice(m.yes_bid ?? m.bid ?? null)}</td>
+          <td className="px-4 py-2 font-mono text-right text-xs">{fmtPrice(m.yes_ask ?? m.ask ?? null)}</td>
+          <td className="px-4 py-2 font-mono text-right text-xs">{fmtPrice(m.last ?? null)}</td>
+        </tr>
+      ))}
+      {isExpanded && !markets && (
+        <tr className="bg-bg-surface">
+          <td colSpan={6} className="px-8 py-2 text-xs text-fg-subtle">Loading markets...</td>
+        </tr>
+      )}
+    </>
   );
 }
 
