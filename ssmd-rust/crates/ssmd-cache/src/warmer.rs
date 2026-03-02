@@ -544,7 +544,13 @@ impl CacheWarmer {
                            e.series_ticker AS series,
                            e.event_ticker AS event,
                            m.ticker,
-                           m.title,
+                           CASE
+                             WHEN m.ticker ~ '-T(\d+(\.\d+)?)$'
+                             THEN m.title || ' $' || (regexp_match(m.ticker, '-T(\d+(?:\.\d+)?)$'))[1]
+                             WHEN m.ticker ~ '-B(\d+(\.\d+)?)$'
+                             THEN m.title || ' $' || (regexp_match(m.ticker, '-B(\d+(?:\.\d+)?)$'))[1]
+                             ELSE m.title
+                           END AS title,
                            COALESCE(m.volume, 0)::bigint AS volume,
                            COALESCE(m.open_interest, 0)::bigint AS open_interest,
                            m.close_time::text
