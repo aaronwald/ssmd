@@ -627,7 +627,7 @@ impl Connector for KalshiConnector {
                 {
                     if cdc_config.enabled {
                         let consumer_name = cdc_config.consumer_name.clone()
-                            .unwrap_or_else(|| format!("{}-cdc", category_label));
+                            .unwrap_or_else(|| format!("{}-cdc-v2", category_label));
 
                         let cdc_nats_url = cdc_config.nats_url.clone()
                             .unwrap_or_else(|| nats_url.clone());

@@ -43,6 +43,8 @@ pub struct CdcEvent {
 struct MarketData {
     ticker: String,
     event_ticker: String,
+    #[serde(default)]
+    status: Option<String>,
 }
 
 /// CDC consumer configuration
@@ -144,8 +146,8 @@ impl CdcSubscriptionConsumer {
                 &config.consumer_name,
                 jetstream::consumer::pull::Config {
                     durable_name: Some(config.consumer_name.clone()),
-                    // Only listen to market insert events
-                    filter_subject: "cdc.markets.insert".to_string(),
+                    // Listen to all market CDC events (insert, update, delete)
+                    filter_subject: "cdc.markets.>".to_string(),
                     deliver_policy,
                     ..Default::default()
                 },
@@ -244,6 +246,9 @@ impl CdcSubscriptionConsumer {
         let mut skipped_category: u64 = 0;
         let mut skipped_duplicate: u64 = 0;
         let mut subscribed: u64 = 0;
+        let mut subscribed_update: u64 = 0;
+        let mut skipped_delete: u64 = 0;
+        let mut skipped_update_inactive: u64 = 0;
 
         let mut consecutive_errors = 0u32;
         const MAX_CONSECUTIVE_ERRORS: u32 = 5;
@@ -295,6 +300,15 @@ impl CdcSubscriptionConsumer {
                 continue;
             }
 
+            // Skip delete events entirely
+            if event.op == "delete" {
+                skipped_delete += 1;
+                if let Err(e) = msg.ack().await {
+                    warn!(error = %e, "Failed to ack message");
+                }
+                continue;
+            }
+
             // Extract market data
             let market_data: MarketData = match event.data {
                 Some(data) => match serde_json::from_value(data) {
@@ -315,6 +329,26 @@ impl CdcSubscriptionConsumer {
                     continue;
                 }
             };
+
+            // For update events, only process if status transitioned to "active"
+            if event.op == "update" {
+                match market_data.status.as_deref() {
+                    Some("active") => {
+                        info!(
+                            ticker = %market_data.ticker,
+                            "CDC: Market transitioned to active"
+                        );
+                        subscribed_update += 1;
+                    }
+                    _ => {
+                        skipped_update_inactive += 1;
+                        if let Err(e) = msg.ack().await {
+                            warn!(error = %e, "Failed to ack message");
+                        }
+                        continue;
+                    }
+                }
+            }
 
             // Skip already subscribed markets
             if self.subscribed_markets.contains(&market_data.ticker) {
@@ -361,7 +395,10 @@ impl CdcSubscriptionConsumer {
                     skipped_lsn,
                     skipped_category,
                     skipped_duplicate,
+                    skipped_delete,
+                    skipped_update_inactive,
                     subscribed,
+                    subscribed_update,
                     "CDC consumer progress"
                 );
             }
@@ -372,7 +409,10 @@ impl CdcSubscriptionConsumer {
             skipped_lsn,
             skipped_category,
             skipped_duplicate,
+            skipped_delete,
+            skipped_update_inactive,
             subscribed,
+            subscribed_update,
             "CDC consumer stopped"
         );
 
@@ -412,5 +452,44 @@ mod tests {
         let market: MarketData = serde_json::from_value(event.data.unwrap()).unwrap();
         assert_eq!(market.ticker, "KXTEST-123");
         assert_eq!(market.event_ticker, "KXEVENT-1");
+        assert_eq!(market.status, None);
+    }
+
+    #[test]
+    fn test_cdc_update_event_parse() {
+        let json = r#"{
+            "lsn": "0/16B3748",
+            "table": "markets",
+            "op": "update",
+            "key": {"ticker": "KXTEST-123"},
+            "data": {
+                "ticker": "KXTEST-123",
+                "event_ticker": "KXEVENT-1",
+                "status": "active"
+            }
+        }"#;
+
+        let event: CdcEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.op, "update");
+
+        let market: MarketData = serde_json::from_value(event.data.unwrap()).unwrap();
+        assert_eq!(market.ticker, "KXTEST-123");
+        assert_eq!(market.event_ticker, "KXEVENT-1");
+        assert_eq!(market.status, Some("active".to_string()));
+    }
+
+    #[test]
+    fn test_cdc_delete_event_parse() {
+        let json = r#"{
+            "lsn": "0/16B3748",
+            "table": "markets",
+            "op": "delete",
+            "key": {"ticker": "KXTEST-123"},
+            "data": null
+        }"#;
+
+        let event: CdcEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.op, "delete");
+        assert!(event.data.is_none());
     }
 }
