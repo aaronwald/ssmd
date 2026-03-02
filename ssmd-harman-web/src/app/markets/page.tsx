@@ -76,8 +76,9 @@ function MarketsContent() {
   const { data: watchlistData } = useWatchlistData(watchlist.items);
 
   // Two separate search hooks
-  const { data: seriesResults } = useEventSearch(search || null, exchange || undefined);
-  const { data: outcomeResults } = useOutcomeSearch(search || null, exchange || undefined);
+  const { data: seriesResults, isLoading: eventsLoading } = useEventSearch(search || null, exchange || undefined);
+  const { data: outcomeResults, isLoading: outcomesLoading } = useOutcomeSearch(search || null, exchange || undefined);
+  const searchLoading = search.length >= 2 && (eventsLoading || outcomesLoading);
   const { data: positions } = usePositions();
 
   // Build position set for overlay
@@ -139,7 +140,7 @@ function MarketsContent() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Markets</h1>
         <span className="text-xs text-fg-muted">
-          {hasSearch ? `${totalResults} results` : "Search markets"}
+          {searchLoading ? "Searching..." : hasSearch ? `${totalResults} results` : "Search markets"}
         </span>
       </div>
 
@@ -212,6 +213,13 @@ function MarketsContent() {
         </details>
       )}
 
+      {/* Loading indicator */}
+      {searchLoading && !hasEvents && !hasOutcomes && (
+        <div className="bg-bg-raised border border-border rounded-lg p-8 text-center text-fg-subtle">
+          <p className="text-sm">Searching...</p>
+        </div>
+      )}
+
       {/* Event results — expandable to show markets */}
       {hasSearch && hasEvents && (
         <EventResultsSection
@@ -240,7 +248,7 @@ function MarketsContent() {
       )}
 
       {/* No results */}
-      {hasSearch && !hasEvents && !hasOutcomes && (
+      {hasSearch && !searchLoading && !hasEvents && !hasOutcomes && (
         <div className="bg-bg-raised border border-border rounded-lg p-8 text-center text-fg-subtle">
           <p className="text-sm">No results for &ldquo;{search}&rdquo;</p>
         </div>
