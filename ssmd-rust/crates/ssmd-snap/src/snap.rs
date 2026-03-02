@@ -100,11 +100,31 @@ async fn run_snap_inner(
         };
 
         let redis_key = format!("snap:{}:{}", feed, ticker);
+        let is_trade = msg.subject.as_str().contains(".trade.");
+
+        let mut conn = redis_conn.clone();
+
+        let final_data = if is_trade {
+            // For trade messages: merge into existing snap to preserve bid/ask
+            let existing: Option<Vec<u8>> = redis::cmd("GET")
+                .arg(&redis_key)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(None);
+
+            if let Some(existing_bytes) = existing {
+                merge_trade_into_snap(&existing_bytes, &enriched)
+                    .unwrap_or(enriched)
+            } else {
+                enriched
+            }
+        } else {
+            enriched
+        };
 
         // Pipeline SET + EXPIRE in one round trip
-        let mut conn = redis_conn.clone();
         let result: Result<(), redis::RedisError> = redis::pipe()
-            .set(&redis_key, &enriched)
+            .set(&redis_key, &final_data)
             .expire(&redis_key, ttl_secs as i64)
             .query_async(&mut conn)
             .await;
@@ -121,6 +141,43 @@ async fn run_snap_inner(
     }
 
     Ok(())
+}
+
+/// Merge trade data into an existing snap (ticker) entry.
+///
+/// Preserves ticker fields (bid/ask/volume/OI) while updating trade fields
+/// (price/count/side) and refreshing _snap_at. Works for both nested (Kalshi
+/// `msg` wrapper) and flat (Kraken/Polymarket) message formats.
+fn merge_trade_into_snap(existing: &[u8], trade: &[u8]) -> Option<Vec<u8>> {
+    let mut snap: serde_json::Value = serde_json::from_slice(existing).ok()?;
+    let trade_val: serde_json::Value = serde_json::from_slice(trade).ok()?;
+
+    let snap_obj = snap.as_object_mut()?;
+    let trade_obj = trade_val.as_object()?;
+
+    // Update _snap_at from trade (more recent)
+    if let Some(snap_at) = trade_obj.get("_snap_at") {
+        snap_obj.insert("_snap_at".to_string(), snap_at.clone());
+    }
+
+    // Merge nested msg fields (Kalshi format: trade price/count into ticker bid/ask)
+    if let Some(trade_msg) = trade_obj.get("msg").and_then(|v| v.as_object()) {
+        if let Some(snap_msg) = snap_obj.get_mut("msg").and_then(|v| v.as_object_mut()) {
+            for (k, v) in trade_msg {
+                snap_msg.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    // Merge top-level trade fields for flat formats (Kraken/Polymarket)
+    // Skip structural keys to preserve ticker envelope
+    for (k, v) in trade_obj {
+        if k != "type" && k != "msg" && k != "_snap_at" {
+            snap_obj.insert(k.clone(), v.clone());
+        }
+    }
+
+    serde_json::to_vec(&snap).ok()
 }
 
 /// Extract ticker and inject `_snap_at` timestamp in a single JSON parse.
@@ -224,5 +281,52 @@ mod tests {
     #[test]
     fn test_enrich_invalid_json() {
         assert!(extract_and_enrich(b"not json").is_none());
+    }
+
+    #[test]
+    fn test_merge_kalshi_trade_into_ticker() {
+        let ticker = br#"{"type":"ticker","sid":1,"_snap_at":1000,"msg":{"market_ticker":"KXTEST","yes_bid":90,"yes_ask":91,"price":88,"volume":5000,"open_interest":2000}}"#;
+        let trade = br#"{"type":"trade","sid":1,"_snap_at":2000,"msg":{"market_ticker":"KXTEST","price":91,"count":5,"side":"yes"}}"#;
+
+        let merged = merge_trade_into_snap(ticker, trade).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&merged).unwrap();
+
+        // Preserved from ticker
+        assert_eq!(v["type"], "ticker");
+        assert_eq!(v["msg"]["yes_bid"], 90);
+        assert_eq!(v["msg"]["yes_ask"], 91);
+        assert_eq!(v["msg"]["volume"], 5000);
+        assert_eq!(v["msg"]["open_interest"], 2000);
+
+        // Updated from trade
+        assert_eq!(v["_snap_at"], 2000);
+        assert_eq!(v["msg"]["price"], 91);
+        assert_eq!(v["msg"]["count"], 5);
+        assert_eq!(v["msg"]["side"], "yes");
+    }
+
+    #[test]
+    fn test_merge_flat_trade_into_ticker() {
+        // Kraken-style flat format
+        let ticker = br#"{"product_id":"PF_XBTUSD","bid":63990.0,"ask":63991.0,"last":63990.5,"_snap_at":1000}"#;
+        let trade = br#"{"product_id":"PF_XBTUSD","price":63991.5,"qty":1.5,"side":"buy","_snap_at":2000}"#;
+
+        let merged = merge_trade_into_snap(ticker, trade).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&merged).unwrap();
+
+        // Preserved from ticker
+        assert_eq!(v["bid"], 63990.0);
+        assert_eq!(v["ask"], 63991.0);
+
+        // Updated from trade
+        assert_eq!(v["_snap_at"], 2000);
+        assert_eq!(v["price"], 63991.5);
+        assert_eq!(v["qty"], 1.5);
+        assert_eq!(v["side"], "buy");
+    }
+
+    #[test]
+    fn test_merge_no_existing_returns_none() {
+        assert!(merge_trade_into_snap(b"not json", b"{}").is_none());
     }
 }
