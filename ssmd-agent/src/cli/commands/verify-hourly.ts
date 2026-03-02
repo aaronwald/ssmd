@@ -94,7 +94,74 @@ export async function handleVerifyHourly(flags: VerifyHourlyFlags): Promise<void
       : `No event with strikeDate > now+2h`,
   };
 
-  const results = [check1, check2];
+  const results: CheckResult[] = [check1, check2];
+
+  // Checks 3 & 4 depend on a current contract from Check 1
+  if (currentContract) {
+    // Check 3: snap-coverage — verify at least one market has a live snap in Redis
+    let check3: CheckResult;
+    try {
+      const marketsData = await fetchJson(
+        `${apiUrl}/v1/markets?event=${currentContract.ticker}&limit=10`,
+        apiKey,
+      );
+      const markets = marketsData.markets as Array<{ ticker: string }> | undefined;
+      if (!Array.isArray(markets) || markets.length === 0) {
+        check3 = {
+          name: "snap-coverage",
+          passed: false,
+          detail: `No markets found for event ${currentContract.ticker}`,
+        };
+      } else {
+        const tickerSlice = markets.slice(0, 5).map((m) => m.ticker);
+        const snapData = await fetchJson(
+          `${apiUrl}/v1/data/snap?feed=kalshi&tickers=${tickerSlice.join(",")}`,
+          apiKey,
+        );
+        const snapshots = snapData.snapshots as unknown[] | undefined;
+        const hasSnap = Array.isArray(snapshots) && snapshots.length > 0;
+        check3 = {
+          name: "snap-coverage",
+          passed: hasSnap,
+          detail: hasSnap
+            ? `${(snapshots as unknown[]).length}/${tickerSlice.length} markets have live snaps`
+            : `No live snaps for ${tickerSlice.length} markets of ${currentContract.ticker}`,
+        };
+      }
+    } catch (err) {
+      check3 = {
+        name: "snap-coverage",
+        passed: false,
+        detail: `API error: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    results.push(check3);
+
+    // Check 4: search-index — verify the current contract appears in event search
+    let check4: CheckResult;
+    try {
+      const searchData = await fetchJson(
+        `${apiUrl}/v1/monitor/search?q=${currentContract.ticker}&type=events&exchange=kalshi&limit=5`,
+        apiKey,
+      );
+      const searchResults = searchData.results as Array<{ ticker: string }> | undefined;
+      const found = Array.isArray(searchResults) && searchResults.length > 0;
+      check4 = {
+        name: "search-index",
+        passed: found,
+        detail: found
+          ? `${searchResults!.length} event(s) found for ${currentContract.ticker}`
+          : `No events found in search for ${currentContract.ticker}`,
+      };
+    } catch (err) {
+      check4 = {
+        name: "search-index",
+        passed: false,
+        detail: `API error: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    results.push(check4);
+  }
 
   if (flags.json) {
     console.log(JSON.stringify({
