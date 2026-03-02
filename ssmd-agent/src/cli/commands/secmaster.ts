@@ -363,6 +363,25 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
             }
           }
         }
+
+        // Pre-open discovery pass — first page only, no status filter.
+        // Catches events Kalshi has created but not yet opened for trading
+        // (e.g., hourly KXBTCD events created hours before open_time).
+        // Newest events appear first, so pre-created future events are on page 1.
+        for await (const batch of client.fetchEventsBySeries(s.ticker)) {
+          result.events.fetched += batch.events.length;
+          result.markets.fetched += batch.markets.length;
+          if (!options.dryRun) {
+            if (batch.events.length > 0) {
+              result.events.upserted += await upsertEvents(db, batch.events);
+            }
+            if (batch.markets.length > 0) {
+              const marketResult = await bulkUpsertMarkets(db, batch.markets);
+              result.markets.upserted += marketResult.total;
+            }
+          }
+          break; // First page only
+        }
         // Success - reset consecutive error counter
         consecutiveErrors = 0;
       } catch (err) {
