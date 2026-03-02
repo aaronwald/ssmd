@@ -76,6 +76,13 @@ async fn main() -> anyhow::Result<()> {
                         Ok(keys) => tracing::info!(keys, "Periodic monitor index refresh"),
                         Err(e) => tracing::error!(error = %e, "Monitor index refresh failed"),
                     }
+                    // Rebuild search indexes after monitor hashes
+                    if let Err(e) = warmer.warm_search_series(&refresh_cache).await {
+                        tracing::error!(error = %e, "Search series refresh failed");
+                    }
+                    if let Err(e) = warmer.warm_search_outcomes(&refresh_cache).await {
+                        tracing::error!(error = %e, "Search outcomes refresh failed");
+                    }
                 }
                 Err(e) => tracing::error!(error = %e, "DB connect failed for periodic refresh"),
             }
