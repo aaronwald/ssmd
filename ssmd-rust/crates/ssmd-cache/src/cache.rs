@@ -51,6 +51,14 @@ impl RedisCache {
         Ok(())
     }
 
+    /// SET a string key (no TTL — refreshed by periodic warmer)
+    pub async fn set_string(&self, key: &str, value: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        conn.set::<_, _, ()>(key, value).await?;
+        tracing::debug!(key, len = value.len(), "SET");
+        Ok(())
+    }
+
     /// DEL an entire key (hash or string)
     pub async fn del_key(&self, key: &str) -> Result<()> {
         let mut conn = self.conn.clone();

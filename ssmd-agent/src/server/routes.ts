@@ -2252,60 +2252,40 @@ route("GET", "/v1/monitor/search", async (req, ctx) => {
   const results: any[] = [];
   const seen = new Set<string>();
 
-  // 1. Search treemap (Kalshi + Kraken + some Polymarket)
-  const raw = await redis.get("monitor:treemap");
-  if (raw) {
+  // 1. Series search — scan monitor:search:series (flat JSON array from warmer)
+  const query = q.toLowerCase();
+  const seriesRaw = await redis.get("monitor:search:series");
+  if (seriesRaw) {
     try {
-      const entries = JSON.parse(raw);
-      const query = q.toLowerCase();
+      const entries = JSON.parse(seriesRaw);
       for (const entry of entries) {
         if (results.length >= limit) break;
         const ticker = (entry.ticker || "").toLowerCase();
         const title = (entry.title || "").toLowerCase();
         if (!ticker.includes(query) && !title.includes(query)) continue;
         if (exchange && entry.exchange !== exchange) continue;
+        results.push({ ...entry, type: "series" });
+        seen.add(entry.ticker);
+      }
+    } catch { /* skip unparseable */ }
+  }
+
+  // 2. Outcome search — scan monitor:search:outcomes (flat JSON array from warmer)
+  const outcomesRaw = await redis.get("monitor:search:outcomes");
+  if (outcomesRaw) {
+    try {
+      const entries = JSON.parse(outcomesRaw);
+      for (const entry of entries) {
+        if (results.length >= limit) break;
+        const ticker = (entry.ticker || "").toLowerCase();
+        const title = (entry.title || "").toLowerCase();
+        if (!ticker.includes(query) && !title.includes(query)) continue;
+        if (exchange && entry.exchange !== exchange) continue;
+        if (seen.has(entry.ticker)) continue;
         results.push({ ...entry });
         seen.add(entry.ticker);
       }
-    } catch { /* skip unparseable treemap */ }
-  }
-
-  // 2. DB fallback for Polymarket — treemap is volume-capped at 3000 entries
-  if (results.length < limit && (!exchange || exchange === "polymarket")) {
-    try {
-      const dbRows = await ctx.db
-        .select({
-          conditionId: polymarketConditions.conditionId,
-          question: polymarketConditions.question,
-          category: polymarketConditions.category,
-          volume: polymarketConditions.volume,
-          endDate: polymarketConditions.endDate,
-        })
-        .from(polymarketConditions)
-        .where(and(
-          isNull(polymarketConditions.deletedAt),
-          eq(polymarketConditions.active, true),
-          ilike(polymarketConditions.question, `%${q}%`),
-        ))
-        .orderBy(desc(polymarketConditions.volume))
-        .limit(limit - results.length);
-
-      for (const row of dbRows) {
-        if (seen.has(row.conditionId)) continue;
-        results.push({
-          exchange: "polymarket",
-          category: row.category || "Other",
-          series: (row.question || "").slice(0, 80),
-          event: row.conditionId,
-          ticker: row.conditionId,
-          title: row.question,
-          volume: Number(row.volume || 0),
-          open_interest: 0,
-          close_time: row.endDate?.toISOString() ?? null,
-        });
-        seen.add(row.conditionId);
-      }
-    } catch { /* DB fallback non-fatal */ }
+    } catch { /* skip unparseable */ }
   }
 
   // Enrich with live snap data

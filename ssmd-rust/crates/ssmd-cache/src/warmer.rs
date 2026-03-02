@@ -447,6 +447,180 @@ impl CacheWarmer {
         Ok(total_keys)
     }
 
+    /// Build flat series search index for text search.
+    /// Stored as `monitor:search:series` — JSON array.
+    pub async fn warm_search_series(&self, cache: &RedisCache) -> Result<u64> {
+        let rows = self.client
+            .query(
+                r#"
+                SELECT ticker, title, category, exchange,
+                       active_events, active_markets
+                FROM (
+                    SELECT s.ticker, s.title,
+                           e.category,
+                           'kalshi' AS exchange,
+                           COUNT(DISTINCT e.event_ticker)::bigint AS active_events,
+                           COUNT(DISTINCT m.ticker)::bigint AS active_markets
+                    FROM series s
+                    JOIN events e ON e.series_ticker = s.ticker AND e.status = 'active'
+                      AND EXISTS (
+                        SELECT 1 FROM markets m2
+                        WHERE m2.event_ticker = e.event_ticker
+                          AND m2.status = 'active' AND m2.close_time > NOW()
+                      )
+                    LEFT JOIN markets m ON m.event_ticker = e.event_ticker
+                      AND m.status = 'active' AND m.close_time > NOW()
+                    WHERE e.category IS NOT NULL
+                    GROUP BY s.ticker, s.title, e.category
+
+                    UNION ALL
+
+                    SELECT p.base AS ticker,
+                           (p.base || ' Perpetuals') AS title,
+                           'Kraken Futures' AS category,
+                           'kraken' AS exchange,
+                           0::bigint AS active_events,
+                           COUNT(*)::bigint AS active_markets
+                    FROM pairs p
+                    WHERE p.deleted_at IS NULL AND p.status = 'active'
+                    GROUP BY p.base
+
+                    UNION ALL
+
+                    SELECT ('PM:' || COALESCE(c.category, 'Other')) AS ticker,
+                           ('Polymarket ' || COALESCE(c.category, 'Other')) AS title,
+                           COALESCE(c.category, 'Other') AS category,
+                           'polymarket' AS exchange,
+                           COUNT(*)::bigint AS active_events,
+                           0::bigint AS active_markets
+                    FROM polymarket_conditions c
+                    WHERE c.deleted_at IS NULL AND c.status = 'active'
+                    GROUP BY c.category
+                ) all_series
+                ORDER BY active_markets DESC NULLS LAST
+                "#,
+                &[],
+            )
+            .await?;
+
+        let entries: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                let ticker: String = row.get(0);
+                let title: Option<String> = row.get(1);
+                let category: String = row.get(2);
+                let exchange: String = row.get(3);
+                let active_events: i64 = row.get(4);
+                let active_markets: i64 = row.get(5);
+                serde_json::json!({
+                    "ticker": ticker,
+                    "title": title.unwrap_or_default(),
+                    "category": category,
+                    "exchange": exchange,
+                    "active_events": active_events,
+                    "active_markets": active_markets,
+                })
+            })
+            .collect();
+
+        let count = entries.len() as u64;
+        let json = serde_json::to_string(&entries)?;
+        cache.set_string("monitor:search:series", &json).await?;
+        tracing::info!(count, bytes = json.len(), "Warmed monitor:search:series");
+        Ok(count)
+    }
+
+    /// Build flat outcome search index for text search.
+    /// Stored as `monitor:search:outcomes` — JSON array of all active markets/conditions.
+    pub async fn warm_search_outcomes(&self, cache: &RedisCache) -> Result<u64> {
+        let rows = self.client
+            .query(
+                r#"
+                SELECT exchange, category, series, event, ticker, title,
+                       volume, open_interest, close_time
+                FROM (
+                    SELECT 'kalshi' AS exchange,
+                           e.category,
+                           e.series_ticker AS series,
+                           e.event_ticker AS event,
+                           m.ticker,
+                           m.title,
+                           COALESCE(m.volume, 0)::bigint AS volume,
+                           COALESCE(m.open_interest, 0)::bigint AS open_interest,
+                           m.close_time::text
+                    FROM markets m
+                    JOIN events e ON m.event_ticker = e.event_ticker
+                    WHERE m.status = 'active'
+                      AND m.close_time > NOW()
+                      AND e.category IS NOT NULL
+
+                    UNION ALL
+
+                    SELECT 'kraken' AS exchange,
+                           'Futures' AS category,
+                           p.base AS series,
+                           p.pair_id AS event,
+                           p.pair_id AS ticker,
+                           (p.base || '/' || p.quote || ' ' || p.market_type) AS title,
+                           COALESCE(p.volume_24h, 0)::bigint AS volume,
+                           COALESCE(p.open_interest, 0)::bigint AS open_interest,
+                           NULL AS close_time
+                    FROM pairs p
+                    WHERE p.deleted_at IS NULL AND p.status = 'active'
+
+                    UNION ALL
+
+                    SELECT 'polymarket' AS exchange,
+                           COALESCE(pc.category, 'Other') AS category,
+                           LEFT(pc.question, 80) AS series,
+                           pc.condition_id AS event,
+                           pc.condition_id AS ticker,
+                           pc.question AS title,
+                           COALESCE(pc.volume, 0)::bigint AS volume,
+                           0::bigint AS open_interest,
+                           pc.end_date::text AS close_time
+                    FROM polymarket_conditions pc
+                    WHERE pc.deleted_at IS NULL AND pc.active = true
+                ) all_outcomes
+                ORDER BY volume DESC NULLS LAST
+                "#,
+                &[],
+            )
+            .await?;
+
+        let entries: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                let exchange: String = row.get(0);
+                let category: String = row.get(1);
+                let series: String = row.get(2);
+                let event: String = row.get(3);
+                let ticker: String = row.get(4);
+                let title: Option<String> = row.get(5);
+                let volume: i64 = row.get(6);
+                let open_interest: i64 = row.get(7);
+                let close_time: Option<String> = row.get(8);
+                serde_json::json!({
+                    "exchange": exchange,
+                    "category": category,
+                    "series": series,
+                    "event": event,
+                    "ticker": ticker,
+                    "title": title.unwrap_or_default(),
+                    "volume": volume,
+                    "open_interest": open_interest,
+                    "close_time": close_time,
+                })
+            })
+            .collect();
+
+        let count = entries.len() as u64;
+        let json = serde_json::to_string(&entries)?;
+        cache.set_string("monitor:search:outcomes", &json).await?;
+        tracing::info!(count, bytes = json.len(), "Warmed monitor:search:outcomes");
+        Ok(count)
+    }
+
     /// Warm cache on startup — only monitor indexes (the tradable universe).
     pub async fn warm_all(&self, cache: &RedisCache) -> Result<String> {
         let start = std::time::Instant::now();
@@ -455,12 +629,18 @@ impl CacheWarmer {
         let lsn = self.current_lsn().await?;
         tracing::info!(lsn = %lsn, "Snapshot LSN");
 
-        // Build monitor index hashes (the only data consumers actually read)
+        // Build monitor index hashes (hierarchical browsing)
         let indexes = self.warm_monitor_indexes(cache).await?;
+
+        // Build flat search indexes (text search)
+        let search_series = self.warm_search_series(cache).await?;
+        let search_outcomes = self.warm_search_outcomes(cache).await?;
 
         let elapsed = start.elapsed();
         tracing::info!(
             indexes,
+            search_series,
+            search_outcomes,
             elapsed_ms = elapsed.as_millis(),
             "Cache warming complete"
         );
