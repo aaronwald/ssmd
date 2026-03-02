@@ -224,7 +224,7 @@ impl CdcConsumer {
 
                     processed += 1;
                     self.metrics.cdc_events.with_label_values(&[&event.table, &event.op]).inc();
-                    if processed.is_multiple_of(100) {
+                    if processed % 100 == 0 {
                         tracing::info!(
                             processed,
                             skipped_lsn,

@@ -103,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
         metrics::CDC_POLLS_TOTAL.inc();
 
         // Log heartbeat every 10 minutes (6000 polls at 100ms interval)
-        if poll_count.is_multiple_of(6000) {
+        if poll_count % 6000 == 0 {
             tracing::info!(
                 polls = poll_count,
                 published = events_published,
@@ -130,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
                         events_published += 1;
                         metrics::CDC_EVENTS_PUBLISHED.with_label_values(&[&event.table]).inc();
                         metrics::CDC_LAST_PUBLISH_TIMESTAMP.set(chrono::Utc::now().timestamp() as f64);
-                        if events_published.is_multiple_of(100) {
+                        if events_published % 100 == 0 {
                             tracing::info!(total = events_published, skipped = events_skipped, "Events published");
                         }
                     }
