@@ -1,6 +1,6 @@
 # ssmd - Vibing Market Data
 
-Market data capture, archival, and signal development platform. Connects to exchange WebSocket APIs, publishes to NATS JetStream, and archives to compressed files.
+Market data capture, archival, signal development, and order management platform. Connects to exchange WebSocket APIs, publishes to NATS JetStream, archives to compressed files, and manages order lifecycle across exchanges.
 
 ## Supported Exchanges
 
@@ -19,10 +19,13 @@ Market data capture, archival, and signal development platform. Connects to exch
 - **Market data**: Exchange WS → Connector → NATS → Archiver + Signal Runner + Consumers
 - **Secmaster**: Exchange REST APIs → CLI → PostgreSQL → CDC → NATS
 - **CDC**: PostgreSQL → ssmd-cdc → NATS → Connector (dynamic subs) + ssmd-cache (Redis)
+- **Snap**: NATS → ssmd-snap → Redis (latest ticker per instrument, 5-min TTL)
 - **Funding rates**: NATS → Funding Rate Consumer → pair_snapshots (PostgreSQL)
 - **Signals**: Signal Runner → NATS (SIGNAL_FIRES) → Notifier → ntfy.sh
 - **Archives**: Archiver → local PVC → GCS sync (Temporal scheduled)
 - **Diagnosis**: PostgreSQL (scores) + data-ts (freshness/volume) → Claude → Email
+- **Order management**: harman-web → Harman OMS → Exchange REST API (order submit/cancel/amend)
+- **Reconciliation**: Harman polls exchange positions/fills, compares to local DB, imports unsolicited orders
 
 ## Components
 
@@ -33,7 +36,17 @@ Market data capture, archival, and signal development platform. Connects to exch
 | `ssmd-connector` | WebSocket → NATS publisher (multi-exchange) |
 | `ssmd-archiver` | NATS → JSONL.gz file archiver (multi-stream) |
 | `ssmd-cdc` | PostgreSQL logical replication → NATS |
-| `ssmd-cache` | CDC stream → Redis cache |
+| `ssmd-cache` | CDC stream → Redis market hierarchy cache |
+| `ssmd-snap` | NATS → Redis ticker price cache (5-min TTL) |
+| `ssmd-parquet-gen` | JSONL.gz → Parquet conversion (CronJob) |
+| `ssmd-schemas` | Parquet Arrow schema definitions |
+| `ssmd-exchange-kalshi` | Kalshi REST API client |
+| `ssmd-harman` | Order gateway binary (Axum HTTP server) |
+| `ssmd-harman-ems` | Execution management (pump, risk, queue) |
+| `ssmd-harman-oms` | Order management (reconciliation, recovery, groups, positions) |
+| `ssmd-harman-tui` | Terminal UI for order management |
+| `harman` | Shared OMS types, DB, state machine |
+| `harman-test-exchange` | Kalshi-protocol mock exchange for testing |
 | `middleware` | Transport, storage, and cache abstractions |
 | `connector` (lib) | Exchange-specific WebSocket clients, writers, CDC consumer, shard manager |
 | `schema` | Cap'n Proto message definitions |
@@ -53,9 +66,37 @@ Market data capture, archival, and signal development platform. Connects to exch
 | State Builders | `src/state/` | Orderbook, price history, volume profile |
 | Shared Lib | `src/lib/` | DB (Drizzle), API clients, types (Zod), pricing, auth |
 
+### Harman OMS (`ssmd-rust/crates/ssmd-harman*`, `harman*`)
+
+Order management system for placing, tracking, and reconciling orders across exchanges.
+
+**Architecture:** 4-crate layered design — `ssmd-harman` (binary) → `ssmd-harman-oms` (order management) → `ssmd-harman-ems` (execution management) → `harman` (shared types, DB, state machine).
+
+**Key features:**
+- **Stable sessions** — permanent identity per (exchange, environment, API key), survives pod restarts
+- **Per-session risk limits** — configurable max order size, position limits, rate limits
+- **Bracket/OCO groups** — linked order groups with automatic cancel-on-fill
+- **Fill integrity** — unsolicited orders and fills from the exchange are always imported
+- **Exchange adapter pattern** — Kalshi first via `ssmd-exchange-kalshi`, extensible to other exchanges
+
+**Deployment:** K8s operator CRD (`harmans.ssmd.ssmd.io`) manages one deployment + service per Harman instance.
+
+### harman-web (Next.js)
+
+Web frontend for Harman OMS. Provides instance picker, order entry, position viewer, and session management with API proxy to Harman instances. Protected by Cloudflare Access.
+
 ### Go (`ssmd-operators/`)
 
-Kubernetes operator with CRDs for Connector, Archiver, Signal, and Notifier resources.
+Kubernetes operator with CRDs for all ssmd workloads:
+
+| CRD | Purpose |
+|-----|---------|
+| `connectors.ssmd.ssmd.io` | WebSocket connector pods |
+| `archivers.ssmd.ssmd.io` | NATS → JSONL.gz archiver pods |
+| `signals.ssmd.ssmd.io` | Signal evaluation pods |
+| `notifiers.ssmd.ssmd.io` | Alert notification pods |
+| `snaps.ssmd.ssmd.io` | NATS → Redis snap service pods |
+| `harmans.ssmd.ssmd.io` | Order gateway deployments + services |
 
 ## Connector Modules
 
