@@ -16,7 +16,7 @@ use crate::error::ExchangeError;
 use crate::exchange::ExchangeAdapter;
 use crate::types::{
     Action, AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrder, ExchangeOrderState,
-    ExchangeOrderStatus, OrderRequest, Position, Side,
+    ExchangeOrderStatus, ExchangeSettlement, OrderRequest, Position, Side,
 };
 
 /// Configurable response for `submit_order`.
@@ -102,6 +102,8 @@ pub struct MockExchangeState {
     pub decrease_behavior: DecreaseBehavior,
     /// Log of decrease calls (exchange_order_id, reduce_by).
     pub decrease_calls: Vec<(String, Decimal)>,
+    /// Settlements to return from get_settlements.
+    pub settlements: Vec<ExchangeSettlement>,
 }
 
 impl Default for MockExchangeState {
@@ -127,6 +129,7 @@ impl Default for MockExchangeState {
             amend_calls: Vec::new(),
             decrease_behavior: DecreaseBehavior::Accept,
             decrease_calls: Vec::new(),
+            settlements: Vec::new(),
         }
     }
 }
@@ -275,6 +278,14 @@ impl ExchangeAdapter for MockExchange {
             }),
             DecreaseBehavior::NotFound => Err(ExchangeError::NotFound(Uuid::nil())),
         }
+    }
+
+    async fn get_settlements(
+        &self,
+        _min_ts: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<ExchangeSettlement>, ExchangeError> {
+        let state = self.state.lock().await;
+        Ok(state.settlements.clone())
     }
 }
 

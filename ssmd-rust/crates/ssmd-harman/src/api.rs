@@ -510,6 +510,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/admin/risk", get(risk_handler))
         .route("/v1/admin/sessions", get(sessions_handler))
         .route("/v1/admin/users", get(admin_users_handler))
+        .route("/v1/admin/settlements", get(settlements_handler))
         .route("/v1/admin/sessions/:id/risk", put(update_session_risk_handler))
         .route("/v1/admin/sessions/:id/resume", put(resume_session_handler))
         .route("/v1/admin/cache/invalidate", post(cache_invalidate_handler))
@@ -1274,6 +1275,35 @@ async fn reconcile_handler(
 
     let result = state.oms.reconcile(ctx.session_id).await;
     (StatusCode::OK, Json(result)).into_response()
+}
+
+/// GET /v1/admin/settlements
+async fn settlements_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<SessionContext>,
+) -> impl IntoResponse {
+    if let Err(e) = require_scope(&ctx, "harman:admin") {
+        return e.into_response();
+    }
+
+    match db::list_settlements(&state.pool, ctx.session_id).await {
+        Ok(settlements) => {
+            let count = settlements.len();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"settlements": settlements, "count": count})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "list settlements failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
 }
 
 /// POST /v1/admin/resume

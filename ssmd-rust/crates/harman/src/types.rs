@@ -269,6 +269,71 @@ pub struct AmendResult {
     pub remaining_quantity: Decimal,
 }
 
+/// Market settlement result
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketResult {
+    Yes,
+    No,
+    Scalar,
+    Void,
+}
+
+impl std::fmt::Display for MarketResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MarketResult::Yes => write!(f, "yes"),
+            MarketResult::No => write!(f, "no"),
+            MarketResult::Scalar => write!(f, "scalar"),
+            MarketResult::Void => write!(f, "void"),
+        }
+    }
+}
+
+impl std::str::FromStr for MarketResult {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "yes" => Ok(MarketResult::Yes),
+            "no" => Ok(MarketResult::No),
+            "scalar" => Ok(MarketResult::Scalar),
+            "void" => Ok(MarketResult::Void),
+            other => Err(format!("unknown market result: {}", other)),
+        }
+    }
+}
+
+/// Settlement record from the exchange (before DB storage)
+#[derive(Debug, Clone)]
+pub struct ExchangeSettlement {
+    pub ticker: String,
+    pub event_ticker: String,
+    pub market_result: MarketResult,
+    pub yes_count: Decimal,
+    pub no_count: Decimal,
+    pub revenue_cents: i64,
+    pub settled_time: DateTime<Utc>,
+    pub fee_cost_dollars: Decimal,
+    pub value_cents: Option<i64>,
+}
+
+/// Settlement record stored in DB
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Settlement {
+    pub id: i64,
+    pub session_id: i64,
+    pub ticker: String,
+    pub event_ticker: String,
+    pub market_result: MarketResult,
+    pub yes_count: Decimal,
+    pub no_count: Decimal,
+    pub revenue_dollars: Decimal,
+    pub settled_time: DateTime<Utc>,
+    pub fee_cost_dollars: Decimal,
+    pub value_dollars: Option<Decimal>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Exchange order record (resting or filled orders from the exchange)
 #[derive(Debug, Clone)]
 pub struct ExchangeOrder {

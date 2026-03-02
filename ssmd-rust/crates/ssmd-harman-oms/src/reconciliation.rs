@@ -18,6 +18,7 @@ const LARGE_MISMATCH_NOTIONAL: &str = "10"; // dollars
 
 #[derive(Debug, Serialize)]
 pub struct ReconcileResult {
+    pub settlements_discovered: u64,
     pub fills_discovered: u64,
     pub orders_resolved: u64,
     pub position_mismatches: Vec<PositionMismatch>,
@@ -38,11 +39,29 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
     let start = Instant::now();
 
     let mut result = ReconcileResult {
+        settlements_discovered: 0,
         fills_discovered: 0,
         orders_resolved: 0,
         position_mismatches: vec![],
         suspended: false,
         errors: vec![],
+    };
+
+    // Discover settlements first (needed for position comparison and cancel reason inference)
+    let settled_tickers = match discover_settlements(oms, session_id).await {
+        Ok(count) => {
+            result.settlements_discovered = count;
+            if count > 0 {
+                oms.metrics.reconciliation_settlements_discovered.inc_by(count);
+            }
+            // Load the full set of settled tickers for downstream use
+            db::get_settled_tickers(&oms.pool, session_id).await.unwrap_or_default()
+        }
+        Err(e) => {
+            error!(error = %e, "settlement discovery failed");
+            result.errors.push(format!("settlement discovery: {}", e));
+            std::collections::HashSet::new()
+        }
     };
 
     match discover_external_orders(oms, session_id).await {
@@ -68,7 +87,7 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
         }
     }
 
-    match resolve_stale_orders(oms, session_id).await {
+    match resolve_stale_orders(oms, session_id, &settled_tickers).await {
         Ok(count) => result.orders_resolved = count,
         Err(e) => {
             error!(error = %e, "stale order resolution failed");
@@ -76,7 +95,7 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
         }
     }
 
-    match compare_positions(oms, session_id).await {
+    match compare_positions(oms, session_id, &settled_tickers).await {
         Ok(mismatches) => {
             result.position_mismatches = mismatches;
         }
@@ -101,6 +120,7 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
     }
 
     info!(
+        settlements_discovered = result.settlements_discovered,
         fills_discovered = result.fills_discovered,
         orders_resolved = result.orders_resolved,
         mismatches = result.position_mismatches.len(),
@@ -111,6 +131,41 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
     );
 
     result
+}
+
+/// Fetch settlements from exchange and record any new ones in the DB.
+///
+/// Returns the count of newly discovered settlements.
+async fn discover_settlements(oms: &Oms, session_id: i64) -> Result<u64, String> {
+    let settlements = oms
+        .exchange
+        .get_settlements(None)
+        .await
+        .map_err(|e| format!("get settlements: {}", e))?;
+
+    debug!(count = settlements.len(), "fetched exchange settlements");
+
+    let mut count = 0u64;
+    for settlement in &settlements {
+        let inserted = db::record_settlement(&oms.pool, session_id, settlement).await?;
+        if inserted {
+            info!(
+                ticker = %settlement.ticker,
+                event_ticker = %settlement.event_ticker,
+                market_result = %settlement.market_result,
+                revenue_cents = settlement.revenue_cents,
+                settled_time = %settlement.settled_time,
+                "recorded settlement"
+            );
+            count += 1;
+        }
+    }
+
+    if count > 0 {
+        info!(count, "discovered new settlements");
+    }
+
+    Ok(count)
 }
 
 /// Fetch resting orders from exchange and import any not tracked locally.
@@ -354,7 +409,13 @@ async fn discover_fills(oms: &Oms, session_id: i64) -> Result<u64, String> {
 ///
 /// Aggregates across ALL sessions for this exchange (global view) to avoid
 /// phantom mismatches from per-session vs global exchange comparison.
-async fn compare_positions(oms: &Oms, session_id: i64) -> Result<Vec<PositionMismatch>, String> {
+/// Tickers with settlement records are skipped — their local fills sum to non-zero
+/// but the exchange reports zero (positions disappear after settlement).
+async fn compare_positions(
+    oms: &Oms,
+    session_id: i64,
+    settled_tickers: &HashSet<String>,
+) -> Result<Vec<PositionMismatch>, String> {
     let exchange_positions = oms
         .exchange
         .get_positions()
@@ -403,6 +464,13 @@ async fn compare_positions(oms: &Oms, session_id: i64) -> Result<Vec<PositionMis
     let mut any_large = false;
 
     for ticker in &all_tickers {
+        // Skip settled tickers — exchange positions disappear after settlement
+        // while local fills remain (expected mismatch, not a real problem)
+        if settled_tickers.contains(ticker) {
+            debug!(ticker = %ticker, "skipping settled ticker in position comparison");
+            continue;
+        }
+
         let local_qty = local_map.get(ticker).copied().unwrap_or(Decimal::ZERO);
         let exchange_qty = exchange_map.get(ticker).copied().unwrap_or(Decimal::ZERO);
         let diff = (local_qty - exchange_qty).abs();
@@ -452,7 +520,13 @@ async fn compare_positions(oms: &Oms, session_id: i64) -> Result<Vec<PositionMis
 }
 
 /// Find and resolve orders stuck in ambiguous states.
-async fn resolve_stale_orders(oms: &Oms, session_id: i64) -> Result<u64, String> {
+/// Uses settled_tickers to infer cancel reason when exchange auto-cancels resting orders
+/// on market settlement (Expired) vs unknown exchange cancels (ExchangeCancel).
+async fn resolve_stale_orders(
+    oms: &Oms,
+    session_id: i64,
+    settled_tickers: &HashSet<String>,
+) -> Result<u64, String> {
     let ambiguous = db::get_ambiguous_orders(&oms.pool, session_id).await?;
 
     let now = chrono::Utc::now();
@@ -504,10 +578,24 @@ async fn resolve_stale_orders(oms: &Oms, session_id: i64) -> Result<u64, String>
                     };
 
                 if let Some(new_state) = new_state {
+                    // Infer cancel reason: if the ticker has a settlement record,
+                    // the exchange auto-cancelled resting orders at market close (Expired).
+                    // Otherwise it's an unknown exchange cancel (ExchangeCancel).
+                    let cancel_reason = if new_state == OrderState::Cancelled {
+                        if settled_tickers.contains(&order.ticker) {
+                            Some(harman::types::CancelReason::Expired)
+                        } else {
+                            Some(harman::types::CancelReason::ExchangeCancel)
+                        }
+                    } else {
+                        None
+                    };
+
                     info!(
                         order_id = order.id,
                         from = %order.state,
                         to = %new_state,
+                        cancel_reason = ?cancel_reason,
                         "reconciliation resolved order"
                     );
 
@@ -518,7 +606,7 @@ async fn resolve_stale_orders(oms: &Oms, session_id: i64) -> Result<u64, String>
                         new_state,
                         Some(&exchange_status.exchange_order_id),
                         Some(exchange_status.filled_quantity),
-                        None,
+                        cancel_reason.as_ref(),
                         "reconciliation",
                     )
                     .await

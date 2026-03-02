@@ -12,7 +12,8 @@ use harman::error::ExchangeError;
 use harman::exchange::ExchangeAdapter;
 use harman::types::{
     Action, AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrder,
-    ExchangeOrderState, ExchangeOrderStatus, OrderRequest, Position, Side,
+    ExchangeOrderState, ExchangeOrderStatus, ExchangeSettlement, MarketResult, OrderRequest,
+    Position, Side,
 };
 use ssmd_connector_lib::kalshi::auth::KalshiCredentials;
 
@@ -689,6 +690,98 @@ impl ExchangeAdapter for KalshiClient {
                 reason: format!("decrease failed HTTP {}: {}", status, error_body),
             })
         }
+    }
+
+    async fn get_settlements(
+        &self,
+        min_ts: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<ExchangeSettlement>, ExchangeError> {
+        let mut all_settlements = Vec::new();
+        let mut cursor: Option<String> = None;
+        let limit = 200;
+
+        loop {
+            let mut url = format!("{}/portfolio/settlements?limit={}", self.path_prefix, limit);
+            if let Some(ts) = min_ts {
+                url.push_str(&format!("&min_ts={}", ts.timestamp()));
+            }
+            if let Some(ref c) = cursor {
+                url.push_str(&format!("&cursor={}", c));
+            }
+
+            let resp = self.get(&url).await?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                let error_body = resp.text().await.unwrap_or_default();
+                return Err(ExchangeError::Unexpected(format!(
+                    "HTTP {}: {}",
+                    status, error_body
+                )));
+            }
+
+            let settlements_resp: KalshiSettlementsResponse = resp
+                .json()
+                .await
+                .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+
+            let page_count = settlements_resp.settlements.len();
+
+            all_settlements.extend(settlements_resp.settlements.into_iter().map(|s| {
+                let settled_time = DateTime::parse_from_rfc3339(&s.settled_time)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+
+                let market_result = match s.market_result.as_str() {
+                    "yes" => MarketResult::Yes,
+                    "no" => MarketResult::No,
+                    "scalar" => MarketResult::Scalar,
+                    "void" => MarketResult::Void,
+                    other => {
+                        warn!(market_result = %other, "unknown market_result, defaulting to Void");
+                        MarketResult::Void
+                    }
+                };
+
+                // Prefer *_fp (decimal string) over integer counts
+                let yes_count = s
+                    .yes_count_fp
+                    .as_deref()
+                    .and_then(|fp| fp.parse::<Decimal>().ok())
+                    .unwrap_or_else(|| Decimal::from(s.yes_count));
+                let no_count = s
+                    .no_count_fp
+                    .as_deref()
+                    .and_then(|fp| fp.parse::<Decimal>().ok())
+                    .unwrap_or_else(|| Decimal::from(s.no_count));
+
+                let fee_cost_dollars = s
+                    .fee_cost
+                    .as_deref()
+                    .and_then(|f| f.parse::<Decimal>().ok())
+                    .unwrap_or(Decimal::ZERO);
+
+                ExchangeSettlement {
+                    ticker: s.ticker,
+                    event_ticker: s.event_ticker,
+                    market_result,
+                    yes_count,
+                    no_count,
+                    revenue_cents: s.revenue,
+                    settled_time,
+                    fee_cost_dollars,
+                    value_cents: s.value,
+                }
+            }));
+
+            match settlements_resp.cursor {
+                Some(c) if !c.is_empty() && page_count > 0 => cursor = Some(c),
+                _ => break,
+            }
+        }
+
+        debug!(count = all_settlements.len(), "fetched all settlements (paginated)");
+        Ok(all_settlements)
     }
 }
 

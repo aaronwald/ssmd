@@ -1,4 +1,4 @@
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use harman::db;
 use harman::error::ExchangeError;
@@ -27,10 +27,13 @@ pub async fn run(oms: &Oms, session_id: i64) -> Result<(), String> {
     // 3. Discover missing fills
     discover_missing_fills(oms, session_id).await?;
 
-    // 4. Verify position consistency
-    verify_positions(oms).await?;
+    // 4. Discover settlements (zero out positions for settled markets)
+    discover_settlements(oms, session_id).await?;
 
-    // 5. Rebuild risk state (just log it, the real check happens per-order)
+    // 5. Verify position consistency
+    verify_positions(oms, session_id).await?;
+
+    // 6. Rebuild risk state (just log it, the real check happens per-order)
     let risk_state = db::compute_risk_state(&oms.pool, session_id).await?;
     info!(
         open_notional = %risk_state.open_notional,
@@ -38,7 +41,7 @@ pub async fn run(oms: &Oms, session_id: i64) -> Result<(), String> {
         "risk state after recovery"
     );
 
-    // 6. Clean up stale queue items (items marked processing from a crash)
+    // 7. Clean up stale queue items (items marked processing from a crash)
     clean_stale_queue(oms).await?;
 
     info!("recovery complete");
@@ -407,17 +410,52 @@ async fn discover_missing_fills(oms: &Oms, session_id: i64) -> Result<(), String
     Ok(())
 }
 
-/// Check local positions against exchange positions
-async fn verify_positions(oms: &Oms) -> Result<(), String> {
+/// Fetch settlements from exchange and record any new ones.
+async fn discover_settlements(oms: &Oms, session_id: i64) -> Result<(), String> {
+    let settlements = oms
+        .exchange
+        .get_settlements(None)
+        .await
+        .map_err(|e| format!("get settlements: {}", e))?;
+
+    info!(count = settlements.len(), "fetched exchange settlements for recovery");
+
+    let mut recorded = 0u64;
+    for settlement in &settlements {
+        let inserted = db::record_settlement(&oms.pool, session_id, settlement).await?;
+        if inserted {
+            info!(
+                ticker = %settlement.ticker,
+                market_result = %settlement.market_result,
+                revenue_cents = settlement.revenue_cents,
+                "recovery: recorded settlement"
+            );
+            recorded += 1;
+        }
+    }
+
+    if recorded > 0 {
+        info!(count = recorded, "imported settlement records during recovery");
+    }
+
+    Ok(())
+}
+
+/// Check local positions against exchange positions.
+/// Logs settled tickers separately from genuinely mismatched positions.
+async fn verify_positions(oms: &Oms, session_id: i64) -> Result<(), String> {
     let exchange_positions = oms
         .exchange
         .get_positions()
         .await
         .map_err(|e| format!("get positions: {}", e))?;
 
+    let settled_tickers = db::get_settled_tickers(&oms.pool, session_id).await.unwrap_or_default();
+
     info!(
-        count = exchange_positions.len(),
-        "fetched exchange positions for verification"
+        exchange_positions = exchange_positions.len(),
+        settled_tickers = settled_tickers.len(),
+        "position verification"
     );
 
     for pos in &exchange_positions {
@@ -427,6 +465,10 @@ async fn verify_positions(oms: &Oms) -> Result<(), String> {
             side = ?pos.side,
             "exchange position"
         );
+    }
+
+    if !settled_tickers.is_empty() {
+        debug!(count = settled_tickers.len(), "settled tickers excluded from position comparison");
     }
 
     Ok(())

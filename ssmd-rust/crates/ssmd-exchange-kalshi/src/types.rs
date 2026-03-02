@@ -196,6 +196,41 @@ pub struct KalshiDecreaseRequest {
     pub subaccount: i32,
 }
 
+/// Kalshi settlement object from GET /portfolio/settlements
+#[derive(Debug, Clone, Deserialize)]
+pub struct KalshiSettlement {
+    pub ticker: String,
+    pub event_ticker: String,
+    pub market_result: String,
+    #[serde(default)]
+    pub yes_count: i64,
+    #[serde(default)]
+    pub yes_count_fp: Option<String>,
+    #[serde(default)]
+    pub no_count: i64,
+    #[serde(default)]
+    pub no_count_fp: Option<String>,
+    #[serde(default)]
+    pub yes_total_cost: i64,
+    #[serde(default)]
+    pub no_total_cost: i64,
+    #[serde(default)]
+    pub revenue: i64,
+    pub settled_time: String,
+    #[serde(default)]
+    pub fee_cost: Option<String>,
+    #[serde(default)]
+    pub value: Option<i64>,
+}
+
+/// Response from GET /portfolio/settlements
+#[derive(Debug, Deserialize)]
+pub struct KalshiSettlementsResponse {
+    pub settlements: Vec<KalshiSettlement>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
 /// Kalshi API error response
 #[derive(Debug, Deserialize)]
 pub struct KalshiError {

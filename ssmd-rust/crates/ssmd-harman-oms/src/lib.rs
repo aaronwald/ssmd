@@ -23,6 +23,7 @@ pub struct OmsMetrics {
     pub reconciliation_duration: prometheus::Histogram,
     pub reconciliation_last_success: prometheus::IntGauge,
     pub reconciliation_fills_discovered: prometheus::IntCounter,
+    pub reconciliation_settlements_discovered: prometheus::IntCounter,
     pub fills_external_imported: prometheus::IntCounter,
 }
 
@@ -54,6 +55,11 @@ impl OmsMetrics {
             "Fills discovered during reconciliation",
         )
         .unwrap();
+        let reconciliation_settlements_discovered = prometheus::IntCounter::new(
+            "harman_reconciliation_settlements_discovered_total",
+            "Settlements discovered during reconciliation",
+        )
+        .unwrap();
         let fills_external_imported = prometheus::IntCounter::new(
             "harman_fills_external_imported_total",
             "External fills imported as synthetic orders",
@@ -65,6 +71,7 @@ impl OmsMetrics {
         registry.register(Box::new(reconciliation_duration.clone())).unwrap();
         registry.register(Box::new(reconciliation_last_success.clone())).unwrap();
         registry.register(Box::new(reconciliation_fills_discovered.clone())).unwrap();
+        registry.register(Box::new(reconciliation_settlements_discovered.clone())).unwrap();
         registry.register(Box::new(fills_external_imported.clone())).unwrap();
 
         Self {
@@ -73,6 +80,7 @@ impl OmsMetrics {
             reconciliation_duration,
             reconciliation_last_success,
             reconciliation_fills_discovered,
+            reconciliation_settlements_discovered,
             fills_external_imported,
         }
     }

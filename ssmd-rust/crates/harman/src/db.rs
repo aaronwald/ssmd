@@ -11,8 +11,8 @@ use crate::error::EnqueueError;
 use crate::risk::{RiskLimits, RiskState};
 use crate::state::OrderState;
 use crate::types::{
-    Action, CancelReason, GroupState, GroupType, LegRole, Order, OrderGroup, OrderRequest, Side,
-    TimeInForce,
+    Action, CancelReason, GroupState, GroupType, LegRole, MarketResult, Order, OrderGroup,
+    OrderRequest, Settlement, Side, TimeInForce,
 };
 
 /// Create a connection pool from a database URL
@@ -219,6 +219,24 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
             .await
             .map_err(|e| format!("migration 009 failed: {}", e))?;
         info!("migration 009_stable_sessions applied");
+    }
+
+    // Check if 010 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '010_settlements'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 010: {}", e))?;
+
+    if row.is_none() {
+        let migration_010 = include_str!("../migrations/010_settlements.sql");
+        client
+            .batch_execute(migration_010)
+            .await
+            .map_err(|e| format!("migration 010 failed: {}", e))?;
+        info!("migration 010_settlements applied");
     }
 
     info!("database migrations applied successfully");
@@ -2229,6 +2247,119 @@ pub async fn order_exists(
         .map_err(|e| format!("order_exists: {}", e))?;
 
     Ok(row.get("exists"))
+}
+
+/// Record a settlement. Idempotent on (session_id, ticker).
+/// Returns true if a new row was inserted, false if it already existed.
+pub async fn record_settlement(
+    pool: &Pool,
+    session_id: i64,
+    settlement: &crate::types::ExchangeSettlement,
+) -> Result<bool, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let revenue_dollars = Decimal::new(settlement.revenue_cents, 2);
+    let value_dollars = settlement.value_cents.map(|v| Decimal::new(v, 2));
+    let market_result_str = settlement.market_result.to_string();
+
+    let result = client
+        .execute(
+            "INSERT INTO settlements (session_id, ticker, event_ticker, market_result, yes_count, no_count, revenue_dollars, settled_time, fee_cost_dollars, value_dollars) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+             ON CONFLICT (session_id, ticker) DO NOTHING",
+            &[
+                &session_id,
+                &settlement.ticker,
+                &settlement.event_ticker,
+                &market_result_str,
+                &settlement.yes_count,
+                &settlement.no_count,
+                &revenue_dollars,
+                &settlement.settled_time,
+                &settlement.fee_cost_dollars,
+                &value_dollars,
+            ],
+        )
+        .await
+        .map_err(|e| format!("record_settlement: {}", e))?;
+
+    Ok(result > 0)
+}
+
+/// Get all tickers that have settlement records for a session.
+pub async fn get_settled_tickers(
+    pool: &Pool,
+    session_id: i64,
+) -> Result<std::collections::HashSet<String>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT ticker FROM settlements WHERE session_id = $1",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| format!("get_settled_tickers: {}", e))?;
+
+    Ok(rows.iter().map(|r| r.get("ticker")).collect())
+}
+
+/// List all settlements for a session.
+pub async fn list_settlements(
+    pool: &Pool,
+    session_id: i64,
+) -> Result<Vec<Settlement>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT id, session_id, ticker, event_ticker, market_result, yes_count, no_count, \
+                    revenue_dollars, settled_time::text as settled_time, fee_cost_dollars, value_dollars, \
+                    created_at::text as created_at \
+             FROM settlements WHERE session_id = $1 ORDER BY settled_time DESC",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| format!("list_settlements: {}", e))?;
+
+    let mut settlements = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let market_result_str: &str = row.get("market_result");
+        let settled_time_str: &str = row.get("settled_time");
+        let created_at_str: &str = row.get("created_at");
+
+        settlements.push(Settlement {
+            id: row.get("id"),
+            session_id: row.get("session_id"),
+            ticker: row.get("ticker"),
+            event_ticker: row.get("event_ticker"),
+            market_result: market_result_str.parse().unwrap_or(MarketResult::Void),
+            yes_count: row.get("yes_count"),
+            no_count: row.get("no_count"),
+            revenue_dollars: row.get("revenue_dollars"),
+            settled_time: chrono::DateTime::parse_from_str(settled_time_str, "%Y-%m-%d %H:%M:%S%.f%z")
+                .or_else(|_| chrono::DateTime::parse_from_rfc3339(settled_time_str))
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now()),
+            fee_cost_dollars: row.get("fee_cost_dollars"),
+            value_dollars: row.get("value_dollars"),
+            created_at: chrono::DateTime::parse_from_str(created_at_str, "%Y-%m-%d %H:%M:%S%.f%z")
+                .or_else(|_| chrono::DateTime::parse_from_rfc3339(created_at_str))
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now()),
+        });
+    }
+
+    Ok(settlements)
 }
 
 fn row_to_order(row: &tokio_postgres::Row) -> Order {

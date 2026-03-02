@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::error::ExchangeError;
 use crate::types::{
     AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrder, ExchangeOrderStatus,
-    OrderRequest, Position,
+    ExchangeSettlement, OrderRequest, Position,
 };
 
 /// Trait for exchange adapters.
@@ -64,4 +64,13 @@ pub trait ExchangeAdapter: Send + Sync {
         exchange_order_id: &str,
         reduce_by: Decimal,
     ) -> Result<(), ExchangeError>;
+
+    /// Get settlements (market close payouts), optionally filtered by minimum timestamp.
+    ///
+    /// When `min_ts` is Some, only returns settlements at or after the given time.
+    /// Implementations must paginate internally to return all matching settlements.
+    async fn get_settlements(
+        &self,
+        min_ts: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ExchangeSettlement>, ExchangeError>;
 }
