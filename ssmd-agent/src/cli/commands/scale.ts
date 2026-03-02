@@ -76,7 +76,7 @@ async function scaleDown(opts: KubectlOptions, dryRun: boolean): Promise<void> {
   console.log(`Scaling down SSMD components in ${envDisplay}...\n`);
 
   // Determine kustomization name based on environment
-  const kustomizationName = context.envName === "prod" ? "ssmd" : "apps";
+  const kustomizationName = "apps";
 
   // Suspend Flux kustomization first to prevent reconciliation
   console.log("Suspending Flux kustomization...");
@@ -143,7 +143,7 @@ async function scaleUp(opts: KubectlOptions, dryRun: boolean): Promise<void> {
   console.log(`Scaling up SSMD components in ${envDisplay} via Flux...\n`);
 
   // Determine kustomization name based on environment
-  const kustomizationName = context.envName === "prod" ? "ssmd" : "apps";
+  const kustomizationName = "apps";
 
   if (dryRun) {
     console.log(`[dry-run] Would resume Flux kustomization ${kustomizationName}`);
