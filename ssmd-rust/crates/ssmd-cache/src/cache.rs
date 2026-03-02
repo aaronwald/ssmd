@@ -90,4 +90,5 @@ impl RedisCache {
         tracing::info!(pattern, count, "DEL pattern");
         Ok(count)
     }
+
 }

@@ -2236,7 +2236,7 @@ route("GET", "/v1/monitor/markets", async (req) => {
   return json({ markets: [...marketMap.values()] });
 }, true, "datasets:read", "public");
 
-// Monitor search — treemap + DB fallback for Polymarket conditions
+// Monitor search — direct DB queries + snap enrichment (no cache dependency)
 route("GET", "/v1/monitor/search", async (req, ctx) => {
   const url = new URL(req.url);
   const q = url.searchParams.get("q");
@@ -2244,88 +2244,100 @@ route("GET", "/v1/monitor/search", async (req, ctx) => {
     return json({ error: "q query parameter is required" }, 400);
   }
   const exchange = url.searchParams.get("exchange");
-  const searchType = url.searchParams.get("type"); // "series", "outcomes", or null (both)
+  const searchType = url.searchParams.get("type"); // "events", "series" (alias), "outcomes", or null (both)
   const limit = Math.min(parseInt(url.searchParams.get("limit") || "50") || 50, 200);
-
-  const redis = await getRedis();
 
   // deno-lint-ignore no-explicit-any
   const results: any[] = [];
-  const seen = new Set<string>();
-  const query = q.toLowerCase();
 
-  // 1. Series search — scan monitor:search:series
-  if (!searchType || searchType === "series") {
-    const seriesRaw = await redis.get("monitor:search:series");
-    if (seriesRaw) {
-      try {
-        const entries = JSON.parse(seriesRaw);
-        for (const entry of entries) {
-          if (results.length >= limit) break;
-          const ticker = (entry.ticker || "").toLowerCase();
-          const title = (entry.title || "").toLowerCase();
-          if (!ticker.includes(query) && !title.includes(query)) continue;
-          if (exchange && entry.exchange !== exchange) continue;
-          results.push({ ...entry, type: "series" });
-          seen.add(entry.ticker);
-        }
-      } catch { /* skip unparseable */ }
+  // 1. Events search (Kalshi events + Kraken pairs) — type=events or type=series (backward compat)
+  if (!searchType || searchType === "events" || searchType === "series") {
+    // Kalshi events
+    if (!exchange || exchange === "kalshi") {
+      const eventRows = await listEvents(ctx.db, { query: q, status: "active", limit });
+      for (const e of eventRows) {
+        if (e.marketCount === 0) continue; // skip events with no active markets
+        results.push({
+          ticker: e.eventTicker,
+          title: e.title,
+          exchange: "kalshi",
+          category: e.category,
+          status: e.status,
+          type: "event",
+        });
+      }
+    }
+
+    // Kraken pairs
+    if (!exchange || exchange === "kraken") {
+      const pairRows = await listPairs(ctx.db, { query: q, status: "active", limit });
+      for (const p of pairRows) {
+        results.push({
+          ticker: p.pairId,
+          title: `${p.base}/${p.quote} ${p.marketType}`,
+          exchange: "kraken",
+          category: "Futures",
+          status: p.status,
+          type: "event",
+        });
+      }
     }
   }
 
-  // 2. Outcome search — scan monitor:search:outcomes
+  // 2. Outcomes search (Polymarket conditions)
   if (!searchType || searchType === "outcomes") {
-    const outcomesRaw = await redis.get("monitor:search:outcomes");
-    if (outcomesRaw) {
-      try {
-        const entries = JSON.parse(outcomesRaw);
-        for (const entry of entries) {
-          if (results.length >= limit) break;
-          const ticker = (entry.ticker || "").toLowerCase();
-          const title = (entry.title || "").toLowerCase();
-          if (!ticker.includes(query) && !title.includes(query)) continue;
-          if (exchange && entry.exchange !== exchange) continue;
-          if (seen.has(entry.ticker)) continue;
-          results.push({ ...entry, type: "outcome" });
-          seen.add(entry.ticker);
-        }
-      } catch { /* skip unparseable */ }
+    if (!exchange || exchange === "polymarket") {
+      const conditionRows = await listConditions(ctx.db, { query: q, status: "active", limit });
+      for (const c of conditionRows) {
+        results.push({
+          ticker: c.conditionId,
+          title: c.question,
+          exchange: "polymarket",
+          category: c.category || "Other",
+          status: c.status,
+          type: "outcome",
+        });
+      }
     }
   }
+
+  // Truncate to limit
+  const limited = results.slice(0, limit);
 
   // Enrich with live snap data
-  if (results.length > 0) {
-    const snapKeys = results.map((r) => {
+  if (limited.length > 0) {
+    const redis = await getRedis();
+    const snapKeys = limited.map((r) => {
       const feed = r.exchange === "kraken" ? "kraken-futures" : (r.exchange || "kalshi");
       return `snap:${feed}:${r.ticker}`;
     });
     try {
       const snapValues = await redis.mget(...snapKeys);
-      for (let i = 0; i < results.length; i++) {
+      for (let i = 0; i < limited.length; i++) {
         const snapRaw = snapValues[i];
         if (!snapRaw) continue;
         try {
           const snap = JSON.parse(snapRaw);
           const msg = snap.msg ?? snap;
           // Kalshi fields
-          if (msg.yes_bid != null) results[i].yes_bid = msg.yes_bid;
-          if (msg.yes_ask != null) results[i].yes_ask = msg.yes_ask;
-          if (msg.yes_bid_dollars != null) results[i].yes_bid_dollars = msg.yes_bid_dollars;
-          if (msg.yes_ask_dollars != null) results[i].yes_ask_dollars = msg.yes_ask_dollars;
-          if (msg.price_dollars != null) results[i].last = Number(msg.price_dollars);
-          else if (msg.price != null) results[i].last = msg.price;
-          if (typeof msg.volume === "number") results[i].volume = msg.volume;
-          if (typeof msg.open_interest === "number") results[i].open_interest = msg.open_interest;
+          if (msg.yes_bid != null) limited[i].yes_bid = msg.yes_bid;
+          if (msg.yes_ask != null) limited[i].yes_ask = msg.yes_ask;
+          if (msg.yes_bid_dollars != null) limited[i].yes_bid_dollars = msg.yes_bid_dollars;
+          if (msg.yes_ask_dollars != null) limited[i].yes_ask_dollars = msg.yes_ask_dollars;
+          if (msg.price_dollars != null) limited[i].last = Number(msg.price_dollars);
+          else if (msg.price != null) limited[i].last = msg.price;
+          if (typeof msg.volume === "number") limited[i].volume = msg.volume;
+          if (typeof msg.open_interest === "number") limited[i].open_interest = msg.open_interest;
           // Kraken fields
-          if (msg.bid != null) results[i].bid = msg.bid;
-          if (msg.ask != null) results[i].ask = msg.ask;
-          if (msg.last != null) results[i].last = msg.last;
+          if (msg.bid != null) limited[i].bid = msg.bid;
+          if (msg.ask != null) limited[i].ask = msg.ask;
+          if (msg.last != null) limited[i].last = msg.last;
         } catch { /* skip unparseable snap */ }
       }
     } catch { /* snap enrichment non-fatal */ }
   }
 
-  return json({ results, count: results.length, query: q });
+  return json({ results: limited, count: limited.length, query: q });
 }, true, "datasets:read", "public");
 
 // Monitor watchlist — batch snap lookup for a list of tickers

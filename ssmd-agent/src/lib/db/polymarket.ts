@@ -128,6 +128,7 @@ export async function listConditions(
   options: {
     category?: string;
     status?: string;
+    query?: string;
     limit?: number;
   } = {},
 ): Promise<(PolymarketCondition & { tokenCount: number })[]> {
@@ -144,6 +145,10 @@ export async function listConditions(
   }
   if (options.status) {
     conditions.push(eq(polymarketConditions.status, options.status));
+  }
+  if (options.query) {
+    const pattern = `%${options.query}%`;
+    conditions.push(sql`(${polymarketConditions.conditionId} ILIKE ${pattern} OR ${polymarketConditions.question} ILIKE ${pattern})`);
   }
 
   return await db

@@ -2,7 +2,7 @@
 
 import { Suspense, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { useSeriesSearch, useOutcomeSearch, useInfo, usePositions, useWatchlist, useWatchlistData } from "@/lib/hooks";
+import { useEventSearch, useOutcomeSearch, useInfo, usePositions, useWatchlist, useWatchlistData } from "@/lib/hooks";
 import type { MonitorMarket, MonitorSearchResult, WatchlistItem, WatchlistResult } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
 
@@ -76,7 +76,7 @@ function MarketsContent() {
   const { data: watchlistData } = useWatchlistData(watchlist.items);
 
   // Two separate search hooks
-  const { data: seriesResults } = useSeriesSearch(search || null, exchange || undefined);
+  const { data: seriesResults } = useEventSearch(search || null, exchange || undefined);
   const { data: outcomeResults } = useOutcomeSearch(search || null, exchange || undefined);
   const { data: positions } = usePositions();
 
@@ -129,7 +129,7 @@ function MarketsContent() {
     return groups;
   }, [watchlist.items, watchlistData]);
 
-  const hasSeries = seriesResults?.results && seriesResults.results.length > 0;
+  const hasEvents = seriesResults?.results && seriesResults.results.length > 0;
   const hasOutcomes = outcomeResults?.results && outcomeResults.results.length > 0;
   const hasSearch = search.length >= 2;
   const totalResults = (seriesResults?.results?.length ?? 0) + (outcomeResults?.results?.length ?? 0);
@@ -158,7 +158,7 @@ function MarketsContent() {
         <input
           ref={searchRef}
           type="text"
-          placeholder="Search series or outcomes... (⌘P)"
+          placeholder="Search events or outcomes... (⌘P)"
           value={search}
           onChange={(e) => handleSearchChange(e.target.value)}
           className="w-full rounded-md border border-border bg-bg-surface px-4 py-2 text-sm text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"
@@ -213,9 +213,9 @@ function MarketsContent() {
       )}
 
       {/* Series results */}
-      {hasSearch && hasSeries && (
+      {hasSearch && hasEvents && (
         <SearchResultsSection
-          title="Series"
+          title="Events"
           results={seriesResults.results}
           positionTickers={positionTickers}
           watchlist={watchlist}
@@ -241,7 +241,7 @@ function MarketsContent() {
       )}
 
       {/* No results */}
-      {hasSearch && !hasSeries && !hasOutcomes && (
+      {hasSearch && !hasEvents && !hasOutcomes && (
         <div className="bg-bg-raised border border-border rounded-lg p-8 text-center text-fg-subtle">
           <p className="text-sm">No results for &ldquo;{search}&rdquo;</p>
         </div>
@@ -250,7 +250,7 @@ function MarketsContent() {
       {/* Prompt when nothing searched */}
       {!hasSearch && watchlist.items.length === 0 && (
         <div className="bg-bg-raised border border-border rounded-lg p-8 text-center text-fg-subtle">
-          <p className="text-sm">Search above to find series or market outcomes.</p>
+          <p className="text-sm">Search above to find events or market outcomes.</p>
         </div>
       )}
 

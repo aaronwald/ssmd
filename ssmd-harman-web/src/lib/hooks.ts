@@ -128,13 +128,16 @@ export function useMe() {
   return useSWR(instanceKey("me"), getMe, { revalidateOnFocus: false });
 }
 
-export function useSeriesSearch(q: string | null, exchange?: string) {
+export function useEventSearch(q: string | null, exchange?: string) {
   return useSWR(
-    q && q.length >= 2 ? `data-search-series-${q}-${exchange ?? ""}` : null,
-    () => searchMonitorMarkets(q!, "series", exchange),
+    q && q.length >= 2 ? `data-search-events-${q}-${exchange ?? ""}` : null,
+    () => searchMonitorMarkets(q!, "events", exchange),
     { refreshInterval: LIVE_REFRESH, dedupingInterval: 500 }
   );
 }
+
+/** @deprecated Use useEventSearch */
+export const useSeriesSearch = useEventSearch;
 
 export function useOutcomeSearch(q: string | null, exchange?: string) {
   return useSWR(

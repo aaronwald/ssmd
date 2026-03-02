@@ -157,6 +157,7 @@ export async function listEvents(
     category?: string;
     status?: string;
     series?: string;
+    query?: string;
     asOf?: string;
     limit?: number;
   } = {}
@@ -181,6 +182,10 @@ export async function listEvents(
   if (options.series) {
     // Case-insensitive match (Kalshi tickers are uppercase but allow lowercase input)
     conditions.push(sql`LOWER(${events.seriesTicker}) = LOWER(${options.series})`);
+  }
+  if (options.query) {
+    const pattern = `%${options.query}%`;
+    conditions.push(sql`(${events.eventTicker} ILIKE ${pattern} OR ${events.title} ILIKE ${pattern})`);
   }
 
   return await db

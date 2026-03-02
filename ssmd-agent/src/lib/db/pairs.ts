@@ -144,6 +144,7 @@ export async function listPairs(
     base?: string;
     quote?: string;
     status?: string;
+    query?: string;
     limit?: number;
   } = {},
 ): Promise<Pair[]> {
@@ -167,6 +168,10 @@ export async function listPairs(
   }
   if (options.status) {
     conditions.push(eq(pairs.status, options.status));
+  }
+  if (options.query) {
+    const pattern = `%${options.query}%`;
+    conditions.push(sql`(${pairs.pairId} ILIKE ${pattern} OR ${pairs.base} ILIKE ${pattern} OR ${pairs.wsName} ILIKE ${pattern})`);
   }
 
   return await db
