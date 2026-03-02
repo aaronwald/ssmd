@@ -185,6 +185,42 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 007_session_risk applied");
     }
 
+    // Check if 008 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '008_environment_test'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 008: {}", e))?;
+
+    if row.is_none() {
+        let migration_008 = include_str!("../migrations/008_environment_test.sql");
+        client
+            .batch_execute(migration_008)
+            .await
+            .map_err(|e| format!("migration 008 failed: {}", e))?;
+        info!("migration 008_environment_test applied");
+    }
+
+    // Check if 009 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '009_stable_sessions'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 009: {}", e))?;
+
+    if row.is_none() {
+        let migration_009 = include_str!("../migrations/009_stable_sessions.sql");
+        client
+            .batch_execute(migration_009)
+            .await
+            .map_err(|e| format!("migration 009 failed: {}", e))?;
+        info!("migration 009_stable_sessions applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
@@ -599,79 +635,57 @@ pub async fn record_fill(
 /// Uses an advisory lock to prevent duplicate session creation during
 /// concurrent startup (e.g., crash-loop restart race).
 ///
-/// When `key_prefix` is None, finds/creates a session where api_key_prefix IS NULL
-/// (backward compatible with pre-auth behavior). When Some, scopes to that key.
+/// Stable sessions: uses INSERT ON CONFLICT DO NOTHING + SELECT on the natural key
+/// (exchange, environment, COALESCE(api_key_prefix, '__none__')). Same inputs always
+/// return the same session ID. No advisory locks needed.
 pub async fn get_or_create_session(
     pool: &Pool,
     exchange: &str,
     environment: &str,
     key_prefix: Option<&str>,
 ) -> Result<i64, String> {
-    let mut client = pool
+    let client = pool
         .get()
         .await
         .map_err(|e| format!("pool error: {}", e))?;
 
-    let tx = client
-        .transaction()
-        .await
-        .map_err(|e| format!("begin tx: {}", e))?;
-
-    // Advisory lock scoped to this transaction — serializes concurrent session creation
-    // for the same exchange+env+prefix. Released automatically on commit.
-    let lock_key = match key_prefix {
-        Some(prefix) => format!("{}:{}:{}", exchange, environment, prefix),
-        None => format!("{}:{}", exchange, environment),
-    };
-    tx.execute(
-        "SELECT pg_advisory_xact_lock(hashtext($1))",
-        &[&lock_key],
-    )
-    .await
-    .map_err(|e| format!("advisory lock: {}", e))?;
-
-    // Look for an existing open session
-    let row = match key_prefix {
-        Some(prefix) => {
-            tx.query_opt(
-                "SELECT id FROM sessions WHERE exchange = $1 AND environment = $2 AND api_key_prefix = $3 AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
-                &[&exchange, &environment, &prefix],
-            )
-            .await
-        }
-        None => {
-            tx.query_opt(
-                "SELECT id FROM sessions WHERE exchange = $1 AND environment = $2 AND api_key_prefix IS NULL AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
-                &[&exchange, &environment],
-            )
-            .await
-        }
-    }
-    .map_err(|e| format!("query session: {:?}", e))?;
-
-    if let Some(row) = row {
-        let id: i64 = row.get("id");
-        tx.commit()
-            .await
-            .map_err(|e| format!("commit: {}", e))?;
-        info!(session_id = id, exchange, environment, key_prefix, "using existing session");
-        return Ok(id);
-    }
-
-    // Create a new session
-    let row = tx
-        .query_one(
-            "INSERT INTO sessions (exchange, environment, api_key_prefix) VALUES ($1, $2, $3) RETURNING id",
+    // Upsert: create if not exists, no-op on conflict
+    client
+        .execute(
+            "INSERT INTO sessions (exchange, environment, api_key_prefix) \
+             VALUES ($1, $2, $3) \
+             ON CONFLICT (exchange, environment, COALESCE(api_key_prefix, '__none__')) \
+             DO NOTHING",
             &[&exchange, &environment, &key_prefix],
         )
         .await
-        .map_err(|e| format!("create session: {:?}", e))?;
+        .map_err(|e| format!("upsert session: {:?}", e))?;
+
+    // Select the stable session
+    let row = match key_prefix {
+        Some(prefix) => {
+            client
+                .query_one(
+                    "SELECT id FROM sessions \
+                     WHERE exchange = $1 AND environment = $2 AND api_key_prefix = $3",
+                    &[&exchange, &environment, &prefix],
+                )
+                .await
+        }
+        None => {
+            client
+                .query_one(
+                    "SELECT id FROM sessions \
+                     WHERE exchange = $1 AND environment = $2 AND api_key_prefix IS NULL",
+                    &[&exchange, &environment],
+                )
+                .await
+        }
+    }
+    .map_err(|e| format!("select session: {:?}", e))?;
 
     let id: i64 = row.get("id");
-    tx.commit()
-        .await
-        .map_err(|e| format!("commit: {}", e))?;
-    info!(session_id = id, exchange, environment, key_prefix, "created new session");
+    info!(session_id = id, exchange, environment, key_prefix, "stable session ready");
     Ok(id)
 }
 
@@ -972,10 +986,10 @@ pub struct SessionInfo {
     pub suspended: bool,
     pub open_notional: String,
     pub created_at: String,
-    pub closed_at: Option<String>,
 }
 
-/// List all sessions for an exchange+environment, with open_notional for each
+/// List all sessions for an exchange+environment, with open_notional for each.
+/// Sessions are permanent (stable sessions) — all sessions are always active.
 pub async fn list_sessions(
     pool: &Pool,
     exchange: &str,
@@ -990,7 +1004,7 @@ pub async fn list_sessions(
     let rows = client
         .query(
             "SELECT id, api_key_prefix, display_name, max_notional, \
-                    created_at::text, closed_at::text \
+                    created_at::text \
              FROM sessions \
              WHERE exchange = $1 AND environment = $2 \
              ORDER BY id",
@@ -1003,16 +1017,10 @@ pub async fn list_sessions(
     for row in &rows {
         let id: i64 = row.get("id");
         let max_notional: Option<Decimal> = row.get("max_notional");
-        let closed_at: Option<String> = row.get("closed_at");
 
-        // Compute open_notional for open sessions
-        let open_notional = if closed_at.is_none() {
-            match compute_risk_state(pool, id).await {
-                Ok(rs) => rs.open_notional,
-                Err(_) => Decimal::ZERO,
-            }
-        } else {
-            Decimal::ZERO
+        let open_notional = match compute_risk_state(pool, id).await {
+            Ok(rs) => rs.open_notional,
+            Err(_) => Decimal::ZERO,
         };
 
         sessions.push(SessionInfo {
@@ -1023,7 +1031,6 @@ pub async fn list_sessions(
             suspended: is_suspended(id),
             open_notional: open_notional.to_string(),
             created_at: row.get("created_at"),
-            closed_at,
         });
     }
 
@@ -1052,8 +1059,9 @@ pub async fn update_session_risk(
     Ok(count > 0)
 }
 
-/// List active (open) session IDs for an exchange+environment
-pub async fn list_active_session_ids(
+/// List all session IDs for an exchange+environment.
+/// Sessions are permanent (stable sessions) — no closed_at filter needed.
+pub async fn list_session_ids(
     pool: &Pool,
     exchange: &str,
     environment: &str,
@@ -1065,11 +1073,11 @@ pub async fn list_active_session_ids(
 
     let rows = client
         .query(
-            "SELECT id FROM sessions WHERE exchange = $1 AND environment = $2 AND closed_at IS NULL ORDER BY id",
+            "SELECT id FROM sessions WHERE exchange = $1 AND environment = $2 ORDER BY id",
             &[&exchange, &environment],
         )
         .await
-        .map_err(|e| format!("list active sessions: {}", e))?;
+        .map_err(|e| format!("list sessions: {}", e))?;
 
     Ok(rows.iter().map(|r| r.get("id")).collect())
 }
@@ -1528,7 +1536,7 @@ pub async fn compute_all_local_positions(
             "SELECT o.ticker, o.action, SUM(o.filled_quantity) as total_filled \
              FROM prediction_orders o \
              JOIN sessions s ON o.session_id = s.id \
-             WHERE s.exchange = $1 AND s.environment = $2 AND s.closed_at IS NULL AND o.filled_quantity > 0 \
+             WHERE s.exchange = $1 AND s.environment = $2 AND o.filled_quantity > 0 \
              GROUP BY o.ticker, o.action \
              ORDER BY o.ticker",
             &[&exchange, &environment],
@@ -2119,11 +2127,8 @@ pub async fn get_group(
     Ok(row.as_ref().map(row_to_group))
 }
 
-/// Check if an order with the given exchange_order_id exists in any session.
-///
-/// Used by reconciliation to avoid importing duplicate synthetic orders
-/// when the real order lives in a different session.
-pub async fn order_exists_in_any_session(
+/// Check if an order with the given exchange_order_id exists in the database.
+pub async fn order_exists(
     pool: &Pool,
     exchange_order_id: &str,
 ) -> Result<bool, String> {
@@ -2138,41 +2143,9 @@ pub async fn order_exists_in_any_session(
             &[&exchange_order_id],
         )
         .await
-        .map_err(|e| format!("order_exists_in_any_session: {}", e))?;
+        .map_err(|e| format!("order_exists: {}", e))?;
 
     Ok(row.get("exists"))
-}
-
-/// Find orders by exchange_order_ids across all sessions, excluding specific sessions.
-///
-/// Used by reconciliation to attribute fills to orders in other sessions
-/// when the fill's order doesn't exist in the current session.
-pub async fn find_orders_by_exchange_ids(
-    pool: &Pool,
-    exchange_order_ids: &[&str],
-    exclude_session_ids: &[i64],
-) -> Result<Vec<Order>, String> {
-    let client = pool
-        .get()
-        .await
-        .map_err(|e| format!("pool error: {}", e))?;
-
-    let rows = client
-        .query(
-            "SELECT id, session_id, client_order_id, exchange_order_id, \
-                    ticker, side, action, quantity, price_dollars, \
-                    filled_quantity, time_in_force, state, cancel_reason, \
-                    group_id, leg_role, created_at, updated_at \
-             FROM prediction_orders \
-             WHERE exchange_order_id = ANY($1) \
-               AND session_id != ALL($2) \
-             ORDER BY id",
-            &[&exchange_order_ids, &exclude_session_ids],
-        )
-        .await
-        .map_err(|e| format!("find_orders_by_exchange_ids: {}", e))?;
-
-    Ok(rows.iter().map(row_to_order).collect())
 }
 
 fn row_to_order(row: &tokio_postgres::Row) -> Order {

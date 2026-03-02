@@ -56,7 +56,7 @@ pub async fn all_positions(
         db::compute_all_local_positions(&oms.pool, exchange_type, environment).await?;
 
     let session_ids =
-        db::list_active_session_ids(&oms.pool, exchange_type, environment).await?;
+        db::list_session_ids(&oms.pool, exchange_type, environment).await?;
 
     let mut sessions = Vec::with_capacity(session_ids.len());
     for sid in session_ids {

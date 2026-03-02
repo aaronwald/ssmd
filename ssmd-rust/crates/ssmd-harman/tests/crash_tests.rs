@@ -46,8 +46,8 @@ async fn build_test_state(
         ems_metrics,
     ));
     let oms_metrics = OmsMetrics::new(&registry);
-    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics, session_id));
-    let runner = Arc::new(OmsRunner::new(oms.clone(), None, session_id, "kalshi".to_string(), "demo".to_string()));
+    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
+    let runner = Arc::new(OmsRunner::new(oms.clone(), None, session_id));
     let pump_trigger = runner.pump_trigger();
     Arc::new(AppState {
         ems,
@@ -1572,7 +1572,7 @@ async fn test_staged_legs_excluded_from_risk() {
     let limits = RiskLimits { max_notional: Decimal::from(5) };
     let ems = Arc::new(ssmd_harman_ems::Ems::new(pool.clone(), exchange.clone(), limits, ems_metrics));
     let oms_metrics = OmsMetrics::new(&registry);
-    let oms = Arc::new(ssmd_harman_oms::Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics, session_id));
+    let oms = Arc::new(ssmd_harman_oms::Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
 
     // Bracket: entry=$2.50 (pending), TP=$4.00 (staged), SL=$1.00 (staged)
     // If staged legs were counted: total = $7.50 > $5 → rejected
@@ -1586,81 +1586,35 @@ async fn test_staged_legs_excluded_from_risk() {
 }
 
 // =============================================================================
-// Test 38: Cross-session fill attribution
+// Test 38: Stable session idempotency
 //
-// Scenario: Session A has an order (exchange_order_id set). Session B runs
-// reconciliation first. Fills for session A's order should NOT be imported
-// as external fills into __system__; they should be attributed to session A.
+// Scenario: Pod restarts should reuse the same session ID (idempotent upsert).
+// Calling get_or_create_session with the same inputs always returns the same ID.
 // =============================================================================
 
 #[tokio::test]
 #[ignore]
-async fn test_reconciliation_cross_session_fill_attribution() {
+async fn test_stable_session_idempotent_upsert() {
     let pool = setup_test_db().await.expect("setup_test_db failed");
 
-    // Create three distinct sessions: A (user), B (different user), system
-    let session_a = db::get_or_create_session(&pool, "test", "demo", Some(&format!("xsess-a-{}", Uuid::new_v4())))
-        .await.unwrap();
-    let session_b = db::get_or_create_session(&pool, "test", "demo", Some(&format!("xsess-b-{}", Uuid::new_v4())))
-        .await.unwrap();
-    let system_session = db::get_or_create_session(&pool, "test", "demo", Some(&format!("xsess-sys-{}", Uuid::new_v4())))
+    let prefix = format!("stable-{}", Uuid::new_v4());
+
+    // First call creates the session
+    let id1 = db::get_or_create_session(&pool, "test", "demo", Some(&prefix))
         .await.unwrap();
 
-    // Session A has an acknowledged order with exchange_order_id
-    let order_a_id = insert_test_order(
-        &pool, session_a, OrderState::Acknowledged,
-        "KXTEST-XSESS-FILL", Some("exch-xsess-398"),
-    ).await.unwrap();
+    // Second call with same inputs returns the same session ID
+    let id2 = db::get_or_create_session(&pool, "test", "demo", Some(&prefix))
+        .await.unwrap();
 
-    // Mock exchange returns fills for session A's order
-    let mock_state = Arc::new(tokio::sync::Mutex::new(MockExchangeState::default()));
-    {
-        let mut s = mock_state.lock().await;
-        s.fills.push(mock_fill(
-            "exch-xsess-398",
-            "KXTEST-XSESS-FILL",
-            Decimal::from(10),
-            Decimal::new(45, 2),
-        ));
-    }
+    assert_eq!(id1, id2, "stable session should return same ID on re-creation");
 
-    // Build state with system_session_id set correctly
-    let registry = prometheus::Registry::new();
-    let ems_metrics = EmsMetrics::new(&registry);
-    let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = Arc::new(MockExchange::with_state(mock_state.clone()));
-    let ems = Arc::new(Ems::new(pool.clone(), exchange.clone(), RiskLimits::default(), ems_metrics));
-    let oms_metrics = OmsMetrics::new(&registry);
-    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems, oms_metrics, system_session));
+    // Null prefix also stable
+    let id_null_1 = db::get_or_create_session(&pool, "test", "demo", None)
+        .await.unwrap();
+    let id_null_2 = db::get_or_create_session(&pool, "test", "demo", None)
+        .await.unwrap();
 
-    // KEY: Reconcile session B FIRST (the bug scenario).
-    // Session B has no orders matching exch-xsess-398, but cross-session lookup
-    // should find it in session A and attribute the fill there.
-    let result_b = oms.reconcile(session_b).await;
-    assert!(result_b.errors.is_empty(), "session B errors: {:?}", result_b.errors);
-    assert_eq!(result_b.fills_discovered, 1, "fill should be discovered via cross-session lookup");
-
-    // Verify fill is recorded against session A's order (not __system__)
-    let client = pool.get().await.unwrap();
-    let row = client
-        .query_one(
-            "SELECT COUNT(*) as cnt FROM fills WHERE order_id = $1",
-            &[&order_a_id],
-        )
-        .await
-        .unwrap();
-    let fill_count: i64 = row.get("cnt");
-    assert_eq!(fill_count, 1, "fill should be attributed to session A's order");
-
-    // Verify NO external order was created in __system__
-    let sys_orders = db::list_orders(&pool, system_session, None).await.unwrap();
-    let has_external = sys_orders.iter().any(|o| o.exchange_order_id.as_deref() == Some("exch-xsess-398"));
-    assert!(!has_external, "no synthetic external order should exist in __system__");
-
-    // Order should transition to Filled (qty=10, fill=10)
-    assert_order_state(&pool, order_a_id, OrderState::Filled).await.unwrap();
-
-    // Now reconcile session A — fill already recorded, should be idempotent
-    let result_a = oms.reconcile(session_a).await;
-    assert!(result_a.errors.is_empty(), "session A errors: {:?}", result_a.errors);
-    assert_eq!(result_a.fills_discovered, 0, "fill already recorded, should be idempotent");
+    assert_eq!(id_null_1, id_null_2, "null-prefix session should be stable");
+    assert_ne!(id1, id_null_1, "different prefixes should get different sessions");
 }

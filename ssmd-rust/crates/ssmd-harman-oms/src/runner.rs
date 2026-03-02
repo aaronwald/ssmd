@@ -15,8 +15,6 @@ pub struct OmsRunner {
     pump_trigger: PumpTrigger,
     reconcile_interval: Option<Duration>,
     startup_session_id: i64,
-    exchange_type: String,
-    environment: String,
     shutdown: CancellationToken,
 }
 
@@ -54,16 +52,12 @@ impl OmsRunner {
         oms: Arc<Oms>,
         reconcile_interval: Option<Duration>,
         startup_session_id: i64,
-        exchange_type: String,
-        environment: String,
     ) -> Self {
         Self {
             oms,
             pump_trigger: PumpTrigger::new(),
             reconcile_interval,
             startup_session_id,
-            exchange_type,
-            environment,
             shutdown: CancellationToken::new(),
         }
     }
@@ -131,6 +125,8 @@ impl OmsRunner {
         }
     }
 
+    /// Reconcile the startup session on a fixed interval.
+    /// With stable sessions, one instance = one exchange account = one stable session.
     async fn auto_reconcile_loop(&self) {
         let interval = match self.reconcile_interval {
             Some(d) if d > Duration::ZERO => d,
@@ -143,28 +139,16 @@ impl OmsRunner {
         loop {
             tokio::time::sleep(interval).await;
 
-            let session_ids = match harman::db::list_active_session_ids(
-                &self.oms.pool,
-                &self.exchange_type,
-                &self.environment,
-            )
-            .await
-            {
-                Ok(ids) => ids,
-                Err(e) => {
-                    warn!(error = %e, "failed to list active sessions for reconciliation");
-                    vec![self.startup_session_id]
-                }
-            };
-
-            info!(sessions = session_ids.len(), "auto-reconcile starting");
-            for sid in &session_ids {
-                let result = self.oms.reconcile(*sid).await;
-                if !result.errors.is_empty() {
-                    warn!(session_id = sid, errors = ?result.errors, "reconciliation errors");
-                }
+            info!(session_id = self.startup_session_id, "auto-reconcile starting");
+            let result = self.oms.reconcile(self.startup_session_id).await;
+            if !result.errors.is_empty() {
+                warn!(
+                    session_id = self.startup_session_id,
+                    errors = ?result.errors,
+                    "reconciliation errors"
+                );
             }
-            info!(sessions = session_ids.len(), "auto-reconcile complete");
+            info!(session_id = self.startup_session_id, "auto-reconcile complete");
         }
     }
 }

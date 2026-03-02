@@ -24,7 +24,6 @@ pub struct OmsMetrics {
     pub reconciliation_last_success: prometheus::IntGauge,
     pub reconciliation_fills_discovered: prometheus::IntCounter,
     pub fills_external_imported: prometheus::IntCounter,
-    pub reconciliation_unattributed_position: prometheus::IntCounter,
 }
 
 impl OmsMetrics {
@@ -60,11 +59,6 @@ impl OmsMetrics {
             "External fills imported as synthetic orders",
         )
         .unwrap();
-        let reconciliation_unattributed_position = prometheus::IntCounter::new(
-            "harman_reconciliation_unattributed_position_total",
-            "Position mismatches with exchange qty but zero local fills",
-        )
-        .unwrap();
 
         registry.register(Box::new(reconciliation_ok.clone())).unwrap();
         registry.register(Box::new(reconciliation_mismatch.clone())).unwrap();
@@ -72,7 +66,6 @@ impl OmsMetrics {
         registry.register(Box::new(reconciliation_last_success.clone())).unwrap();
         registry.register(Box::new(reconciliation_fills_discovered.clone())).unwrap();
         registry.register(Box::new(fills_external_imported.clone())).unwrap();
-        registry.register(Box::new(reconciliation_unattributed_position.clone())).unwrap();
 
         Self {
             reconciliation_ok,
@@ -81,7 +74,6 @@ impl OmsMetrics {
             reconciliation_last_success,
             reconciliation_fills_discovered,
             fills_external_imported,
-            reconciliation_unattributed_position,
         }
     }
 }
@@ -96,8 +88,6 @@ pub struct Oms {
     pub ems: Arc<Ems>,
     pub metrics: OmsMetrics,
     pub suspended_sessions: DashMap<i64, ()>,
-    /// Session for external fills/orders not attributed to any user session
-    pub system_session_id: i64,
 }
 
 impl Oms {
@@ -106,7 +96,6 @@ impl Oms {
         exchange: Arc<dyn ExchangeAdapter>,
         ems: Arc<Ems>,
         metrics: OmsMetrics,
-        system_session_id: i64,
     ) -> Self {
         Self {
             pool,
@@ -114,7 +103,6 @@ impl Oms {
             ems,
             metrics,
             suspended_sessions: DashMap::new(),
-            system_session_id,
         }
     }
 

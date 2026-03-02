@@ -13,7 +13,6 @@ use crate::Oms;
 const STALE_THRESHOLD: Duration = Duration::from_secs(30);
 
 /// Thresholds for position mismatch severity.
-/// Large mismatches trigger session suspension.
 const LARGE_MISMATCH_CONTRACTS: i64 = 1;
 const LARGE_MISMATCH_NOTIONAL: &str = "10"; // dollars
 
@@ -35,8 +34,6 @@ pub struct PositionMismatch {
 }
 
 /// Run one full reconciliation cycle: discover fills, resolve stale orders, compare positions.
-///
-/// Called explicitly via `POST /v1/admin/reconcile` — no background polling.
 pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
     let start = Instant::now();
 
@@ -48,7 +45,7 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
         errors: vec![],
     };
 
-    match discover_external_orders(oms, session_id, oms.system_session_id).await {
+    match discover_external_orders(oms, session_id).await {
         Ok(count) => {
             if count > 0 {
                 info!(count, "imported external resting orders");
@@ -60,7 +57,7 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
         }
     }
 
-    match discover_fills(oms, session_id, oms.system_session_id).await {
+    match discover_fills(oms, session_id).await {
         Ok(count) => {
             result.fills_discovered = count;
             oms.metrics.reconciliation_fills_discovered.inc_by(count);
@@ -86,19 +83,6 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
         Err(e) => {
             error!(error = %e, "position comparison failed");
             result.errors.push(format!("position comparison: {}", e));
-        }
-    }
-
-    // Detect unattributed positions: exchange has quantity but we found zero fills.
-    // This indicates fills were likely mis-attributed to __system__ in a prior run.
-    if result.fills_discovered == 0 {
-        let has_unattributed = result.position_mismatches.iter().any(|m| {
-            let exchange_qty: Decimal = m.exchange_quantity.parse().unwrap_or(Decimal::ZERO);
-            let local_qty: Decimal = m.local_quantity.parse().unwrap_or(Decimal::ZERO);
-            exchange_qty.abs() > Decimal::ZERO && local_qty.is_zero()
-        });
-        if has_unattributed {
-            oms.metrics.reconciliation_unattributed_position.inc();
         }
     }
 
@@ -132,8 +116,9 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
 /// Fetch resting orders from exchange and import any not tracked locally.
 ///
 /// External resting orders (placed via exchange website) are imported as
-/// synthetic orders in 'acknowledged' state so they appear in the blotter.
-async fn discover_external_orders(oms: &Oms, session_id: i64, system_session_id: i64) -> Result<u64, String> {
+/// synthetic orders in 'acknowledged' state into the user's session.
+/// With stable sessions, one harman instance = one exchange account.
+async fn discover_external_orders(oms: &Oms, session_id: i64) -> Result<u64, String> {
     let exchange_orders = oms
         .exchange
         .get_orders()
@@ -155,12 +140,12 @@ async fn discover_external_orders(oms: &Oms, session_id: i64, system_session_id:
             continue;
         }
 
-        // Check if the order exists in another session (avoid duplicate synthetic imports)
-        match db::order_exists_in_any_session(&oms.pool, &order.exchange_order_id).await {
+        // Check if the order exists anywhere in the DB (avoid duplicate imports)
+        match db::order_exists(&oms.pool, &order.exchange_order_id).await {
             Ok(true) => {
                 debug!(
                     exchange_order_id = %order.exchange_order_id,
-                    "order exists in another session, skipping external import"
+                    "order already exists, skipping external import"
                 );
                 continue;
             }
@@ -169,7 +154,7 @@ async fn discover_external_orders(oms: &Oms, session_id: i64, system_session_id:
                 warn!(
                     error = %e,
                     exchange_order_id = %order.exchange_order_id,
-                    "cross-session order check failed, proceeding with import"
+                    "order existence check failed, proceeding with import"
                 );
             }
         }
@@ -182,13 +167,13 @@ async fn discover_external_orders(oms: &Oms, session_id: i64, system_session_id:
             quantity = %order.quantity,
             price = %order.price_dollars,
             client_order_id = ?order.client_order_id,
-            "importing external resting order to __system__ session"
+            "importing external resting order"
         );
 
         match db::create_external_resting_order(
             &oms.pool,
             &db::ExternalOrderParams {
-                session_id: system_session_id,
+                session_id,
                 exchange_order_id: &order.exchange_order_id,
                 ticker: &order.ticker,
                 side: order.side,
@@ -219,10 +204,9 @@ async fn discover_external_orders(oms: &Oms, session_id: i64, system_session_id:
 /// Fetch recent fills from exchange and record any missing ones.
 /// After recording fills, update order states (Acknowledged → Filled/PartiallyFilled).
 ///
-/// Loads all orders once and builds a lookup to avoid N+1 queries.
-/// Performs cross-session lookup for fills whose orders live in other sessions,
-/// preventing mis-attribution of fills to __system__ as "external".
-async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> Result<u64, String> {
+/// With stable sessions, all fills for this exchange account belong to the user's session.
+/// No cross-session lookup needed.
+async fn discover_fills(oms: &Oms, session_id: i64) -> Result<u64, String> {
     let fills = oms
         .exchange
         .get_fills(None)
@@ -233,62 +217,23 @@ async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> R
 
     let session_orders = db::list_orders(&oms.pool, session_id, None).await?;
 
-    // Collect exchange_order_ids that have no match in the current session
-    let local_eids: HashSet<&str> = session_orders
-        .iter()
-        .filter_map(|o| o.exchange_order_id.as_deref())
-        .collect();
-    let unmatched_eids: Vec<String> = fills
-        .iter()
-        .map(|f| f.order_id.clone())
-        .filter(|eid| !local_eids.contains(eid.as_str()))
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    // Cross-session lookup: find orders in other sessions (excludes current + system)
-    let cross_orders = if !unmatched_eids.is_empty() {
-        let eid_refs: Vec<&str> = unmatched_eids.iter().map(|s| s.as_str()).collect();
-        db::find_orders_by_exchange_ids(&oms.pool, &eid_refs, &[session_id, system_session_id]).await?
-    } else {
-        vec![]
-    };
-
-    if !cross_orders.is_empty() {
-        debug!(
-            count = cross_orders.len(),
-            "found orders in other sessions for unmatched fills"
-        );
-    }
-
-    // Build unified lookup: exchange_order_id → &Order (local takes priority)
-    let mut order_by_eid: HashMap<&str, &Order> =
-        HashMap::new();
+    // Build lookup: exchange_order_id → &Order
+    let mut order_by_eid: HashMap<&str, &Order> = HashMap::new();
     for o in &session_orders {
         if let Some(eid) = &o.exchange_order_id {
             order_by_eid.insert(eid, o);
         }
     }
-    for o in &cross_orders {
-        if let Some(eid) = &o.exchange_order_id {
-            order_by_eid.entry(eid).or_insert(o); // local takes priority
-        }
-    }
 
     let mut count = 0u64;
-    // Track which orders got new fills so we can update their states
-    // Maps order_id → session_id (the order's actual session, not necessarily the function param)
-    let mut orders_with_new_fills: HashMap<i64, i64> =
-        HashMap::new();
+    let mut orders_with_new_fills: HashSet<i64> = HashSet::new();
 
     for fill in &fills {
         if let Some(order) = order_by_eid.get(fill.order_id.as_str()) {
-            // Use the order's own session_id (may differ from function param for cross-session)
-            let order_session = order.session_id;
             let inserted = db::record_fill(
                 &oms.pool,
                 order.id,
-                order_session,
+                session_id,
                 &fill.trade_id,
                 fill.price_dollars,
                 fill.quantity,
@@ -298,39 +243,29 @@ async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> R
             .await?;
 
             if inserted {
-                if order_session != session_id {
-                    info!(
-                        order_id = order.id,
-                        order_session_id = order_session,
-                        trade_id = %fill.trade_id,
-                        "recorded cross-session fill"
-                    );
-                } else {
-                    info!(
-                        order_id = order.id,
-                        trade_id = %fill.trade_id,
-                        "recorded missing fill"
-                    );
-                }
+                info!(
+                    order_id = order.id,
+                    trade_id = %fill.trade_id,
+                    "recorded missing fill"
+                );
                 oms.ems.metrics.fills_recorded.inc();
-                orders_with_new_fills.insert(order.id, order_session);
+                orders_with_new_fills.insert(order.id);
                 count += 1;
             }
         } else {
-            // No matching order in any session — this is a truly external fill.
-            // Fills are sacrosanct: never drop fills. Import to __system__ session.
+            // No matching order — external fill. Fills are sacrosanct: never drop.
+            // Import to user's session (one instance = one exchange account).
             info!(
                 trade_id = %fill.trade_id,
                 exchange_order_id = %fill.order_id,
                 ticker = %fill.ticker,
                 client_order_id = ?fill.client_order_id,
-                system_session_id,
-                "importing external fill to __system__ session"
+                "importing external fill"
             );
             match db::create_external_order(
                 &oms.pool,
                 &db::ExternalOrderParams {
-                    session_id: system_session_id,
+                    session_id,
                     exchange_order_id: &fill.order_id,
                     ticker: &fill.ticker,
                     side: fill.side,
@@ -345,7 +280,7 @@ async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> R
                     let inserted = db::record_fill(
                         &oms.pool,
                         order_id,
-                        system_session_id,
+                        session_id,
                         &fill.trade_id,
                         fill.price_dollars,
                         fill.quantity,
@@ -370,20 +305,12 @@ async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> R
         }
     }
 
-    // Build a combined lookup for order state updates (session + cross-session orders)
-    let all_orders: Vec<&Order> = session_orders
-        .iter()
-        .chain(cross_orders.iter())
-        .collect();
-
     // Update order states for orders that received new fills
-    for (order_id, order_session) in &orders_with_new_fills {
-        if let Some(order) = all_orders.iter().find(|o| o.id == *order_id) {
-            // Only update non-terminal orders
+    for order_id in &orders_with_new_fills {
+        if let Some(order) = session_orders.iter().find(|o| o.id == *order_id) {
             if order.state.is_terminal() {
                 continue;
             }
-            // Compute total filled quantity from all fills for this order
             let filled_qty = db::get_filled_quantity(&oms.pool, *order_id).await?;
             let new_state = if filled_qty >= order.quantity {
                 OrderState::Filled
@@ -405,7 +332,7 @@ async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> R
                 if let Err(e) = db::update_order_state(
                     &oms.pool,
                     *order_id,
-                    *order_session,
+                    session_id,
                     new_state,
                     None,
                     Some(filled_qty),
@@ -425,11 +352,8 @@ async fn discover_fills(oms: &Oms, session_id: i64, system_session_id: i64) -> R
 
 /// Compare local positions (from filled orders) against exchange positions.
 ///
-/// For each ticker, compute local net position from filled orders:
-///   Buy → +quantity, Sell → -quantity
-/// Then compare against exchange `get_positions()`.
-///
-/// Large mismatches (>1 contract or >$10 notional) trigger session suspension.
+/// Aggregates across ALL sessions for this exchange (global view) to avoid
+/// phantom mismatches from per-session vs global exchange comparison.
 async fn compare_positions(oms: &Oms, session_id: i64) -> Result<Vec<PositionMismatch>, String> {
     let exchange_positions = oms
         .exchange
@@ -454,7 +378,6 @@ async fn compare_positions(oms: &Oms, session_id: i64) -> Result<Vec<PositionMis
         if order.filled_quantity <= Decimal::ZERO {
             continue;
         }
-        // Buy adds to position, Sell subtracts
         let signed = match order.action {
             Action::Buy => order.filled_quantity,
             Action::Sell => -order.filled_quantity,
@@ -488,7 +411,6 @@ async fn compare_positions(oms: &Oms, session_id: i64) -> Result<Vec<PositionMis
             continue;
         }
 
-        // Determine severity: diff > 1 contract is large, or estimate notional
         let is_large = diff > large_threshold_contracts || diff > large_threshold_notional;
         let severity = if is_large { "large" } else { "small" };
 
@@ -542,7 +464,7 @@ async fn resolve_stale_orders(oms: &Oms, session_id: i64) -> Result<u64, String>
             < chrono::Duration::from_std(STALE_THRESHOLD)
                 .unwrap_or(chrono::Duration::seconds(30))
         {
-            continue; // Not stale yet
+            continue;
         }
 
         debug!(
@@ -562,7 +484,6 @@ async fn resolve_stale_orders(oms: &Oms, session_id: i64) -> Result<u64, String>
                     match state::resolve_exchange_state(&order.state, &exchange_status.status) {
                         Some(s) => Some(s),
                         None => {
-                            // Special case: PendingCancel + Resting → re-send cancel
                             if order.state == OrderState::PendingCancel
                                 && exchange_status.status == ExchangeOrderState::Resting
                             {
