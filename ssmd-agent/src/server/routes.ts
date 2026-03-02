@@ -2244,6 +2244,7 @@ route("GET", "/v1/monitor/search", async (req, ctx) => {
     return json({ error: "q query parameter is required" }, 400);
   }
   const exchange = url.searchParams.get("exchange");
+  const searchType = url.searchParams.get("type"); // "series", "outcomes", or null (both)
   const limit = Math.min(parseInt(url.searchParams.get("limit") || "50") || 50, 200);
 
   const redis = await getRedis();
@@ -2251,41 +2252,45 @@ route("GET", "/v1/monitor/search", async (req, ctx) => {
   // deno-lint-ignore no-explicit-any
   const results: any[] = [];
   const seen = new Set<string>();
-
-  // 1. Series search — scan monitor:search:series (flat JSON array from warmer)
   const query = q.toLowerCase();
-  const seriesRaw = await redis.get("monitor:search:series");
-  if (seriesRaw) {
-    try {
-      const entries = JSON.parse(seriesRaw);
-      for (const entry of entries) {
-        if (results.length >= limit) break;
-        const ticker = (entry.ticker || "").toLowerCase();
-        const title = (entry.title || "").toLowerCase();
-        if (!ticker.includes(query) && !title.includes(query)) continue;
-        if (exchange && entry.exchange !== exchange) continue;
-        results.push({ ...entry, type: "series" });
-        seen.add(entry.ticker);
-      }
-    } catch { /* skip unparseable */ }
+
+  // 1. Series search — scan monitor:search:series
+  if (!searchType || searchType === "series") {
+    const seriesRaw = await redis.get("monitor:search:series");
+    if (seriesRaw) {
+      try {
+        const entries = JSON.parse(seriesRaw);
+        for (const entry of entries) {
+          if (results.length >= limit) break;
+          const ticker = (entry.ticker || "").toLowerCase();
+          const title = (entry.title || "").toLowerCase();
+          if (!ticker.includes(query) && !title.includes(query)) continue;
+          if (exchange && entry.exchange !== exchange) continue;
+          results.push({ ...entry, type: "series" });
+          seen.add(entry.ticker);
+        }
+      } catch { /* skip unparseable */ }
+    }
   }
 
-  // 2. Outcome search — scan monitor:search:outcomes (flat JSON array from warmer)
-  const outcomesRaw = await redis.get("monitor:search:outcomes");
-  if (outcomesRaw) {
-    try {
-      const entries = JSON.parse(outcomesRaw);
-      for (const entry of entries) {
-        if (results.length >= limit) break;
-        const ticker = (entry.ticker || "").toLowerCase();
-        const title = (entry.title || "").toLowerCase();
-        if (!ticker.includes(query) && !title.includes(query)) continue;
-        if (exchange && entry.exchange !== exchange) continue;
-        if (seen.has(entry.ticker)) continue;
-        results.push({ ...entry });
-        seen.add(entry.ticker);
-      }
-    } catch { /* skip unparseable */ }
+  // 2. Outcome search — scan monitor:search:outcomes
+  if (!searchType || searchType === "outcomes") {
+    const outcomesRaw = await redis.get("monitor:search:outcomes");
+    if (outcomesRaw) {
+      try {
+        const entries = JSON.parse(outcomesRaw);
+        for (const entry of entries) {
+          if (results.length >= limit) break;
+          const ticker = (entry.ticker || "").toLowerCase();
+          const title = (entry.title || "").toLowerCase();
+          if (!ticker.includes(query) && !title.includes(query)) continue;
+          if (exchange && entry.exchange !== exchange) continue;
+          if (seen.has(entry.ticker)) continue;
+          results.push({ ...entry, type: "outcome" });
+          seen.add(entry.ticker);
+        }
+      } catch { /* skip unparseable */ }
+    }
   }
 
   // Enrich with live snap data

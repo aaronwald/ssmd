@@ -209,9 +209,10 @@ export const getInfo = () =>
 export const getMe = () =>
   request<MeResponse>("/v1/me");
 
-// Monitor search — search treemap by query string
-export const searchMonitorMarkets = async (q: string, exchange?: string, limit?: number): Promise<MonitorSearchResponse> => {
+// Monitor search — search by series or outcomes
+export const searchMonitorMarkets = async (q: string, type?: string, exchange?: string, limit?: number): Promise<MonitorSearchResponse> => {
   const params = new URLSearchParams({ q });
+  if (type) params.set("type", type);
   if (exchange) params.set("exchange", exchange);
   if (limit) params.set("limit", String(limit));
   return dataRequest<MonitorSearchResponse>(`/monitor/search?${params.toString()}`);

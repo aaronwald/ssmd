@@ -128,10 +128,18 @@ export function useMe() {
   return useSWR(instanceKey("me"), getMe, { revalidateOnFocus: false });
 }
 
-export function useMarketSearch(q: string | null, exchange?: string) {
+export function useSeriesSearch(q: string | null, exchange?: string) {
   return useSWR(
-    q && q.length >= 2 ? `data-search-${q}-${exchange ?? ""}` : null,
-    () => searchMonitorMarkets(q!, exchange),
+    q && q.length >= 2 ? `data-search-series-${q}-${exchange ?? ""}` : null,
+    () => searchMonitorMarkets(q!, "series", exchange),
+    { refreshInterval: LIVE_REFRESH, dedupingInterval: 500 }
+  );
+}
+
+export function useOutcomeSearch(q: string | null, exchange?: string) {
+  return useSWR(
+    q && q.length >= 2 ? `data-search-outcomes-${q}-${exchange ?? ""}` : null,
+    () => searchMonitorMarkets(q!, "outcomes", exchange),
     { refreshInterval: LIVE_REFRESH, dedupingInterval: 500 }
   );
 }
