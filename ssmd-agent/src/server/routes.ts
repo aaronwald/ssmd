@@ -2314,6 +2314,8 @@ route("GET", "/v1/monitor/search", async (req, ctx) => {
           if (msg.yes_ask_dollars != null) results[i].yes_ask_dollars = msg.yes_ask_dollars;
           if (msg.price_dollars != null) results[i].last = Number(msg.price_dollars);
           else if (msg.price != null) results[i].last = msg.price;
+          if (typeof msg.volume === "number") results[i].volume = msg.volume;
+          if (typeof msg.open_interest === "number") results[i].open_interest = msg.open_interest;
           // Kraken fields
           if (msg.bid != null) results[i].bid = msg.bid;
           if (msg.ask != null) results[i].ask = msg.ask;
