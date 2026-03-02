@@ -6,7 +6,7 @@ use clap::Parser;
 use dashmap::DashMap;
 use lru::LruCache;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use ssmd_harman::{api, shutdown, AppState, MonitorMetrics};
 use ssmd_harman_ems::{Ems, EmsMetrics};
@@ -186,11 +186,24 @@ async fn main() {
             });
     }
 
-    // Get or create stable startup session (idempotent — same ID across restarts)
-    let startup_session_id = harman::db::get_or_create_session(&pool, &exchange_type, &environment, None)
-        .await
-        .expect("failed to get or create session");
-    info!(startup_session_id, "stable session ready");
+    // Find existing session (prefers authenticated over NULL-key placeholder).
+    // Only create a NULL-key placeholder on very first boot when no session exists.
+    let startup_session_id = match harman::db::find_startup_session(&pool, &exchange_type, &environment).await {
+        Ok(Some(id)) => id,
+        _ => {
+            harman::db::get_or_create_session(&pool, &exchange_type, &environment, None)
+                .await
+                .expect("failed to create startup session")
+        }
+    };
+    info!(startup_session_id, "startup session resolved");
+
+    // Clean up orphaned NULL-key sessions from previous boots
+    match harman::db::absorb_null_key_sessions(&pool, &exchange_type, &environment, startup_session_id).await {
+        Ok(0) => {}
+        Ok(n) => info!(moved_orders = n, "cleaned up orphaned NULL-key sessions"),
+        Err(e) => warn!(error = %e, "failed to clean up orphaned sessions"),
+    }
 
     // Create shared registry, EMS metrics first, then OMS metrics
     let registry = prometheus::Registry::new();

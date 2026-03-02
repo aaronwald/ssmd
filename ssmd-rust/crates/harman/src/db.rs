@@ -632,9 +632,92 @@ pub async fn record_fill(
 /// Get or create a session for the given exchange and optional API key prefix.
 ///
 /// Returns the ID of an open (not closed) session, or creates a new one.
-/// Uses an advisory lock to prevent duplicate session creation during
-/// concurrent startup (e.g., crash-loop restart race).
-///
+/// Find the best existing session for (exchange, environment) at startup.
+/// Prefers authenticated sessions (non-NULL key_prefix) over placeholders.
+/// Returns None if no session exists (first boot).
+pub async fn find_startup_session(
+    pool: &Pool,
+    exchange: &str,
+    environment: &str,
+) -> Result<Option<i64>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT id, api_key_prefix FROM sessions \
+             WHERE exchange = $1 AND environment = $2 \
+             ORDER BY (api_key_prefix IS NOT NULL) DESC, created_at DESC \
+             LIMIT 1",
+            &[&exchange, &environment],
+        )
+        .await
+        .map_err(|e| format!("find startup session: {:?}", e))?;
+
+    match rows.first() {
+        Some(row) => {
+            let id: i64 = row.get("id");
+            let prefix: Option<String> = row.get("api_key_prefix");
+            info!(session_id = id, key_prefix = ?prefix, exchange, environment, "found existing session for startup");
+            Ok(Some(id))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Clean up orphaned NULL-key sessions by moving their orders to the target session
+/// and deleting the orphan. Called at startup when an authenticated session exists.
+pub async fn absorb_null_key_sessions(
+    pool: &Pool,
+    exchange: &str,
+    environment: &str,
+    target_session_id: i64,
+) -> Result<u64, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let orphans: Vec<i64> = client
+        .query(
+            "SELECT id FROM sessions \
+             WHERE exchange = $1 AND environment = $2 AND api_key_prefix IS NULL AND id != $3",
+            &[&exchange, &environment, &target_session_id],
+        )
+        .await
+        .map_err(|e| format!("find orphans: {:?}", e))?
+        .iter()
+        .map(|r| r.get("id"))
+        .collect();
+
+    if orphans.is_empty() {
+        return Ok(0);
+    }
+
+    let mut total_moved = 0u64;
+    for orphan_id in &orphans {
+        let moved = client
+            .execute(
+                "UPDATE prediction_orders SET session_id = $1 WHERE session_id = $2",
+                &[&target_session_id, orphan_id],
+            )
+            .await
+            .map_err(|e| format!("move orders: {:?}", e))?;
+        total_moved += moved;
+
+        client
+            .execute("DELETE FROM sessions WHERE id = $1", &[orphan_id])
+            .await
+            .map_err(|e| format!("delete orphan: {:?}", e))?;
+
+        info!(orphan_session_id = orphan_id, target_session_id, moved_orders = moved, "absorbed orphan NULL-key session");
+    }
+
+    Ok(total_moved)
+}
+
 /// Stable sessions: uses INSERT ON CONFLICT DO NOTHING + SELECT on the natural key
 /// (exchange, environment, COALESCE(api_key_prefix, '__none__')). Same inputs always
 /// return the same session ID. No advisory locks needed.
