@@ -365,33 +365,59 @@ function ExpandableEventRow({
         <td className="px-4 py-2"><MarketStatusBadge status={event.status || "-"} /></td>
         <td className="px-4 py-2 text-xs text-fg-muted">{isExpanded ? "" : `${event.volume ?? ""}`}</td>
       </tr>
-      {isExpanded && markets && markets.map((m) => (
-        <tr
-          key={m.ticker}
-          className="border-b border-border-subtle hover:bg-bg-surface-hover cursor-pointer bg-bg-surface"
-          onClick={() => onMarketClick(m)}
-        >
-          <td className="px-4 py-2">
-            <button
-              onClick={(e) => { e.stopPropagation(); toggleStar(m.ticker, event.exchange || "kalshi", m.title); }}
-              className={`text-sm ${watchlist.has(m.ticker) ? "text-yellow" : "text-fg-subtle hover:text-yellow"}`}
-              title={watchlist.has(m.ticker) ? "Remove from watchlist" : "Add to watchlist"}
-            >
-              {watchlist.has(m.ticker) ? "\u2605" : "\u2606"}
-            </button>
+      {isExpanded && markets && (
+        <tr className="bg-bg-surface">
+          <td colSpan={6} className="p-0">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-fg-muted border-b border-border-subtle">
+                  <th className="px-4 py-1 w-6"></th>
+                  <th className="px-4 py-1">Market</th>
+                  <th className="px-4 py-1">Title</th>
+                  <th className="px-4 py-1 text-right">Bid</th>
+                  <th className="px-4 py-1 text-right">Ask</th>
+                  <th className="px-4 py-1 text-right">Last</th>
+                  <th className="px-4 py-1 text-right">Vol</th>
+                  <th className="px-4 py-1 text-right">OI</th>
+                  <th className="px-4 py-1 w-6"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {markets.map((m) => (
+                  <tr
+                    key={m.ticker}
+                    className="border-b border-border-subtle hover:bg-bg-surface-hover cursor-pointer"
+                    onClick={() => onMarketClick(m)}
+                  >
+                    <td className="px-4 py-1.5">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleStar(m.ticker, event.exchange || "kalshi", m.title); }}
+                        className={`text-sm ${watchlist.has(m.ticker) ? "text-yellow" : "text-fg-subtle hover:text-yellow"}`}
+                        title={watchlist.has(m.ticker) ? "Remove from watchlist" : "Add to watchlist"}
+                      >
+                        {watchlist.has(m.ticker) ? "\u2605" : "\u2606"}
+                      </button>
+                    </td>
+                    <td className="px-4 py-1.5 font-mono text-xs">
+                      {m.ticker}
+                      {positionTickers.has(m.ticker) && (
+                        <span className="ml-1 text-accent text-xs" title="Has position">●</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-1.5 text-xs text-fg-muted truncate max-w-[180px]">{m.title || "-"}</td>
+                    <td className="px-4 py-1.5 font-mono text-right text-xs">{fmtPrice(m.yes_bid ?? m.bid ?? null)}</td>
+                    <td className="px-4 py-1.5 font-mono text-right text-xs">{fmtPrice(m.yes_ask ?? m.ask ?? null)}</td>
+                    <td className="px-4 py-1.5 font-mono text-right text-xs">{fmtPrice(m.last ?? null)}</td>
+                    <td className="px-4 py-1.5 font-mono text-right text-xs">{fmtInt(m.volume ?? null)}</td>
+                    <td className="px-4 py-1.5 font-mono text-right text-xs">{fmtInt(m.open_interest ?? null)}</td>
+                    <td className="px-4 py-1.5 text-fg-muted">&rarr;</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </td>
-          <td className="pl-8 pr-4 py-2 font-mono text-xs">
-            {m.ticker}
-            {positionTickers.has(m.ticker) && (
-              <span className="ml-1 text-accent text-xs" title="Has position">●</span>
-            )}
-          </td>
-          <td className="px-4 py-2 text-xs text-fg-muted truncate max-w-[200px]">{m.title || "-"}</td>
-          <td className="px-4 py-2 font-mono text-right text-xs">{fmtPrice(m.yes_bid ?? m.bid ?? null)}</td>
-          <td className="px-4 py-2 font-mono text-right text-xs">{fmtPrice(m.yes_ask ?? m.ask ?? null)}</td>
-          <td className="px-4 py-2 font-mono text-right text-xs">{fmtPrice(m.last ?? null)}</td>
         </tr>
-      ))}
+      )}
       {isExpanded && !markets && (
         <tr className="bg-bg-surface">
           <td colSpan={6} className="px-8 py-2 text-xs text-fg-subtle">Loading markets...</td>
