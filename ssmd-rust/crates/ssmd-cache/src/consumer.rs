@@ -5,7 +5,8 @@ use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 use tokio_postgres::{Client, NoTls};
-use crate::{Result, Error, cache::RedisCache};
+use chrono::Utc;
+use crate::{Result, Error, cache::RedisCache, metrics::CacheMetrics};
 
 /// CDC event from NATS (matches ssmd-cdc publisher format)
 #[derive(Debug, serde::Deserialize)]
@@ -90,6 +91,7 @@ pub struct CdcConsumer {
     stream: Stream,
     snapshot_lsn: String,
     event_series_lookup: EventSeriesLookup,
+    metrics: CacheMetrics,
 }
 
 impl CdcConsumer {
@@ -99,6 +101,7 @@ impl CdcConsumer {
         consumer_name: &str,
         snapshot_lsn: String,
         database_url: &str,
+        metrics: CacheMetrics,
     ) -> Result<Self> {
         let client = async_nats::connect(nats_url).await
             .map_err(|e| Error::Nats(format!("Connection failed: {}", e)))?;
@@ -134,6 +137,7 @@ impl CdcConsumer {
             stream: messages,
             snapshot_lsn,
             event_series_lookup,
+            metrics,
         })
     }
 
@@ -158,6 +162,7 @@ impl CdcConsumer {
                 );
             }
             last_event_time = Instant::now();
+            self.metrics.last_event_timestamp.set(Utc::now().timestamp() as f64);
             let msg = msg.map_err(|e| Error::Nats(format!("Message error: {}", e)))?;
 
             match serde_json::from_slice::<CdcEvent>(&msg.payload) {
@@ -165,6 +170,7 @@ impl CdcConsumer {
                     // Skip events before snapshot LSN
                     if !lsn_gte(&event.lsn, &self.snapshot_lsn) {
                         skipped_lsn += 1;
+                        self.metrics.skipped.inc();
                         msg.ack().await.map_err(|e| Error::Nats(format!("Ack failed: {}", e)))?;
                         continue;
                     }
@@ -180,6 +186,7 @@ impl CdcConsumer {
                                     "LSN went backwards - possible reprocessing"
                                 );
                                 gaps_detected += 1;
+                                self.metrics.gaps.inc();
                             }
                         }
                         last_lsn = Some(current_lsn);
@@ -216,7 +223,8 @@ impl CdcConsumer {
                     }
 
                     processed += 1;
-                    if processed % 100 == 0 {
+                    self.metrics.cdc_events.with_label_values(&[&event.table, &event.op]).inc();
+                    if processed.is_multiple_of(100) {
                         tracing::info!(
                             processed,
                             skipped_lsn,
@@ -265,11 +273,15 @@ impl CdcConsumer {
                         });
                         if let Err(e) = cache.hset(&hash_key, market_ticker, &val.to_string()).await {
                             tracing::warn!(error = %e, "Failed to update monitor:markets index");
+                        } else {
+                            self.metrics.redis_writes.with_label_values(&["hset"]).inc();
                         }
                     } else {
                         // Terminal status — remove from monitor hash
                         if let Err(e) = cache.hdel(&hash_key, market_ticker).await {
                             tracing::warn!(error = %e, "Failed to HDEL from monitor:markets");
+                        } else {
+                            self.metrics.redis_writes.with_label_values(&["hdel"]).inc();
                         }
                         tracing::debug!(market_ticker, status, "HDEL market from monitor");
                     }
@@ -317,11 +329,15 @@ impl CdcConsumer {
                         });
                         if let Err(e) = cache.hset(&hash_key, event_ticker, &val.to_string()).await {
                             tracing::warn!(error = %e, "Failed to update monitor:events index");
+                        } else {
+                            self.metrics.redis_writes.with_label_values(&["hset"]).inc();
                         }
                     } else {
                         // Terminal status — remove from monitor hash
                         if let Err(e) = cache.hdel(&hash_key, event_ticker).await {
                             tracing::warn!(error = %e, "Failed to HDEL from monitor:events");
+                        } else {
+                            self.metrics.redis_writes.with_label_values(&["hdel"]).inc();
                         }
                         tracing::debug!(event_ticker, status, "HDEL event from monitor");
                     }
@@ -377,11 +393,15 @@ impl CdcConsumer {
                         });
                         if let Err(e) = cache.hset(&markets_hash, pair_id, &market_val.to_string()).await {
                             tracing::warn!(error = %e, "Failed to update monitor:markets for Kraken pair");
+                        } else {
+                            self.metrics.redis_writes.with_label_values(&["hset"]).inc();
                         }
                     } else {
                         // Not active — remove from monitor hash
                         if let Err(e) = cache.hdel(&markets_hash, pair_id).await {
                             tracing::warn!(error = %e, "Failed to HDEL Kraken pair from monitor");
+                        } else {
+                            self.metrics.redis_writes.with_label_values(&["hdel"]).inc();
                         }
                         tracing::debug!(pair_id, status, "HDEL Kraken pair from monitor");
                     }
@@ -435,11 +455,15 @@ impl CdcConsumer {
                         });
                         if let Err(e) = cache.hset(&events_hash, condition_id, &event_val.to_string()).await {
                             tracing::warn!(error = %e, "Failed to update monitor:events for Polymarket condition");
+                        } else {
+                            self.metrics.redis_writes.with_label_values(&["hset"]).inc();
                         }
                     } else {
                         // Not active — remove from monitor hash
                         if let Err(e) = cache.hdel(&events_hash, condition_id).await {
                             tracing::warn!(error = %e, "Failed to HDEL Polymarket condition from monitor");
+                        } else {
+                            self.metrics.redis_writes.with_label_values(&["hdel"]).inc();
                         }
                         tracing::debug!(condition_id, status, "HDEL Polymarket condition from monitor");
                     }

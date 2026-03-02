@@ -7,6 +7,7 @@ use ssmd_cache::{
     cache::RedisCache,
     warmer::CacheWarmer,
     consumer::CdcConsumer,
+    metrics::CacheMetrics,
 };
 
 /// Prometheus metrics endpoint
@@ -41,6 +42,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Set up Prometheus metrics
     let registry = Registry::new();
+    let cache_metrics = CacheMetrics::new(&registry)
+        .expect("Failed to register cache metrics");
 
     // Spawn metrics HTTP server on port 9090
     let metrics_registry = registry.clone();
@@ -89,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
         &config.consumer_name,
         snapshot_lsn,
         &config.database_url,
+        cache_metrics,
     ).await?;
 
     consumer.run(&cache).await?;
