@@ -445,14 +445,30 @@ impl ExchangeAdapter for KalshiClient {
             "{}/portfolio/orders/{}",
             self.path_prefix, exchange_order_id
         );
+        let url = format!("{}{}", self.base_url, path);
+        warn!(
+            url = %url,
+            exchange_order_id = %exchange_order_id,
+            "get_order_by_exchange_id request"
+        );
         let resp = self.get(&path).await?;
 
         let status = resp.status();
+        warn!(
+            http_status = %status,
+            exchange_order_id = %exchange_order_id,
+            "get_order_by_exchange_id response"
+        );
+
         if status.is_success() {
-            let order_resp: KalshiOrderResponse = resp
-                .json()
-                .await
-                .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+            let body = resp.text().await.unwrap_or_default();
+            warn!(
+                body_len = body.len(),
+                body_preview = %&body[..body.len().min(500)],
+                "get_order_by_exchange_id success body"
+            );
+            let order_resp: KalshiOrderResponse = serde_json::from_str(&body)
+                .map_err(|e| ExchangeError::Unexpected(format!("parse error: {}", e)))?;
 
             let order = &order_resp.order;
             let filled = order.filled_count();
@@ -468,17 +484,24 @@ impl ExchangeAdapter for KalshiClient {
         }
 
         if status == reqwest::StatusCode::NOT_FOUND {
-            // Fallback: try historical orders endpoint (Kalshi moves old data there)
-            debug!(
+            let error_body = resp.text().await.unwrap_or_default();
+            warn!(
                 exchange_order_id = %exchange_order_id,
-                "order not found in active, trying historical endpoint"
+                error_body = %&error_body[..error_body.len().min(500)],
+                "get_order_by_exchange_id 404 body"
             );
+            // Fallback: try historical orders endpoint (Kalshi moves old data there)
             return self
                 .get_order_from_history(exchange_order_id)
                 .await;
         }
 
         let error_body = resp.text().await.unwrap_or_default();
+        warn!(
+            http_status = %status,
+            error_body = %&error_body[..error_body.len().min(500)],
+            "get_order_by_exchange_id unexpected status"
+        );
         Err(ExchangeError::Unexpected(format!(
             "HTTP {}: {}",
             status, error_body
@@ -549,11 +572,14 @@ impl ExchangeAdapter for KalshiClient {
                 url.push_str(&format!("&cursor={}", c));
             }
 
+            let full_url = format!("{}{}", self.base_url, url);
+            warn!(url = %full_url, "get_orders request");
             let resp = self.get(&url).await?;
 
             let status = resp.status();
             if !status.is_success() {
                 let error_body = resp.text().await.unwrap_or_default();
+                warn!(http_status = %status, error_body = %&error_body[..error_body.len().min(500)], "get_orders error");
                 return Err(ExchangeError::Unexpected(format!(
                     "HTTP {}: {}",
                     status, error_body
