@@ -205,13 +205,16 @@ async fn main() {
         Err(e) => warn!(error = %e, "failed to clean up orphaned sessions"),
     }
 
+    // Create audit channel for exchange audit logging
+    let (audit_sender, audit_writer) = harman::audit::create_audit_channel(pool.clone());
+
     // Create shared registry, EMS metrics first, then OMS metrics
     let registry = prometheus::Registry::new();
     let ems_metrics = EmsMetrics::new(&registry);
-    let ems = Arc::new(Ems::new(pool.clone(), exchange.clone(), risk_limits, ems_metrics));
+    let ems = Arc::new(Ems::new(pool.clone(), exchange.clone(), risk_limits, ems_metrics, audit_sender.clone()));
 
     let oms_metrics = Arc::new(OmsMetrics::new(&registry));
-    let oms = Arc::new(Oms::new(pool.clone(), exchange.clone(), ems.clone(), oms_metrics));
+    let oms = Arc::new(Oms::new(pool.clone(), exchange.clone(), ems.clone(), oms_metrics, audit_sender));
     let monitor_metrics = MonitorMetrics::new(&registry);
 
     // Optional WebSocket event stream for real-time order/fill/settlement events.
@@ -313,6 +316,11 @@ async fn main() {
         error!(error = %e, "recovery failed, exiting");
         std::process::exit(1);
     }
+
+    // Spawn audit writer (background batch INSERT to exchange_audit_log)
+    tokio::spawn(async move {
+        audit_writer.run().await;
+    });
 
     // Spawn OMS background runner (auto-pump + auto-reconcile)
     let runner_state = state.clone();

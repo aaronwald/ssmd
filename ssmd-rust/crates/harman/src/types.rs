@@ -285,7 +285,7 @@ pub struct Balance {
 /// Request to amend a resting order.
 /// Caller provides original ticker/side/action (required by Kalshi).
 /// At least one of new_price_dollars or new_quantity must be Some.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AmendRequest {
     pub exchange_order_id: String,
     pub ticker: String,

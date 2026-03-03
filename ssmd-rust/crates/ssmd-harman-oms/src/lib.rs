@@ -10,6 +10,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use deadpool_postgres::Pool;
 
+use harman::audit::AuditSender;
 use harman::exchange::ExchangeAdapter;
 use ssmd_harman_ems::Ems;
 
@@ -96,6 +97,7 @@ pub struct Oms {
     pub exchange: Arc<dyn ExchangeAdapter>,
     pub ems: Arc<Ems>,
     pub metrics: Arc<OmsMetrics>,
+    pub audit: AuditSender,
     pub suspended_sessions: DashMap<i64, ()>,
 }
 
@@ -105,12 +107,14 @@ impl Oms {
         exchange: Arc<dyn ExchangeAdapter>,
         ems: Arc<Ems>,
         metrics: Arc<OmsMetrics>,
+        audit: AuditSender,
     ) -> Self {
         Self {
             pool,
             exchange,
             ems,
             metrics,
+            audit,
             suspended_sessions: DashMap::new(),
         }
     }

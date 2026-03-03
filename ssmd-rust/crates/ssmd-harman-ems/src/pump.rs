@@ -170,20 +170,31 @@ enum SubmitOutcome {
 }
 
 async fn handle_submit(ems: &Ems, session_id: i64, item: &db::QueueItem) -> SubmitOutcome {
-    match ems
-        .exchange
-        .submit_order(&harman::types::OrderRequest {
-            client_order_id: item.order.client_order_id,
-            ticker: item.order.ticker.clone(),
-            side: item.order.side,
-            action: item.order.action,
-            quantity: item.order.quantity,
-            price_dollars: item.order.price_dollars,
-            time_in_force: item.order.time_in_force,
-        })
-        .await
-    {
+    let request = harman::types::OrderRequest {
+        client_order_id: item.order.client_order_id,
+        ticker: item.order.ticker.clone(),
+        side: item.order.side,
+        action: item.order.action,
+        quantity: item.order.quantity,
+        price_dollars: item.order.price_dollars,
+        time_in_force: item.order.time_in_force,
+    };
+    let start = std::time::Instant::now();
+    match ems.exchange.submit_order(&request).await {
         Ok(exchange_order_id) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id,
+                Some(item.order_id),
+                "submit_order",
+                "POST /trade-api/v2/portfolio/orders",
+                Some(200),
+                Some(duration_ms),
+                serde_json::to_value(&request).ok(),
+                Some(serde_json::json!({"exchange_order_id": exchange_order_id})),
+                "success",
+                None,
+            );
             info!(
                 order_id = item.order_id,
                 exchange_order_id = %exchange_order_id,
@@ -210,6 +221,19 @@ async fn handle_submit(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Subm
             SubmitOutcome::Submitted
         }
         Err(ExchangeError::Rejected { reason }) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id,
+                Some(item.order_id),
+                "submit_order",
+                "POST /trade-api/v2/portfolio/orders",
+                Some(400),
+                Some(duration_ms),
+                serde_json::to_value(&request).ok(),
+                None,
+                "error",
+                Some(reason.clone()),
+            );
             warn!(
                 order_id = item.order_id,
                 reason = %reason,
@@ -236,6 +260,19 @@ async fn handle_submit(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Subm
             SubmitOutcome::Rejected
         }
         Err(ExchangeError::RateLimited { retry_after_ms: _ }) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id,
+                Some(item.order_id),
+                "submit_order",
+                "POST /trade-api/v2/portfolio/orders",
+                Some(429),
+                Some(duration_ms),
+                serde_json::to_value(&request).ok(),
+                None,
+                "rate_limited",
+                None,
+            );
             warn!(order_id = item.order_id, "rate limited, requeueing");
 
             if let Err(e) = db::requeue_item(&ems.pool, item.queue_id).await {
@@ -245,6 +282,19 @@ async fn handle_submit(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Subm
             SubmitOutcome::RateLimited
         }
         Err(ExchangeError::Timeout { .. }) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id,
+                Some(item.order_id),
+                "submit_order",
+                "POST /trade-api/v2/portfolio/orders",
+                None,
+                Some(duration_ms),
+                serde_json::to_value(&request).ok(),
+                None,
+                "timeout",
+                None,
+            );
             warn!(
                 order_id = item.order_id,
                 "exchange timeout, leaving as submitted for reconciliation"
@@ -253,6 +303,19 @@ async fn handle_submit(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Subm
             SubmitOutcome::Timeout
         }
         Err(e) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id,
+                Some(item.order_id),
+                "submit_order",
+                "POST /trade-api/v2/portfolio/orders",
+                None,
+                Some(duration_ms),
+                serde_json::to_value(&request).ok(),
+                None,
+                "error",
+                Some(e.to_string()),
+            );
             error!(
                 error = %e,
                 order_id = item.order_id,
@@ -302,8 +365,22 @@ async fn handle_cancel(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Canc
         }
     };
 
+    let start = std::time::Instant::now();
     match ems.exchange.cancel_order(&exchange_order_id).await {
         Ok(()) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id,
+                Some(item.order_id),
+                "cancel_order",
+                "DELETE /trade-api/v2/portfolio/orders",
+                Some(200),
+                Some(duration_ms),
+                Some(serde_json::json!({"exchange_order_id": exchange_order_id})),
+                None,
+                "success",
+                None,
+            );
             info!(order_id = item.order_id, "cancel confirmed");
             ems.metrics.orders_cancelled.inc();
 
@@ -326,6 +403,19 @@ async fn handle_cancel(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Canc
             CancelOutcome::Cancelled
         }
         Err(e) if e.is_not_found() => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id,
+                Some(item.order_id),
+                "cancel_order",
+                "DELETE /trade-api/v2/portfolio/orders",
+                Some(404),
+                Some(duration_ms),
+                Some(serde_json::json!({"exchange_order_id": exchange_order_id})),
+                None,
+                "not_found",
+                None,
+            );
             info!(
                 order_id = item.order_id,
                 "cancel target not found on exchange, marking cancelled"
@@ -348,12 +438,38 @@ async fn handle_cancel(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Canc
             CancelOutcome::NotFound
         }
         Err(ExchangeError::RateLimited { retry_after_ms: _ }) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id,
+                Some(item.order_id),
+                "cancel_order",
+                "DELETE /trade-api/v2/portfolio/orders",
+                Some(429),
+                Some(duration_ms),
+                Some(serde_json::json!({"exchange_order_id": exchange_order_id})),
+                None,
+                "rate_limited",
+                None,
+            );
             if let Err(e) = db::requeue_item(&ems.pool, item.queue_id).await {
                 error!(error = %e, "failed to requeue cancel");
             }
             CancelOutcome::RateLimited
         }
         Err(e) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id,
+                Some(item.order_id),
+                "cancel_order",
+                "DELETE /trade-api/v2/portfolio/orders",
+                None,
+                Some(duration_ms),
+                Some(serde_json::json!({"exchange_order_id": exchange_order_id})),
+                None,
+                "error",
+                Some(e.to_string()),
+            );
             error!(
                 error = %e,
                 order_id = item.order_id,
@@ -449,8 +565,26 @@ async fn handle_amend(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Amend
         new_quantity: Some(new_quantity.unwrap_or(item.order.quantity)),
     };
 
+    let start = std::time::Instant::now();
     match ems.exchange.amend_order(&request).await {
         Ok(result) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id,
+                Some(item.order_id),
+                "amend_order",
+                "POST /trade-api/v2/portfolio/orders/amend",
+                Some(200),
+                Some(duration_ms),
+                serde_json::to_value(&request).ok(),
+                Some(serde_json::json!({
+                    "exchange_order_id": result.exchange_order_id,
+                    "new_price_dollars": result.new_price_dollars.to_string(),
+                    "new_quantity": result.new_quantity.to_string(),
+                })),
+                "success",
+                None,
+            );
             info!(
                 order_id = item.order_id,
                 new_exchange_order_id = %result.exchange_order_id,
@@ -477,6 +611,13 @@ async fn handle_amend(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Amend
             AmendOutcome::Amended
         }
         Err(e) if e.is_not_found() => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id, Some(item.order_id), "amend_order",
+                "POST /trade-api/v2/portfolio/orders/amend",
+                Some(404), Some(duration_ms),
+                serde_json::to_value(&request).ok(), None, "not_found", None,
+            );
             warn!(
                 order_id = item.order_id,
                 "amend target not found on exchange, marking cancelled"
@@ -502,6 +643,13 @@ async fn handle_amend(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Amend
             ))
         }
         Err(ExchangeError::RateLimited { retry_after_ms: _ }) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id, Some(item.order_id), "amend_order",
+                "POST /trade-api/v2/portfolio/orders/amend",
+                Some(429), Some(duration_ms),
+                serde_json::to_value(&request).ok(), None, "rate_limited", None,
+            );
             warn!(order_id = item.order_id, "rate limited on amend, requeueing");
             if let Err(e) = db::requeue_item(&ems.pool, item.queue_id).await {
                 error!(error = %e, "failed to requeue amend");
@@ -509,6 +657,13 @@ async fn handle_amend(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Amend
             AmendOutcome::RateLimited
         }
         Err(e) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id, Some(item.order_id), "amend_order",
+                "POST /trade-api/v2/portfolio/orders/amend",
+                None, Some(duration_ms),
+                serde_json::to_value(&request).ok(), None, "error", Some(e.to_string()),
+            );
             error!(
                 error = %e,
                 order_id = item.order_id,
@@ -622,12 +777,21 @@ async fn handle_decrease(ems: &Ems, session_id: i64, item: &db::QueueItem) -> De
         }
     };
 
+    let start = std::time::Instant::now();
     match ems
         .exchange
         .decrease_order(&exchange_order_id, reduce_by)
         .await
     {
         Ok(()) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id, Some(item.order_id), "decrease_order",
+                "POST /trade-api/v2/portfolio/orders/decrease",
+                Some(200), Some(duration_ms),
+                Some(serde_json::json!({"exchange_order_id": exchange_order_id, "reduce_by": reduce_by.to_string()})),
+                None, "success", None,
+            );
             info!(
                 order_id = item.order_id,
                 reduce_by = %reduce_by,
@@ -650,6 +814,14 @@ async fn handle_decrease(ems: &Ems, session_id: i64, item: &db::QueueItem) -> De
             DecreaseOutcome::Decreased
         }
         Err(e) if e.is_not_found() => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id, Some(item.order_id), "decrease_order",
+                "POST /trade-api/v2/portfolio/orders/decrease",
+                Some(404), Some(duration_ms),
+                Some(serde_json::json!({"exchange_order_id": exchange_order_id, "reduce_by": reduce_by.to_string()})),
+                None, "not_found", None,
+            );
             warn!(
                 order_id = item.order_id,
                 "decrease target not found on exchange, marking cancelled"
@@ -675,6 +847,14 @@ async fn handle_decrease(ems: &Ems, session_id: i64, item: &db::QueueItem) -> De
             ))
         }
         Err(ExchangeError::RateLimited { retry_after_ms: _ }) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id, Some(item.order_id), "decrease_order",
+                "POST /trade-api/v2/portfolio/orders/decrease",
+                Some(429), Some(duration_ms),
+                Some(serde_json::json!({"exchange_order_id": exchange_order_id, "reduce_by": reduce_by.to_string()})),
+                None, "rate_limited", None,
+            );
             warn!(order_id = item.order_id, "rate limited on decrease, requeueing");
             if let Err(e) = db::requeue_item(&ems.pool, item.queue_id).await {
                 error!(error = %e, "failed to requeue decrease");
@@ -682,6 +862,14 @@ async fn handle_decrease(ems: &Ems, session_id: i64, item: &db::QueueItem) -> De
             DecreaseOutcome::RateLimited
         }
         Err(e) => {
+            let duration_ms = start.elapsed().as_millis() as i32;
+            ems.audit.rest_call(
+                session_id, Some(item.order_id), "decrease_order",
+                "POST /trade-api/v2/portfolio/orders/decrease",
+                None, Some(duration_ms),
+                Some(serde_json::json!({"exchange_order_id": exchange_order_id, "reduce_by": reduce_by.to_string()})),
+                None, "error", Some(e.to_string()),
+            );
             error!(
                 error = %e,
                 order_id = item.order_id,

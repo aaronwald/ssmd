@@ -39,14 +39,16 @@ async fn build_test_state(
     let registry = prometheus::Registry::new();
     let ems_metrics = EmsMetrics::new(&registry);
     let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = Arc::new(mock);
+    let (audit_sender, _audit_writer) = harman::audit::create_audit_channel(pool.clone());
     let ems = Arc::new(Ems::new(
         pool.clone(),
         exchange.clone(),
         RiskLimits::default(),
         ems_metrics,
+        audit_sender.clone(),
     ));
     let oms_metrics = Arc::new(OmsMetrics::new(&registry));
-    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
+    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics, audit_sender));
     let runner = Arc::new(OmsRunner::new(oms.clone(), None, session_id, None));
     let pump_trigger = runner.pump_trigger();
     Arc::new(AppState {
@@ -1570,9 +1572,10 @@ async fn test_staged_legs_excluded_from_risk() {
     let ems_metrics = ssmd_harman_ems::EmsMetrics::new(&registry);
     let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = Arc::new(mock);
     let limits = RiskLimits { max_notional: Decimal::from(5) };
-    let ems = Arc::new(ssmd_harman_ems::Ems::new(pool.clone(), exchange.clone(), limits, ems_metrics));
+    let (audit_sender2, _audit_writer2) = harman::audit::create_audit_channel(pool.clone());
+    let ems = Arc::new(ssmd_harman_ems::Ems::new(pool.clone(), exchange.clone(), limits, ems_metrics, audit_sender2.clone()));
     let oms_metrics = Arc::new(OmsMetrics::new(&registry));
-    let oms = Arc::new(ssmd_harman_oms::Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
+    let oms = Arc::new(ssmd_harman_oms::Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics, audit_sender2));
 
     // Bracket: entry=$2.50 (pending), TP=$4.00 (staged), SL=$1.00 (staged)
     // If staged legs were counted: total = $7.50 > $5 → rejected

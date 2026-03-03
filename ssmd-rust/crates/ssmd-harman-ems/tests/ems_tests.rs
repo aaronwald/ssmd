@@ -23,7 +23,8 @@ use ssmd_harman_ems::{Ems, EmsMetrics};
 fn build_test_ems(mock: MockExchange, pool: deadpool_postgres::Pool) -> Ems {
     let registry = prometheus::Registry::new();
     let metrics = EmsMetrics::new(&registry);
-    Ems::new(pool, Arc::new(mock), RiskLimits::default(), metrics)
+    let (audit_sender, _audit_writer) = harman::audit::create_audit_channel(pool.clone());
+    Ems::new(pool, Arc::new(mock), RiskLimits::default(), metrics, audit_sender)
 }
 
 /// Setup helper: create pool, run migrations, create a unique test session.

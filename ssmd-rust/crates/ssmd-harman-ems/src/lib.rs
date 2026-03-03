@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use deadpool_postgres::Pool;
 
+use harman::audit::AuditSender;
 use harman::exchange::ExchangeAdapter;
 use harman::risk::RiskLimits;
 
@@ -100,6 +101,7 @@ pub struct Ems {
     pub exchange: Arc<dyn ExchangeAdapter>,
     pub risk_limits: RiskLimits,
     pub metrics: EmsMetrics,
+    pub audit: AuditSender,
     pub shutting_down: AtomicBool,
 }
 
@@ -109,12 +111,14 @@ impl Ems {
         exchange: Arc<dyn ExchangeAdapter>,
         risk_limits: RiskLimits,
         metrics: EmsMetrics,
+        audit: AuditSender,
     ) -> Self {
         Self {
             pool,
             exchange,
             risk_limits,
             metrics,
+            audit,
             shutting_down: AtomicBool::new(false),
         }
     }
