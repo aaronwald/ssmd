@@ -81,6 +81,15 @@ impl EventIngester {
     }
 
     async fn handle_event(&self, event: ExchangeEvent, result: &mut IngestResult) {
+        // Receiving any data event proves WS is connected. Handles the race where
+        // the Connected event was broadcast before the ingester subscribed.
+        if !matches!(event, ExchangeEvent::Disconnected { .. })
+            && !self.ws_connected.load(Ordering::Relaxed)
+        {
+            info!("WS: marking connected (inferred from data event)");
+            self.ws_connected.store(true, Ordering::Relaxed);
+        }
+
         match event {
             ExchangeEvent::Fill {
                 trade_id,
