@@ -548,11 +548,15 @@ async fn resolve_stale_orders(
             "resolving stale order"
         );
 
-        match oms
-            .exchange
-            .get_order_by_client_id(order.client_order_id)
-            .await
-        {
+        // Prefer get_order_by_exchange_id when the exchange order ID is known
+        let exchange_result = if let Some(eid) = &order.exchange_order_id {
+            oms.exchange.get_order_by_exchange_id(eid).await
+        } else {
+            oms.exchange
+                .get_order_by_client_id(order.client_order_id)
+                .await
+        };
+        match exchange_result {
             Ok(exchange_status) => {
                 let new_state =
                     match state::resolve_exchange_state(&order.state, &exchange_status.status) {
@@ -578,11 +582,14 @@ async fn resolve_stale_orders(
                     };
 
                 if let Some(new_state) = new_state {
-                    // Infer cancel reason: if the ticker has a settlement record,
-                    // the exchange auto-cancelled resting orders at market close (Expired).
-                    // Otherwise it's an unknown exchange cancel (ExchangeCancel).
+                    // Infer cancel reason:
+                    // 1. If exchange reports close_cancel_count > 0, it's a market-close cancel (Expired)
+                    // 2. Fall back to settled_tickers heuristic for NotFound cases
+                    // 3. Otherwise it's an unknown exchange cancel (ExchangeCancel)
                     let cancel_reason = if new_state == OrderState::Cancelled {
-                        if settled_tickers.contains(&order.ticker) {
+                        if exchange_status.close_cancel_count.unwrap_or(0) > 0
+                            || settled_tickers.contains(&order.ticker)
+                        {
                             Some(harman::types::CancelReason::Expired)
                         } else {
                             Some(harman::types::CancelReason::ExchangeCancel)
@@ -618,26 +625,91 @@ async fn resolve_stale_orders(
                 }
             }
             Err(harman::error::ExchangeError::NotFound(_)) => {
-                if order.state == OrderState::Submitted {
-                    info!(
-                        order_id = order.id,
-                        "submitted order not found on exchange, marking rejected"
-                    );
-                    if let Err(e) = db::update_order_state(
-                        &oms.pool,
-                        order.id,
-                        session_id,
-                        OrderState::Rejected,
-                        None,
-                        None,
-                        None,
-                        "reconciliation",
-                    )
-                    .await
-                    {
-                        error!(error = %e, "failed to update rejected state");
-                    } else {
-                        count += 1;
+                match order.state {
+                    OrderState::Submitted => {
+                        info!(
+                            order_id = order.id,
+                            "submitted order not found on exchange, marking rejected"
+                        );
+                        if let Err(e) = db::update_order_state(
+                            &oms.pool,
+                            order.id,
+                            session_id,
+                            OrderState::Rejected,
+                            None,
+                            None,
+                            None,
+                            "reconciliation",
+                        )
+                        .await
+                        {
+                            error!(error = %e, "failed to update rejected state");
+                        } else {
+                            count += 1;
+                        }
+                    }
+                    OrderState::PendingCancel => {
+                        info!(
+                            order_id = order.id,
+                            "pending_cancel order not found on exchange, marking cancelled"
+                        );
+                        if let Err(e) = db::update_order_state(
+                            &oms.pool,
+                            order.id,
+                            session_id,
+                            OrderState::Cancelled,
+                            None,
+                            None,
+                            Some(&harman::types::CancelReason::ExchangeCancel),
+                            "reconciliation",
+                        )
+                        .await
+                        {
+                            error!(error = %e, "failed to update cancelled state");
+                        } else {
+                            count += 1;
+                        }
+                    }
+                    OrderState::Acknowledged | OrderState::PartiallyFilled => {
+                        // Order was on exchange but is now gone — exchange auto-cancelled
+                        // at market close or unknown cancel. Use settled_tickers heuristic
+                        // to infer reason (close_cancel_count not available in NotFound case).
+                        let cancel_reason = if settled_tickers.contains(&order.ticker) {
+                            harman::types::CancelReason::Expired
+                        } else {
+                            harman::types::CancelReason::ExchangeCancel
+                        };
+                        warn!(
+                            order_id = order.id,
+                            state = %order.state,
+                            cancel_reason = ?cancel_reason,
+                            "reconciliation: {} order not found on exchange, marking cancelled",
+                            order.state
+                        );
+                        if let Err(e) = db::update_order_state(
+                            &oms.pool,
+                            order.id,
+                            session_id,
+                            OrderState::Cancelled,
+                            None,
+                            None,
+                            Some(&cancel_reason),
+                            "reconciliation",
+                        )
+                        .await
+                        {
+                            error!(error = %e, "failed to update cancelled state");
+                        } else {
+                            count += 1;
+                        }
+                    }
+                    _ => {
+                        warn!(
+                            order_id = order.id,
+                            state = %order.state,
+                            "reconciliation: order in {} state not found, leaving for review",
+                            order.state
+                        );
                     }
                 }
             }

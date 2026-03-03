@@ -47,7 +47,7 @@ async fn main() {
         )
         .route(
             "/trade-api/v2/portfolio/orders/:id",
-            delete(routes::cancel_order),
+            delete(routes::cancel_order).get(routes::get_order),
         )
         .route(
             "/trade-api/v2/portfolio/orders/:id/amend",

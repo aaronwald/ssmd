@@ -78,6 +78,8 @@ pub struct MockExchangeState {
     pub cancel_all_count: i32,
     /// Exchange order statuses, keyed by client_order_id.
     pub order_statuses: HashMap<Uuid, ExchangeOrderStatus>,
+    /// Exchange order statuses, keyed by exchange_order_id string.
+    pub order_statuses_by_exchange_id: HashMap<String, ExchangeOrderStatus>,
     /// Fills to return from get_fills.
     pub fills: Vec<ExchangeFill>,
     /// Resting orders to return from get_orders.
@@ -114,6 +116,7 @@ impl Default for MockExchangeState {
             cancel_behavior: CancelBehavior::Accept,
             cancel_all_count: 0,
             order_statuses: HashMap::new(),
+            order_statuses_by_exchange_id: HashMap::new(),
             fills: Vec::new(),
             resting_orders: Vec::new(),
             positions: Vec::new(),
@@ -220,6 +223,24 @@ impl ExchangeAdapter for MockExchange {
             .get(&client_order_id)
             .cloned()
             .ok_or(ExchangeError::NotFound(client_order_id))
+    }
+
+    async fn get_order_by_exchange_id(
+        &self,
+        exchange_order_id: &str,
+    ) -> Result<ExchangeOrderStatus, ExchangeError> {
+        let state = self.state.lock().await;
+        // First check the exchange_id-keyed map
+        if let Some(status) = state.order_statuses_by_exchange_id.get(exchange_order_id) {
+            return Ok(status.clone());
+        }
+        // Fall back to scanning the client_order_id-keyed map
+        state
+            .order_statuses
+            .values()
+            .find(|s| s.exchange_order_id == exchange_order_id)
+            .cloned()
+            .ok_or(ExchangeError::NotFound(Uuid::nil()))
     }
 
     async fn get_positions(&self) -> Result<Vec<Position>, ExchangeError> {
@@ -532,6 +553,7 @@ pub fn mock_exchange_status(
         status,
         filled_quantity: filled_qty,
         remaining_quantity: remaining_qty,
+        close_cancel_count: None,
     }
 }
 

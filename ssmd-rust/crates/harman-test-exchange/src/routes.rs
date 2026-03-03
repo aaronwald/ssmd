@@ -119,6 +119,19 @@ pub async fn batch_cancel(State(state): State<AppState>) -> Json<BatchCancelResp
     })
 }
 
+pub async fn get_order(
+    State(state): State<AppState>,
+    Path(order_id): Path<String>,
+) -> Result<Json<OrderResponse>, StatusCode> {
+    let state = state.lock().await;
+    match state.orders.get(&order_id) {
+        Some(order) => Ok(Json(OrderResponse {
+            order: order.clone(),
+        })),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
 pub async fn list_orders(
     State(state): State<AppState>,
     Query(query): Query<OrdersQuery>,

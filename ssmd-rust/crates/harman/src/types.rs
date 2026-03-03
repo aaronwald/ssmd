@@ -215,6 +215,9 @@ pub struct ExchangeOrderStatus {
     pub status: ExchangeOrderState,
     pub filled_quantity: Decimal,
     pub remaining_quantity: Decimal,
+    /// Number of contracts cancelled due to market close.
+    /// When > 0, indicates the exchange auto-cancelled resting orders at settlement.
+    pub close_cancel_count: Option<i64>,
 }
 
 /// Simplified exchange order state

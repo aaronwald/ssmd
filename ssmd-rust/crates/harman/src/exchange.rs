@@ -30,10 +30,22 @@ pub trait ExchangeAdapter: Send + Sync {
 
     /// Get order status by our client_order_id (idempotency key).
     ///
-    /// Used during recovery to resolve ambiguous order states.
+    /// Used during recovery to resolve ambiguous order states when
+    /// exchange_order_id is not available (e.g., Submitted orders where
+    /// the POST response was lost).
     async fn get_order_by_client_id(
         &self,
         client_order_id: Uuid,
+    ) -> Result<ExchangeOrderStatus, ExchangeError>;
+
+    /// Get order status by the exchange-assigned order ID.
+    ///
+    /// Preferred over `get_order_by_client_id` when the exchange order ID
+    /// is known. Uses the direct single-order endpoint which is more reliable
+    /// than list-based lookups.
+    async fn get_order_by_exchange_id(
+        &self,
+        exchange_order_id: &str,
     ) -> Result<ExchangeOrderStatus, ExchangeError>;
 
     /// Get current portfolio positions.

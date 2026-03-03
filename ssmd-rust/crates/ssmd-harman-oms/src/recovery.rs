@@ -60,11 +60,18 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
     info!(count = ambiguous.len(), "recovering ambiguous orders");
 
     for order in &ambiguous {
-        match oms
-            .exchange
-            .get_order_by_client_id(order.client_order_id)
-            .await
-        {
+        // Prefer get_order_by_exchange_id when the exchange order ID is known
+        // (more reliable direct lookup vs list-based client_order_id search).
+        // Fall back to get_order_by_client_id for Submitted orders where the
+        // POST response was lost and exchange_order_id is None.
+        let exchange_result = if let Some(eid) = &order.exchange_order_id {
+            oms.exchange.get_order_by_exchange_id(eid).await
+        } else {
+            oms.exchange
+                .get_order_by_client_id(order.client_order_id)
+                .await
+        };
+        match exchange_result {
             Ok(exchange_status) => {
                 // Use shared resolution logic
                 let new_state = match state::resolve_exchange_state(&order.state, &exchange_status.status) {
@@ -117,6 +124,17 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                 };
 
                 if let Some(new_state) = new_state {
+                    // Infer cancel reason from exchange data
+                    let cancel_reason = if new_state == OrderState::Cancelled {
+                        if exchange_status.close_cancel_count.unwrap_or(0) > 0 {
+                            Some(harman::types::CancelReason::Expired)
+                        } else {
+                            Some(harman::types::CancelReason::ExchangeCancel)
+                        }
+                    } else {
+                        None
+                    };
+
                     if let Err(e) = db::update_order_state(
                         &oms.pool,
                         order.id,
@@ -124,7 +142,7 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                         new_state,
                         Some(&exchange_status.exchange_order_id),
                         Some(exchange_status.filled_quantity),
-                        None,
+                        cancel_reason.as_ref(),
                         "recovery",
                     )
                     .await
@@ -173,9 +191,30 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                         )
                         .await;
                     }
+                    OrderState::Acknowledged | OrderState::PartiallyFilled => {
+                        // Order was on the exchange (has exchange_order_id) but is now
+                        // gone — exchange auto-cancelled at market close or unknown cancel.
+                        warn!(
+                            order_id = order.id,
+                            state = %order.state,
+                            "recovery: {} order not found on exchange, marking cancelled",
+                            order.state
+                        );
+                        let _ = db::update_order_state(
+                            &oms.pool,
+                            order.id,
+                            session_id,
+                            OrderState::Cancelled,
+                            None,
+                            None,
+                            Some(&harman::types::CancelReason::ExchangeCancel),
+                            "recovery",
+                        )
+                        .await;
+                    }
                     _ => {
-                        // Acknowledged/PartiallyFilled/PendingAmend/PendingDecrease not found
-                        // on exchange is unusual — log warning but don't auto-cancel
+                        // PendingAmend/PendingDecrease not found is unusual —
+                        // log warning but don't auto-cancel
                         warn!(
                             order_id = order.id,
                             state = %order.state,

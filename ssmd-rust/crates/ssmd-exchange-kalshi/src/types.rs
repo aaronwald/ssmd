@@ -43,6 +43,10 @@ pub struct KalshiOrder {
     #[serde(default)]
     pub remaining_count: Option<i64>,
     pub created_time: Option<String>,
+    /// Number of contracts cancelled due to market close.
+    /// Present when the exchange auto-cancels resting orders at settlement.
+    #[serde(default)]
+    pub close_cancel_count: Option<i64>,
 }
 
 impl KalshiOrder {

@@ -25,6 +25,8 @@ pub struct Order {
     pub remaining_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_cancel_count: Option<i64>,
 }
 
 /// Kalshi-compatible fill representation.
@@ -157,6 +159,7 @@ impl ExchangeState {
             count: Some(count),
             remaining_count: Some(0),
             created_time: Some(now.clone()),
+            close_cancel_count: None,
         };
 
         let fill = Fill {
@@ -245,6 +248,7 @@ impl ExchangeState {
             count: Some(count),
             remaining_count: Some(count),
             created_time: Some(Utc::now().to_rfc3339()),
+            close_cancel_count: None,
         };
 
         self.orders.insert(new_order_id, new_order.clone());

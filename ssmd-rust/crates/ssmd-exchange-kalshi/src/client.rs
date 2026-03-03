@@ -212,6 +212,49 @@ impl KalshiClient {
         Ok(())
     }
 
+    /// Fallback: search historical orders for a specific exchange order ID.
+    ///
+    /// Used when `GET /portfolio/orders/{id}` returns 404 because Kalshi
+    /// has migrated old orders to the historical endpoint.
+    async fn get_order_from_history(
+        &self,
+        exchange_order_id: &str,
+    ) -> Result<ExchangeOrderStatus, ExchangeError> {
+        let path = format!(
+            "{}/portfolio/history/orders",
+            self.path_prefix
+        );
+        let resp = self.get(&path).await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            // Historical endpoint not available or error — treat as not found
+            return Err(ExchangeError::NotFound(Uuid::nil()));
+        }
+
+        let orders_resp: KalshiOrdersResponse = resp
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+
+        let order = orders_resp
+            .orders
+            .into_iter()
+            .find(|o| o.order_id == exchange_order_id)
+            .ok_or(ExchangeError::NotFound(Uuid::nil()))?;
+
+        let filled = order.filled_count();
+        let remaining = order.effective_remaining();
+
+        Ok(ExchangeOrderStatus {
+            exchange_order_id: order.order_id.clone(),
+            status: Self::map_order_status(&order),
+            filled_quantity: Decimal::from(filled),
+            remaining_quantity: Decimal::from(remaining),
+            close_cancel_count: order.close_cancel_count,
+        })
+    }
+
     /// Map a Kalshi order status string to our ExchangeOrderState
     fn map_order_status(order: &KalshiOrder) -> ExchangeOrderState {
         match order.status.as_str() {
@@ -389,7 +432,57 @@ impl ExchangeAdapter for KalshiClient {
             status: Self::map_order_status(&order),
             filled_quantity: Decimal::from(filled),
             remaining_quantity: Decimal::from(remaining),
+            close_cancel_count: order.close_cancel_count,
         })
+    }
+
+    async fn get_order_by_exchange_id(
+        &self,
+        exchange_order_id: &str,
+    ) -> Result<ExchangeOrderStatus, ExchangeError> {
+        // Primary: GET /portfolio/orders/{order_id} (single order endpoint)
+        let path = format!(
+            "{}/portfolio/orders/{}",
+            self.path_prefix, exchange_order_id
+        );
+        let resp = self.get(&path).await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let order_resp: KalshiOrderResponse = resp
+                .json()
+                .await
+                .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+
+            let order = &order_resp.order;
+            let filled = order.filled_count();
+            let remaining = order.effective_remaining();
+
+            return Ok(ExchangeOrderStatus {
+                exchange_order_id: order.order_id.clone(),
+                status: Self::map_order_status(order),
+                filled_quantity: Decimal::from(filled),
+                remaining_quantity: Decimal::from(remaining),
+                close_cancel_count: order.close_cancel_count,
+            });
+        }
+
+        if status == reqwest::StatusCode::NOT_FOUND {
+            // Fallback: try historical orders endpoint (Kalshi moves old data there)
+            debug!(
+                exchange_order_id = %exchange_order_id,
+                "order not found in active, trying historical endpoint"
+            );
+            return self
+                .get_order_from_history(exchange_order_id)
+                .await;
+        }
+
+        let error_body = resp.text().await.unwrap_or_default();
+        Err(ExchangeError::Unexpected(format!(
+            "HTTP {}: {}",
+            status, error_body
+        )))
     }
 
     async fn get_positions(&self) -> Result<Vec<Position>, ExchangeError> {
