@@ -156,55 +156,14 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                 }
             }
             Err(ExchangeError::NotFound(_)) => {
-                match order.state {
-                    OrderState::Submitted => {
-                        info!(
-                            order_id = order.id,
-                            "recovery: submitted order not found on exchange → rejected"
-                        );
-                        let _ = db::update_order_state(
-                            &oms.pool,
-                            order.id,
-                            session_id,
-                            OrderState::Rejected,
-                            None,
-                            None,
-                            None,
-                            "recovery",
-                        )
-                        .await;
-                    }
-                    OrderState::PendingCancel => {
-                        info!(
-                            order_id = order.id,
-                            "recovery: pending_cancel order not found → cancelled"
-                        );
-                        let _ = db::update_order_state(
-                            &oms.pool,
-                            order.id,
-                            session_id,
-                            OrderState::Cancelled,
-                            None,
-                            None,
-                            None,
-                            "recovery",
-                        )
-                        .await;
-                    }
-                    _ => {
-                        // Acknowledged, PartiallyFilled, PendingAmend, PendingDecrease:
-                        // NotFound is ambiguous — could mean order aged out of API, endpoint
-                        // is wrong, or auth failed. Do NOT auto-cancel; leave for the primary
-                        // path (get_order_by_exchange_id returning actual status) to resolve.
-                        // Pile-up of unresolved orders is a visible signal that something's broken.
-                        warn!(
-                            order_id = order.id,
-                            state = %order.state,
-                            "recovery: order in {} state not found on exchange, leaving for manual review",
-                            order.state
-                        );
-                    }
-                }
+                // NotFound is ambiguous — could mean order aged out of API, endpoint
+                // is wrong, or auth failed. Do NOT auto-resolve any state.
+                // Pile-up of unresolved orders is a visible signal that something's broken.
+                warn!(
+                    order_id = order.id,
+                    state = %order.state,
+                    "recovery: order not found on exchange, leaving for manual review"
+                );
             }
             Err(ExchangeError::Connection(_) | ExchangeError::Timeout { .. }) => {
                 error!(

@@ -625,60 +625,13 @@ async fn resolve_stale_orders(
                 }
             }
             Err(harman::error::ExchangeError::NotFound(_)) => {
-                match order.state {
-                    OrderState::Submitted => {
-                        info!(
-                            order_id = order.id,
-                            "submitted order not found on exchange, marking rejected"
-                        );
-                        if let Err(e) = db::update_order_state(
-                            &oms.pool,
-                            order.id,
-                            session_id,
-                            OrderState::Rejected,
-                            None,
-                            None,
-                            None,
-                            "reconciliation",
-                        )
-                        .await
-                        {
-                            error!(error = %e, "failed to update rejected state");
-                        } else {
-                            count += 1;
-                        }
-                    }
-                    OrderState::PendingCancel => {
-                        info!(
-                            order_id = order.id,
-                            "pending_cancel order not found on exchange, marking cancelled"
-                        );
-                        if let Err(e) = db::update_order_state(
-                            &oms.pool,
-                            order.id,
-                            session_id,
-                            OrderState::Cancelled,
-                            None,
-                            None,
-                            Some(&harman::types::CancelReason::ExchangeCancel),
-                            "reconciliation",
-                        )
-                        .await
-                        {
-                            error!(error = %e, "failed to update cancelled state");
-                        } else {
-                            count += 1;
-                        }
-                    }
-                    _ => {
-                        warn!(
-                            order_id = order.id,
-                            state = %order.state,
-                            "reconciliation: order in {} state not found, leaving for review",
-                            order.state
-                        );
-                    }
-                }
+                // NotFound is ambiguous — do NOT auto-resolve any state.
+                // The primary path (Ok with actual status) should handle resolution.
+                warn!(
+                    order_id = order.id,
+                    state = %order.state,
+                    "reconciliation: order not found on exchange, leaving for review"
+                );
             }
             Err(e) => {
                 warn!(
