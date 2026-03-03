@@ -1190,12 +1190,12 @@ pub async fn get_order_by_client_id(
     Ok(row.as_ref().map(row_to_order))
 }
 
-/// Find an order by its exchange-assigned order ID, scoped to a session.
+/// Find an order by its exchange-assigned order ID.
 ///
-/// Returns `None` if no order has this exchange_order_id in the session.
+/// No session_id filter — each harman instance has its own DB,
+/// and exchange_order_id is unique within it.
 pub async fn find_order_by_exchange_id(
     pool: &Pool,
-    session_id: i64,
     exchange_order_id: &str,
 ) -> Result<Option<Order>, String> {
     let client = pool
@@ -1209,8 +1209,8 @@ pub async fn find_order_by_exchange_id(
                     ticker, side, action, quantity, price_dollars, \
                     filled_quantity, time_in_force, state, cancel_reason, \
                     group_id, leg_role, created_at, updated_at \
-             FROM prediction_orders WHERE exchange_order_id = $1 AND session_id = $2",
-            &[&exchange_order_id, &session_id],
+             FROM prediction_orders WHERE exchange_order_id = $1",
+            &[&exchange_order_id],
         )
         .await
         .map_err(|e| format!("find order by exchange_id: {}", e))?;

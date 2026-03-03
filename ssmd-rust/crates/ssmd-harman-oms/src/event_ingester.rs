@@ -24,7 +24,6 @@ use crate::OmsMetrics;
 /// Ingests WS events and writes to DB via shared processors.
 pub struct EventIngester {
     pool: Pool,
-    session_id: i64,
     metrics: Arc<OmsMetrics>,
     audit: AuditSender,
     /// Set to true when WS is connected, false on disconnect.
@@ -40,10 +39,9 @@ pub struct IngestResult {
 }
 
 impl EventIngester {
-    pub fn new(pool: Pool, session_id: i64, metrics: Arc<OmsMetrics>, audit: AuditSender) -> Self {
+    pub fn new(pool: Pool, metrics: Arc<OmsMetrics>, audit: AuditSender) -> Self {
         Self {
             pool,
-            session_id,
             metrics,
             audit,
             ws_connected: Arc::new(AtomicBool::new(false)),
@@ -103,9 +101,26 @@ impl EventIngester {
                 filled_at,
                 client_order_id,
             } => {
+                // Look up the order to get its session_id
+                let order = match db::find_order_by_exchange_id(
+                    &self.pool,
+                    &exchange_order_id,
+                )
+                .await
+                {
+                    Ok(Some(o)) => Some(o),
+                    Ok(None) => None,
+                    Err(e) => {
+                        error!(error = %e, "failed to look up order for fill");
+                        None
+                    }
+                };
+
+                let session_id = order.as_ref().map(|o| o.session_id).unwrap_or(0);
+
                 self.audit.ws_event(
-                    self.session_id,
-                    None,
+                    session_id,
+                    order.as_ref().map(|o| o.id),
                     "fill",
                     Some(serde_json::json!({
                         "trade_id": trade_id,
@@ -130,7 +145,7 @@ impl EventIngester {
                 };
 
                 let session_orders =
-                    match db::list_orders(&self.pool, self.session_id, None).await {
+                    match db::list_orders(&self.pool, session_id, None).await {
                         Ok(orders) => orders,
                         Err(e) => {
                             error!(error = %e, "failed to list orders for fill import");
@@ -140,7 +155,7 @@ impl EventIngester {
 
                 match fill_processor::import_fills(
                     &self.pool,
-                    self.session_id,
+                    session_id,
                     &[fill],
                     &session_orders,
                     "ws_event",
@@ -175,27 +190,28 @@ impl EventIngester {
                 remaining_quantity: _,
                 close_cancel_count,
             } => {
-                self.audit.ws_event(
-                    self.session_id,
-                    None,
-                    "order_update",
-                    Some(serde_json::json!({
-                        "exchange_order_id": exchange_order_id,
-                        "ticker": ticker,
-                        "status": format!("{:?}", status),
-                        "filled_quantity": filled_quantity.to_string(),
-                    })),
-                    None,
-                );
-                // Look up the order by exchange_order_id
+                // Look up the order by exchange_order_id (no session filter —
+                // each harman instance has its own DB)
                 match db::find_order_by_exchange_id(
                     &self.pool,
-                    self.session_id,
                     &exchange_order_id,
                 )
                 .await
                 {
                     Ok(Some(order)) => {
+                        self.audit.ws_event(
+                            order.session_id,
+                            Some(order.id),
+                            "order_update",
+                            Some(serde_json::json!({
+                                "exchange_order_id": exchange_order_id,
+                                "ticker": ticker,
+                                "status": format!("{:?}", status),
+                                "filled_quantity": filled_quantity.to_string(),
+                            })),
+                            None,
+                        );
+
                         // Handle unsolicited cancel
                         if status == OrderState::Cancelled {
                             let cancel_reason =
@@ -217,7 +233,7 @@ impl EventIngester {
                             if let Err(e) = db::update_order_state(
                                 &self.pool,
                                 order.id,
-                                self.session_id,
+                                order.session_id,
                                 OrderState::Cancelled,
                                 Some(&exchange_order_id),
                                 Some(filled_quantity),
@@ -241,7 +257,7 @@ impl EventIngester {
                             if let Err(e) = db::update_order_state(
                                 &self.pool,
                                 order.id,
-                                self.session_id,
+                                order.session_id,
                                 OrderState::Filled,
                                 Some(&exchange_order_id),
                                 Some(filled_quantity),
@@ -265,7 +281,7 @@ impl EventIngester {
                             if let Err(e) = db::update_order_state(
                                 &self.pool,
                                 order.id,
-                                self.session_id,
+                                order.session_id,
                                 OrderState::Acknowledged,
                                 Some(&exchange_order_id),
                                 Some(filled_quantity),
@@ -283,13 +299,25 @@ impl EventIngester {
                     Ok(None) => {
                         // Unknown order — WS user_orders doesn't carry side/action/price/quantity,
                         // so we can't construct a full ExchangeOrder for the importer.
-                        // Log it; the fill channel or REST reconciliation will handle import.
+                        self.audit.ws_event(
+                            0,
+                            None,
+                            "order_update",
+                            Some(serde_json::json!({
+                                "exchange_order_id": exchange_order_id,
+                                "ticker": ticker,
+                                "status": format!("{:?}", status),
+                                "filled_quantity": filled_quantity.to_string(),
+                                "note": "external_order_not_imported",
+                            })),
+                            None,
+                        );
                         if status == OrderState::Acknowledged || status == OrderState::Filled {
                             debug!(
                                 exchange_order_id = %exchange_order_id,
                                 ticker = %ticker,
                                 status = %status,
-                                "WS: detected external order (fill or REST reconciliation will import)"
+                                "WS: detected external order (fill channel will import)"
                             );
                         }
                     }
@@ -300,7 +328,7 @@ impl EventIngester {
             }
 
             ExchangeEvent::PositionUpdate { .. } => {
-                self.audit.ws_event(self.session_id, None, "position_update", None, None);
+                self.audit.ws_event(0, None, "position_update", None, None);
                 debug!("WS: position update (informational)");
             }
 
@@ -310,7 +338,7 @@ impl EventIngester {
                 settled_time,
             } => {
                 self.audit.ws_event(
-                    self.session_id,
+                    0,
                     None,
                     "market_settled",
                     Some(serde_json::json!({
@@ -320,30 +348,24 @@ impl EventIngester {
                     })),
                     None,
                 );
-                // WS market_lifecycle_v2 only provides ticker/result/time — not the P&L
-                // fields (event_ticker, yes_count, no_count, revenue_cents, etc.) needed
-                // to record a full settlement. REST reconciliation handles that.
-                //
-                // This event is useful for knowing a market settled, which helps with
-                // unsolicited cancel detection (orders auto-cancelled at settlement).
                 info!(
                     ticker = %ticker,
                     market_result = ?market_result,
                     settled_time = %settled_time,
-                    "WS: market settled (REST reconciliation will record P&L)"
+                    "WS: market settled"
                 );
                 result.settlements_noted += 1;
             }
 
             ExchangeEvent::Connected => {
-                self.audit.ws_event(self.session_id, None, "connected", None, None);
+                self.audit.ws_event(0, None, "connected", None, None);
                 info!("WS: connected");
                 self.ws_connected.store(true, Ordering::Relaxed);
             }
 
             ExchangeEvent::Disconnected { reason } => {
                 self.audit.ws_event(
-                    self.session_id, None, "disconnected", None,
+                    0, None, "disconnected", None,
                     Some(serde_json::json!({"reason": reason})),
                 );
                 warn!(reason = %reason, "WS: disconnected");

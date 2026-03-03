@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -13,12 +12,6 @@ use harman::exchange::EventStream;
 use crate::Oms;
 use crate::event_ingester::EventIngester;
 
-/// Reconciliation interval when WS is connected (safety-net audit).
-const WS_UP_RECONCILE_INTERVAL: Duration = Duration::from_secs(300);
-
-/// Reconciliation interval when WS is disconnected (aggressive catch-up).
-const WS_DOWN_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
-
 /// Background task coordinator for auto-pump, auto-reconcile, and WS event ingestion.
 pub struct OmsRunner {
     oms: Arc<Oms>,
@@ -28,8 +21,6 @@ pub struct OmsRunner {
     shutdown: CancellationToken,
     /// Optional WS event stream for real-time events.
     event_stream: Option<Arc<dyn EventStream>>,
-    /// Shared WS connection flag — set by EventIngester, read by reconciliation.
-    ws_connected: Arc<AtomicBool>,
 }
 
 /// Cheap, cloneable handle for REST handlers to trigger auto-pump.
@@ -75,7 +66,6 @@ impl OmsRunner {
             startup_session_id,
             shutdown: CancellationToken::new(),
             event_stream,
-            ws_connected: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -85,11 +75,6 @@ impl OmsRunner {
 
     pub fn shutdown(&self) {
         self.shutdown.cancel();
-    }
-
-    /// Whether the WS event stream is connected.
-    pub fn ws_connected(&self) -> bool {
-        self.ws_connected.load(Ordering::Relaxed)
     }
 
     /// Run background tasks. Blocks until shutdown.
@@ -150,13 +135,20 @@ impl OmsRunner {
 
     /// Reconcile the startup session on a configurable interval.
     ///
-    /// When WS is enabled, the interval adapts:
-    /// - WS connected: 5 minutes (safety-net audit)
-    /// - WS disconnected: 5 seconds (aggressive catch-up)
+    /// When WS is enabled, reconciliation is disabled entirely — the WS event
+    /// ingester handles all live state updates. Recovery on startup handles
+    /// the cold-start gap.
     ///
-    /// Without WS, uses the configured `reconcile_interval`.
+    /// Without WS (REST-only mode), uses the configured `reconcile_interval`.
     async fn auto_reconcile_loop(&self) {
-        let base_interval = match self.reconcile_interval {
+        // WS mode: no reconciliation — WS handles the live path
+        if self.event_stream.is_some() {
+            info!("WS enabled — reconciliation disabled");
+            std::future::pending::<()>().await;
+            return;
+        }
+
+        let interval = match self.reconcile_interval {
             Some(d) if d > Duration::ZERO => d,
             _ => {
                 // Disabled -- park forever
@@ -165,24 +157,11 @@ impl OmsRunner {
             }
         };
 
-        let has_ws = self.event_stream.is_some();
-
         loop {
-            let interval = if has_ws {
-                if self.ws_connected.load(Ordering::Relaxed) {
-                    WS_UP_RECONCILE_INTERVAL
-                } else {
-                    WS_DOWN_RECONCILE_INTERVAL
-                }
-            } else {
-                base_interval
-            };
-
             tokio::time::sleep(interval).await;
 
             info!(
                 session_id = self.startup_session_id,
-                ws_connected = self.ws_connected.load(Ordering::Relaxed),
                 interval_secs = interval.as_secs(),
                 "auto-reconcile starting"
             );
@@ -213,28 +192,12 @@ impl OmsRunner {
         let rx = event_stream.subscribe();
         let ingester = EventIngester::new(
             self.oms.pool.clone(),
-            self.startup_session_id,
             self.oms.metrics.clone(),
             self.oms.audit.clone(),
         );
 
-        // Share the ws_connected flag directly — EventIngester sets it,
-        // auto_reconcile_loop reads it for adaptive interval.
-        let shared_connected = self.ws_connected.clone();
-        // Replace the ingester's default ws_connected with our shared one.
-        // EventIngester::ws_connected is pub Arc<AtomicBool>.
-        // We need to wire them together — simplest is to monitor and mirror.
-        let ingester_flag = ingester.ws_connected.clone();
-        let mirror_task = tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                shared_connected.store(ingester_flag.load(Ordering::Relaxed), Ordering::Relaxed);
-            }
-        });
-
         info!("WS event ingester started");
         let result = ingester.run(rx).await;
-        mirror_task.abort();
 
         info!(
             events_processed = result.events_processed,
