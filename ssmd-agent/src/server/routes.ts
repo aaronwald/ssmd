@@ -53,6 +53,7 @@ import {
   llmUsageDaily,
   dataAccessLog,
   apiRequestLog,
+  getRawSql,
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
@@ -2545,6 +2546,285 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
     headers: { "Content-Type": "application/json" },
   });
 }, true, "llm:chat");
+
+// ============================================================
+// Harman Admin Routes — sessions, orders, fills, audit, timeline
+// All require admin:read scope. Uses raw SQL (postgres.js) for
+// harman tables not in the drizzle schema.
+// ============================================================
+
+route("GET", "/v1/harman/sessions", async (_req, _ctx) => {
+  const rawSql = getRawSql();
+  const rows = await rawSql`
+    SELECT s.id, s.exchange, s.environment, s.api_key_prefix, s.display_name,
+           s.max_notional, s.suspended, s.created_at,
+           COALESCE(o.open_count, 0)::int as open_order_count,
+           COALESCE(o.open_notional, 0) as open_notional,
+           COALESCE(f.total_fills, 0)::int as total_fills,
+           COALESCE(st.total_settlements, 0)::int as total_settlements,
+           COALESCE(a.last_activity, s.created_at) as last_activity
+    FROM sessions s
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*) FILTER (WHERE state NOT IN ('filled','cancelled','rejected','expired')) as open_count,
+             COALESCE(SUM(price_dollars * (quantity - filled_quantity))
+               FILTER (WHERE state NOT IN ('filled','cancelled','rejected','expired')), 0) as open_notional
+      FROM prediction_orders WHERE session_id = s.id
+    ) o ON true
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*) as total_fills FROM fills fi
+      JOIN prediction_orders po ON fi.order_id = po.id WHERE po.session_id = s.id
+    ) f ON true
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*) as total_settlements FROM settlements WHERE session_id = s.id
+    ) st ON true
+    LEFT JOIN LATERAL (
+      SELECT MAX(created_at) as last_activity FROM prediction_orders WHERE session_id = s.id
+    ) a ON true
+    ORDER BY s.id
+  `;
+  return json({ sessions: rows });
+}, true, "admin:read");
+
+route("GET", "/v1/harman/sessions/:id/orders", async (req, _ctx) => {
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const sessionId = parseInt(params.id);
+  if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
+
+  const url = new URL(req.url);
+  const state = url.searchParams.get("state");
+  const ticker = url.searchParams.get("ticker");
+  const since = url.searchParams.get("since");
+  const until = url.searchParams.get("until");
+  const limit = Math.min(Math.max(
+    url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
+
+  const rawSql = getRawSql();
+  const rows = await rawSql`
+    SELECT id, client_order_id, exchange_order_id, ticker, side, action,
+           quantity, price_dollars, filled_quantity, state, cancel_reason,
+           created_at, updated_at
+    FROM prediction_orders
+    WHERE session_id = ${sessionId}
+    ${state ? rawSql`AND state = ${state}` : rawSql``}
+    ${ticker ? rawSql`AND ticker ILIKE ${'%' + ticker + '%'}` : rawSql``}
+    ${since ? rawSql`AND created_at >= ${since}` : rawSql``}
+    ${until ? rawSql`AND created_at <= ${until}` : rawSql``}
+    ORDER BY created_at DESC
+    LIMIT ${limit}
+  `;
+  return json({ orders: rows });
+}, true, "admin:read");
+
+route("GET", "/v1/harman/sessions/:id/fills", async (req, _ctx) => {
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const sessionId = parseInt(params.id);
+  if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
+
+  const url = new URL(req.url);
+  const ticker = url.searchParams.get("ticker");
+  const since = url.searchParams.get("since");
+  const until = url.searchParams.get("until");
+  const limit = Math.min(Math.max(
+    url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
+
+  const rawSql = getRawSql();
+  const rows = await rawSql`
+    SELECT f.id, f.order_id, f.trade_id, po.ticker, f.price_dollars,
+           f.quantity, f.is_taker, f.filled_at, f.created_at
+    FROM fills f
+    JOIN prediction_orders po ON f.order_id = po.id
+    WHERE po.session_id = ${sessionId}
+    ${ticker ? rawSql`AND po.ticker ILIKE ${'%' + ticker + '%'}` : rawSql``}
+    ${since ? rawSql`AND f.filled_at >= ${since}` : rawSql``}
+    ${until ? rawSql`AND f.filled_at <= ${until}` : rawSql``}
+    ORDER BY f.filled_at DESC
+    LIMIT ${limit}
+  `;
+  return json({ fills: rows });
+}, true, "admin:read");
+
+route("GET", "/v1/harman/sessions/:id/settlements", async (req, _ctx) => {
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const sessionId = parseInt(params.id);
+  if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
+
+  const url = new URL(req.url);
+  const ticker = url.searchParams.get("ticker");
+  const since = url.searchParams.get("since");
+  const until = url.searchParams.get("until");
+
+  const rawSql = getRawSql();
+  const rows = await rawSql`
+    SELECT id, ticker, result, payout_dollars, created_at
+    FROM settlements
+    WHERE session_id = ${sessionId}
+    ${ticker ? rawSql`AND ticker ILIKE ${'%' + ticker + '%'}` : rawSql``}
+    ${since ? rawSql`AND created_at >= ${since}` : rawSql``}
+    ${until ? rawSql`AND created_at <= ${until}` : rawSql``}
+    ORDER BY created_at DESC
+  `;
+  return json({ settlements: rows });
+}, true, "admin:read");
+
+route("GET", "/v1/harman/sessions/:id/audit", async (req, _ctx) => {
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const sessionId = parseInt(params.id);
+  if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
+
+  const url = new URL(req.url);
+  const orderId = url.searchParams.get("order_id") ? parseInt(url.searchParams.get("order_id")!) : null;
+  const actor = url.searchParams.get("actor");
+  const since = url.searchParams.get("since");
+  const until = url.searchParams.get("until");
+  const limit = Math.min(Math.max(
+    url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
+
+  const rawSql = getRawSql();
+  const rows = await rawSql`
+    SELECT al.id, al.order_id, al.from_state, al.to_state, al.event, al.actor,
+           al.details, al.created_at
+    FROM audit_log al
+    JOIN prediction_orders po ON al.order_id = po.id
+    WHERE po.session_id = ${sessionId}
+    ${orderId ? rawSql`AND al.order_id = ${orderId}` : rawSql``}
+    ${actor ? rawSql`AND al.actor = ${actor}` : rawSql``}
+    ${since ? rawSql`AND al.created_at >= ${since}` : rawSql``}
+    ${until ? rawSql`AND al.created_at <= ${until}` : rawSql``}
+    ORDER BY al.created_at DESC
+    LIMIT ${limit}
+  `;
+  return json({ entries: rows });
+}, true, "admin:read");
+
+route("GET", "/v1/harman/sessions/:id/exchange-audit", async (req, _ctx) => {
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const sessionId = parseInt(params.id);
+  if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
+
+  const url = new URL(req.url);
+  const orderId = url.searchParams.get("order_id") ? parseInt(url.searchParams.get("order_id")!) : null;
+  const category = url.searchParams.get("category");
+  const action = url.searchParams.get("action");
+  const outcome = url.searchParams.get("outcome");
+  const since = url.searchParams.get("since");
+  const until = url.searchParams.get("until");
+  const limit = Math.min(Math.max(
+    url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
+
+  const rawSql = getRawSql();
+  const rows = await rawSql`
+    SELECT id, order_id, category, action, endpoint, status_code, duration_ms,
+           request, response, outcome, error_msg, metadata, created_at
+    FROM exchange_audit_log
+    WHERE session_id = ${sessionId}
+    ${orderId ? rawSql`AND order_id = ${orderId}` : rawSql``}
+    ${category ? rawSql`AND category = ${category}` : rawSql``}
+    ${action ? rawSql`AND action = ${action}` : rawSql``}
+    ${outcome ? rawSql`AND outcome = ${outcome}` : rawSql``}
+    ${since ? rawSql`AND created_at >= ${since}` : rawSql``}
+    ${until ? rawSql`AND created_at <= ${until}` : rawSql``}
+    ORDER BY created_at DESC
+    LIMIT ${limit}
+  `;
+  return json({ entries: rows });
+}, true, "admin:read");
+
+route("GET", "/v1/harman/sessions/:id/risk", async (req, _ctx) => {
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const sessionId = parseInt(params.id);
+  if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
+
+  const rawSql = getRawSql();
+  const sessions = await rawSql`SELECT max_notional FROM sessions WHERE id = ${sessionId}`;
+  if (sessions.length === 0) return json({ error: "Session not found" }, 404);
+  const maxNotional = parseFloat(sessions[0].max_notional) || 0;
+
+  const riskRows = await rawSql`
+    SELECT COUNT(*)::int as open_orders,
+           COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional
+    FROM prediction_orders
+    WHERE session_id = ${sessionId}
+      AND state NOT IN ('filled','cancelled','rejected','expired')
+  `;
+  const openOrders = riskRows[0].open_orders;
+  const openNotional = parseFloat(riskRows[0].open_notional) || 0;
+
+  return json({
+    risk: {
+      session_id: sessionId,
+      open_orders: openOrders,
+      open_notional: openNotional,
+      max_notional: maxNotional,
+      available: maxNotional - openNotional,
+    },
+  });
+}, true, "admin:read");
+
+route("GET", "/v1/harman/orders/:id/timeline", async (req, _ctx) => {
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const orderId = parseInt(params.id);
+  if (isNaN(orderId)) return json({ error: "Invalid order ID" }, 400);
+
+  const rawSql = getRawSql();
+
+  // 1. Fetch order
+  const orders = await rawSql`
+    SELECT id, client_order_id, exchange_order_id, session_id, ticker, side, action,
+           quantity, price_dollars, filled_quantity, state, cancel_reason,
+           created_at, updated_at
+    FROM prediction_orders WHERE id = ${orderId}
+  `;
+  if (orders.length === 0) return json({ error: "Order not found" }, 404);
+  const order = orders[0];
+
+  // 2. Fetch state transitions from audit_log
+  const stateChanges = await rawSql`
+    SELECT created_at as ts, 'state_change' as type, from_state, to_state,
+           event, actor, details
+    FROM audit_log WHERE order_id = ${orderId}
+    ORDER BY created_at
+  `;
+
+  // 3. Fetch exchange interactions from exchange_audit_log
+  const exchangeCalls = await rawSql`
+    SELECT created_at as ts, category as type, action, endpoint,
+           status_code, duration_ms, request, response, outcome, error_msg, metadata
+    FROM exchange_audit_log WHERE order_id = ${orderId}
+    ORDER BY created_at
+  `;
+
+  // 4. Fetch fills
+  const fills = await rawSql`
+    SELECT id, trade_id, price_dollars, quantity, is_taker, filled_at, created_at
+    FROM fills WHERE order_id = ${orderId}
+    ORDER BY filled_at
+  `;
+
+  // 5. Fetch settlement (if ticker matches)
+  const settlements = await rawSql`
+    SELECT id, ticker, result, payout_dollars, created_at
+    FROM settlements
+    WHERE session_id = ${order.session_id} AND ticker = ${order.ticker}
+  `;
+
+  // 6. Merge into unified timeline sorted by timestamp
+  // deno-lint-ignore no-explicit-any
+  const timeline: any[] = [
+    ...stateChanges,
+    ...exchangeCalls,
+    // deno-lint-ignore no-explicit-any
+    ...fills.map((f: any) => ({ ts: f.filled_at, type: "fill", ...f })),
+  ];
+  // deno-lint-ignore no-explicit-any
+  timeline.sort((a: any, b: any) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+
+  return json({
+    order,
+    timeline,
+    fills,
+    settlement: settlements[0] ?? null,
+  });
+}, true, "admin:read");
 
 // Helper to create JSON response
 function json(data: unknown, status = 200): Response {
