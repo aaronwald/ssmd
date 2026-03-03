@@ -322,6 +322,16 @@ async fn compare_positions(
             any_large = true;
         }
 
+        oms.audit.reconciliation(
+            session_id, None, "position_mismatch", severity,
+            Some(serde_json::json!({
+                "ticker": ticker,
+                "local_quantity": local_qty.to_string(),
+                "exchange_quantity": exchange_qty.to_string(),
+                "diff": diff.to_string(),
+            })),
+        );
+
         mismatches.push(PositionMismatch {
             ticker: ticker.clone(),
             local_quantity: local_qty.to_string(),
@@ -372,6 +382,7 @@ async fn resolve_stale_orders(
         );
 
         // Prefer get_order_by_exchange_id when the exchange order ID is known
+        let start = std::time::Instant::now();
         let exchange_result = if let Some(eid) = &order.exchange_order_id {
             oms.exchange.get_order_by_exchange_id(eid).await
         } else {
@@ -379,8 +390,16 @@ async fn resolve_stale_orders(
                 .get_order_by_client_id(order.client_order_id)
                 .await
         };
+        let get_order_ms = start.elapsed().as_millis() as i32;
         match exchange_result {
             Ok(exchange_status) => {
+                oms.audit.rest_call(
+                    session_id, Some(order.id), "get_order",
+                    "GET /trade-api/v2/portfolio/orders",
+                    Some(200), Some(get_order_ms), None,
+                    Some(serde_json::json!({"exchange_state": format!("{:?}", exchange_status.status)})),
+                    "success", None,
+                );
                 let new_state =
                     match state::resolve_exchange_state(&order.state, &exchange_status.status) {
                         Some(s) => Some(s),
@@ -451,15 +470,11 @@ async fn resolve_stale_orders(
                 }
             }
             Err(ref e) if e.is_not_found() => {
-                // Single-order GET returned 404 — fall back to contextual data.
-                //
-                // The demo API's GET /portfolio/orders/{id} returns 404 for settled/cancelled
-                // orders, so we use settlement data to infer the order's final state.
-                //
-                // Check both:
-                // 1. settled_tickers: exact market ticker match (had position in this market)
-                // 2. settled_events: event-level match (any sibling market settled → whole event settled)
-                //    Handles unfilled orders where no settlement record exists for the exact ticker.
+                oms.audit.rest_call(
+                    session_id, Some(order.id), "get_order",
+                    "GET /trade-api/v2/portfolio/orders",
+                    Some(404), Some(get_order_ms), None, None, "not_found", None,
+                );
                 let ticker_settled = settled_tickers.contains(&order.ticker);
                 let event_settled = settled_events.iter().any(|event| {
                     order.ticker.starts_with(event.as_str())
@@ -467,7 +482,11 @@ async fn resolve_stale_orders(
                 });
 
                 if ticker_settled || event_settled {
-                    // Market/event settled → exchange auto-cancelled resting orders at settlement.
+                    let fallback = if ticker_settled { "notfound_settled_tickers" } else { "notfound_settled_events" };
+                    oms.audit.fallback(
+                        session_id, order.id, fallback, "success",
+                        Some(serde_json::json!({"ticker": &order.ticker, "ticker_settled": ticker_settled, "event_settled": event_settled})),
+                    );
                     let cancel_reason = harman::types::CancelReason::Expired;
                     info!(
                         order_id = order.id,
@@ -496,11 +515,12 @@ async fn resolve_stale_orders(
                         count += 1;
                     }
                 } else {
-                    // No settlement data — check market status directly.
-                    // If the market is no longer active (closed/settled), the exchange
-                    // auto-cancelled resting orders at market close.
                     match oms.exchange.is_market_active(&order.ticker).await {
                         Ok(false) => {
+                            oms.audit.fallback(
+                                session_id, order.id, "notfound_market_status", "success",
+                                Some(serde_json::json!({"ticker": &order.ticker, "market_active": false})),
+                            );
                             let cancel_reason = harman::types::CancelReason::Expired;
                             info!(
                                 order_id = order.id,
@@ -528,7 +548,10 @@ async fn resolve_stale_orders(
                             }
                         }
                         Ok(true) => {
-                            // Market still active but order not found — genuinely ambiguous.
+                            oms.audit.fallback(
+                                session_id, order.id, "notfound_market_status", "error",
+                                Some(serde_json::json!({"ticker": &order.ticker, "market_active": true})),
+                            );
                             warn!(
                                 order_id = order.id,
                                 state = %order.state,
@@ -548,6 +571,11 @@ async fn resolve_stale_orders(
                 }
             }
             Err(e) => {
+                oms.audit.rest_call(
+                    session_id, Some(order.id), "get_order",
+                    "GET /trade-api/v2/portfolio/orders",
+                    None, Some(get_order_ms), None, None, "error", Some(e.to_string()),
+                );
                 warn!(
                     error = %e,
                     order_id = order.id,

@@ -37,6 +37,13 @@ pub async fn run(oms: &Oms, session_id: i64) -> Result<(), String> {
 
     // 6. Rebuild risk state (just log it, the real check happens per-order)
     let risk_state = db::compute_risk_state(&oms.pool, session_id).await?;
+    oms.audit.risk(
+        session_id, "risk_state_rebuilt", "success",
+        Some(serde_json::json!({
+            "open_notional": risk_state.open_notional.to_string(),
+            "max_notional": oms.ems.risk_limits.max_notional.to_string(),
+        })),
+    );
     info!(
         open_notional = %risk_state.open_notional,
         max_notional = %oms.ems.risk_limits.max_notional,
@@ -62,10 +69,7 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
     info!(count = ambiguous.len(), "recovering ambiguous orders");
 
     for order in &ambiguous {
-        // Prefer get_order_by_exchange_id when the exchange order ID is known
-        // (more reliable direct lookup vs list-based client_order_id search).
-        // Fall back to get_order_by_client_id for Submitted orders where the
-        // POST response was lost and exchange_order_id is None.
+        let start = std::time::Instant::now();
         let exchange_result = if let Some(eid) = &order.exchange_order_id {
             oms.exchange.get_order_by_exchange_id(eid).await
         } else {
@@ -73,8 +77,16 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                 .get_order_by_client_id(order.client_order_id)
                 .await
         };
+        let duration_ms = start.elapsed().as_millis() as i32;
         match exchange_result {
             Ok(exchange_status) => {
+                oms.audit.rest_call(
+                    session_id, Some(order.id), "get_order",
+                    "GET /trade-api/v2/portfolio/orders",
+                    Some(200), Some(duration_ms), None,
+                    Some(serde_json::json!({"exchange_state": format!("{:?}", exchange_status.status)})),
+                    "success", None,
+                );
                 // Use shared resolution logic
                 let new_state = match state::resolve_exchange_state(&order.state, &exchange_status.status) {
                     Some(s) => {
@@ -158,9 +170,11 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                 }
             }
             Err(ref e) if e.is_not_found() => {
-                // NotFound is ambiguous — could mean order aged out of API, endpoint
-                // is wrong, or auth failed. Do NOT auto-resolve any state.
-                // Pile-up of unresolved orders is a visible signal that something's broken.
+                oms.audit.rest_call(
+                    session_id, Some(order.id), "get_order",
+                    "GET /trade-api/v2/portfolio/orders",
+                    Some(404), Some(duration_ms), None, None, "not_found", None,
+                );
                 warn!(
                     order_id = order.id,
                     state = %order.state,
@@ -168,6 +182,12 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                 );
             }
             Err(ExchangeError::Connection(_) | ExchangeError::Timeout { .. }) => {
+                oms.audit.rest_call(
+                    session_id, Some(order.id), "get_order",
+                    "GET /trade-api/v2/portfolio/orders",
+                    None, Some(duration_ms), None, None, "error",
+                    Some("exchange unreachable".to_string()),
+                );
                 error!(
                     order_id = order.id,
                     "exchange unreachable during recovery, cannot resolve - exiting"
@@ -175,6 +195,11 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                 return Err("exchange unreachable during recovery".to_string());
             }
             Err(e) => {
+                oms.audit.rest_call(
+                    session_id, Some(order.id), "get_order",
+                    "GET /trade-api/v2/portfolio/orders",
+                    None, Some(duration_ms), None, None, "error", Some(e.to_string()),
+                );
                 error!(
                     error = %e,
                     order_id = order.id,

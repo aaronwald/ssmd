@@ -12,6 +12,7 @@ use deadpool_postgres::Pool;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
+use harman::audit::AuditSender;
 use harman::db;
 use harman::exchange::ExchangeEvent;
 use harman::fill_processor;
@@ -25,6 +26,7 @@ pub struct EventIngester {
     pool: Pool,
     session_id: i64,
     metrics: Arc<OmsMetrics>,
+    audit: AuditSender,
     /// Set to true when WS is connected, false on disconnect.
     pub ws_connected: Arc<AtomicBool>,
 }
@@ -38,11 +40,12 @@ pub struct IngestResult {
 }
 
 impl EventIngester {
-    pub fn new(pool: Pool, session_id: i64, metrics: Arc<OmsMetrics>) -> Self {
+    pub fn new(pool: Pool, session_id: i64, metrics: Arc<OmsMetrics>, audit: AuditSender) -> Self {
         Self {
             pool,
             session_id,
             metrics,
+            audit,
             ws_connected: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -91,6 +94,19 @@ impl EventIngester {
                 filled_at,
                 client_order_id,
             } => {
+                self.audit.ws_event(
+                    self.session_id,
+                    None,
+                    "fill",
+                    Some(serde_json::json!({
+                        "trade_id": trade_id,
+                        "exchange_order_id": exchange_order_id,
+                        "ticker": ticker,
+                        "price_dollars": price_dollars.to_string(),
+                        "quantity": quantity.to_string(),
+                    })),
+                    None,
+                );
                 let fill = ExchangeFill {
                     trade_id,
                     order_id: exchange_order_id,
@@ -150,6 +166,18 @@ impl EventIngester {
                 remaining_quantity: _,
                 close_cancel_count,
             } => {
+                self.audit.ws_event(
+                    self.session_id,
+                    None,
+                    "order_update",
+                    Some(serde_json::json!({
+                        "exchange_order_id": exchange_order_id,
+                        "ticker": ticker,
+                        "status": format!("{:?}", status),
+                        "filled_quantity": filled_quantity.to_string(),
+                    })),
+                    None,
+                );
                 // Look up the order by exchange_order_id
                 match db::find_order_by_exchange_id(
                     &self.pool,
@@ -263,16 +291,26 @@ impl EventIngester {
             }
 
             ExchangeEvent::PositionUpdate { .. } => {
-                // Position updates are informational for now.
-                // Phase 5 will add in-memory position cache.
+                self.audit.ws_event(self.session_id, None, "position_update", None, None);
                 debug!("WS: position update (informational)");
             }
 
             ExchangeEvent::MarketSettled {
-                ticker,
-                result: market_result,
+                ref ticker,
+                result: ref market_result,
                 settled_time,
             } => {
+                self.audit.ws_event(
+                    self.session_id,
+                    None,
+                    "market_settled",
+                    Some(serde_json::json!({
+                        "ticker": ticker,
+                        "market_result": format!("{:?}", market_result),
+                        "settled_time": settled_time.to_rfc3339(),
+                    })),
+                    None,
+                );
                 // WS market_lifecycle_v2 only provides ticker/result/time — not the P&L
                 // fields (event_ticker, yes_count, no_count, revenue_cents, etc.) needed
                 // to record a full settlement. REST reconciliation handles that.
@@ -289,11 +327,16 @@ impl EventIngester {
             }
 
             ExchangeEvent::Connected => {
+                self.audit.ws_event(self.session_id, None, "connected", None, None);
                 info!("WS: connected");
                 self.ws_connected.store(true, Ordering::Relaxed);
             }
 
             ExchangeEvent::Disconnected { reason } => {
+                self.audit.ws_event(
+                    self.session_id, None, "disconnected", None,
+                    Some(serde_json::json!({"reason": reason})),
+                );
                 warn!(reason = %reason, "WS: disconnected");
                 self.ws_connected.store(false, Ordering::Relaxed);
             }

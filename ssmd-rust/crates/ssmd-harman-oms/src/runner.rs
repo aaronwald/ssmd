@@ -215,6 +215,7 @@ impl OmsRunner {
             self.oms.pool.clone(),
             self.startup_session_id,
             self.oms.metrics.clone(),
+            self.oms.audit.clone(),
         );
 
         // Share the ws_connected flag directly — EventIngester sets it,
