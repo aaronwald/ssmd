@@ -77,7 +77,7 @@ export function InstanceBadge() {
         onClick={() => setOpen(!open)}
         className={`text-xs font-mono px-2 py-0.5 rounded-full border ${envColor}`}
       >
-        {current.exchange} ({current.environment}) ▾
+        {current.id} ▾
       </button>
       {open && (
         <div className="absolute top-full left-0 mt-1 bg-bg-raised border border-border rounded shadow-lg z-50 min-w-[200px]">
@@ -94,7 +94,7 @@ export function InstanceBadge() {
                   : "text-fg-muted"
               }`}
             >
-              {inst.exchange} ({inst.environment})
+              {inst.id}
               {!inst.healthy && (
                 <span className="text-red-400 ml-2">offline</span>
               )}
