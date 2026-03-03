@@ -51,19 +51,22 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
     };
 
     // Discover settlements first (needed for position comparison and cancel reason inference)
-    let settled_tickers = match discover_settlements(oms, session_id).await {
+    let (settled_tickers, settled_events) = match discover_settlements(oms, session_id).await {
         Ok(count) => {
             result.settlements_discovered = count;
             if count > 0 {
                 oms.metrics.reconciliation_settlements_discovered.inc_by(count);
             }
-            // Load the full set of settled tickers for downstream use
-            db::get_settled_tickers(&oms.pool, session_id).await.unwrap_or_default()
+            // Load settled tickers (market-level) for position comparison,
+            // and settled events (event-level) for NotFound order resolution.
+            let tickers = db::get_settled_tickers(&oms.pool, session_id).await.unwrap_or_default();
+            let events = db::get_settled_event_tickers(&oms.pool, session_id).await.unwrap_or_default();
+            (tickers, events)
         }
         Err(e) => {
             error!(error = %e, "settlement discovery failed");
             result.errors.push(format!("settlement discovery: {}", e));
-            std::collections::HashSet::new()
+            (std::collections::HashSet::new(), std::collections::HashSet::new())
         }
     };
 
@@ -90,7 +93,7 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
         }
     }
 
-    match resolve_stale_orders(oms, session_id, &settled_tickers).await {
+    match resolve_stale_orders(oms, session_id, &settled_tickers, &settled_events).await {
         Ok(count) => result.orders_resolved = count,
         Err(e) => {
             error!(error = %e, "stale order resolution failed");
@@ -345,6 +348,7 @@ async fn resolve_stale_orders(
     oms: &Oms,
     session_id: i64,
     settled_tickers: &HashSet<String>,
+    settled_events: &HashSet<String>,
 ) -> Result<u64, String> {
     let ambiguous = db::get_ambiguous_orders(&oms.pool, session_id).await?;
 
@@ -450,10 +454,20 @@ async fn resolve_stale_orders(
                 // Single-order GET returned 404 — fall back to contextual data.
                 //
                 // The demo API's GET /portfolio/orders/{id} returns 404 for settled/cancelled
-                // orders, so we use settled_tickers (from settlement discovery) to infer the
-                // order's final state when the direct endpoint fails.
-                if settled_tickers.contains(&order.ticker) {
-                    // Market settled → exchange auto-cancelled resting orders at settlement.
+                // orders, so we use settlement data to infer the order's final state.
+                //
+                // Check both:
+                // 1. settled_tickers: exact market ticker match (had position in this market)
+                // 2. settled_events: event-level match (any sibling market settled → whole event settled)
+                //    Handles unfilled orders where no settlement record exists for the exact ticker.
+                let ticker_settled = settled_tickers.contains(&order.ticker);
+                let event_settled = settled_events.iter().any(|event| {
+                    order.ticker.starts_with(event.as_str())
+                        && order.ticker[event.len()..].starts_with('-')
+                });
+
+                if ticker_settled || event_settled {
+                    // Market/event settled → exchange auto-cancelled resting orders at settlement.
                     let cancel_reason = harman::types::CancelReason::Expired;
                     info!(
                         order_id = order.id,
@@ -461,7 +475,9 @@ async fn resolve_stale_orders(
                         from = %order.state,
                         to = %OrderState::Cancelled,
                         cancel_reason = ?cancel_reason,
-                        "reconciliation: order not found but ticker settled, resolving as expired"
+                        ticker_settled,
+                        event_settled,
+                        "reconciliation: order not found but event settled, resolving as expired"
                     );
                     if let Err(e) = db::update_order_state(
                         &oms.pool,
@@ -485,7 +501,7 @@ async fn resolve_stale_orders(
                         order_id = order.id,
                         state = %order.state,
                         ticker = %order.ticker,
-                        "reconciliation: order not found on exchange and ticker not settled, leaving for review"
+                        "reconciliation: order not found on exchange and event not settled, leaving for review"
                     );
                 }
             }

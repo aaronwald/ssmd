@@ -2459,6 +2459,31 @@ pub async fn get_settled_tickers(
     Ok(rows.iter().map(|r| r.get("ticker")).collect())
 }
 
+/// Get all event tickers that have settlement records for a session.
+///
+/// Unlike `get_settled_tickers` which returns market-level tickers (where positions existed),
+/// this returns event-level tickers. Useful for determining if a market settled even when
+/// the user had no position in that specific market (e.g., unfilled resting orders).
+pub async fn get_settled_event_tickers(
+    pool: &Pool,
+    session_id: i64,
+) -> Result<std::collections::HashSet<String>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT DISTINCT event_ticker FROM settlements WHERE session_id = $1",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| format!("get_settled_event_tickers: {}", e))?;
+
+    Ok(rows.iter().map(|r| r.get("event_ticker")).collect())
+}
+
 /// List all settlements for a session.
 pub async fn list_settlements(
     pool: &Pool,
