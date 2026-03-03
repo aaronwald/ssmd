@@ -49,6 +49,12 @@ pub struct BalanceResponse {
 }
 
 #[derive(Serialize)]
+pub struct SettlementsResponse {
+    pub settlements: Vec<serde_json::Value>,
+    pub cursor: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct AmendResponse {
     pub old_order: Order,
     pub order: Order,
@@ -199,5 +205,12 @@ pub async fn get_balance(State(state): State<AppState>) -> Json<BalanceResponse>
     Json(BalanceResponse {
         balance: state.balance,
         payout: 0,
+    })
+}
+
+pub async fn list_settlements() -> Json<SettlementsResponse> {
+    Json(SettlementsResponse {
+        settlements: vec![],
+        cursor: None,
     })
 }

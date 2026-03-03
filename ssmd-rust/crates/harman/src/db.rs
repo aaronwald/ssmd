@@ -2325,8 +2325,8 @@ pub async fn list_settlements(
     let rows = client
         .query(
             "SELECT id, session_id, ticker, event_ticker, market_result, yes_count, no_count, \
-                    revenue_dollars, settled_time::text as settled_time, fee_cost_dollars, value_dollars, \
-                    created_at::text as created_at \
+                    revenue_dollars, settled_time, fee_cost_dollars, value_dollars, \
+                    created_at \
              FROM settlements WHERE session_id = $1 ORDER BY settled_time DESC",
             &[&session_id],
         )
@@ -2336,8 +2336,6 @@ pub async fn list_settlements(
     let mut settlements = Vec::with_capacity(rows.len());
     for row in &rows {
         let market_result_str: &str = row.get("market_result");
-        let settled_time_str: &str = row.get("settled_time");
-        let created_at_str: &str = row.get("created_at");
 
         settlements.push(Settlement {
             id: row.get("id"),
@@ -2348,16 +2346,10 @@ pub async fn list_settlements(
             yes_count: row.get("yes_count"),
             no_count: row.get("no_count"),
             revenue_dollars: row.get("revenue_dollars"),
-            settled_time: chrono::DateTime::parse_from_str(settled_time_str, "%Y-%m-%d %H:%M:%S%.f%z")
-                .or_else(|_| chrono::DateTime::parse_from_rfc3339(settled_time_str))
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now()),
+            settled_time: row.get("settled_time"),
             fee_cost_dollars: row.get("fee_cost_dollars"),
             value_dollars: row.get("value_dollars"),
-            created_at: chrono::DateTime::parse_from_str(created_at_str, "%Y-%m-%d %H:%M:%S%.f%z")
-                .or_else(|_| chrono::DateTime::parse_from_rfc3339(created_at_str))
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now()),
+            created_at: row.get("created_at"),
         });
     }
 

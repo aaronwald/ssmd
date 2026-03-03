@@ -730,7 +730,14 @@ impl ExchangeAdapter for KalshiClient {
             all_settlements.extend(settlements_resp.settlements.into_iter().map(|s| {
                 let settled_time = DateTime::parse_from_rfc3339(&s.settled_time)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now());
+                    .or_else(|_| {
+                        chrono::NaiveDateTime::parse_from_str(&s.settled_time, "%Y-%m-%dT%H:%M:%S")
+                            .map(|ndt| ndt.and_utc())
+                    })
+                    .unwrap_or_else(|e| {
+                        warn!(ticker = %s.ticker, raw = %s.settled_time, error = %e, "failed to parse settled_time, using now()");
+                        chrono::Utc::now()
+                    });
 
                 let market_result = match s.market_result.as_str() {
                     "yes" => MarketResult::Yes,

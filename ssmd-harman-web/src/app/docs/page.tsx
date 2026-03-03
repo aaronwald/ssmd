@@ -900,6 +900,31 @@ export default function DocsPage() {
             curl={`curl -X POST $HARMAN_URL/v1/admin/cache/invalidate \\
   -H "Authorization: Bearer $HARMAN_TOKEN"`}
           />
+          <Endpoint
+            method="GET"
+            path="/v1/admin/settlements"
+            scope="harman:admin"
+            description="List all settlement records for the current session. Shows market settlement outcomes, revenue, and fees for settled contracts."
+            response={`{
+  "settlements": [
+    {
+      "id": 1,
+      "session_id": 26,
+      "ticker": "KXBTCD-26MAR0200-B96749.99",
+      "event_ticker": "KXBTCD-26MAR0200",
+      "market_result": "no",
+      "yes_count": "0",
+      "no_count": "0",
+      "revenue_dollars": "0.00",
+      "settled_time": "2026-03-02T02:00:00Z",
+      "fee_cost_dollars": "0.00",
+      "value_dollars": "0"
+    }
+  ]
+}`}
+            curl={`curl $HARMAN_URL/v1/admin/settlements \\
+  -H "Authorization: Bearer $HARMAN_TOKEN"`}
+          />
         </Section>
 
         {/* ============================================================= */}

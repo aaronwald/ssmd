@@ -69,6 +69,10 @@ async fn main() {
             "/trade-api/v2/portfolio/balance",
             get(routes::get_balance),
         )
+        .route(
+            "/trade-api/v2/portfolio/settlements",
+            get(routes::list_settlements),
+        )
         .route("/health", get(routes::health))
         .with_state(state);
 
