@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import type { MonitorMarket } from "@/lib/types";
-import { useInfo } from "@/lib/hooks";
+import { useInstance } from "@/lib/instance-context";
 import { CreateOrderFormControlled } from "./create-order-form-controlled";
 
 const EXCHANGE_LABELS: Record<string, string> = {
@@ -18,16 +19,21 @@ interface Props {
 }
 
 export function MarketSlideOver({ market, onClose }: Props) {
-  const { data: info } = useInfo();
+  const { instances } = useInstance();
   const bid = market.yes_bid ?? market.bid ?? market.best_bid ?? null;
   const ask = market.yes_ask ?? market.ask ?? market.best_ask ?? null;
   const last = market.last ?? (market.price != null ? Number(market.price) : null);
   const fmtPrice = (v: number | null) => v != null ? `$${v.toFixed(2)}` : "—";
 
   const marketExchange = market.exchange || "kalshi";
-  const instanceExchange = info?.exchange || "kalshi";
-  // Allow ordering if exchanges match, or if instance is "test" (test-exchange accepts any ticker)
-  const canOrder = instanceExchange === marketExchange || instanceExchange === "test";
+  // Filter to compatible instances (same exchange or test)
+  const compatible = instances.filter(
+    (i) => i.healthy && (i.exchange === marketExchange || i.exchange === "test")
+  );
+  const [selectedInstance, setSelectedInstance] = useState<string>(
+    compatible[0]?.id ?? ""
+  );
+  const canOrder = compatible.length > 0;
 
   return (
     <>
@@ -86,11 +92,26 @@ export function MarketSlideOver({ market, onClose }: Props) {
           {canOrder ? (
             <>
               <h3 className="text-sm font-medium text-fg mb-3">Place Order</h3>
+              {compatible.length > 1 && (
+                <div className="mb-3">
+                  <label className="block text-xs text-fg-muted mb-1">Instance</label>
+                  <select
+                    value={selectedInstance}
+                    onChange={(e) => setSelectedInstance(e.target.value)}
+                    className="w-full rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm text-fg focus:border-accent focus:outline-none"
+                  >
+                    {compatible.map((inst) => (
+                      <option key={inst.id} value={inst.id}>{inst.id}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <CreateOrderFormControlled
                 ticker={market.ticker}
                 yesBid={bid}
                 yesAsk={ask}
                 last={last}
+                instanceId={selectedInstance}
                 onSuccess={onClose}
               />
             </>
@@ -100,7 +121,7 @@ export function MarketSlideOver({ market, onClose }: Props) {
                 No OMS for <span className="font-medium text-fg">{EXCHANGE_LABELS[marketExchange] || marketExchange}</span>
               </div>
               <div className="text-xs text-fg-subtle">
-                This instance routes to {EXCHANGE_LABELS[instanceExchange] || instanceExchange}. Switch to a {EXCHANGE_LABELS[marketExchange] || marketExchange} instance to trade this market.
+                No healthy {EXCHANGE_LABELS[marketExchange] || marketExchange} instance available.
               </div>
             </div>
           )}

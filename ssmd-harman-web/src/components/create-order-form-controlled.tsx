@@ -12,10 +12,11 @@ interface Props {
   yesBid: number | null;
   yesAsk: number | null;
   last: number | null;
+  instanceId?: string;
   onSuccess?: () => void;
 }
 
-export function CreateOrderFormControlled({ ticker, yesBid, yesAsk, last, onSuccess }: Props) {
+export function CreateOrderFormControlled({ ticker, yesBid, yesAsk, last, instanceId, onSuccess }: Props) {
   const { mutate } = useSWRConfig();
   const [side, setSide] = useState<Side>("yes");
   const [action, setAction] = useState<Action>("buy");
@@ -38,7 +39,7 @@ export function CreateOrderFormControlled({ ticker, yesBid, yesAsk, last, onSucc
         quantity,
         price_dollars: price,
         time_in_force: tif,
-      });
+      }, instanceId);
       setQuantity("");
       setPrice("");
       mutate(matchInstanceKey("orders"));

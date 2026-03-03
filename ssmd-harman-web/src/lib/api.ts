@@ -39,10 +39,12 @@ export function getApiInstance(): string | null {
 
 async function request<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  instanceOverride?: string
 ): Promise<T> {
-  if (!_currentInstance) throw new Error("No harman instance selected");
-  const baseUrl = `/api/${_currentInstance}`;
+  const inst = instanceOverride || _currentInstance;
+  if (!inst) throw new Error("No harman instance selected");
+  const baseUrl = `/api/${inst}`;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -117,8 +119,8 @@ export const listAudit = async (): Promise<AuditEntry[]> => {
 };
 
 // Write endpoints
-export const createOrder = (order: CreateOrderRequest) =>
-  request<Order>("/v1/orders", { method: "POST", body: JSON.stringify(order) });
+export const createOrder = (order: CreateOrderRequest, instanceId?: string) =>
+  request<Order>("/v1/orders", { method: "POST", body: JSON.stringify(order) }, instanceId);
 
 export const cancelOrder = (id: number) =>
   request<void>(`/v1/orders/${id}`, { method: "DELETE" });
