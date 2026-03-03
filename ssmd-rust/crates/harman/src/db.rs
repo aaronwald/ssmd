@@ -239,8 +239,84 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 010_settlements applied");
     }
 
+    // Check if 011 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '011_exchange_audit_log'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 011: {}", e))?;
+
+    if row.is_none() {
+        let migration_011 = include_str!("../migrations/011_exchange_audit_log.sql");
+        client
+            .batch_execute(migration_011)
+            .await
+            .map_err(|e| format!("migration 011 failed: {}", e))?;
+        info!("migration 011_exchange_audit_log applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
+}
+
+/// Batch INSERT audit events into exchange_audit_log.
+/// JSONB columns are serialized to strings and cast in SQL.
+pub async fn batch_insert_audit(
+    pool: &Pool,
+    events: &[crate::audit::AuditEvent],
+) -> Result<u64, String> {
+    let client = pool.get().await.map_err(|e| e.to_string())?;
+    let stmt = client
+        .prepare(
+            "INSERT INTO exchange_audit_log
+             (session_id, order_id, category, action, endpoint, status_code, duration_ms,
+              request, response, outcome, error_msg, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6, $7,
+                     $8::TEXT::JSONB, $9::TEXT::JSONB, $10, $11, $12::TEXT::JSONB)",
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut count = 0u64;
+    for event in events {
+        let request_json = event
+            .request
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
+        let response_json = event
+            .response
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
+        let metadata_json = event
+            .metadata
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
+
+        client
+            .execute(
+                &stmt,
+                &[
+                    &event.session_id,
+                    &event.order_id,
+                    &event.category,
+                    &event.action,
+                    &event.endpoint,
+                    &event.status_code,
+                    &event.duration_ms,
+                    &request_json,
+                    &response_json,
+                    &event.outcome,
+                    &event.error_msg,
+                    &metadata_json,
+                ],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 /// The core transactional enqueue operation.
