@@ -277,6 +277,71 @@ export interface AdminUsersResponse {
   sessions: AdminSession[];
 }
 
+/** Harman admin types */
+export interface HarmanSession {
+  id: number;
+  exchange: string;
+  environment: string;
+  api_key_prefix: string;
+  display_name: string | null;
+  max_notional: number;
+  open_notional: number;
+  open_order_count: number;
+  total_fills: number;
+  total_settlements: number;
+  suspended: boolean;
+  created_at: string;
+  last_activity: string;
+}
+
+export interface ExchangeAuditEntry {
+  id: number;
+  session_id: number;
+  order_id: number | null;
+  category: string;
+  action: string;
+  endpoint: string | null;
+  status_code: number | null;
+  duration_ms: number | null;
+  request: unknown;
+  response: unknown;
+  outcome: string;
+  error_msg: string | null;
+  metadata: unknown;
+  created_at: string;
+}
+
+export interface TimelineEntry {
+  ts: string;
+  type: string;
+  from?: string;
+  to?: string;
+  actor?: string;
+  event?: string;
+  details?: string;
+  action?: string;
+  endpoint?: string;
+  status_code?: number;
+  duration_ms?: number;
+  request?: unknown;
+  response?: unknown;
+  outcome?: string;
+  error_msg?: string;
+  metadata?: unknown;
+  id?: number;
+  price_dollars?: string;
+  quantity?: string;
+  is_taker?: boolean;
+  category?: string;
+}
+
+export interface OrderTimelineResponse {
+  order: Order;
+  timeline: TimelineEntry[];
+  fills: Fill[];
+  settlement: unknown | null;
+}
+
 /** Watchlist types */
 export interface WatchlistItem {
   ticker: string;

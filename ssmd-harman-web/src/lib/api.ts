@@ -21,6 +21,9 @@ import type {
   AdminUsersResponse,
   WatchlistItem,
   WatchlistResponse,
+  HarmanSession,
+  ExchangeAuditEntry,
+  OrderTimelineResponse,
 } from "./types";
 
 // Dynamic instance routing — set via InstanceProvider
@@ -221,6 +224,26 @@ export const searchMonitorMarkets = async (q: string, type?: string, exchange?: 
 // Admin users endpoint
 export const getAdminUsers = () =>
   request<AdminUsersResponse>("/v1/admin/users");
+
+// Harman admin endpoints (via data-ts)
+export const getHarmanSessions = async (): Promise<HarmanSession[]> => {
+  const res = await dataRequest<{ sessions: HarmanSession[] }>("/harman/sessions");
+  return res.sessions;
+};
+
+export const getSessionOrders = async (sessionId: number): Promise<Order[]> => {
+  const res = await dataRequest<{ orders: Order[] }>(`/harman/sessions/${sessionId}/orders?limit=100`);
+  return res.orders;
+};
+
+export const getOrderTimeline = async (orderId: number): Promise<OrderTimelineResponse> => {
+  return dataRequest<OrderTimelineResponse>(`/harman/orders/${orderId}/timeline`);
+};
+
+export const getExchangeAudit = async (sessionId: number): Promise<ExchangeAuditEntry[]> => {
+  const res = await dataRequest<{ audit: ExchangeAuditEntry[] }>(`/harman/sessions/${sessionId}/exchange-audit?limit=200`);
+  return res.audit;
+};
 
 // Watchlist — batch snap lookup via data-ts
 export const fetchWatchlist = (items: WatchlistItem[]): Promise<WatchlistResponse> =>

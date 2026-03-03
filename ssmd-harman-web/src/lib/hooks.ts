@@ -21,6 +21,10 @@ import {
   getAdminUsers,
   getApiInstance,
   fetchWatchlist,
+  getHarmanSessions,
+  getSessionOrders,
+  getOrderTimeline,
+  getExchangeAudit,
 } from "./api";
 import type { WatchlistItem } from "./types";
 
@@ -151,6 +155,40 @@ export function useAdminUsers() {
   return useSWR(instanceKey("admin-users"), getAdminUsers, {
     refreshInterval: METADATA_REFRESH,
   });
+}
+
+// Harman admin hooks (via data-ts — not instance-scoped)
+const ADMIN_REFRESH = 60000;
+const ORDER_REFRESH = 5000;
+
+export function useHarmanSessions() {
+  return useSWR("data-harman-sessions", getHarmanSessions, {
+    refreshInterval: ADMIN_REFRESH,
+  });
+}
+
+export function useSessionOrders(sessionId: number | null) {
+  return useSWR(
+    sessionId ? `data-harman-orders-${sessionId}` : null,
+    () => getSessionOrders(sessionId!),
+    { refreshInterval: ORDER_REFRESH }
+  );
+}
+
+export function useOrderTimeline(orderId: number | null) {
+  return useSWR(
+    orderId ? `data-harman-timeline-${orderId}` : null,
+    () => getOrderTimeline(orderId!),
+    { refreshInterval: ORDER_REFRESH }
+  );
+}
+
+export function useExchangeAudit(sessionId: number | null) {
+  return useSWR(
+    sessionId ? `data-harman-audit-${sessionId}` : null,
+    () => getExchangeAudit(sessionId!),
+    { refreshInterval: ORDER_REFRESH }
+  );
 }
 
 // Watchlist persistence (localStorage)
