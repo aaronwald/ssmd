@@ -4,9 +4,10 @@ use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use crate::error::ExchangeError;
+use crate::state::OrderState;
 use crate::types::{
-    AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrder, ExchangeOrderStatus,
-    ExchangeSettlement, OrderRequest, Position,
+    Action, AmendRequest, AmendResult, Balance, ExchangeFill, ExchangeOrder,
+    ExchangeOrderStatus, ExchangeSettlement, MarketResult, OrderRequest, Position, Side,
 };
 
 /// Trait for exchange adapters.
@@ -85,4 +86,68 @@ pub trait ExchangeAdapter: Send + Sync {
         &self,
         min_ts: Option<DateTime<Utc>>,
     ) -> Result<Vec<ExchangeSettlement>, ExchangeError>;
+}
+
+// --- WebSocket event types ---
+
+/// Events delivered by the exchange via WebSocket (or other real-time channels).
+///
+/// WS is read-only — order placement/cancel/amend remains REST.
+/// These events are produced by `EventStream` and consumed by the `EventIngester`.
+#[derive(Debug, Clone)]
+pub enum ExchangeEvent {
+    /// An order's state changed on the exchange.
+    OrderUpdate {
+        exchange_order_id: String,
+        client_order_id: Option<Uuid>,
+        ticker: String,
+        status: OrderState,
+        filled_quantity: Decimal,
+        remaining_quantity: Decimal,
+        /// Number of contracts cancelled due to market close (Kalshi-specific).
+        close_cancel_count: Option<i64>,
+    },
+    /// A fill (trade execution) occurred.
+    Fill {
+        trade_id: String,
+        exchange_order_id: String,
+        ticker: String,
+        side: Side,
+        action: Action,
+        price_dollars: Decimal,
+        quantity: Decimal,
+        is_taker: bool,
+        filled_at: DateTime<Utc>,
+        client_order_id: Option<Uuid>,
+    },
+    /// Portfolio position update for a ticker.
+    PositionUpdate {
+        ticker: String,
+        position: Decimal,
+        position_cost_dollars: Decimal,
+        realized_pnl_dollars: Decimal,
+        volume: Decimal,
+    },
+    /// A market has settled (determined/finalized).
+    MarketSettled {
+        ticker: String,
+        result: MarketResult,
+        settled_time: DateTime<Utc>,
+    },
+    /// WebSocket connection established (or re-established after disconnect).
+    Connected,
+    /// WebSocket connection lost.
+    Disconnected { reason: String },
+}
+
+/// Trait for exchange event streams (WebSocket private channels).
+///
+/// Implementations are pure event sources — no DB access, no business logic.
+/// The `EventIngester` consumes these events and routes them to shared processors.
+pub trait EventStream: Send + Sync {
+    /// Subscribe to exchange events. Returns a broadcast receiver.
+    ///
+    /// Multiple consumers can subscribe; each gets all events.
+    /// The broadcast channel has a bounded buffer — slow consumers will lag.
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<ExchangeEvent>;
 }

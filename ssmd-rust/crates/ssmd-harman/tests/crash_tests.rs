@@ -45,9 +45,9 @@ async fn build_test_state(
         RiskLimits::default(),
         ems_metrics,
     ));
-    let oms_metrics = OmsMetrics::new(&registry);
+    let oms_metrics = Arc::new(OmsMetrics::new(&registry));
     let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
-    let runner = Arc::new(OmsRunner::new(oms.clone(), None, session_id));
+    let runner = Arc::new(OmsRunner::new(oms.clone(), None, session_id, None));
     let pump_trigger = runner.pump_trigger();
     Arc::new(AppState {
         ems,
@@ -1571,7 +1571,7 @@ async fn test_staged_legs_excluded_from_risk() {
     let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = Arc::new(mock);
     let limits = RiskLimits { max_notional: Decimal::from(5) };
     let ems = Arc::new(ssmd_harman_ems::Ems::new(pool.clone(), exchange.clone(), limits, ems_metrics));
-    let oms_metrics = OmsMetrics::new(&registry);
+    let oms_metrics = Arc::new(OmsMetrics::new(&registry));
     let oms = Arc::new(ssmd_harman_oms::Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
 
     // Bracket: entry=$2.50 (pending), TP=$4.00 (staged), SL=$1.00 (staged)

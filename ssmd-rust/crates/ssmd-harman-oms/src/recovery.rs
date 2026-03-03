@@ -2,9 +2,11 @@ use tracing::{debug, error, info, warn};
 
 use harman::db;
 use harman::error::ExchangeError;
+use harman::fill_processor;
+use harman::order_importer;
+use harman::settlement_recorder;
 use harman::state::{self, OrderState};
 use harman::types::ExchangeOrderState;
-use rust_decimal::Decimal;
 
 use crate::Oms;
 
@@ -155,7 +157,7 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                     }
                 }
             }
-            Err(ExchangeError::NotFound(_)) => {
+            Err(ref e) if e.is_not_found() => {
                 // NotFound is ambiguous — could mean order aged out of API, endpoint
                 // is wrong, or auth failed. Do NOT auto-resolve any state.
                 // Pile-up of unresolved orders is a visible signal that something's broken.
@@ -198,46 +200,15 @@ async fn discover_external_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
 
     let local_orders = db::list_orders(&oms.pool, session_id, None).await?;
 
-    let mut imported = 0u64;
-    for order in &exchange_orders {
-        let known = local_orders
-            .iter()
-            .any(|o| o.exchange_order_id.as_deref() == Some(&order.exchange_order_id));
-
-        if known {
-            continue;
-        }
-
-        info!(
-            exchange_order_id = %order.exchange_order_id,
-            ticker = %order.ticker,
-            "recovery: importing external resting order"
-        );
-
-        match db::create_external_resting_order(
-            &oms.pool,
-            &db::ExternalOrderParams {
-                session_id,
-                exchange_order_id: &order.exchange_order_id,
-                ticker: &order.ticker,
-                side: order.side,
-                action: order.action,
-                quantity: order.quantity,
-                price_dollars: order.price_dollars,
-            },
-        )
-        .await
-        {
-            Ok(_) => imported += 1,
-            Err(e) => {
-                error!(
-                    error = %e,
-                    exchange_order_id = %order.exchange_order_id,
-                    "recovery: failed to import external resting order"
-                );
-            }
-        }
-    }
+    let imported = order_importer::import_external_orders(
+        &oms.pool,
+        session_id,
+        &exchange_orders,
+        &local_orders,
+        false, // no DB existence check during recovery (faster)
+        "recovery",
+    )
+    .await?;
 
     if imported > 0 {
         info!(count = imported, "recovery: imported external resting orders");
@@ -258,133 +229,23 @@ async fn discover_missing_fills(oms: &Oms, session_id: i64) -> Result<(), String
     info!(count = fills.len(), "fetched exchange fills for recovery");
 
     let orders = db::list_orders(&oms.pool, session_id, None).await?;
-    let mut recorded = 0;
-    let mut orders_with_new_fills: std::collections::HashSet<i64> =
-        std::collections::HashSet::new();
 
-    let mut external_imported = 0u64;
+    let import_result = fill_processor::import_fills(
+        &oms.pool,
+        session_id,
+        &fills,
+        &orders,
+        "recovery",
+    )
+    .await?;
 
-    for fill in &fills {
-        if let Some(order) = orders
-            .iter()
-            .find(|o| o.exchange_order_id.as_deref() == Some(&fill.order_id))
-        {
-            let inserted = db::record_fill(
-                &oms.pool,
-                order.id,
-                session_id,
-                &fill.trade_id,
-                fill.price_dollars,
-                fill.quantity,
-                fill.is_taker,
-                fill.filled_at,
-            )
-            .await?;
-
-            if inserted {
-                recorded += 1;
-                orders_with_new_fills.insert(order.id);
-            }
-        } else {
-            // External fill — import as synthetic order (fills are sacrosanct)
-            info!(
-                trade_id = %fill.trade_id,
-                exchange_order_id = %fill.order_id,
-                ticker = %fill.ticker,
-                "recovery: importing external fill"
-            );
-            match db::create_external_order(
-                &oms.pool,
-                &db::ExternalOrderParams {
-                    session_id,
-                    exchange_order_id: &fill.order_id,
-                    ticker: &fill.ticker,
-                    side: fill.side,
-                    action: fill.action,
-                    quantity: fill.quantity,
-                    price_dollars: fill.price_dollars,
-                },
-            )
-            .await
-            {
-                Ok(order_id) => {
-                    let inserted = db::record_fill(
-                        &oms.pool,
-                        order_id,
-                        session_id,
-                        &fill.trade_id,
-                        fill.price_dollars,
-                        fill.quantity,
-                        fill.is_taker,
-                        fill.filled_at,
-                    )
-                    .await?;
-                    if inserted {
-                        recorded += 1;
-                        external_imported += 1;
-                    }
-                }
-                Err(e) => {
-                    error!(
-                        error = %e,
-                        trade_id = %fill.trade_id,
-                        "recovery: failed to import external fill"
-                    );
-                }
-            }
-        }
-    }
-
-    if recorded > 0 {
+    if import_result.recorded > 0 {
         info!(
-            count = recorded,
-            external = external_imported,
+            count = import_result.recorded,
+            external = import_result.external_imported,
+            state_updates = import_result.state_updates,
             "recorded missing fills during recovery"
         );
-    }
-
-    // Update order states for orders that received new fills
-    for order_id in &orders_with_new_fills {
-        if let Some(order) = orders.iter().find(|o| o.id == *order_id) {
-            if order.state.is_terminal() {
-                continue;
-            }
-            let filled_qty = db::get_filled_quantity(&oms.pool, *order_id).await?;
-            let new_state = if filled_qty >= order.quantity {
-                OrderState::Filled
-            } else if filled_qty > Decimal::ZERO {
-                OrderState::PartiallyFilled
-            } else {
-                continue;
-            };
-            if new_state != order.state {
-                info!(
-                    order_id = order.id,
-                    from = %order.state,
-                    to = %new_state,
-                    filled_qty = %filled_qty,
-                    "recovery: updated order state from fills"
-                );
-                if let Err(e) = db::update_order_state(
-                    &oms.pool,
-                    *order_id,
-                    session_id,
-                    new_state,
-                    None,
-                    Some(filled_qty),
-                    None,
-                    "recovery",
-                )
-                .await
-                {
-                    error!(
-                        error = %e,
-                        order_id = order.id,
-                        "failed to update order state from recovery fills"
-                    );
-                }
-            }
-        }
     }
 
     Ok(())
@@ -400,19 +261,13 @@ async fn discover_settlements(oms: &Oms, session_id: i64) -> Result<(), String> 
 
     info!(count = settlements.len(), "fetched exchange settlements for recovery");
 
-    let mut recorded = 0u64;
-    for settlement in &settlements {
-        let inserted = db::record_settlement(&oms.pool, session_id, settlement).await?;
-        if inserted {
-            info!(
-                ticker = %settlement.ticker,
-                market_result = %settlement.market_result,
-                revenue_cents = settlement.revenue_cents,
-                "recovery: recorded settlement"
-            );
-            recorded += 1;
-        }
-    }
+    let recorded = settlement_recorder::record_settlements(
+        &oms.pool,
+        session_id,
+        &settlements,
+        "recovery",
+    )
+    .await?;
 
     if recorded > 0 {
         info!(count = recorded, "imported settlement records during recovery");

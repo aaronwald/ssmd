@@ -47,8 +47,11 @@ pub enum ExchangeError {
     #[error("rate limited, retry after {retry_after_ms}ms")]
     RateLimited { retry_after_ms: u64 },
 
-    #[error("order not found on exchange: client_order_id={0}")]
-    NotFound(Uuid),
+    #[error("order not found by client_order_id: {0}")]
+    OrderNotFoundByClientId(Uuid),
+
+    #[error("order not found by exchange_order_id: {0}")]
+    OrderNotFoundByExchangeId(String),
 
     #[error("exchange timeout after {timeout_ms}ms")]
     Timeout { timeout_ms: u64 },
@@ -61,4 +64,21 @@ pub enum ExchangeError {
 
     #[error("authentication error: {0}")]
     Auth(String),
+
+    #[error("WebSocket disconnected: {reason}")]
+    Disconnected { reason: String },
+
+    #[error("WebSocket subscription failed: channel={channel}, reason={reason}")]
+    SubscriptionFailed { channel: String, reason: String },
+}
+
+impl ExchangeError {
+    /// Returns true if this is any variant of order-not-found.
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            ExchangeError::OrderNotFoundByClientId(_)
+                | ExchangeError::OrderNotFoundByExchangeId(_)
+        )
+    }
 }

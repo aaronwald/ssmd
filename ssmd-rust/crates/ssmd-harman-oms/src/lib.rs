@@ -1,3 +1,4 @@
+pub mod event_ingester;
 pub mod groups;
 pub mod positions;
 pub mod reconciliation;
@@ -94,7 +95,7 @@ pub struct Oms {
     pub pool: Pool,
     pub exchange: Arc<dyn ExchangeAdapter>,
     pub ems: Arc<Ems>,
-    pub metrics: OmsMetrics,
+    pub metrics: Arc<OmsMetrics>,
     pub suspended_sessions: DashMap<i64, ()>,
 }
 
@@ -103,7 +104,7 @@ impl Oms {
         pool: Pool,
         exchange: Arc<dyn ExchangeAdapter>,
         ems: Arc<Ems>,
-        metrics: OmsMetrics,
+        metrics: Arc<OmsMetrics>,
     ) -> Self {
         Self {
             pool,

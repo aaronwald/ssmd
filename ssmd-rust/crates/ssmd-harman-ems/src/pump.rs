@@ -7,7 +7,7 @@ use rust_decimal::Decimal;
 use harman::db;
 use harman::error::ExchangeError;
 use harman::state::OrderState;
-use harman::types::{AmendRequest, CancelReason};
+use harman::types::{AmendRequest, CancelReason, QueueAction};
 
 use crate::Ems;
 
@@ -56,8 +56,8 @@ pub async fn pump(ems: &Ems, session_id: i64) -> PumpResult {
                     "dequeued order"
                 );
 
-                match item.action.as_str() {
-                    "submit" => {
+                match item.action {
+                    QueueAction::Submit => {
                         let outcome = handle_submit(ems, session_id, &item).await;
                         match outcome {
                             SubmitOutcome::Submitted => result.submitted += 1,
@@ -81,7 +81,7 @@ pub async fn pump(ems: &Ems, session_id: i64) -> PumpResult {
                             }
                         }
                     }
-                    "cancel" => {
+                    QueueAction::Cancel => {
                         let outcome = handle_cancel(ems, session_id, &item).await;
                         match outcome {
                             CancelOutcome::Cancelled | CancelOutcome::NotFound => {
@@ -100,7 +100,7 @@ pub async fn pump(ems: &Ems, session_id: i64) -> PumpResult {
                             }
                         }
                     }
-                    "amend" => {
+                    QueueAction::Amend => {
                         let outcome = handle_amend(ems, session_id, &item).await;
                         match outcome {
                             AmendOutcome::Amended => result.amended += 1,
@@ -117,7 +117,7 @@ pub async fn pump(ems: &Ems, session_id: i64) -> PumpResult {
                             }
                         }
                     }
-                    "decrease" => {
+                    QueueAction::Decrease => {
                         let outcome = handle_decrease(ems, session_id, &item).await;
                         match outcome {
                             DecreaseOutcome::Decreased => result.decreased += 1,
@@ -133,10 +133,6 @@ pub async fn pump(ems: &Ems, session_id: i64) -> PumpResult {
                                 break;
                             }
                         }
-                    }
-                    other => {
-                        warn!(action = other, "unknown queue action, removing");
-                        let _ = db::remove_queue_item(&ems.pool, item.queue_id).await;
                     }
                 }
             }
@@ -329,7 +325,7 @@ async fn handle_cancel(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Canc
             let _ = db::remove_queue_item(&ems.pool, item.queue_id).await;
             CancelOutcome::Cancelled
         }
-        Err(ExchangeError::NotFound(_)) => {
+        Err(e) if e.is_not_found() => {
             info!(
                 order_id = item.order_id,
                 "cancel target not found on exchange, marking cancelled"
@@ -463,50 +459,24 @@ async fn handle_amend(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Amend
                 "order amended on exchange"
             );
 
-            // Update order with new values from exchange
-            let client = match ems.pool.get().await {
-                Ok(c) => c,
-                Err(e) => {
-                    error!(error = %e, "pool error updating amended order");
-                    let _ = db::remove_queue_item(&ems.pool, item.queue_id).await;
-                    return AmendOutcome::Amended;
-                }
-            };
-
-            if let Err(e) = client
-                .execute(
-                    "UPDATE prediction_orders SET state = 'acknowledged', \
-                     exchange_order_id = $1, price_dollars = $2, quantity = $3 \
-                     WHERE id = $4 AND session_id = $5",
-                    &[
-                        &result.exchange_order_id,
-                        &result.new_price_dollars,
-                        &result.new_quantity,
-                        &item.order_id,
-                        &session_id,
-                    ],
-                )
-                .await
+            // Update order with new values from exchange (transactional)
+            if let Err(e) = db::update_amended_order(
+                &ems.pool,
+                item.order_id,
+                session_id,
+                &result.exchange_order_id,
+                result.new_price_dollars,
+                result.new_quantity,
+            )
+            .await
             {
                 error!(error = %e, "failed to update amended order");
-            }
-
-            // Audit log
-            if let Err(e) = client
-                .execute(
-                    "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
-                     VALUES ($1, 'pending_amend', 'acknowledged', 'amend_confirm', 'pump')",
-                    &[&item.order_id],
-                )
-                .await
-            {
-                error!(error = %e, "failed to insert amend audit");
             }
 
             let _ = db::remove_queue_item(&ems.pool, item.queue_id).await;
             AmendOutcome::Amended
         }
-        Err(ExchangeError::NotFound(_)) => {
+        Err(e) if e.is_not_found() => {
             warn!(
                 order_id = item.order_id,
                 "amend target not found on exchange, marking cancelled"
@@ -664,44 +634,22 @@ async fn handle_decrease(ems: &Ems, session_id: i64, item: &db::QueueItem) -> De
                 "order decreased on exchange"
             );
 
-            // Update quantity in DB
-            let client = match ems.pool.get().await {
-                Ok(c) => c,
-                Err(e) => {
-                    error!(error = %e, "pool error updating decreased order");
-                    let _ = db::remove_queue_item(&ems.pool, item.queue_id).await;
-                    return DecreaseOutcome::Decreased;
-                }
-            };
-
-            if let Err(e) = client
-                .execute(
-                    "UPDATE prediction_orders SET state = 'acknowledged', \
-                     quantity = quantity - $1 \
-                     WHERE id = $2 AND session_id = $3",
-                    &[&reduce_by, &item.order_id, &session_id],
-                )
-                .await
+            // Update quantity in DB (transactional)
+            if let Err(e) = db::update_decreased_order(
+                &ems.pool,
+                item.order_id,
+                session_id,
+                reduce_by,
+            )
+            .await
             {
                 error!(error = %e, "failed to update decreased order");
-            }
-
-            // Audit log
-            if let Err(e) = client
-                .execute(
-                    "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
-                     VALUES ($1, 'pending_decrease', 'acknowledged', 'decrease_confirm', 'pump')",
-                    &[&item.order_id],
-                )
-                .await
-            {
-                error!(error = %e, "failed to insert decrease audit");
             }
 
             let _ = db::remove_queue_item(&ems.pool, item.queue_id).await;
             DecreaseOutcome::Decreased
         }
-        Err(ExchangeError::NotFound(_)) => {
+        Err(e) if e.is_not_found() => {
             warn!(
                 order_id = item.order_id,
                 "decrease target not found on exchange, marking cancelled"

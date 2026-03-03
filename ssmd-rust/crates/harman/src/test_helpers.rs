@@ -203,7 +203,7 @@ impl ExchangeAdapter for MockExchange {
 
         match &state.cancel_behavior {
             CancelBehavior::Accept => Ok(()),
-            CancelBehavior::NotFound => Err(ExchangeError::NotFound(Uuid::nil())),
+            CancelBehavior::NotFound => Err(ExchangeError::OrderNotFoundByExchangeId(exchange_order_id.to_string())),
         }
     }
 
@@ -222,7 +222,7 @@ impl ExchangeAdapter for MockExchange {
             .order_statuses
             .get(&client_order_id)
             .cloned()
-            .ok_or(ExchangeError::NotFound(client_order_id))
+            .ok_or(ExchangeError::OrderNotFoundByClientId(client_order_id))
     }
 
     async fn get_order_by_exchange_id(
@@ -240,7 +240,7 @@ impl ExchangeAdapter for MockExchange {
             .values()
             .find(|s| s.exchange_order_id == exchange_order_id)
             .cloned()
-            .ok_or(ExchangeError::NotFound(Uuid::nil()))
+            .ok_or(ExchangeError::OrderNotFoundByExchangeId(exchange_order_id.to_string()))
     }
 
     async fn get_positions(&self) -> Result<Vec<Position>, ExchangeError> {
@@ -278,7 +278,7 @@ impl ExchangeAdapter for MockExchange {
             AmendBehavior::Reject(reason) => Err(ExchangeError::Rejected {
                 reason: reason.clone(),
             }),
-            AmendBehavior::NotFound => Err(ExchangeError::NotFound(Uuid::nil())),
+            AmendBehavior::NotFound => Err(ExchangeError::OrderNotFoundByExchangeId(request.exchange_order_id.clone())),
         }
     }
 
@@ -297,7 +297,7 @@ impl ExchangeAdapter for MockExchange {
             DecreaseBehavior::Reject(reason) => Err(ExchangeError::Rejected {
                 reason: reason.clone(),
             }),
-            DecreaseBehavior::NotFound => Err(ExchangeError::NotFound(Uuid::nil())),
+            DecreaseBehavior::NotFound => Err(ExchangeError::OrderNotFoundByExchangeId(exchange_order_id.to_string())),
         }
     }
 

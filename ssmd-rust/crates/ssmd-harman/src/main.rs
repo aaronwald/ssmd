@@ -131,7 +131,7 @@ async fn main() {
                 &kalshi_config.private_key_pem,
             )
             .expect("invalid Kalshi credentials");
-            Arc::new(ssmd_exchange_kalshi::client::KalshiClient::new(
+            Arc::new(ssmd_exchange_kalshi::client::KalshiRestClient::new(
                 credentials,
                 args.kalshi_base_url.clone(),
             ))
@@ -142,7 +142,7 @@ async fn main() {
             // and the test-exchange ignores auth headers entirely.
             info!(base_url = %exchange_base_url, "using test exchange (Kalshi protocol)");
             let credentials = ssmd_connector_lib::kalshi::auth::KalshiCredentials::dummy();
-            Arc::new(ssmd_exchange_kalshi::client::KalshiClient::new(
+            Arc::new(ssmd_exchange_kalshi::client::KalshiRestClient::new(
                 credentials,
                 exchange_base_url.clone(),
             ))
@@ -210,16 +210,43 @@ async fn main() {
     let ems_metrics = EmsMetrics::new(&registry);
     let ems = Arc::new(Ems::new(pool.clone(), exchange.clone(), risk_limits, ems_metrics));
 
-    let oms_metrics = OmsMetrics::new(&registry);
-    let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics));
+    let oms_metrics = Arc::new(OmsMetrics::new(&registry));
+    let oms = Arc::new(Oms::new(pool.clone(), exchange.clone(), ems.clone(), oms_metrics));
     let monitor_metrics = MonitorMetrics::new(&registry);
+
+    // Optional WebSocket event stream for real-time order/fill/settlement events.
+    // Requires KALSHI_WS_URL and Kalshi credentials (KALSHI_API_KEY + KALSHI_PRIVATE_KEY).
+    let event_stream: Option<Arc<dyn harman::exchange::EventStream>> =
+        match (std::env::var("KALSHI_WS_URL"), exchange_type.as_str()) {
+            (Ok(ws_url), "kalshi" | "test") => {
+                let kalshi_config = ssmd_connector_lib::kalshi::config::KalshiConfig::from_env()
+                    .expect("Kalshi credentials required for WS");
+                let ws_credentials = ssmd_connector_lib::kalshi::auth::KalshiCredentials::new(
+                    kalshi_config.api_key,
+                    &kalshi_config.private_key_pem,
+                )
+                .expect("invalid Kalshi credentials for WS");
+                info!(ws_url = %ws_url, "WS event stream enabled");
+                Some(Arc::new(ssmd_exchange_kalshi::ws::client::KalshiWsClient::new(
+                    ws_credentials, ws_url,
+                )))
+            }
+            (Ok(_), _) => {
+                warn!("KALSHI_WS_URL set but EXCHANGE_TYPE is not kalshi/test, WS disabled");
+                None
+            }
+            (Err(_), _) => {
+                info!("KALSHI_WS_URL not set, WS event stream disabled (REST-only mode)");
+                None
+            }
+        };
 
     let reconcile_interval = if args.reconcile_interval_secs > 0 {
         Some(Duration::from_secs(args.reconcile_interval_secs))
     } else {
         None
     };
-    let runner = Arc::new(OmsRunner::new(oms.clone(), reconcile_interval, startup_session_id));
+    let runner = Arc::new(OmsRunner::new(oms.clone(), reconcile_interval, startup_session_id, event_stream));
     let pump_trigger = runner.pump_trigger();
     if args.auto_pump {
         info!("auto-pump enabled");

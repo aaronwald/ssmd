@@ -12,7 +12,7 @@ use crate::risk::{RiskLimits, RiskState};
 use crate::state::OrderState;
 use crate::types::{
     Action, CancelReason, GroupState, GroupType, LegRole, MarketResult, Order, OrderGroup,
-    OrderRequest, Settlement, Side, TimeInForce,
+    OrderRequest, QueueAction, Settlement, Side, TimeInForce,
 };
 
 /// Create a connection pool from a database URL
@@ -387,7 +387,7 @@ pub async fn enqueue_order(
 pub struct QueueItem {
     pub queue_id: i64,
     pub order_id: i64,
-    pub action: String,
+    pub action: QueueAction,
     pub order: Order,
     pub metadata: Option<serde_json::Value>,
 }
@@ -433,7 +433,10 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
 
     let queue_id: i64 = row.get("queue_id");
     let order_id: i64 = row.get("order_id");
-    let action: String = row.get("action");
+    let action_str: String = row.get("action");
+    let action: QueueAction = action_str.parse().map_err(|e: String| {
+        format!("queue_id={} order_id={}: {}", queue_id, order_id, e)
+    })?;
 
     // Mark as processing
     tx.execute(
@@ -444,7 +447,7 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
     .map_err(|e| format!("mark processing: {}", e))?;
 
     // Update order state to submitted (for submit actions)
-    if action == "submit" {
+    if action == QueueAction::Submit {
         let from_state: String = row.get("state");
         tx.execute(
             "UPDATE prediction_orders SET state = 'submitted' WHERE id = $1",
@@ -477,7 +480,7 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
         price_dollars: row.get("price_dollars"),
         filled_quantity: row.get("filled_quantity"),
         time_in_force: parse_tif(row.get("time_in_force")),
-        state: if action == "submit" {
+        state: if action == QueueAction::Submit {
             OrderState::Submitted
         } else {
             parse_state(row.get("state"))
@@ -571,6 +574,122 @@ pub async fn update_order_state(
     )
     .await
     .map_err(|e| format!("insert audit: {}", e))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit: {}", e))?;
+
+    Ok(())
+}
+
+/// Update an order after a successful amend on the exchange.
+///
+/// Wraps the state update (PendingAmend → Acknowledged), exchange_order_id swap,
+/// price/quantity update, and audit log in a single transaction.
+pub async fn update_amended_order(
+    pool: &Pool,
+    order_id: i64,
+    session_id: i64,
+    new_exchange_order_id: &str,
+    new_price_dollars: Decimal,
+    new_quantity: Decimal,
+) -> Result<(), String> {
+    let mut client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("begin tx: {}", e))?;
+
+    // Lock the order row and get current state for audit
+    let row = tx
+        .query_one(
+            "SELECT state FROM prediction_orders WHERE id = $1 AND session_id = $2 FOR UPDATE",
+            &[&order_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("get state: {}", e))?;
+    let from_state: String = row.get("state");
+
+    tx.execute(
+        "UPDATE prediction_orders SET state = 'acknowledged', \
+         exchange_order_id = $1, price_dollars = $2, quantity = $3 \
+         WHERE id = $4 AND session_id = $5",
+        &[
+            &new_exchange_order_id,
+            &new_price_dollars,
+            &new_quantity,
+            &order_id,
+            &session_id,
+        ],
+    )
+    .await
+    .map_err(|e| format!("update amended order: {}", e))?;
+
+    tx.execute(
+        "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+         VALUES ($1, $2, 'acknowledged', 'amend_confirm', 'pump')",
+        &[&order_id, &from_state],
+    )
+    .await
+    .map_err(|e| format!("insert amend audit: {}", e))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit: {}", e))?;
+
+    Ok(())
+}
+
+/// Update an order after a successful decrease on the exchange.
+///
+/// Wraps the state update (PendingDecrease → Acknowledged), quantity reduction,
+/// and audit log in a single transaction.
+pub async fn update_decreased_order(
+    pool: &Pool,
+    order_id: i64,
+    session_id: i64,
+    reduce_by: Decimal,
+) -> Result<(), String> {
+    let mut client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("begin tx: {}", e))?;
+
+    // Lock the order row and get current state for audit
+    let row = tx
+        .query_one(
+            "SELECT state FROM prediction_orders WHERE id = $1 AND session_id = $2 FOR UPDATE",
+            &[&order_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("get state: {}", e))?;
+    let from_state: String = row.get("state");
+
+    tx.execute(
+        "UPDATE prediction_orders SET state = 'acknowledged', \
+         quantity = quantity - $1 \
+         WHERE id = $2 AND session_id = $3",
+        &[&reduce_by, &order_id, &session_id],
+    )
+    .await
+    .map_err(|e| format!("update decreased order: {}", e))?;
+
+    tx.execute(
+        "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+         VALUES ($1, $2, 'acknowledged', 'decrease_confirm', 'pump')",
+        &[&order_id, &from_state],
+    )
+    .await
+    .map_err(|e| format!("insert decrease audit: {}", e))?;
 
     tx.commit()
         .await
@@ -991,6 +1110,34 @@ pub async fn get_order_by_client_id(
         )
         .await
         .map_err(|e| format!("get order by cid: {}", e))?;
+
+    Ok(row.as_ref().map(row_to_order))
+}
+
+/// Find an order by its exchange-assigned order ID, scoped to a session.
+///
+/// Returns `None` if no order has this exchange_order_id in the session.
+pub async fn find_order_by_exchange_id(
+    pool: &Pool,
+    session_id: i64,
+    exchange_order_id: &str,
+) -> Result<Option<Order>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let row = client
+        .query_opt(
+            "SELECT id, session_id, client_order_id, exchange_order_id, \
+                    ticker, side, action, quantity, price_dollars, \
+                    filled_quantity, time_in_force, state, cancel_reason, \
+                    group_id, leg_role, created_at, updated_at \
+             FROM prediction_orders WHERE exchange_order_id = $1 AND session_id = $2",
+            &[&exchange_order_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("find order by exchange_id: {}", e))?;
 
     Ok(row.as_ref().map(row_to_order))
 }

@@ -1,7 +1,10 @@
 pub mod db;
 pub mod error;
 pub mod exchange;
+pub mod fill_processor;
+pub mod order_importer;
 pub mod risk;
+pub mod settlement_recorder;
 pub mod state;
 pub mod test_helpers;
 pub mod types;

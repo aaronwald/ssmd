@@ -24,7 +24,7 @@ const MIN_REQUEST_GAP: Duration = Duration::from_millis(200);
 const DEFAULT_PATH_PREFIX: &str = "/trade-api/v2";
 
 /// Kalshi REST trading client
-pub struct KalshiClient {
+pub struct KalshiRestClient {
     http: Client,
     credentials: KalshiCredentials,
     base_url: String,
@@ -32,7 +32,7 @@ pub struct KalshiClient {
     last_request: tokio::sync::Mutex<tokio::time::Instant>,
 }
 
-impl KalshiClient {
+impl KalshiRestClient {
     /// Create a new Kalshi client
     ///
     /// `base_url` should be either:
@@ -229,7 +229,7 @@ impl KalshiClient {
         let status = resp.status();
         if !status.is_success() {
             // Historical endpoint not available or error — treat as not found
-            return Err(ExchangeError::NotFound(Uuid::nil()));
+            return Err(ExchangeError::OrderNotFoundByExchangeId(exchange_order_id.to_string()));
         }
 
         let orders_resp: KalshiOrdersResponse = resp
@@ -241,7 +241,7 @@ impl KalshiClient {
             .orders
             .into_iter()
             .find(|o| o.order_id == exchange_order_id)
-            .ok_or(ExchangeError::NotFound(Uuid::nil()))?;
+            .ok_or(ExchangeError::OrderNotFoundByExchangeId(exchange_order_id.to_string()))?;
 
         let filled = order.filled_count();
         let remaining = order.effective_remaining();
@@ -286,7 +286,7 @@ impl KalshiClient {
 }
 
 #[async_trait]
-impl ExchangeAdapter for KalshiClient {
+impl ExchangeAdapter for KalshiRestClient {
     async fn submit_order(&self, order: &OrderRequest) -> Result<String, ExchangeError> {
         // Kalshi API always uses yes_price for both Yes and No side orders.
         // For No-side orders, the exchange interprets yes_price as the complement
@@ -331,7 +331,7 @@ impl ExchangeAdapter for KalshiClient {
         if status.is_success() {
             Ok(())
         } else if status == reqwest::StatusCode::NOT_FOUND {
-            Err(ExchangeError::NotFound(Uuid::nil()))
+            Err(ExchangeError::OrderNotFoundByExchangeId(exchange_order_id.to_string()))
         } else {
             let error_body = resp.text().await.unwrap_or_default();
             Err(ExchangeError::Rejected {
@@ -422,7 +422,7 @@ impl ExchangeAdapter for KalshiClient {
                     .as_deref()
                     == Some(&client_order_id.to_string())
             })
-            .ok_or(ExchangeError::NotFound(client_order_id))?;
+            .ok_or(ExchangeError::OrderNotFoundByClientId(client_order_id))?;
 
         let filled = order.filled_count();
         let remaining = order.effective_remaining();
@@ -773,7 +773,7 @@ impl ExchangeAdapter for KalshiClient {
                 remaining_quantity: Decimal::from(remaining),
             })
         } else if status == reqwest::StatusCode::NOT_FOUND {
-            Err(ExchangeError::NotFound(Uuid::nil()))
+            Err(ExchangeError::OrderNotFoundByExchangeId(request.exchange_order_id.clone()))
         } else {
             let error_body = resp.text().await.unwrap_or_default();
             Err(ExchangeError::Rejected {
@@ -802,7 +802,7 @@ impl ExchangeAdapter for KalshiClient {
         if status.is_success() {
             Ok(())
         } else if status == reqwest::StatusCode::NOT_FOUND {
-            Err(ExchangeError::NotFound(Uuid::nil()))
+            Err(ExchangeError::OrderNotFoundByExchangeId(exchange_order_id.to_string()))
         } else {
             let error_body = resp.text().await.unwrap_or_default();
             Err(ExchangeError::Rejected {
@@ -911,9 +911,9 @@ impl ExchangeAdapter for KalshiClient {
     }
 }
 
-impl std::fmt::Debug for KalshiClient {
+impl std::fmt::Debug for KalshiRestClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KalshiClient")
+        f.debug_struct("KalshiRestClient")
             .field("base_url", &self.base_url)
             .finish()
     }
@@ -925,7 +925,7 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    async fn setup() -> (MockServer, KalshiClient) {
+    async fn setup() -> (MockServer, KalshiRestClient) {
         let server = MockServer::start().await;
 
         // Generate a test RSA key for signing
@@ -937,7 +937,7 @@ mod tests {
 
         let credentials =
             KalshiCredentials::new("test-api-key".to_string(), pem.as_str()).unwrap();
-        let client = KalshiClient::new(credentials, server.uri());
+        let client = KalshiRestClient::new(credentials, server.uri());
 
         (server, client)
     }
@@ -1055,7 +1055,7 @@ mod tests {
 
         let result = client.cancel_order("exch-999").await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ExchangeError::NotFound(_)));
+        assert!(result.unwrap_err().is_not_found());
     }
 
     #[tokio::test]
@@ -1266,7 +1266,7 @@ mod tests {
         };
 
         let result = client.amend_order(&request).await;
-        assert!(matches!(result.unwrap_err(), ExchangeError::NotFound(_)));
+        assert!(result.unwrap_err().is_not_found());
     }
 
     #[tokio::test]
@@ -1368,6 +1368,6 @@ mod tests {
             .await;
 
         let result = client.decrease_order("exch-999", Decimal::from(1)).await;
-        assert!(matches!(result.unwrap_err(), ExchangeError::NotFound(_)));
+        assert!(result.unwrap_err().is_not_found());
     }
 }

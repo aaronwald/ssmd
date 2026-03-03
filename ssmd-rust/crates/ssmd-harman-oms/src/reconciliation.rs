@@ -4,8 +4,11 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 use harman::db;
+use harman::fill_processor;
+use harman::order_importer;
+use harman::settlement_recorder;
 use harman::state::{self, OrderState};
-use harman::types::{Action, ExchangeOrderState, Order, Side};
+use harman::types::{Action, ExchangeOrderState, Side};
 use rust_decimal::Decimal;
 
 use crate::Oms;
@@ -145,27 +148,8 @@ async fn discover_settlements(oms: &Oms, session_id: i64) -> Result<u64, String>
 
     debug!(count = settlements.len(), "fetched exchange settlements");
 
-    let mut count = 0u64;
-    for settlement in &settlements {
-        let inserted = db::record_settlement(&oms.pool, session_id, settlement).await?;
-        if inserted {
-            info!(
-                ticker = %settlement.ticker,
-                event_ticker = %settlement.event_ticker,
-                market_result = %settlement.market_result,
-                revenue_cents = settlement.revenue_cents,
-                settled_time = %settlement.settled_time,
-                "recorded settlement"
-            );
-            count += 1;
-        }
-    }
-
-    if count > 0 {
-        info!(count, "discovered new settlements");
-    }
-
-    Ok(count)
+    settlement_recorder::record_settlements(&oms.pool, session_id, &settlements, "reconciliation")
+        .await
 }
 
 /// Fetch resting orders from exchange and import any not tracked locally.
@@ -184,73 +168,18 @@ async fn discover_external_orders(oms: &Oms, session_id: i64) -> Result<u64, Str
 
     let local_orders = db::list_orders(&oms.pool, session_id, None).await?;
 
-    let mut count = 0u64;
-    for order in &exchange_orders {
-        // Check if we already track this order locally
-        let known = local_orders
-            .iter()
-            .any(|o| o.exchange_order_id.as_deref() == Some(&order.exchange_order_id));
+    let count = order_importer::import_external_orders(
+        &oms.pool,
+        session_id,
+        &exchange_orders,
+        &local_orders,
+        true, // check_db_exists for reconciliation
+        "reconciliation",
+    )
+    .await?;
 
-        if known {
-            continue;
-        }
-
-        // Check if the order exists anywhere in the DB (avoid duplicate imports)
-        match db::order_exists(&oms.pool, &order.exchange_order_id).await {
-            Ok(true) => {
-                debug!(
-                    exchange_order_id = %order.exchange_order_id,
-                    "order already exists, skipping external import"
-                );
-                continue;
-            }
-            Ok(false) => {} // truly external, proceed with import
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    exchange_order_id = %order.exchange_order_id,
-                    "order existence check failed, proceeding with import"
-                );
-            }
-        }
-
-        info!(
-            exchange_order_id = %order.exchange_order_id,
-            ticker = %order.ticker,
-            side = ?order.side,
-            action = ?order.action,
-            quantity = %order.quantity,
-            price = %order.price_dollars,
-            client_order_id = ?order.client_order_id,
-            "importing external resting order"
-        );
-
-        match db::create_external_resting_order(
-            &oms.pool,
-            &db::ExternalOrderParams {
-                session_id,
-                exchange_order_id: &order.exchange_order_id,
-                ticker: &order.ticker,
-                side: order.side,
-                action: order.action,
-                quantity: order.quantity,
-                price_dollars: order.price_dollars,
-            },
-        )
-        .await
-        {
-            Ok(_order_id) => {
-                oms.metrics.fills_external_imported.inc();
-                count += 1;
-            }
-            Err(e) => {
-                error!(
-                    error = %e,
-                    exchange_order_id = %order.exchange_order_id,
-                    "failed to import external resting order"
-                );
-            }
-        }
+    if count > 0 {
+        oms.metrics.fills_external_imported.inc_by(count);
     }
 
     Ok(count)
@@ -272,137 +201,27 @@ async fn discover_fills(oms: &Oms, session_id: i64) -> Result<u64, String> {
 
     let session_orders = db::list_orders(&oms.pool, session_id, None).await?;
 
-    // Build lookup: exchange_order_id → &Order
-    let mut order_by_eid: HashMap<&str, &Order> = HashMap::new();
-    for o in &session_orders {
-        if let Some(eid) = &o.exchange_order_id {
-            order_by_eid.insert(eid, o);
-        }
+    let import_result = fill_processor::import_fills(
+        &oms.pool,
+        session_id,
+        &fills,
+        &session_orders,
+        "reconciliation",
+    )
+    .await?;
+
+    // Update metrics
+    let total = import_result.recorded;
+    if total > 0 {
+        oms.ems.metrics.fills_recorded.inc_by(total);
+    }
+    if import_result.external_imported > 0 {
+        oms.metrics
+            .fills_external_imported
+            .inc_by(import_result.external_imported);
     }
 
-    let mut count = 0u64;
-    let mut orders_with_new_fills: HashSet<i64> = HashSet::new();
-
-    for fill in &fills {
-        if let Some(order) = order_by_eid.get(fill.order_id.as_str()) {
-            let inserted = db::record_fill(
-                &oms.pool,
-                order.id,
-                session_id,
-                &fill.trade_id,
-                fill.price_dollars,
-                fill.quantity,
-                fill.is_taker,
-                fill.filled_at,
-            )
-            .await?;
-
-            if inserted {
-                info!(
-                    order_id = order.id,
-                    trade_id = %fill.trade_id,
-                    "recorded missing fill"
-                );
-                oms.ems.metrics.fills_recorded.inc();
-                orders_with_new_fills.insert(order.id);
-                count += 1;
-            }
-        } else {
-            // No matching order — external fill. Fills are sacrosanct: never drop.
-            // Import to user's session (one instance = one exchange account).
-            info!(
-                trade_id = %fill.trade_id,
-                exchange_order_id = %fill.order_id,
-                ticker = %fill.ticker,
-                client_order_id = ?fill.client_order_id,
-                "importing external fill"
-            );
-            match db::create_external_order(
-                &oms.pool,
-                &db::ExternalOrderParams {
-                    session_id,
-                    exchange_order_id: &fill.order_id,
-                    ticker: &fill.ticker,
-                    side: fill.side,
-                    action: fill.action,
-                    quantity: fill.quantity,
-                    price_dollars: fill.price_dollars,
-                },
-            )
-            .await
-            {
-                Ok(order_id) => {
-                    let inserted = db::record_fill(
-                        &oms.pool,
-                        order_id,
-                        session_id,
-                        &fill.trade_id,
-                        fill.price_dollars,
-                        fill.quantity,
-                        fill.is_taker,
-                        fill.filled_at,
-                    )
-                    .await?;
-                    if inserted {
-                        oms.ems.metrics.fills_recorded.inc();
-                        oms.metrics.fills_external_imported.inc();
-                        count += 1;
-                    }
-                }
-                Err(e) => {
-                    error!(
-                        error = %e,
-                        trade_id = %fill.trade_id,
-                        "failed to import external fill"
-                    );
-                }
-            }
-        }
-    }
-
-    // Update order states for orders that received new fills
-    for order_id in &orders_with_new_fills {
-        if let Some(order) = session_orders.iter().find(|o| o.id == *order_id) {
-            if order.state.is_terminal() {
-                continue;
-            }
-            let filled_qty = db::get_filled_quantity(&oms.pool, *order_id).await?;
-            let new_state = if filled_qty >= order.quantity {
-                OrderState::Filled
-            } else if filled_qty > Decimal::ZERO {
-                OrderState::PartiallyFilled
-            } else {
-                continue;
-            };
-
-            if new_state != order.state {
-                info!(
-                    order_id = order.id,
-                    from = %order.state,
-                    to = %new_state,
-                    filled_qty = %filled_qty,
-                    order_qty = %order.quantity,
-                    "reconciliation updated order state from fill"
-                );
-                if let Err(e) = db::update_order_state(
-                    &oms.pool,
-                    *order_id,
-                    session_id,
-                    new_state,
-                    None,
-                    Some(filled_qty),
-                    None,
-                    "reconciliation",
-                )
-                .await
-                {
-                    error!(error = %e, order_id, "failed to update order state after fill");
-                }
-            }
-        }
-    }
-
-    Ok(count)
+    Ok(total)
 }
 
 /// Compare local positions (from filled orders) against exchange positions.
@@ -565,9 +384,12 @@ async fn resolve_stale_orders(
                             if order.state == OrderState::PendingCancel
                                 && exchange_status.status == ExchangeOrderState::Resting
                             {
-                                if let Some(eid) = &order.exchange_order_id {
-                                    warn!(order_id = order.id, "re-sending cancel");
-                                    let _ = oms.exchange.cancel_order(eid).await;
+                                // Re-enqueue cancel through the EMS pump path instead of
+                                // firing a REST mutation inline. This gives audit trail,
+                                // retry logic, and rate limiting.
+                                warn!(order_id = order.id, "re-enqueuing cancel via EMS queue");
+                                if let Err(e) = db::enqueue_cancel(&oms.pool, order.id, "reconciliation").await {
+                                    error!(error = %e, order_id = order.id, "failed to re-enqueue cancel");
                                 }
                             } else {
                                 warn!(
@@ -624,14 +446,48 @@ async fn resolve_stale_orders(
                     }
                 }
             }
-            Err(harman::error::ExchangeError::NotFound(_)) => {
-                // NotFound is ambiguous — do NOT auto-resolve any state.
-                // The primary path (Ok with actual status) should handle resolution.
-                warn!(
-                    order_id = order.id,
-                    state = %order.state,
-                    "reconciliation: order not found on exchange, leaving for review"
-                );
+            Err(ref e) if e.is_not_found() => {
+                // Single-order GET returned 404 — fall back to contextual data.
+                //
+                // The demo API's GET /portfolio/orders/{id} returns 404 for settled/cancelled
+                // orders, so we use settled_tickers (from settlement discovery) to infer the
+                // order's final state when the direct endpoint fails.
+                if settled_tickers.contains(&order.ticker) {
+                    // Market settled → exchange auto-cancelled resting orders at settlement.
+                    let cancel_reason = harman::types::CancelReason::Expired;
+                    info!(
+                        order_id = order.id,
+                        ticker = %order.ticker,
+                        from = %order.state,
+                        to = %OrderState::Cancelled,
+                        cancel_reason = ?cancel_reason,
+                        "reconciliation: order not found but ticker settled, resolving as expired"
+                    );
+                    if let Err(e) = db::update_order_state(
+                        &oms.pool,
+                        order.id,
+                        session_id,
+                        OrderState::Cancelled,
+                        order.exchange_order_id.as_deref(),
+                        Some(order.filled_quantity),
+                        Some(&cancel_reason),
+                        "reconciliation",
+                    )
+                    .await
+                    {
+                        error!(error = %e, order_id = order.id, "failed to update settled-cancel state");
+                    } else {
+                        count += 1;
+                    }
+                } else {
+                    // Not settled — genuinely ambiguous. Leave for review.
+                    warn!(
+                        order_id = order.id,
+                        state = %order.state,
+                        ticker = %order.ticker,
+                        "reconciliation: order not found on exchange and ticker not settled, leaving for review"
+                    );
+                }
             }
             Err(e) => {
                 warn!(

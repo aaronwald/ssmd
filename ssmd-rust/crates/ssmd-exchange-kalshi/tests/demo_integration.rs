@@ -18,7 +18,7 @@ use harman::types::{Action, AmendRequest, OrderRequest, Side, TimeInForce};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use ssmd_connector_lib::kalshi::auth::KalshiCredentials;
-use ssmd_exchange_kalshi::client::KalshiClient;
+use ssmd_exchange_kalshi::client::KalshiRestClient;
 use uuid::Uuid;
 
 const DEMO_BASE_URL: &str = "https://demo-api.kalshi.co";
@@ -35,9 +35,9 @@ struct MarketsResponse {
     markets: Vec<MarketInfo>,
 }
 
-/// Build a KalshiClient from environment variables.
+/// Build a KalshiRestClient from environment variables.
 /// Returns None if credentials are not set (test should skip).
-fn make_client() -> Option<KalshiClient> {
+fn make_client() -> Option<KalshiRestClient> {
     let api_key = std::env::var("KALSHI_API_KEY").ok()?;
     let pem = std::env::var("KALSHI_PRIVATE_KEY_PEM").ok()?;
 
@@ -47,11 +47,11 @@ fn make_client() -> Option<KalshiClient> {
 
     let credentials = KalshiCredentials::new(api_key, &pem)
         .expect("failed to parse KALSHI_PRIVATE_KEY_PEM");
-    Some(KalshiClient::new(credentials, DEMO_BASE_URL.to_string()))
+    Some(KalshiRestClient::new(credentials, DEMO_BASE_URL.to_string()))
 }
 
 /// Discover an active market on the demo environment.
-/// Makes a direct HTTP call since KalshiClient doesn't expose a markets endpoint.
+/// Makes a direct HTTP call since KalshiRestClient doesn't expose a markets endpoint.
 async fn discover_active_market() -> Option<String> {
     let api_key = std::env::var("KALSHI_API_KEY").ok()?;
     let pem = std::env::var("KALSHI_PRIVATE_KEY_PEM").ok()?;
@@ -363,7 +363,7 @@ async fn test_demo_double_cancel() {
         "expected second cancel to fail, but it succeeded"
     );
     match result.unwrap_err() {
-        ExchangeError::NotFound(_) => println!("Got expected NotFound"),
+        e if e.is_not_found() => println!("Got expected NotFound"),
         ExchangeError::Rejected { reason } => println!("Got Rejected (acceptable): {}", reason),
         e => panic!("unexpected error type: {:?}", e),
     }
@@ -391,7 +391,7 @@ async fn test_demo_cancel_nonexistent_order() {
         "expected cancel of non-existent order to fail"
     );
     match result.unwrap_err() {
-        ExchangeError::NotFound(_) => println!("Got expected NotFound"),
+        e if e.is_not_found() => println!("Got expected NotFound"),
         ExchangeError::Rejected { reason } => println!("Got Rejected (acceptable): {}", reason),
         e => panic!("unexpected error type: {:?}", e),
     }
@@ -855,7 +855,7 @@ async fn test_demo_amend_cancelled_order() {
     assert!(result.is_err(), "expected amend of cancelled order to fail");
     match result.unwrap_err() {
         ExchangeError::Rejected { reason } => println!("Got expected Rejected: {}", reason),
-        ExchangeError::NotFound(_) => println!("Got NotFound (acceptable)"),
+        e if e.is_not_found() => println!("Got NotFound (acceptable)"),
         e => panic!("unexpected error type: {:?}", e),
     }
 }
@@ -885,7 +885,7 @@ async fn test_demo_amend_nonexistent_order() {
     println!("Amend non-existent order result: {:?}", result);
     assert!(result.is_err(), "expected amend of non-existent order to fail");
     match result.unwrap_err() {
-        ExchangeError::NotFound(_) => println!("Got expected NotFound"),
+        e if e.is_not_found() => println!("Got expected NotFound"),
         ExchangeError::Rejected { reason } => println!("Got Rejected (acceptable): {}", reason),
         e => panic!("unexpected error type: {:?}", e),
     }
@@ -1115,7 +1115,7 @@ async fn test_demo_decrease_nonexistent_order() {
         "expected decrease of non-existent order to fail"
     );
     match result.unwrap_err() {
-        ExchangeError::NotFound(_) => println!("Got expected NotFound"),
+        e if e.is_not_found() => println!("Got expected NotFound"),
         ExchangeError::Rejected { reason } => println!("Got Rejected (acceptable): {}", reason),
         e => panic!("unexpected error type: {:?}", e),
     }
