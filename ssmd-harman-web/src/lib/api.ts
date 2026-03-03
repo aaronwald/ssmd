@@ -241,8 +241,8 @@ export const getOrderTimeline = async (orderId: number): Promise<OrderTimelineRe
 };
 
 export const getExchangeAudit = async (sessionId: number): Promise<ExchangeAuditEntry[]> => {
-  const res = await dataRequest<{ audit: ExchangeAuditEntry[] }>(`/harman/sessions/${sessionId}/exchange-audit?limit=200`);
-  return res.audit;
+  const res = await dataRequest<{ entries: ExchangeAuditEntry[] }>(`/harman/sessions/${sessionId}/exchange-audit?limit=200`);
+  return res.entries;
 };
 
 // Watchlist — batch snap lookup via data-ts
