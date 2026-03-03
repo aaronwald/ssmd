@@ -45,6 +45,18 @@ function NavLinks() {
   );
 }
 
+/** Build a human-readable label for an instance.
+ *  If multiple instances share the same exchange+environment, append the id suffix. */
+function instanceLabel(inst: { id: string; exchange: string; environment: string }, all: { id: string; exchange: string; environment: string }[]) {
+  const base = `${inst.exchange} (${inst.environment})`;
+  const siblings = all.filter((i) => i.exchange === inst.exchange && i.environment === inst.environment);
+  if (siblings.length <= 1) return base;
+  // Derive a short suffix from the id: strip the common "exchange-env" prefix
+  const prefix = `${inst.exchange}-${inst.environment}`;
+  const suffix = inst.id.startsWith(prefix) ? inst.id.slice(prefix.length).replace(/^-/, "") : inst.id;
+  return suffix ? `${base} ${suffix}` : base;
+}
+
 export function InstanceBadge() {
   const { instance, instances, setInstance } = useInstance();
   const [open, setOpen] = useState(false);
@@ -77,7 +89,7 @@ export function InstanceBadge() {
         onClick={() => setOpen(!open)}
         className={`text-xs font-mono px-2 py-0.5 rounded-full border ${envColor}`}
       >
-        {current.id} ▾
+        {instanceLabel(current, instances)} ▾
       </button>
       {open && (
         <div className="absolute top-full left-0 mt-1 bg-bg-raised border border-border rounded shadow-lg z-50 min-w-[200px]">
@@ -94,7 +106,7 @@ export function InstanceBadge() {
                   : "text-fg-muted"
               }`}
             >
-              {inst.id}
+              {instanceLabel(inst, instances)}
               {!inst.healthy && (
                 <span className="text-red-400 ml-2">offline</span>
               )}
