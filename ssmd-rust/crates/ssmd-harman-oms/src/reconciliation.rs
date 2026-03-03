@@ -670,39 +670,6 @@ async fn resolve_stale_orders(
                             count += 1;
                         }
                     }
-                    OrderState::Acknowledged | OrderState::PartiallyFilled => {
-                        // Order was on exchange but is now gone — exchange auto-cancelled
-                        // at market close or unknown cancel. Use settled_tickers heuristic
-                        // to infer reason (close_cancel_count not available in NotFound case).
-                        let cancel_reason = if settled_tickers.contains(&order.ticker) {
-                            harman::types::CancelReason::Expired
-                        } else {
-                            harman::types::CancelReason::ExchangeCancel
-                        };
-                        warn!(
-                            order_id = order.id,
-                            state = %order.state,
-                            cancel_reason = ?cancel_reason,
-                            "reconciliation: {} order not found on exchange, marking cancelled",
-                            order.state
-                        );
-                        if let Err(e) = db::update_order_state(
-                            &oms.pool,
-                            order.id,
-                            session_id,
-                            OrderState::Cancelled,
-                            None,
-                            None,
-                            Some(&cancel_reason),
-                            "reconciliation",
-                        )
-                        .await
-                        {
-                            error!(error = %e, "failed to update cancelled state");
-                        } else {
-                            count += 1;
-                        }
-                    }
                     _ => {
                         warn!(
                             order_id = order.id,

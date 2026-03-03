@@ -191,30 +191,12 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                         )
                         .await;
                     }
-                    OrderState::Acknowledged | OrderState::PartiallyFilled => {
-                        // Order was on the exchange (has exchange_order_id) but is now
-                        // gone — exchange auto-cancelled at market close or unknown cancel.
-                        warn!(
-                            order_id = order.id,
-                            state = %order.state,
-                            "recovery: {} order not found on exchange, marking cancelled",
-                            order.state
-                        );
-                        let _ = db::update_order_state(
-                            &oms.pool,
-                            order.id,
-                            session_id,
-                            OrderState::Cancelled,
-                            None,
-                            None,
-                            Some(&harman::types::CancelReason::ExchangeCancel),
-                            "recovery",
-                        )
-                        .await;
-                    }
                     _ => {
-                        // PendingAmend/PendingDecrease not found is unusual —
-                        // log warning but don't auto-cancel
+                        // Acknowledged, PartiallyFilled, PendingAmend, PendingDecrease:
+                        // NotFound is ambiguous — could mean order aged out of API, endpoint
+                        // is wrong, or auth failed. Do NOT auto-cancel; leave for the primary
+                        // path (get_order_by_exchange_id returning actual status) to resolve.
+                        // Pile-up of unresolved orders is a visible signal that something's broken.
                         warn!(
                             order_id = order.id,
                             state = %order.state,
