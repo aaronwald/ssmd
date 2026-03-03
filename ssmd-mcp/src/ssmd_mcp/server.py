@@ -31,6 +31,12 @@ from ssmd_mcp.tools import (
     get_fees,
     list_api_keys,
     query_key_usage,
+    harman_sessions,
+    harman_orders,
+    harman_fills,
+    harman_order_timeline,
+    harman_exchange_audit,
+    harman_settlements,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -551,6 +557,168 @@ TOOLS = [
             },
         },
     ),
+    Tool(
+        name="harman_sessions",
+        description=(
+            "List all harman OMS sessions with risk/status summary. Returns session ID, "
+            "exchange, environment, api_key_prefix, display_name, max_notional, "
+            "open_notional, open_order_count, total_fills, total_settlements, "
+            "suspended status, and last_activity. Requires admin scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        },
+    ),
+    Tool(
+        name="harman_orders",
+        description=(
+            "Query orders for a harman session. Returns order ID, ticker, side, action, "
+            "quantity, price, filled_quantity, state, cancel_reason, timestamps. "
+            "Requires admin scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "integer",
+                    "description": "Session ID to query orders for.",
+                },
+                "state": {
+                    "type": "string",
+                    "description": "Filter by order state (e.g., 'acknowledged', 'filled', 'cancelled').",
+                },
+                "ticker": {
+                    "type": "string",
+                    "description": "Filter by ticker (ILIKE pattern match).",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "ISO datetime lower bound for created_at.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return. Default 100, max 500.",
+                    "default": 100,
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
+    Tool(
+        name="harman_fills",
+        description=(
+            "Query fills for a harman session. Returns fill ID, order_id, trade_id, "
+            "ticker, price, quantity, is_taker, filled_at. Requires admin scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "integer",
+                    "description": "Session ID to query fills for.",
+                },
+                "ticker": {
+                    "type": "string",
+                    "description": "Filter by ticker (ILIKE pattern match).",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "ISO datetime lower bound for filled_at.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return. Default 100, max 500.",
+                    "default": 100,
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
+    Tool(
+        name="harman_order_timeline",
+        description=(
+            "Get full order lifecycle timeline. Joins prediction_orders + audit_log + "
+            "exchange_audit_log + fills + settlements into a unified timeline sorted by "
+            "timestamp. The key debugging endpoint for understanding order behavior. "
+            "Requires admin scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "order_id": {
+                    "type": "integer",
+                    "description": "Order ID to get timeline for.",
+                },
+            },
+            "required": ["order_id"],
+        },
+    ),
+    Tool(
+        name="harman_exchange_audit",
+        description=(
+            "Query exchange audit log for a harman session. Returns REST calls, WS events, "
+            "fallback decisions, and reconciliation actions with full request/response payloads. "
+            "Categories: rest_call, ws_event, fallback, reconciliation, recovery, risk. "
+            "Requires admin scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "integer",
+                    "description": "Session ID to query exchange audit for.",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Filter by category (e.g., 'rest_call', 'ws_event', 'fallback').",
+                },
+                "action": {
+                    "type": "string",
+                    "description": "Filter by action (e.g., 'submit_order', 'cancel_order').",
+                },
+                "outcome": {
+                    "type": "string",
+                    "description": "Filter by outcome (e.g., 'success', 'error', 'not_found').",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "ISO datetime lower bound for created_at.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return. Default 100, max 500.",
+                    "default": 100,
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
+    Tool(
+        name="harman_settlements",
+        description=(
+            "Query settlements for a harman session. Returns settlement ID, ticker, "
+            "result, payout_dollars, created_at. Requires admin scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "integer",
+                    "description": "Session ID to query settlements for.",
+                },
+                "ticker": {
+                    "type": "string",
+                    "description": "Filter by ticker (ILIKE pattern match).",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "ISO datetime lower bound for created_at.",
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
 ]
 
 
@@ -675,6 +843,47 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
         return query_key_usage(
             cfg,
             key_prefix=arguments.get("key_prefix"),
+        )
+    elif name == "harman_sessions":
+        return harman_sessions(cfg)
+    elif name == "harman_orders":
+        return harman_orders(
+            cfg,
+            session_id=arguments["session_id"],
+            state=arguments.get("state"),
+            ticker=arguments.get("ticker"),
+            since=arguments.get("since"),
+            limit=arguments.get("limit", 100),
+        )
+    elif name == "harman_fills":
+        return harman_fills(
+            cfg,
+            session_id=arguments["session_id"],
+            ticker=arguments.get("ticker"),
+            since=arguments.get("since"),
+            limit=arguments.get("limit", 100),
+        )
+    elif name == "harman_order_timeline":
+        return harman_order_timeline(
+            cfg,
+            order_id=arguments["order_id"],
+        )
+    elif name == "harman_exchange_audit":
+        return harman_exchange_audit(
+            cfg,
+            session_id=arguments["session_id"],
+            category=arguments.get("category"),
+            action=arguments.get("action"),
+            outcome=arguments.get("outcome"),
+            since=arguments.get("since"),
+            limit=arguments.get("limit", 100),
+        )
+    elif name == "harman_settlements":
+        return harman_settlements(
+            cfg,
+            session_id=arguments["session_id"],
+            ticker=arguments.get("ticker"),
+            since=arguments.get("since"),
         )
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

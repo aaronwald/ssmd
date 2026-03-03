@@ -341,3 +341,94 @@ def query_key_usage(cfg: Config, key_prefix: str | None = None) -> str:
         merged = [m for m in merged if m.get("keyPrefix") == key_prefix]
 
     return json.dumps({"count": len(merged), "sincePodStart": True, "usage": merged}, default=str)
+
+
+# --- Harman Admin tools ---
+
+
+def harman_sessions(cfg: Config) -> str:
+    """List all harman sessions with risk/status summary."""
+    result = api_get(cfg, "/v1/harman/sessions")
+    return json.dumps(result, indent=2, default=str)
+
+
+def harman_orders(
+    cfg: Config,
+    session_id: int,
+    state: str | None = None,
+    ticker: str | None = None,
+    since: str | None = None,
+    limit: int = 100,
+) -> str:
+    """Query orders for a harman session."""
+    params: dict[str, Any] = {"limit": limit}
+    if state:
+        params["state"] = state
+    if ticker:
+        params["ticker"] = ticker
+    if since:
+        params["since"] = since
+    result = api_get(cfg, f"/v1/harman/sessions/{session_id}/orders", params)
+    return json.dumps(result, indent=2, default=str)
+
+
+def harman_fills(
+    cfg: Config,
+    session_id: int,
+    ticker: str | None = None,
+    since: str | None = None,
+    limit: int = 100,
+) -> str:
+    """Query fills for a harman session."""
+    params: dict[str, Any] = {"limit": limit}
+    if ticker:
+        params["ticker"] = ticker
+    if since:
+        params["since"] = since
+    result = api_get(cfg, f"/v1/harman/sessions/{session_id}/fills", params)
+    return json.dumps(result, indent=2, default=str)
+
+
+def harman_order_timeline(cfg: Config, order_id: int) -> str:
+    """Get full order lifecycle timeline."""
+    result = api_get(cfg, f"/v1/harman/orders/{order_id}/timeline")
+    return json.dumps(result, indent=2, default=str)
+
+
+def harman_exchange_audit(
+    cfg: Config,
+    session_id: int,
+    category: str | None = None,
+    action: str | None = None,
+    outcome: str | None = None,
+    since: str | None = None,
+    limit: int = 100,
+) -> str:
+    """Query exchange audit log for a harman session."""
+    params: dict[str, Any] = {"limit": limit}
+    if category:
+        params["category"] = category
+    if action:
+        params["action"] = action
+    if outcome:
+        params["outcome"] = outcome
+    if since:
+        params["since"] = since
+    result = api_get(cfg, f"/v1/harman/sessions/{session_id}/exchange-audit", params)
+    return json.dumps(result, indent=2, default=str)
+
+
+def harman_settlements(
+    cfg: Config,
+    session_id: int,
+    ticker: str | None = None,
+    since: str | None = None,
+) -> str:
+    """Query settlements for a harman session."""
+    params: dict[str, Any] = {}
+    if ticker:
+        params["ticker"] = ticker
+    if since:
+        params["since"] = since
+    result = api_get(cfg, f"/v1/harman/sessions/{session_id}/settlements", params if params else None)
+    return json.dumps(result, indent=2, default=str)
