@@ -73,6 +73,7 @@ import {
   VOLUME_UNITS,
 } from "../lib/duckdb/queries.ts";
 import { VALID_DATA_FEEDS, FEED_PATHS } from "../lib/duckdb/feed-config.ts";
+import postgres from "postgres";
 import { and, inArray, isNull, eq, gte, lt, lte, desc, sql, ilike } from "drizzle-orm";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
@@ -86,6 +87,7 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 export interface RouteContext {
   dataDir: string;
   db: Database;
+  harmanSql?: ReturnType<typeof postgres>;
   authOverride?: (apiKey: string | null, db: Database) => Promise<import("./auth.ts").AuthResult>;
 }
 
@@ -2549,12 +2551,13 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
 
 // ============================================================
 // Harman Admin Routes — sessions, orders, fills, audit, timeline
-// All require admin:read scope. Uses raw SQL (postgres.js) for
-// harman tables not in the drizzle schema.
+// All require admin:read scope. Uses a separate postgres connection
+// (HARMAN_DATABASE_URL) for harman tables in the harman database.
 // ============================================================
 
-route("GET", "/v1/harman/sessions", async (_req, _ctx) => {
-  const rawSql = getRawSql();
+route("GET", "/v1/harman/sessions", async (_req, ctx) => {
+  if (!ctx.harmanSql) return json({ error: "Harman database not configured" }, 503);
+  const rawSql = ctx.harmanSql;
   const rows = await rawSql`
     SELECT s.id, s.exchange, s.environment, s.api_key_prefix, s.display_name,
            s.max_notional, s.suspended, s.created_at,
@@ -2585,7 +2588,8 @@ route("GET", "/v1/harman/sessions", async (_req, _ctx) => {
   return json({ sessions: rows });
 }, true, "admin:read");
 
-route("GET", "/v1/harman/sessions/:id/orders", async (req, _ctx) => {
+route("GET", "/v1/harman/sessions/:id/orders", async (req, ctx) => {
+  if (!ctx.harmanSql) return json({ error: "Harman database not configured" }, 503);
   const params = (req as Request & { params: Record<string, string> }).params;
   const sessionId = parseInt(params.id);
   if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
@@ -2598,7 +2602,7 @@ route("GET", "/v1/harman/sessions/:id/orders", async (req, _ctx) => {
   const limit = Math.min(Math.max(
     url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
 
-  const rawSql = getRawSql();
+  const rawSql = ctx.harmanSql;
   const rows = await rawSql`
     SELECT id, client_order_id, exchange_order_id, ticker, side, action,
            quantity, price_dollars, filled_quantity, state, cancel_reason,
@@ -2615,7 +2619,8 @@ route("GET", "/v1/harman/sessions/:id/orders", async (req, _ctx) => {
   return json({ orders: rows });
 }, true, "admin:read");
 
-route("GET", "/v1/harman/sessions/:id/fills", async (req, _ctx) => {
+route("GET", "/v1/harman/sessions/:id/fills", async (req, ctx) => {
+  if (!ctx.harmanSql) return json({ error: "Harman database not configured" }, 503);
   const params = (req as Request & { params: Record<string, string> }).params;
   const sessionId = parseInt(params.id);
   if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
@@ -2627,7 +2632,7 @@ route("GET", "/v1/harman/sessions/:id/fills", async (req, _ctx) => {
   const limit = Math.min(Math.max(
     url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
 
-  const rawSql = getRawSql();
+  const rawSql = ctx.harmanSql;
   const rows = await rawSql`
     SELECT f.id, f.order_id, f.trade_id, po.ticker, f.price_dollars,
            f.quantity, f.is_taker, f.filled_at, f.created_at
@@ -2643,7 +2648,8 @@ route("GET", "/v1/harman/sessions/:id/fills", async (req, _ctx) => {
   return json({ fills: rows });
 }, true, "admin:read");
 
-route("GET", "/v1/harman/sessions/:id/settlements", async (req, _ctx) => {
+route("GET", "/v1/harman/sessions/:id/settlements", async (req, ctx) => {
+  if (!ctx.harmanSql) return json({ error: "Harman database not configured" }, 503);
   const params = (req as Request & { params: Record<string, string> }).params;
   const sessionId = parseInt(params.id);
   if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
@@ -2653,7 +2659,7 @@ route("GET", "/v1/harman/sessions/:id/settlements", async (req, _ctx) => {
   const since = url.searchParams.get("since");
   const until = url.searchParams.get("until");
 
-  const rawSql = getRawSql();
+  const rawSql = ctx.harmanSql;
   const rows = await rawSql`
     SELECT id, ticker, result, payout_dollars, created_at
     FROM settlements
@@ -2666,7 +2672,8 @@ route("GET", "/v1/harman/sessions/:id/settlements", async (req, _ctx) => {
   return json({ settlements: rows });
 }, true, "admin:read");
 
-route("GET", "/v1/harman/sessions/:id/audit", async (req, _ctx) => {
+route("GET", "/v1/harman/sessions/:id/audit", async (req, ctx) => {
+  if (!ctx.harmanSql) return json({ error: "Harman database not configured" }, 503);
   const params = (req as Request & { params: Record<string, string> }).params;
   const sessionId = parseInt(params.id);
   if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
@@ -2679,7 +2686,7 @@ route("GET", "/v1/harman/sessions/:id/audit", async (req, _ctx) => {
   const limit = Math.min(Math.max(
     url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
 
-  const rawSql = getRawSql();
+  const rawSql = ctx.harmanSql;
   const rows = await rawSql`
     SELECT al.id, al.order_id, al.from_state, al.to_state, al.event, al.actor,
            al.details, al.created_at
@@ -2696,7 +2703,8 @@ route("GET", "/v1/harman/sessions/:id/audit", async (req, _ctx) => {
   return json({ entries: rows });
 }, true, "admin:read");
 
-route("GET", "/v1/harman/sessions/:id/exchange-audit", async (req, _ctx) => {
+route("GET", "/v1/harman/sessions/:id/exchange-audit", async (req, ctx) => {
+  if (!ctx.harmanSql) return json({ error: "Harman database not configured" }, 503);
   const params = (req as Request & { params: Record<string, string> }).params;
   const sessionId = parseInt(params.id);
   if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
@@ -2711,7 +2719,7 @@ route("GET", "/v1/harman/sessions/:id/exchange-audit", async (req, _ctx) => {
   const limit = Math.min(Math.max(
     url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
 
-  const rawSql = getRawSql();
+  const rawSql = ctx.harmanSql;
   const rows = await rawSql`
     SELECT id, order_id, category, action, endpoint, status_code, duration_ms,
            request, response, outcome, error_msg, metadata, created_at
@@ -2729,12 +2737,13 @@ route("GET", "/v1/harman/sessions/:id/exchange-audit", async (req, _ctx) => {
   return json({ entries: rows });
 }, true, "admin:read");
 
-route("GET", "/v1/harman/sessions/:id/risk", async (req, _ctx) => {
+route("GET", "/v1/harman/sessions/:id/risk", async (req, ctx) => {
+  if (!ctx.harmanSql) return json({ error: "Harman database not configured" }, 503);
   const params = (req as Request & { params: Record<string, string> }).params;
   const sessionId = parseInt(params.id);
   if (isNaN(sessionId)) return json({ error: "Invalid session ID" }, 400);
 
-  const rawSql = getRawSql();
+  const rawSql = ctx.harmanSql;
   const sessions = await rawSql`SELECT max_notional FROM sessions WHERE id = ${sessionId}`;
   if (sessions.length === 0) return json({ error: "Session not found" }, 404);
   const maxNotional = parseFloat(sessions[0].max_notional) || 0;
@@ -2760,12 +2769,13 @@ route("GET", "/v1/harman/sessions/:id/risk", async (req, _ctx) => {
   });
 }, true, "admin:read");
 
-route("GET", "/v1/harman/orders/:id/timeline", async (req, _ctx) => {
+route("GET", "/v1/harman/orders/:id/timeline", async (req, ctx) => {
+  if (!ctx.harmanSql) return json({ error: "Harman database not configured" }, 503);
   const params = (req as Request & { params: Record<string, string> }).params;
   const orderId = parseInt(params.id);
   if (isNaN(orderId)) return json({ error: "Invalid order ID" }, 400);
 
-  const rawSql = getRawSql();
+  const rawSql = ctx.harmanSql;
 
   // 1. Fetch order
   const orders = await rawSql`
