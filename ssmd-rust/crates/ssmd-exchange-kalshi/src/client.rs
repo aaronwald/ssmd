@@ -811,6 +811,33 @@ impl ExchangeAdapter for KalshiRestClient {
         }
     }
 
+    async fn is_market_active(&self, ticker: &str) -> Result<bool, ExchangeError> {
+        let url = format!("{}/markets/{}", self.path_prefix, ticker);
+        let resp = self.get(&url).await?;
+
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            // Market doesn't exist — treat as not active
+            return Ok(false);
+        }
+        if !status.is_success() {
+            let error_body = resp.text().await.unwrap_or_default();
+            return Err(ExchangeError::Unexpected(format!(
+                "HTTP {}: {}",
+                status, error_body
+            )));
+        }
+
+        let market_resp: crate::types::KalshiMarketResponse = resp
+            .json()
+            .await
+            .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
+
+        // Kalshi market statuses: "active", "closed", "settled"
+        // Only "active" means the market is still accepting orders
+        Ok(market_resp.market.status == "active")
+    }
+
     async fn get_settlements(
         &self,
         min_ts: Option<chrono::DateTime<chrono::Utc>>,

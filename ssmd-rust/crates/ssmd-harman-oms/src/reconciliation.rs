@@ -496,13 +496,55 @@ async fn resolve_stale_orders(
                         count += 1;
                     }
                 } else {
-                    // Not settled — genuinely ambiguous. Leave for review.
-                    warn!(
-                        order_id = order.id,
-                        state = %order.state,
-                        ticker = %order.ticker,
-                        "reconciliation: order not found on exchange and event not settled, leaving for review"
-                    );
+                    // No settlement data — check market status directly.
+                    // If the market is no longer active (closed/settled), the exchange
+                    // auto-cancelled resting orders at market close.
+                    match oms.exchange.is_market_active(&order.ticker).await {
+                        Ok(false) => {
+                            let cancel_reason = harman::types::CancelReason::Expired;
+                            info!(
+                                order_id = order.id,
+                                ticker = %order.ticker,
+                                from = %order.state,
+                                to = %OrderState::Cancelled,
+                                cancel_reason = ?cancel_reason,
+                                "reconciliation: order not found and market not active, resolving as expired"
+                            );
+                            if let Err(e) = db::update_order_state(
+                                &oms.pool,
+                                order.id,
+                                session_id,
+                                OrderState::Cancelled,
+                                order.exchange_order_id.as_deref(),
+                                Some(order.filled_quantity),
+                                Some(&cancel_reason),
+                                "reconciliation",
+                            )
+                            .await
+                            {
+                                error!(error = %e, order_id = order.id, "failed to update market-closed cancel state");
+                            } else {
+                                count += 1;
+                            }
+                        }
+                        Ok(true) => {
+                            // Market still active but order not found — genuinely ambiguous.
+                            warn!(
+                                order_id = order.id,
+                                state = %order.state,
+                                ticker = %order.ticker,
+                                "reconciliation: order not found but market still active, leaving for review"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                order_id = order.id,
+                                ticker = %order.ticker,
+                                "reconciliation: failed to check market status, leaving for review"
+                            );
+                        }
+                    }
                 }
             }
             Err(e) => {

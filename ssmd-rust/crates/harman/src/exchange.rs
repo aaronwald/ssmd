@@ -78,6 +78,13 @@ pub trait ExchangeAdapter: Send + Sync {
         reduce_by: Decimal,
     ) -> Result<(), ExchangeError>;
 
+    /// Check if a market is still active (accepting orders).
+    ///
+    /// Returns `true` if the market is open/active, `false` if closed/settled/finalized.
+    /// Used as a fallback when portfolio-level queries can't determine order state
+    /// (e.g., single-order GET returns 404 on demo for settled markets).
+    async fn is_market_active(&self, ticker: &str) -> Result<bool, ExchangeError>;
+
     /// Get settlements (market close payouts), optionally filtered by minimum timestamp.
     ///
     /// When `min_ts` is Some, only returns settlements at or after the given time.

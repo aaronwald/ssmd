@@ -301,6 +301,11 @@ impl ExchangeAdapter for MockExchange {
         }
     }
 
+    async fn is_market_active(&self, _ticker: &str) -> Result<bool, ExchangeError> {
+        // Default: markets are active in tests
+        Ok(true)
+    }
+
     async fn get_settlements(
         &self,
         _min_ts: Option<chrono::DateTime<chrono::Utc>>,

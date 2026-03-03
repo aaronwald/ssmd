@@ -235,6 +235,18 @@ pub struct KalshiSettlementsResponse {
     pub cursor: Option<String>,
 }
 
+/// Minimal Kalshi market response for status checks.
+#[derive(Debug, Deserialize)]
+pub struct KalshiMarketResponse {
+    pub market: KalshiMarketStatus,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KalshiMarketStatus {
+    pub ticker: String,
+    pub status: String, // "active", "closed", "settled", etc.
+}
+
 /// Kalshi API error response
 #[derive(Debug, Deserialize)]
 pub struct KalshiError {
