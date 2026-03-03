@@ -15,7 +15,7 @@ export interface ServerOptions {
   dataDir: string;
   databaseUrl: string;
   redisUrl?: string;  // Optional, uses REDIS_URL env var if not provided
-  harmanDatabaseUrl?: string;  // Optional, for harman admin queries
+  harmanDatabaseUrls?: Map<string, string>;  // Optional, name→url for harman admin queries
 }
 
 /**
@@ -30,19 +30,22 @@ export function createServer(options: ServerOptions): Deno.HttpServer<Deno.NetAd
   const sql = postgres(options.databaseUrl);
   const db = drizzle(sql, { schema });
 
-  // Optional second pool for harman database (admin routes)
-  const harmanSql = options.harmanDatabaseUrl
-    ? postgres(options.harmanDatabaseUrl, { max: 5, idle_timeout: 30, connect_timeout: 10 })
-    : undefined;
+  // Create pools for harman databases (admin routes)
+  const harmanPools = new Map<string, ReturnType<typeof postgres>>();
+  if (options.harmanDatabaseUrls) {
+    for (const [name, url] of options.harmanDatabaseUrls) {
+      harmanPools.set(name, postgres(url, { max: 5, idle_timeout: 30, connect_timeout: 10 }));
+    }
+  }
 
-  if (harmanSql) {
-    console.log("Harman database connection configured for admin routes");
+  if (harmanPools.size > 0) {
+    console.log(`Harman database connections configured: ${[...harmanPools.keys()].join(", ")}`);
   }
 
   const ctx: RouteContext = {
     dataDir: options.dataDir,
     db,
-    harmanSql,
+    harmanPools,
   };
 
   const router = createRouter(ctx);

@@ -167,26 +167,26 @@ export function useHarmanSessions() {
   });
 }
 
-export function useSessionOrders(sessionId: number | null) {
+export function useSessionOrders(sessionId: number | null, instance?: string) {
   return useSWR(
-    sessionId ? `data-harman-orders-${sessionId}` : null,
-    () => getSessionOrders(sessionId!),
+    sessionId ? `data-harman-orders-${instance ?? ""}-${sessionId}` : null,
+    () => getSessionOrders(sessionId!, instance),
     { refreshInterval: ORDER_REFRESH }
   );
 }
 
-export function useOrderTimeline(orderId: number | null) {
+export function useOrderTimeline(orderId: number | null, instance?: string) {
   return useSWR(
-    orderId ? `data-harman-timeline-${orderId}` : null,
-    () => getOrderTimeline(orderId!),
+    orderId ? `data-harman-timeline-${instance ?? ""}-${orderId}` : null,
+    () => getOrderTimeline(orderId!, instance),
     { refreshInterval: ORDER_REFRESH }
   );
 }
 
-export function useExchangeAudit(sessionId: number | null) {
+export function useExchangeAudit(sessionId: number | null, instance?: string) {
   return useSWR(
-    sessionId ? `data-harman-audit-${sessionId}` : null,
-    () => getExchangeAudit(sessionId!),
+    sessionId ? `data-harman-audit-${instance ?? ""}-${sessionId}` : null,
+    () => getExchangeAudit(sessionId!, instance),
     { refreshInterval: ORDER_REFRESH }
   );
 }

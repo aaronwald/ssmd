@@ -233,17 +233,20 @@ export const getHarmanSessions = async (): Promise<HarmanSession[]> => {
   return res.sessions;
 };
 
-export const getSessionOrders = async (sessionId: number): Promise<Order[]> => {
-  const res = await dataRequest<{ orders: Order[] }>(`/harman/sessions/${sessionId}/orders?limit=100`);
+export const getSessionOrders = async (sessionId: number, instance?: string): Promise<Order[]> => {
+  const qs = instance ? `?limit=100&instance=${encodeURIComponent(instance)}` : "?limit=100";
+  const res = await dataRequest<{ orders: Order[] }>(`/harman/sessions/${sessionId}/orders${qs}`);
   return res.orders;
 };
 
-export const getOrderTimeline = async (orderId: number): Promise<OrderTimelineResponse> => {
-  return dataRequest<OrderTimelineResponse>(`/harman/orders/${orderId}/timeline`);
+export const getOrderTimeline = async (orderId: number, instance?: string): Promise<OrderTimelineResponse> => {
+  const qs = instance ? `?instance=${encodeURIComponent(instance)}` : "";
+  return dataRequest<OrderTimelineResponse>(`/harman/orders/${orderId}/timeline${qs}`);
 };
 
-export const getExchangeAudit = async (sessionId: number): Promise<ExchangeAuditEntry[]> => {
-  const res = await dataRequest<{ entries: ExchangeAuditEntry[] }>(`/harman/sessions/${sessionId}/exchange-audit?limit=200`);
+export const getExchangeAudit = async (sessionId: number, instance?: string): Promise<ExchangeAuditEntry[]> => {
+  const qs = instance ? `?limit=200&instance=${encodeURIComponent(instance)}` : "?limit=200";
+  const res = await dataRequest<{ entries: ExchangeAuditEntry[] }>(`/harman/sessions/${sessionId}/exchange-audit${qs}`);
   return res.entries;
 };
 

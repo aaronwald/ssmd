@@ -128,8 +128,8 @@ function EntryDetail({ entry }: { entry: TimelineEntry }) {
   );
 }
 
-export function OrderTimeline({ orderId }: { orderId: number }) {
-  const { data, error } = useOrderTimeline(orderId);
+export function OrderTimeline({ orderId, instance }: { orderId: number; instance?: string }) {
+  const { data, error } = useOrderTimeline(orderId, instance);
 
   if (error) {
     return <p className="text-xs text-red py-2">Error loading timeline: {error.message}</p>;

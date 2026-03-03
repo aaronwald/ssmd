@@ -280,6 +280,7 @@ export interface AdminUsersResponse {
 /** Harman admin types */
 export interface HarmanSession {
   id: number;
+  instance: string;
   exchange: string;
   environment: string;
   api_key_prefix: string;

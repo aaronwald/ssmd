@@ -87,7 +87,7 @@ function AdminContent() {
 
 function SessionsSection() {
   const { data: sessions, error } = useHarmanSessions();
-  const [selectedSession, setSelectedSession] = useState<number | null>(null);
+  const [selected, setSelected] = useState<{ id: number; instance: string } | null>(null);
   const [search, setSearch] = useState("");
 
   const filtered = useMemo(() => {
@@ -98,6 +98,7 @@ function SessionsSection() {
       (s) =>
         s.exchange.toLowerCase().includes(q) ||
         s.environment.toLowerCase().includes(q) ||
+        (s.instance?.toLowerCase().includes(q) ?? false) ||
         (s.display_name?.toLowerCase().includes(q) ?? false) ||
         s.api_key_prefix.toLowerCase().includes(q)
     );
@@ -135,6 +136,7 @@ function SessionsSection() {
             <thead>
               <tr className="text-left text-xs text-fg-muted border-b border-border">
                 <th className="px-4 py-2">ID</th>
+                <th className="px-4 py-2">Instance</th>
                 <th className="px-4 py-2">Exchange</th>
                 <th className="px-4 py-2">Env</th>
                 <th className="px-4 py-2">Name</th>
@@ -149,12 +151,14 @@ function SessionsSection() {
               {filtered && filtered.length > 0 ? (
                 filtered.map((s) => (
                   <SessionRow
-                    key={s.id}
+                    key={`${s.instance}-${s.id}`}
                     session={s}
-                    isSelected={selectedSession === s.id}
+                    isSelected={selected?.id === s.id && selected?.instance === s.instance}
                     onToggle={() =>
-                      setSelectedSession(
-                        selectedSession === s.id ? null : s.id
+                      setSelected(
+                        selected?.id === s.id && selected?.instance === s.instance
+                          ? null
+                          : { id: s.id, instance: s.instance }
                       )
                     }
                   />
@@ -162,7 +166,7 @@ function SessionsSection() {
               ) : (
                 <tr>
                   <td
-                    colSpan={9}
+                    colSpan={10}
                     className="px-4 py-8 text-center text-fg-subtle text-sm"
                   >
                     {filtered ? "No sessions" : "Loading..."}
@@ -175,7 +179,7 @@ function SessionsSection() {
       </div>
 
       {/* Expanded session orders */}
-      {selectedSession && <SessionOrdersPanel sessionId={selectedSession} />}
+      {selected && <SessionOrdersPanel sessionId={selected.id} instance={selected.instance} />}
     </div>
   );
 }
@@ -197,6 +201,7 @@ function SessionRow({
       onClick={onToggle}
     >
       <td className="px-4 py-2 font-mono text-fg-muted">{s.id}</td>
+      <td className="px-4 py-2 font-mono text-xs text-fg-muted">{s.instance}</td>
       <td className="px-4 py-2 capitalize">{s.exchange}</td>
       <td className="px-4 py-2">{s.environment}</td>
       <td className="px-4 py-2">{s.display_name || s.api_key_prefix + "..."}</td>
@@ -241,8 +246,8 @@ function SessionRow({
   );
 }
 
-function SessionOrdersPanel({ sessionId }: { sessionId: number }) {
-  const { data: orders, error } = useSessionOrders(sessionId);
+function SessionOrdersPanel({ sessionId, instance }: { sessionId: number; instance?: string }) {
+  const { data: orders, error } = useSessionOrders(sessionId, instance);
   const [expandedOrder, setExpandedOrder] = useState<number | null>(null);
 
   if (error) {
@@ -285,6 +290,7 @@ function SessionOrdersPanel({ sessionId }: { sessionId: number }) {
                 <OrderRow
                   key={o.id}
                   order={o}
+                  instance={instance}
                   isExpanded={expandedOrder === o.id}
                   onToggle={() =>
                     setExpandedOrder(expandedOrder === o.id ? null : o.id)
@@ -310,10 +316,12 @@ function SessionOrdersPanel({ sessionId }: { sessionId: number }) {
 
 function OrderRow({
   order: o,
+  instance,
   isExpanded,
   onToggle,
 }: {
   order: Order;
+  instance?: string;
   isExpanded: boolean;
   onToggle: () => void;
 }) {
@@ -348,7 +356,7 @@ function OrderRow({
       {isExpanded && (
         <tr>
           <td colSpan={8} className="px-4 py-3 bg-bg">
-            <OrderTimeline orderId={o.id} />
+            <OrderTimeline orderId={o.id} instance={instance} />
           </td>
         </tr>
       )}
@@ -360,32 +368,34 @@ function OrderRow({
 
 function ExchangeAuditSection() {
   const { data: sessions } = useHarmanSessions();
-  const [selectedSession, setSelectedSession] = useState<number | null>(null);
+  const [selected, setSelected] = useState<{ id: number; instance: string } | null>(null);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
         <h2 className="text-sm font-semibold text-fg">Exchange Audit Log</h2>
         <select
-          value={selectedSession ?? ""}
-          onChange={(e) =>
-            setSelectedSession(e.target.value ? Number(e.target.value) : null)
-          }
+          value={selected ? `${selected.instance}:${selected.id}` : ""}
+          onChange={(e) => {
+            if (!e.target.value) { setSelected(null); return; }
+            const [inst, id] = e.target.value.split(":");
+            setSelected({ instance: inst, id: Number(id) });
+          }}
           className="rounded-md border border-border bg-bg-surface px-3 py-1 text-sm text-fg focus:border-accent focus:outline-none"
         >
           <option value="">Select session...</option>
           {sessions?.map((s) => (
-            <option key={s.id} value={s.id}>
-              #{s.id} — {s.exchange} ({s.environment})
+            <option key={`${s.instance}-${s.id}`} value={`${s.instance}:${s.id}`}>
+              #{s.id} — {s.instance} — {s.exchange} ({s.environment})
               {s.display_name ? ` — ${s.display_name}` : ""}
             </option>
           ))}
         </select>
       </div>
 
-      {selectedSession && <AuditLogTable sessionId={selectedSession} />}
+      {selected && <AuditLogTable sessionId={selected.id} instance={selected.instance} />}
 
-      {!selectedSession && (
+      {!selected && (
         <p className="text-sm text-fg-muted">
           Select a session to view exchange audit entries.
         </p>
@@ -394,8 +404,8 @@ function ExchangeAuditSection() {
   );
 }
 
-function AuditLogTable({ sessionId }: { sessionId: number }) {
-  const { data: audit, error } = useExchangeAudit(sessionId);
+function AuditLogTable({ sessionId, instance }: { sessionId: number; instance?: string }) {
+  const { data: audit, error } = useExchangeAudit(sessionId, instance);
   const [categoryFilter, setCategoryFilter] = useState("");
   const [outcomeFilter, setOutcomeFilter] = useState("");
 

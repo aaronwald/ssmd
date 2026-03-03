@@ -601,6 +601,10 @@ TOOLS = [
                     "description": "Max results to return. Default 100, max 500.",
                     "default": 100,
                 },
+                "instance": {
+                    "type": "string",
+                    "description": "Optional: filter to a specific harman instance (e.g., 'kalshi-demo', 'kalshi-prod').",
+                },
             },
             "required": ["session_id"],
         },
@@ -631,6 +635,10 @@ TOOLS = [
                     "description": "Max results to return. Default 100, max 500.",
                     "default": 100,
                 },
+                "instance": {
+                    "type": "string",
+                    "description": "Optional: filter to a specific harman instance (e.g., 'kalshi-demo', 'kalshi-prod').",
+                },
             },
             "required": ["session_id"],
         },
@@ -649,6 +657,10 @@ TOOLS = [
                 "order_id": {
                     "type": "integer",
                     "description": "Order ID to get timeline for.",
+                },
+                "instance": {
+                    "type": "string",
+                    "description": "Optional: filter to a specific harman instance (e.g., 'kalshi-demo', 'kalshi-prod').",
                 },
             },
             "required": ["order_id"],
@@ -690,6 +702,10 @@ TOOLS = [
                     "description": "Max results to return. Default 100, max 500.",
                     "default": 100,
                 },
+                "instance": {
+                    "type": "string",
+                    "description": "Optional: filter to a specific harman instance (e.g., 'kalshi-demo', 'kalshi-prod').",
+                },
             },
             "required": ["session_id"],
         },
@@ -714,6 +730,10 @@ TOOLS = [
                 "since": {
                     "type": "string",
                     "description": "ISO datetime lower bound for created_at.",
+                },
+                "instance": {
+                    "type": "string",
+                    "description": "Optional: filter to a specific harman instance (e.g., 'kalshi-demo', 'kalshi-prod').",
                 },
             },
             "required": ["session_id"],
@@ -854,6 +874,7 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             ticker=arguments.get("ticker"),
             since=arguments.get("since"),
             limit=arguments.get("limit", 100),
+            instance=arguments.get("instance"),
         )
     elif name == "harman_fills":
         return harman_fills(
@@ -862,11 +883,13 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             ticker=arguments.get("ticker"),
             since=arguments.get("since"),
             limit=arguments.get("limit", 100),
+            instance=arguments.get("instance"),
         )
     elif name == "harman_order_timeline":
         return harman_order_timeline(
             cfg,
             order_id=arguments["order_id"],
+            instance=arguments.get("instance"),
         )
     elif name == "harman_exchange_audit":
         return harman_exchange_audit(
@@ -877,6 +900,7 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             outcome=arguments.get("outcome"),
             since=arguments.get("since"),
             limit=arguments.get("limit", 100),
+            instance=arguments.get("instance"),
         )
     elif name == "harman_settlements":
         return harman_settlements(
@@ -884,6 +908,7 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             session_id=arguments["session_id"],
             ticker=arguments.get("ticker"),
             since=arguments.get("since"),
+            instance=arguments.get("instance"),
         )
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

@@ -359,6 +359,7 @@ def harman_orders(
     ticker: str | None = None,
     since: str | None = None,
     limit: int = 100,
+    instance: str | None = None,
 ) -> str:
     """Query orders for a harman session."""
     params: dict[str, Any] = {"limit": limit}
@@ -368,6 +369,8 @@ def harman_orders(
         params["ticker"] = ticker
     if since:
         params["since"] = since
+    if instance:
+        params["instance"] = instance
     result = api_get(cfg, f"/v1/harman/sessions/{session_id}/orders", params)
     return json.dumps(result, indent=2, default=str)
 
@@ -378,6 +381,7 @@ def harman_fills(
     ticker: str | None = None,
     since: str | None = None,
     limit: int = 100,
+    instance: str | None = None,
 ) -> str:
     """Query fills for a harman session."""
     params: dict[str, Any] = {"limit": limit}
@@ -385,13 +389,18 @@ def harman_fills(
         params["ticker"] = ticker
     if since:
         params["since"] = since
+    if instance:
+        params["instance"] = instance
     result = api_get(cfg, f"/v1/harman/sessions/{session_id}/fills", params)
     return json.dumps(result, indent=2, default=str)
 
 
-def harman_order_timeline(cfg: Config, order_id: int) -> str:
+def harman_order_timeline(cfg: Config, order_id: int, instance: str | None = None) -> str:
     """Get full order lifecycle timeline."""
-    result = api_get(cfg, f"/v1/harman/orders/{order_id}/timeline")
+    params: dict[str, Any] = {}
+    if instance:
+        params["instance"] = instance
+    result = api_get(cfg, f"/v1/harman/orders/{order_id}/timeline", params if params else None)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -403,6 +412,7 @@ def harman_exchange_audit(
     outcome: str | None = None,
     since: str | None = None,
     limit: int = 100,
+    instance: str | None = None,
 ) -> str:
     """Query exchange audit log for a harman session."""
     params: dict[str, Any] = {"limit": limit}
@@ -414,6 +424,8 @@ def harman_exchange_audit(
         params["outcome"] = outcome
     if since:
         params["since"] = since
+    if instance:
+        params["instance"] = instance
     result = api_get(cfg, f"/v1/harman/sessions/{session_id}/exchange-audit", params)
     return json.dumps(result, indent=2, default=str)
 
@@ -423,6 +435,7 @@ def harman_settlements(
     session_id: int,
     ticker: str | None = None,
     since: str | None = None,
+    instance: str | None = None,
 ) -> str:
     """Query settlements for a harman session."""
     params: dict[str, Any] = {}
@@ -430,5 +443,7 @@ def harman_settlements(
         params["ticker"] = ticker
     if since:
         params["since"] = since
+    if instance:
+        params["instance"] = instance
     result = api_get(cfg, f"/v1/harman/sessions/{session_id}/settlements", params if params else None)
     return json.dumps(result, indent=2, default=str)
