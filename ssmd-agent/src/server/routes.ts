@@ -2560,7 +2560,7 @@ route("GET", "/v1/harman/sessions", async (_req, ctx) => {
   const rawSql = ctx.harmanSql;
   const rows = await rawSql`
     SELECT s.id, s.exchange, s.environment, s.api_key_prefix, s.display_name,
-           s.max_notional, s.suspended, s.created_at,
+           s.max_notional, s.created_at,
            COALESCE(o.open_count, 0)::int as open_order_count,
            COALESCE(o.open_notional, 0) as open_notional,
            COALESCE(f.total_fills, 0)::int as total_fills,
@@ -2661,7 +2661,7 @@ route("GET", "/v1/harman/sessions/:id/settlements", async (req, ctx) => {
 
   const rawSql = ctx.harmanSql;
   const rows = await rawSql`
-    SELECT id, ticker, result, payout_dollars, created_at
+    SELECT id, ticker, market_result, revenue_dollars, created_at
     FROM settlements
     WHERE session_id = ${sessionId}
     ${ticker ? rawSql`AND ticker ILIKE ${'%' + ticker + '%'}` : rawSql``}
@@ -2812,7 +2812,7 @@ route("GET", "/v1/harman/orders/:id/timeline", async (req, ctx) => {
 
   // 5. Fetch settlement (if ticker matches)
   const settlements = await rawSql`
-    SELECT id, ticker, result, payout_dollars, created_at
+    SELECT id, ticker, market_result, revenue_dollars, created_at
     FROM settlements
     WHERE session_id = ${order.session_id} AND ticker = ${order.ticker}
   `;
