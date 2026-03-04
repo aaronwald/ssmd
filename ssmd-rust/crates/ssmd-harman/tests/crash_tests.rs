@@ -172,7 +172,7 @@ async fn test_recovery_submitted_order_executed_on_exchange() {
 }
 
 // =============================================================================
-// Test 3: Recovery resolves submitted order → Rejected (exchange says NotFound)
+// Test 3: Recovery leaves submitted order for manual review (exchange says NotFound)
 // =============================================================================
 
 #[tokio::test]
@@ -198,7 +198,8 @@ async fn test_recovery_submitted_order_not_found_on_exchange() {
     let app_state = build_test_state(mock, pool.clone(), session_id).await;
     app_state.oms.run_recovery(session_id).await.unwrap();
 
-    assert_order_state(&pool, order_id, OrderState::Rejected)
+    // NotFound orders are left in Submitted for manual review (not auto-rejected)
+    assert_order_state(&pool, order_id, OrderState::Submitted)
         .await
         .unwrap();
 }
