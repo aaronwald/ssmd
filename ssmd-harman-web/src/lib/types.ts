@@ -384,29 +384,30 @@ export interface SecmasterStats {
 
 export interface SecmasterMarket {
   ticker: string;
+  eventTicker: string;
   title: string;
   status: string;
-  close_time: string | null;
-  event_ticker: string;
-  series_ticker: string;
-  category: string;
+  closeTime: string | null;
   volume: number | null;
+  volume24h: number | null;
+  openInterest: number | null;
 }
 
 export interface SecmasterPair {
-  pair_id: string;
-  symbol: string;
+  pairId: string;
+  exchange: string;
   base: string;
   quote: string;
-  market_type: string;
+  marketType: string;
   status: string;
+  wsName: string;
 }
 
 export interface SecmasterCondition {
-  condition_id: string;
+  conditionId: string;
   question: string;
   status: string;
-  end_date: string | null;
-  token_count: number;
   category: string | null;
+  endDate: string | null;
+  tokenCount: number;
 }

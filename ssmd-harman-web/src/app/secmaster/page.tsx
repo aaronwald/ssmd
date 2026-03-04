@@ -268,8 +268,7 @@ function KalshiTable({ stats }: { stats: SecmasterStats | undefined }) {
                     <th className="px-4 py-2">Ticker</th>
                     <th className="px-4 py-2">Title</th>
                     <th className="px-4 py-2">Status</th>
-                    <th className="px-4 py-2">Series</th>
-                    <th className="px-4 py-2">Category</th>
+                    <th className="px-4 py-2">Event</th>
                     <th className="px-4 py-2">Close</th>
                     <th className="px-4 py-2 text-right">Volume</th>
                   </tr>
@@ -280,9 +279,8 @@ function KalshiTable({ stats }: { stats: SecmasterStats | undefined }) {
                       <td className="px-4 py-1.5 font-mono text-xs text-fg">{m.ticker}</td>
                       <td className="px-4 py-1.5 text-xs text-fg-muted max-w-[300px] truncate">{m.title}</td>
                       <td className="px-4 py-1.5"><StatusBadge status={m.status} /></td>
-                      <td className="px-4 py-1.5 font-mono text-xs text-fg-subtle">{m.series_ticker}</td>
-                      <td className="px-4 py-1.5 text-xs text-fg-subtle">{m.category}</td>
-                      <td className="px-4 py-1.5 text-xs text-fg-muted whitespace-nowrap">{fmtCloseTime(m.close_time)}</td>
+                      <td className="px-4 py-1.5 font-mono text-xs text-fg-subtle">{m.eventTicker}</td>
+                      <td className="px-4 py-1.5 text-xs text-fg-muted whitespace-nowrap">{fmtCloseTime(m.closeTime)}</td>
                       <td className="px-4 py-1.5 font-mono text-xs text-fg-subtle text-right">{m.volume != null ? fmtNum(m.volume) : "-"}</td>
                     </tr>
                   ))}
@@ -369,7 +367,7 @@ function KrakenTable({ stats }: { stats: SecmasterStats | undefined }) {
                 <thead>
                   <tr className="text-left text-xs text-fg-muted border-b border-border">
                     <th className="px-4 py-2">Pair ID</th>
-                    <th className="px-4 py-2">Symbol</th>
+                    <th className="px-4 py-2">WS Name</th>
                     <th className="px-4 py-2">Base</th>
                     <th className="px-4 py-2">Quote</th>
                     <th className="px-4 py-2">Type</th>
@@ -378,12 +376,12 @@ function KrakenTable({ stats }: { stats: SecmasterStats | undefined }) {
                 </thead>
                 <tbody>
                   {pairs.map((p) => (
-                    <tr key={p.pair_id} className="border-b border-border-subtle hover:bg-bg-surface-hover">
-                      <td className="px-4 py-1.5 font-mono text-xs text-fg">{p.pair_id}</td>
-                      <td className="px-4 py-1.5 font-mono text-xs text-fg-muted">{p.symbol}</td>
+                    <tr key={p.pairId} className="border-b border-border-subtle hover:bg-bg-surface-hover">
+                      <td className="px-4 py-1.5 font-mono text-xs text-fg">{p.pairId}</td>
+                      <td className="px-4 py-1.5 font-mono text-xs text-fg-muted">{p.wsName}</td>
                       <td className="px-4 py-1.5 font-mono text-xs text-fg">{p.base}</td>
                       <td className="px-4 py-1.5 font-mono text-xs text-fg-subtle">{p.quote}</td>
-                      <td className="px-4 py-1.5 text-xs text-fg-subtle">{p.market_type}</td>
+                      <td className="px-4 py-1.5 text-xs text-fg-subtle">{p.marketType}</td>
                       <td className="px-4 py-1.5"><StatusBadge status={p.status} /></td>
                     </tr>
                   ))}
@@ -470,13 +468,13 @@ function PolymarketTable({ stats }: { stats: SecmasterStats | undefined }) {
                 </thead>
                 <tbody>
                   {conditions.map((c) => (
-                    <tr key={c.condition_id} className="border-b border-border-subtle hover:bg-bg-surface-hover">
-                      <td className="px-4 py-1.5 font-mono text-xs text-fg max-w-[200px] truncate" title={c.condition_id}>{c.condition_id.slice(0, 10)}...</td>
+                    <tr key={c.conditionId} className="border-b border-border-subtle hover:bg-bg-surface-hover">
+                      <td className="px-4 py-1.5 font-mono text-xs text-fg max-w-[200px] truncate" title={c.conditionId}>{c.conditionId.slice(0, 10)}...</td>
                       <td className="px-4 py-1.5 text-xs text-fg-muted max-w-[400px] truncate" title={c.question}>{c.question}</td>
                       <td className="px-4 py-1.5"><StatusBadge status={c.status} /></td>
                       <td className="px-4 py-1.5 text-xs text-fg-subtle">{c.category || "-"}</td>
-                      <td className="px-4 py-1.5 font-mono text-xs text-fg-subtle text-right">{c.token_count}</td>
-                      <td className="px-4 py-1.5 text-xs text-fg-muted whitespace-nowrap">{fmtCloseTime(c.end_date)}</td>
+                      <td className="px-4 py-1.5 font-mono text-xs text-fg-subtle text-right">{c.tokenCount}</td>
+                      <td className="px-4 py-1.5 text-xs text-fg-muted whitespace-nowrap">{fmtCloseTime(c.endDate)}</td>
                     </tr>
                   ))}
                 </tbody>
