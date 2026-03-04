@@ -284,6 +284,15 @@ export function NavRail() {
       className="shrink-0 flex flex-col h-full border-r border-border bg-bg-raised transition-[width] duration-200"
       style={{ width: navCollapsed ? "var(--width-nav-collapsed)" : "var(--width-nav-expanded)" }}
     >
+      {/* Brand */}
+      <Link
+        href="/"
+        className="flex items-center gap-2 px-3 py-3 border-b border-border hover:bg-bg-surface-hover transition-colors"
+      >
+        <span className="shrink-0 text-accent font-bold text-sm">H</span>
+        {!navCollapsed && <span className="text-sm font-semibold text-fg tracking-tight">harman<span className="text-fg-muted">.oms</span></span>}
+      </Link>
+
       {/* Instance selector */}
       <InstanceSelector collapsed={navCollapsed} />
 
