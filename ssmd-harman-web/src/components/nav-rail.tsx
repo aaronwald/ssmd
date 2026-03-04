@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useLayout } from "@/lib/layout-context";
 import { useInstance, type Instance } from "@/lib/instance-context";
-import { useHealth, useMe } from "@/lib/hooks";
+import { useMe } from "@/lib/hooks";
 
 // --- Inline SVG icons (16x16, stroke-based) ---
 
@@ -213,24 +213,6 @@ function NavItem({ href, label, icon: Icon, active, collapsed }: NavItemProps) {
 
 // --- Health dot ---
 
-function HealthDot({ collapsed }: { collapsed: boolean }) {
-  const { data: health } = useHealth();
-  const isHealthy = health ? (health.status === "ok" || health.status === "healthy") : false;
-  const status = health ? (isHealthy ? "green" : "red") : "yellow";
-  const colors = { green: "bg-green", red: "bg-red", yellow: "bg-yellow" };
-  const label = health ? (isHealthy ? "Healthy" : health.status) : "connecting";
-
-  return (
-    <div className="flex items-center gap-2 px-3 py-2" title={label}>
-      <span
-        className={`inline-block h-2 w-2 rounded-full ${colors[status]}`}
-        style={status === "green" ? { animation: "pulse-dot 2s ease-in-out infinite" } : undefined}
-      />
-      {!collapsed && <span className="text-xs text-fg-muted truncate">{label}</span>}
-    </div>
-  );
-}
-
 // --- Admin links (requires admin scope) ---
 
 function KeyIcon() {
@@ -344,10 +326,8 @@ export function NavRail() {
         </Suspense>
       </nav>
 
-      {/* Bottom: health + varshtat + collapse toggle */}
+      {/* Bottom: varshtat + collapse toggle */}
       <div className="border-t border-border">
-        <HealthDot collapsed={navCollapsed} />
-
         <a
           href="https://md.varshtat.com"
           target="_blank"
