@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { setApiInstance } from "./api";
+import { mutate } from "swr";
 
 export interface Instance {
   id: string;
@@ -65,6 +66,8 @@ export function InstanceProvider({ children }: { children: ReactNode }) {
     setApiInstance(id);
     setInstanceState(id);
     sessionStorage.setItem("harman-instance", id);
+    // Clear all SWR cache so hooks re-fetch with new instance
+    mutate(() => true, undefined, { revalidate: true });
   };
 
   return (
