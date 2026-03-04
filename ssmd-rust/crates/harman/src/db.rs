@@ -269,8 +269,8 @@ pub async fn batch_insert_audit(
     pool: &Pool,
     events: &[crate::audit::AuditEvent],
 ) -> Result<u64, String> {
-    let mut client = pool.get().await.map_err(|e| e.to_string())?;
-    let tx = client.transaction().await.map_err(|e| e.to_string())?;
+    let mut client = pool.get().await.map_err(|e| format!("pool: {e}"))?;
+    let tx = client.transaction().await.map_err(|e| format!("begin: {e:?}"))?;
     let stmt = tx
         .prepare(
             "INSERT INTO exchange_audit_log
@@ -280,7 +280,7 @@ pub async fn batch_insert_audit(
                      $8::TEXT::JSONB, $9::TEXT::JSONB, $10, $11, $12::TEXT::JSONB)",
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("prepare: {e:?}"))?;
 
     let mut count = 0u64;
     for event in events {
@@ -315,10 +315,10 @@ pub async fn batch_insert_audit(
                 ],
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("execute row {count}: {e:?}"))?;
         count += 1;
     }
-    tx.commit().await.map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| format!("commit: {e:?}"))?;
     Ok(count)
 }
 
