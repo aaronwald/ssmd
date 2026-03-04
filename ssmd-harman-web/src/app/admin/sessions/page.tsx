@@ -2,7 +2,6 @@
 
 import { useState, useMemo } from "react";
 import { useMe, useHarmanSessions, useSessionOrders } from "@/lib/hooks";
-import { ArchitectureDiagram } from "@/components/ArchitectureDiagram";
 import { OrderTimeline } from "@/components/OrderTimeline";
 import { StateBadge } from "@/components/state-badge";
 import type { HarmanSession, Order } from "@/lib/types";
@@ -39,7 +38,6 @@ function SessionsContent() {
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold">Sessions</h1>
-      <ArchitectureDiagram />
 
       {error && <p className="text-sm text-red">Error loading sessions: {error.message}</p>}
 
