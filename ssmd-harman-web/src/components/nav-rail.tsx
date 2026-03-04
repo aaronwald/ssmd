@@ -215,9 +215,10 @@ function NavItem({ href, label, icon: Icon, active, collapsed }: NavItemProps) {
 
 function HealthDot({ collapsed }: { collapsed: boolean }) {
   const { data: health } = useHealth();
-  const status = health ? (health.status === "healthy" ? "green" : "red") : "yellow";
+  const isHealthy = health ? (health.status === "ok" || health.status === "healthy") : false;
+  const status = health ? (isHealthy ? "green" : "red") : "yellow";
   const colors = { green: "bg-green", red: "bg-red", yellow: "bg-yellow" };
-  const label = health?.session_state ?? "loading";
+  const label = health ? (isHealthy ? "Healthy" : health.status) : "connecting";
 
   return (
     <div className="flex items-center gap-2 px-3 py-2" title={label}>

@@ -19,7 +19,8 @@ export function StatsBar() {
     );
   }
 
-  const healthStatus = health ? (health.status === "healthy" ? "green" : "red") : "yellow";
+  const isHealthy = health ? (health.status === "ok" || health.status === "healthy") : false;
+  const healthStatus = health ? (isHealthy ? "green" : "red") : "yellow";
   const healthColors: Record<string, string> = { green: "bg-green", red: "bg-red", yellow: "bg-yellow" };
 
   const openN = risk ? parseFloat(risk.open_notional) : 0;
@@ -38,7 +39,7 @@ export function StatsBar() {
           className={`inline-block h-2 w-2 rounded-full ${healthColors[healthStatus]}`}
           style={healthStatus === "green" ? { animation: "pulse-dot 2s ease-in-out infinite" } : undefined}
         />
-        <span>{health?.session_state ?? "..."}</span>
+        <span>{health ? (isHealthy ? "Healthy" : health.status) : "connecting"}</span>
       </Link>
 
       <span className="w-px h-4 bg-border" />
