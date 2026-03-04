@@ -269,7 +269,7 @@ export function NavRail() {
   const pathname = usePathname();
 
   const coreLinks = [
-    { href: "/", label: "Dashboard", icon: GridIcon },
+    { href: "/", label: "Positions", icon: GridIcon },
     { href: "/orders", label: "Orders", icon: ListIcon },
     { href: "/fills", label: "Fills", icon: FileTextIcon },
   ];

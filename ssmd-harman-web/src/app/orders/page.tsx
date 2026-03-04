@@ -158,10 +158,10 @@ function OrdersContent() {
                     <td className="px-4 py-2 font-mono">{o.ticker}</td>
                     <td className="px-4 py-2 uppercase">{o.side}</td>
                     <td className="px-4 py-2 uppercase">{o.action}</td>
-                    <td className="px-4 py-2 font-mono text-right">{o.quantity}</td>
-                    <td className="px-4 py-2 font-mono text-right">{o.filled_quantity}</td>
-                    <td className={`px-4 py-2 font-mono text-right ${netQty > 0 ? "text-green" : netQty < 0 ? "text-red" : "text-fg-subtle"}`}>{pos ? pos.net_quantity : "—"}</td>
-                    <td className="px-4 py-2 font-mono text-right">${o.price_dollars}</td>
+                    <td className="px-4 py-2 font-mono text-right">{Number(o.quantity).toFixed(0)}</td>
+                    <td className="px-4 py-2 font-mono text-right">{Number(o.filled_quantity).toFixed(0)}</td>
+                    <td className={`px-4 py-2 font-mono text-right ${netQty > 0 ? "text-green" : netQty < 0 ? "text-red" : "text-fg-subtle"}`}>{pos ? netQty.toFixed(0) : "—"}</td>
+                    <td className="px-4 py-2 font-mono text-right">${Number(o.price_dollars).toFixed(2)}</td>
                     <td className="px-4 py-2 uppercase text-xs">{o.time_in_force}</td>
                     <td className="px-4 py-2"><StateBadge state={o.state} /></td>
                     <td className="px-4 py-2 text-xs text-fg-muted">{o.leg_role || "-"}</td>

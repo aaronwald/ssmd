@@ -58,8 +58,8 @@ export default function FillsPage() {
                         <td className="px-4 py-2 font-mono">{f.ticker}</td>
                         <td className="px-4 py-2 uppercase">{f.side}</td>
                         <td className="px-4 py-2 uppercase">{f.action}</td>
-                        <td className="px-4 py-2 font-mono text-right">${f.price}</td>
-                        <td className="px-4 py-2 font-mono text-right">{f.quantity}</td>
+                        <td className="px-4 py-2 font-mono text-right">${Number(f.price).toFixed(2)}</td>
+                        <td className="px-4 py-2 font-mono text-right">{Number(f.quantity).toFixed(0)}</td>
                         <td className="px-4 py-2">{f.is_taker ? <span className="text-yellow text-xs">Yes</span> : <span className="text-fg-subtle text-xs">No</span>}</td>
                         <td className="px-4 py-2 text-xs text-fg-muted">{new Date(f.filled_at).toLocaleString()}</td>
                       </tr>
