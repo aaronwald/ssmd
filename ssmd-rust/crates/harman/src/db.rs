@@ -263,12 +263,15 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
 
 /// Batch INSERT audit events into exchange_audit_log.
 /// JSONB columns are serialized to strings and cast in SQL.
+/// Uses a transaction so partial inserts roll back on failure,
+/// making the retry in AuditWriter::flush() safe from duplicates.
 pub async fn batch_insert_audit(
     pool: &Pool,
     events: &[crate::audit::AuditEvent],
 ) -> Result<u64, String> {
-    let client = pool.get().await.map_err(|e| e.to_string())?;
-    let stmt = client
+    let mut client = pool.get().await.map_err(|e| e.to_string())?;
+    let tx = client.transaction().await.map_err(|e| e.to_string())?;
+    let stmt = tx
         .prepare(
             "INSERT INTO exchange_audit_log
              (session_id, order_id, category, action, endpoint, status_code, duration_ms,
@@ -294,8 +297,7 @@ pub async fn batch_insert_audit(
             .as_ref()
             .map(|v| serde_json::to_string(v).unwrap_or_default());
 
-        client
-            .execute(
+        tx.execute(
                 &stmt,
                 &[
                     &event.session_id,
@@ -316,6 +318,7 @@ pub async fn batch_insert_audit(
             .map_err(|e| e.to_string())?;
         count += 1;
     }
+    tx.commit().await.map_err(|e| e.to_string())?;
     Ok(count)
 }
 
