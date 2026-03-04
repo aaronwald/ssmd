@@ -6,6 +6,7 @@ import { useOrders, usePositions } from "@/lib/hooks";
 import { pump, reconcile, resume, massCancel } from "@/lib/api";
 import { StateBadge } from "@/components/state-badge";
 import { OrderActions } from "@/components/order-actions";
+import { OrderTimeline } from "@/components/OrderTimeline";
 import { CreateOrderForm } from "@/components/create-order-form";
 import type { Order, OrderState, LocalPosition } from "@/lib/types";
 
@@ -183,8 +184,8 @@ function OrderRow({ order: o, netQty, pos, isOpen, isExpanded, onToggle }: {
   return (
     <>
       <tr
-        className={`border-b border-border-subtle transition-colors ${isOpen ? "cursor-pointer" : ""} ${isExpanded ? "bg-bg-surface" : "hover:bg-bg-surface-hover"}`}
-        onClick={isOpen ? onToggle : undefined}
+        className={`border-b border-border-subtle transition-colors cursor-pointer ${isExpanded ? "bg-bg-surface" : "hover:bg-bg-surface-hover"}`}
+        onClick={onToggle}
       >
         <td className="px-4 py-2 font-mono text-fg-muted">{o.id}</td>
         <td className="px-4 py-2 font-mono">{o.ticker}</td>
@@ -195,14 +196,18 @@ function OrderRow({ order: o, netQty, pos, isOpen, isExpanded, onToggle }: {
         <td className={`px-4 py-2 font-mono text-right ${netQty > 0 ? "text-green" : netQty < 0 ? "text-red" : "text-fg-subtle"}`}>{pos ? netQty.toFixed(0) : "—"}</td>
         <td className="px-4 py-2 font-mono text-right">${Number(o.price_dollars).toFixed(2)}</td>
         <td className="px-4 py-2 uppercase text-xs">{o.time_in_force}</td>
-        <td className="px-4 py-2"><StateBadge state={o.state} /></td>
+        <td className="px-4 py-2">
+          <StateBadge state={o.state} />
+          {o.cancel_reason && <span className="ml-1.5 text-xs text-fg-muted">({o.cancel_reason.replace(/_/g, " ")})</span>}
+        </td>
         <td className="px-4 py-2 text-xs text-fg-muted">{o.leg_role || "-"}</td>
         <td className="px-4 py-2 text-xs text-fg-muted font-mono">{new Date(o.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
       </tr>
       {isExpanded && (
         <tr>
-          <td colSpan={12} className="px-4 py-2 bg-bg border-b border-border-subtle">
-            <OrderActions order={o} />
+          <td colSpan={12} className="px-4 py-2 bg-bg border-b border-border-subtle space-y-3">
+            {isOpen && <OrderActions order={o} />}
+            <OrderTimeline orderId={o.id} />
           </td>
         </tr>
       )}

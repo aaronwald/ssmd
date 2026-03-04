@@ -169,7 +169,10 @@ function OrderRow({ order: o, instance, isExpanded, onToggle }: { order: Order; 
         <td className="px-4 py-2 uppercase text-xs">{o.action}</td>
         <td className="px-4 py-2 font-mono text-right">{Number(o.filled_quantity).toFixed(0)}/{Number(o.quantity).toFixed(0)}</td>
         <td className="px-4 py-2 font-mono text-right">${Number(o.price_dollars).toFixed(2)}</td>
-        <td className="px-4 py-2"><StateBadge state={o.state} /></td>
+        <td className="px-4 py-2">
+          <StateBadge state={o.state} />
+          {o.cancel_reason && <span className="ml-1.5 text-xs text-fg-muted">({o.cancel_reason.replace(/_/g, " ")})</span>}
+        </td>
         <td className="px-4 py-2 text-xs text-fg-muted font-mono">
           {new Date(o.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
         </td>
