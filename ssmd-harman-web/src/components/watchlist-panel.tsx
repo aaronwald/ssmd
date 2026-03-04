@@ -29,8 +29,6 @@ export function WatchlistPanel() {
   const { instance } = useInstance();
   const [expandedTicker, setExpandedTicker] = useState<string | null>(null);
 
-  if (!watchlistOpen) return null;
-
   const grouped = useMemo((): GroupedWatchlist[] => {
     const byExchange = new Map<string, Array<WatchlistItem & { data?: WatchlistResult }>>();
     const dataMap = new Map<string, WatchlistResult>();
@@ -52,6 +50,8 @@ export function WatchlistPanel() {
   }, [watchlist.items, watchlistData]);
 
   const fmtPrice = (v: number | null | undefined) => v != null ? `$${v.toFixed(2)}` : "—";
+
+  if (!watchlistOpen) return null;
 
   return (
     <aside
