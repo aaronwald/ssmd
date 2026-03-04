@@ -281,15 +281,14 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
 
 /// Batch INSERT audit events into exchange_audit_log.
 /// JSONB columns are serialized to strings and cast in SQL.
-/// Uses a transaction for atomicity. Each event has a UUID event_id;
-/// ON CONFLICT DO NOTHING makes retries idempotent (no duplicates).
+/// Each event has a UUID event_id; ON CONFLICT DO NOTHING makes retries idempotent.
+/// Per-row inserts: one bad event (e.g. FK violation) won't poison the whole batch.
 pub async fn batch_insert_audit(
     pool: &Pool,
     events: &[crate::audit::AuditEvent],
 ) -> Result<u64, String> {
-    let mut client = pool.get().await.map_err(|e| format!("pool: {e}"))?;
-    let tx = client.transaction().await.map_err(|e| format!("begin: {e:?}"))?;
-    let stmt = tx
+    let client = pool.get().await.map_err(|e| format!("pool: {e}"))?;
+    let stmt = client
         .prepare(
             "INSERT INTO exchange_audit_log
              (event_id, session_id, order_id, category, action, endpoint, status_code, duration_ms,
@@ -302,6 +301,7 @@ pub async fn batch_insert_audit(
         .map_err(|e| format!("prepare: {e:?}"))?;
 
     let mut count = 0u64;
+    let mut skipped = 0u64;
     for event in events {
         let request_json = event
             .request
@@ -316,7 +316,7 @@ pub async fn batch_insert_audit(
             .as_ref()
             .map(|v| serde_json::to_string(v).unwrap_or_default());
 
-        tx.execute(
+        match client.execute(
                 &stmt,
                 &[
                     &event.event_id,
@@ -335,10 +335,22 @@ pub async fn batch_insert_audit(
                 ],
             )
             .await
-            .map_err(|e| format!("execute row {count}: {e:?}"))?;
-        count += 1;
+        {
+            Ok(_) => count += 1,
+            Err(e) => {
+                warn!(
+                    category = event.category,
+                    action = %event.action,
+                    session_id = event.session_id,
+                    "skipping audit event: {e:?}"
+                );
+                skipped += 1;
+            }
+        }
     }
-    tx.commit().await.map_err(|e| format!("commit: {e:?}"))?;
+    if skipped > 0 {
+        warn!(skipped, inserted = count, "some audit events skipped");
+    }
     Ok(count)
 }
 
