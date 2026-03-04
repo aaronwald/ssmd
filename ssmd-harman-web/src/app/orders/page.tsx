@@ -7,9 +7,11 @@ import { pump, reconcile, resume, massCancel } from "@/lib/api";
 import { StateBadge } from "@/components/state-badge";
 import { OrderActions } from "@/components/order-actions";
 import { CreateOrderForm } from "@/components/create-order-form";
-import type { Order, LocalPosition } from "@/lib/types";
+import type { Order, OrderState, LocalPosition } from "@/lib/types";
 
 type SortKey = "id" | "ticker" | "quantity" | "price_dollars" | "state" | "created_at";
+
+const cancellableStates: OrderState[] = ["pending", "submitted", "acknowledged", "partially_filled", "staged"];
 type SortDir = "asc" | "desc";
 
 const stateFilters = [
@@ -46,6 +48,7 @@ function OrdersContent() {
   const [actionMsg, setActionMsg] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
   // Build ticker → local position map for quick lookup
   const posMap = useMemo(() => {
@@ -144,7 +147,6 @@ function OrdersContent() {
                 <SortTh k="state" current={sortKey} dir={sortDir} onClick={handleSort}>State</SortTh>
                 <th className="px-4 py-2">Leg</th>
                 <SortTh k="created_at" current={sortKey} dir={sortDir} onClick={handleSort}>Created</SortTh>
-                <th className="px-4 py-2">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -152,27 +154,16 @@ function OrdersContent() {
                 sortedOrders.map((o) => {
                   const pos = posMap.get(o.ticker);
                   const netQty = pos ? parseFloat(pos.net_quantity) : 0;
+                  const isOpen = cancellableStates.includes(o.state);
+                  const isExpanded = expandedId === o.id;
                   return (
-                  <tr key={o.id} className="border-b border-border-subtle hover:bg-bg-surface-hover">
-                    <td className="px-4 py-2 font-mono text-fg-muted">{o.id}</td>
-                    <td className="px-4 py-2 font-mono">{o.ticker}</td>
-                    <td className="px-4 py-2 uppercase">{o.side}</td>
-                    <td className="px-4 py-2 uppercase">{o.action}</td>
-                    <td className="px-4 py-2 font-mono text-right">{Number(o.quantity).toFixed(0)}</td>
-                    <td className="px-4 py-2 font-mono text-right">{Number(o.filled_quantity).toFixed(0)}</td>
-                    <td className={`px-4 py-2 font-mono text-right ${netQty > 0 ? "text-green" : netQty < 0 ? "text-red" : "text-fg-subtle"}`}>{pos ? netQty.toFixed(0) : "—"}</td>
-                    <td className="px-4 py-2 font-mono text-right">${Number(o.price_dollars).toFixed(2)}</td>
-                    <td className="px-4 py-2 uppercase text-xs">{o.time_in_force}</td>
-                    <td className="px-4 py-2"><StateBadge state={o.state} /></td>
-                    <td className="px-4 py-2 text-xs text-fg-muted">{o.leg_role || "-"}</td>
-                    <td className="px-4 py-2 text-xs text-fg-muted font-mono">{new Date(o.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
-                    <td className="px-4 py-2"><OrderActions order={o} /></td>
-                  </tr>
+                  <OrderRow key={o.id} order={o} netQty={netQty} pos={pos} isOpen={isOpen}
+                    isExpanded={isExpanded} onToggle={() => setExpandedId(isExpanded ? null : o.id)} />
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan={13} className="px-4 py-8 text-center text-fg-subtle text-sm">
+                  <td colSpan={12} className="px-4 py-8 text-center text-fg-subtle text-sm">
                     {sortedOrders ? "No orders" : "Loading..."}
                   </td>
                 </tr>
@@ -182,6 +173,40 @@ function OrdersContent() {
         </div>
       </div>
     </div>
+  );
+}
+
+function OrderRow({ order: o, netQty, pos, isOpen, isExpanded, onToggle }: {
+  order: Order; netQty: number; pos: LocalPosition | undefined;
+  isOpen: boolean; isExpanded: boolean; onToggle: () => void;
+}) {
+  return (
+    <>
+      <tr
+        className={`border-b border-border-subtle transition-colors ${isOpen ? "cursor-pointer" : ""} ${isExpanded ? "bg-bg-surface" : "hover:bg-bg-surface-hover"}`}
+        onClick={isOpen ? onToggle : undefined}
+      >
+        <td className="px-4 py-2 font-mono text-fg-muted">{o.id}</td>
+        <td className="px-4 py-2 font-mono">{o.ticker}</td>
+        <td className="px-4 py-2 uppercase">{o.side}</td>
+        <td className="px-4 py-2 uppercase">{o.action}</td>
+        <td className="px-4 py-2 font-mono text-right">{Number(o.quantity).toFixed(0)}</td>
+        <td className="px-4 py-2 font-mono text-right">{Number(o.filled_quantity).toFixed(0)}</td>
+        <td className={`px-4 py-2 font-mono text-right ${netQty > 0 ? "text-green" : netQty < 0 ? "text-red" : "text-fg-subtle"}`}>{pos ? netQty.toFixed(0) : "—"}</td>
+        <td className="px-4 py-2 font-mono text-right">${Number(o.price_dollars).toFixed(2)}</td>
+        <td className="px-4 py-2 uppercase text-xs">{o.time_in_force}</td>
+        <td className="px-4 py-2"><StateBadge state={o.state} /></td>
+        <td className="px-4 py-2 text-xs text-fg-muted">{o.leg_role || "-"}</td>
+        <td className="px-4 py-2 text-xs text-fg-muted font-mono">{new Date(o.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
+      </tr>
+      {isExpanded && (
+        <tr>
+          <td colSpan={12} className="px-4 py-2 bg-bg border-b border-border-subtle">
+            <OrderActions order={o} />
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
