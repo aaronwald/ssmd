@@ -2,18 +2,14 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { StatusDot } from "@/components/status-dot";
-import { RiskGauge } from "@/components/risk-gauge";
 import { SnapAgeDot } from "@/components/snap-age-dot";
 import { StateBadge } from "@/components/state-badge";
-import { useHealth, usePositions, useOrders, useRisk, useSnapMap, useInfo } from "@/lib/hooks";
+import { usePositions, useOrders, useSnapMap, useInfo } from "@/lib/hooks";
 import type { ExchangePosition, LocalPosition, NormalizedSnapshot } from "@/lib/types";
 
 export default function Dashboard() {
-  const { data: health } = useHealth();
   const { data: positions } = usePositions();
   const { data: openOrders } = useOrders("open");
-  const { data: risk } = useRisk();
   const { data: info } = useInfo();
   const feed = info?.exchange ?? "kalshi";
   const { data: snapMap, error: snapError } = useSnapMap(feed);
@@ -34,34 +30,9 @@ export default function Dashboard() {
   const snapFor = (ticker: string): NormalizedSnapshot | undefined =>
     snapMap?.get(ticker);
 
-  const healthStatus = health
-    ? health.status === "healthy"
-      ? "green"
-      : "red"
-    : "yellow";
-
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold">Dashboard</h1>
-
-      {/* Health + Risk row */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="bg-bg-raised border border-border rounded-lg p-4 space-y-3">
-          <h2 className="text-sm font-medium text-fg-muted">Health</h2>
-          <StatusDot status={healthStatus} />
-          {health && (
-            <div className="text-xs text-fg-muted space-y-1">
-              <div>Session: <span className="font-mono text-fg">{health.session_state}</span></div>
-              <div>Uptime: <span className="font-mono text-fg">{Math.floor(health.uptime_seconds)}s</span></div>
-            </div>
-          )}
-        </div>
-
-        <div className="bg-bg-raised border border-border rounded-lg p-4 space-y-3">
-          <h2 className="text-sm font-medium text-fg-muted">Risk</h2>
-          {risk ? <RiskGauge risk={risk} /> : <span className="text-xs text-fg-subtle">Loading...</span>}
-        </div>
-      </div>
 
       {/* Snap error banner */}
       {snapError && (
