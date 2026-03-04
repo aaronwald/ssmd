@@ -24,6 +24,14 @@
   --font-mono: var(--font-jetbrains-mono);
   --radius-default: 8px;
   --radius-lg: 12px;
+  --width-nav-expanded: 220px;
+  --width-nav-collapsed: 56px;
+  --width-watchlist: 288px;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 body {
