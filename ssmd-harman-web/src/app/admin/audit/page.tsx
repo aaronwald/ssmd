@@ -55,11 +55,13 @@ function AuditLogTable({ sessionId, instance }: { sessionId: number; instance?: 
 
   const filtered = useMemo(() => {
     if (!audit) return undefined;
-    return audit.filter((a) => {
-      if (categoryFilter && a.category !== categoryFilter) return false;
-      if (outcomeFilter && a.outcome !== outcomeFilter) return false;
-      return true;
-    });
+    return audit
+      .filter((a) => {
+        if (categoryFilter && a.category !== categoryFilter) return false;
+        if (outcomeFilter && a.outcome !== outcomeFilter) return false;
+        return true;
+      })
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [audit, categoryFilter, outcomeFilter]);
 
   const categories = useMemo(() => !audit ? [] : [...new Set(audit.map((a) => a.category))].sort(), [audit]);
