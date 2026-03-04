@@ -3,13 +3,11 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { SnapAgeDot } from "@/components/snap-age-dot";
-import { StateBadge } from "@/components/state-badge";
-import { usePositions, useOrders, useSnapMap, useInfo } from "@/lib/hooks";
+import { usePositions, useSnapMap, useInfo } from "@/lib/hooks";
 import type { ExchangePosition, LocalPosition, NormalizedSnapshot } from "@/lib/types";
 
 export default function Dashboard() {
   const { data: positions } = usePositions();
-  const { data: openOrders } = useOrders("open");
   const { data: info } = useInfo();
   const feed = info?.exchange ?? "kalshi";
   const { data: snapMap, error: snapError } = useSnapMap(feed);
@@ -32,7 +30,7 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold">Dashboard</h1>
+      <h1 className="text-xl font-bold">Positions</h1>
 
       {/* Snap error banner */}
       {snapError && (
@@ -42,50 +40,10 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Open Orders */}
-      {openOrders && openOrders.length > 0 && (
-        <div className="bg-bg-raised border border-border rounded-lg p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium text-fg-muted">Open Orders ({openOrders.length})</h2>
-            <Link href="/orders?state=open" className="text-xs text-accent hover:underline">View all</Link>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-fg-muted border-b border-border">
-                  <th className="pb-2 pr-4">Ticker</th>
-                  <th className="pb-2 pr-4">Side</th>
-                  <th className="pb-2 pr-4">Action</th>
-                  <th className="pb-2 pr-4 text-right">Qty</th>
-                  <th className="pb-2 pr-4 text-right">Filled</th>
-                  <th className="pb-2 pr-4 text-right">Price</th>
-                  <th className="pb-2">State</th>
-                </tr>
-              </thead>
-              <tbody>
-                {openOrders.map((o) => (
-                  <tr key={o.id} className="border-b border-border-subtle">
-                    <td className="py-2 pr-4 font-mono">
-                      <Link href={`/orders?state=open`} className="text-accent hover:underline">{o.ticker}</Link>
-                    </td>
-                    <td className="py-2 pr-4 uppercase">{o.side}</td>
-                    <td className="py-2 pr-4 uppercase">{o.action}</td>
-                    <td className="py-2 pr-4 font-mono text-right">{o.quantity}</td>
-                    <td className="py-2 pr-4 font-mono text-right">{o.filled_quantity}</td>
-                    <td className="py-2 pr-4 font-mono text-right">${o.price_dollars}</td>
-                    <td className="py-2"><StateBadge state={o.state} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
       {/* Positions (from fills — authoritative) */}
       <div className="bg-bg-raised border border-border rounded-lg p-4 space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium text-fg-muted">Positions</h2>
+          <h2 className="text-sm font-medium text-fg-muted">From Fills</h2>
           <label className="flex items-center gap-2 text-xs text-fg-muted cursor-pointer select-none">
             <input
               type="checkbox"
