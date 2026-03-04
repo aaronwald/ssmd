@@ -1,7 +1,6 @@
 "use client";
 
-import { Suspense, useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useSeries, useEvents, useMarkets, usePositions } from "@/lib/hooks";
 import { useWatchlist } from "@/lib/watchlist-context";
 import type { MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
@@ -9,12 +8,27 @@ import { MarketSlideOver } from "@/components/market-slide-over";
 
 const SERIES_LS_KEY = "crypto-selected-series";
 
+/** Read URL search params directly (avoids useSearchParams Suspense re-trigger) */
+function getUrlParam(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get(key);
+}
+
+/** Update URL search params without Next.js router (no Suspense trigger) */
+function setUrlParams(updates: Record<string, string | null>) {
+  if (typeof window === "undefined") return;
+  const params = new URLSearchParams(window.location.search);
+  for (const [k, v] of Object.entries(updates)) {
+    if (v) params.set(k, v);
+    else params.delete(k);
+  }
+  const qs = params.toString();
+  const url = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+  window.history.replaceState(null, "", url);
+}
+
 export default function CryptoPage() {
-  return (
-    <Suspense fallback={<div className="p-8 text-center text-fg-subtle">Loading...</div>}>
-      <CryptoContent />
-    </Suspense>
-  );
+  return <CryptoContent />;
 }
 
 // --- Helpers ---
@@ -85,8 +99,6 @@ function countdownColor(targetDate: string | null): string {
 // --- Main content ---
 
 function CryptoContent() {
-  const searchParams = useSearchParams();
-  const router = useRouter();
   const [slideOverMarket, setSlideOverMarket] = useState<MonitorMarket | null>(null);
 
   // 1. Fetch all crypto series
@@ -101,14 +113,10 @@ function CryptoContent() {
   }, [allSeries]);
 
   // 2. Auto-select series: URL param > localStorage > first hourly
-  const urlSeries = searchParams.get("series");
-  const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
+  const [selectedSeries, setSelectedSeries] = useState<string | null>(() => getUrlParam("series"));
 
   useEffect(() => {
-    if (urlSeries) {
-      setSelectedSeries(urlSeries);
-      return;
-    }
+    if (selectedSeries) return; // already set
     try {
       const stored = localStorage.getItem(SERIES_LS_KEY);
       if (stored && allSeries?.some((s) => s.ticker === stored)) {
@@ -119,16 +127,14 @@ function CryptoContent() {
     if (sortedSeries.length > 0) {
       setSelectedSeries(sortedSeries[0].ticker);
     }
-  }, [urlSeries, allSeries, sortedSeries]);
+  }, [selectedSeries, allSeries, sortedSeries]);
 
   const selectSeries = useCallback((ticker: string) => {
     setSelectedSeries(ticker);
+    setSelectedEvent(null);
     try { localStorage.setItem(SERIES_LS_KEY, ticker); } catch {}
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("series", ticker);
-    params.delete("event");
-    router.replace(`/crypto?${params.toString()}`);
-  }, [searchParams, router]);
+    setUrlParams({ series: ticker, event: null });
+  }, []);
 
   // 3. Fetch events for selected series
   const { data: events } = useEvents(selectedSeries);
@@ -143,26 +149,19 @@ function CryptoContent() {
   }, [events]);
 
   // 4. Auto-select event: URL param > soonest closing
-  const urlEvent = searchParams.get("event");
-  const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<string | null>(() => getUrlParam("event"));
 
   useEffect(() => {
-    if (urlEvent && events?.some((e) => e.ticker === urlEvent)) {
-      setSelectedEvent(urlEvent);
-      return;
-    }
+    if (selectedEvent && events?.some((e) => e.ticker === selectedEvent)) return; // still valid
     if (futureEvents.length > 0) {
       setSelectedEvent(futureEvents[0].ticker);
     }
-  }, [urlEvent, events, futureEvents]);
+  }, [selectedEvent, events, futureEvents]);
 
   const selectEvent = useCallback((ticker: string) => {
     setSelectedEvent(ticker);
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("event", ticker);
-    if (selectedSeries) params.set("series", selectedSeries);
-    router.replace(`/crypto?${params.toString()}`);
-  }, [searchParams, router, selectedSeries]);
+    setUrlParams({ event: ticker });
+  }, []);
 
   // 5. Fetch markets for selected event
   const { data: markets } = useMarkets(selectedEvent);
