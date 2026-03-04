@@ -34,11 +34,18 @@ function EntryDetail({ entry }: { entry: TimelineEntry }) {
 
   if (entry.type === "state_change") {
     return (
-      <div className="flex items-center gap-1.5">
-        {entry.from && <StateBadge state={entry.from as OrderState} />}
+      <div className="flex items-center gap-1.5 text-xs">
+        {entry.from && entry.from !== "none" && <StateBadge state={entry.from as OrderState} />}
         <span className="text-fg-subtle">&rarr;</span>
         {entry.to && <StateBadge state={entry.to as OrderState} />}
-        {entry.actor && <span className="text-xs text-fg-muted ml-2">by {entry.actor}</span>}
+        {entry.event && (
+          <span className="text-fg-muted font-mono ml-1">{entry.event}</span>
+        )}
+        {entry.actor && (
+          <span className="text-fg-subtle ml-1">
+            ({entry.actor === "api" ? "user request" : entry.actor === "pump" ? "exchange submit" : entry.actor === "ws_event" ? "exchange WS" : entry.actor})
+          </span>
+        )}
       </div>
     );
   }
