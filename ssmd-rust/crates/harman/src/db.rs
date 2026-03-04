@@ -257,14 +257,32 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 011_exchange_audit_log applied");
     }
 
+    // Check if 012 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '012_audit_event_id'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 012: {}", e))?;
+
+    if row.is_none() {
+        let migration_012 = include_str!("../migrations/012_audit_event_id.sql");
+        client
+            .batch_execute(migration_012)
+            .await
+            .map_err(|e| format!("migration 012 failed: {}", e))?;
+        info!("migration 012_audit_event_id applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
 
 /// Batch INSERT audit events into exchange_audit_log.
 /// JSONB columns are serialized to strings and cast in SQL.
-/// Uses a transaction so partial inserts roll back on failure,
-/// making the retry in AuditWriter::flush() safe from duplicates.
+/// Uses a transaction for atomicity. Each event has a UUID event_id;
+/// ON CONFLICT DO NOTHING makes retries idempotent (no duplicates).
 pub async fn batch_insert_audit(
     pool: &Pool,
     events: &[crate::audit::AuditEvent],
@@ -274,10 +292,11 @@ pub async fn batch_insert_audit(
     let stmt = tx
         .prepare(
             "INSERT INTO exchange_audit_log
-             (session_id, order_id, category, action, endpoint, status_code, duration_ms,
+             (event_id, session_id, order_id, category, action, endpoint, status_code, duration_ms,
               request, response, outcome, error_msg, metadata)
-             VALUES ($1, $2, $3, $4, $5, $6, $7,
-                     $8::TEXT::JSONB, $9::TEXT::JSONB, $10, $11, $12::TEXT::JSONB)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                     $9::TEXT::JSONB, $10::TEXT::JSONB, $11, $12, $13::TEXT::JSONB)
+             ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING",
         )
         .await
         .map_err(|e| format!("prepare: {e:?}"))?;
@@ -300,6 +319,7 @@ pub async fn batch_insert_audit(
         tx.execute(
                 &stmt,
                 &[
+                    &event.event_id,
                     &event.session_id,
                     &event.order_id,
                     &event.category,

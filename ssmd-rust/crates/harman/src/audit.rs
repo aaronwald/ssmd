@@ -3,10 +3,12 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::interval;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct AuditEvent {
+    pub event_id: Uuid,
     pub session_id: i64,
     pub order_id: Option<i64>,
     pub category: &'static str,
@@ -38,6 +40,7 @@ impl AuditSender {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn rest_call(
         &self,
         session_id: i64,
@@ -52,6 +55,7 @@ impl AuditSender {
         error_msg: Option<String>,
     ) {
         self.send(AuditEvent {
+            event_id: Uuid::new_v4(),
             session_id,
             order_id,
             category: "rest_call",
@@ -76,6 +80,7 @@ impl AuditSender {
         metadata: Option<Value>,
     ) {
         self.send(AuditEvent {
+            event_id: Uuid::new_v4(),
             session_id,
             order_id,
             category: "ws_event",
@@ -100,6 +105,7 @@ impl AuditSender {
         metadata: Option<Value>,
     ) {
         self.send(AuditEvent {
+            event_id: Uuid::new_v4(),
             session_id,
             order_id: Some(order_id),
             category: "fallback",
@@ -124,6 +130,7 @@ impl AuditSender {
         metadata: Option<Value>,
     ) {
         self.send(AuditEvent {
+            event_id: Uuid::new_v4(),
             session_id,
             order_id,
             category: "reconciliation",
@@ -147,6 +154,7 @@ impl AuditSender {
         metadata: Option<Value>,
     ) {
         self.send(AuditEvent {
+            event_id: Uuid::new_v4(),
             session_id,
             order_id: None,
             category: "risk",
@@ -204,12 +212,13 @@ impl AuditWriter {
 
         // Drain remaining on shutdown
         if !batch.is_empty() {
+            info!(count = batch.len(), "draining remaining audit events on shutdown");
             self.flush(&mut batch).await;
         }
     }
 
     async fn flush(&self, batch: &mut Vec<AuditEvent>) {
-        let events: Vec<AuditEvent> = batch.drain(..).collect();
+        let events: Vec<AuditEvent> = std::mem::take(batch);
         let count = events.len();
         match crate::db::batch_insert_audit(&self.pool, &events).await {
             Ok(n) => {

@@ -318,7 +318,7 @@ async fn main() {
     }
 
     // Spawn audit writer (background batch INSERT to exchange_audit_log)
-    tokio::spawn(async move {
+    let audit_handle = tokio::spawn(async move {
         audit_writer.run().await;
     });
 
@@ -347,6 +347,17 @@ async fn main() {
         })
         .await
         .expect("server error");
+
+    // Drop our Arc<AppState> so AuditSenders are released and the channel closes.
+    drop(state);
+
+    // Wait for the audit writer to drain remaining events (max 5s).
+    info!("waiting for audit writer to drain...");
+    match tokio::time::timeout(std::time::Duration::from_secs(5), audit_handle).await {
+        Ok(Ok(())) => info!("audit writer drained successfully"),
+        Ok(Err(e)) => error!(error = %e, "audit writer task panicked"),
+        Err(_) => warn!("audit writer drain timed out after 5s"),
+    }
 
     info!("ssmd-harman stopped");
 }
