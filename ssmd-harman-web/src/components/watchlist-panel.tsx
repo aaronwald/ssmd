@@ -3,7 +3,8 @@
 import { useState, useMemo } from "react";
 import Link from "next/link";
 import { useLayout } from "@/lib/layout-context";
-import { useWatchlist, useWatchlistData } from "@/lib/hooks";
+import { useWatchlistData } from "@/lib/hooks";
+import { useWatchlist } from "@/lib/watchlist-context";
 import { useInstance } from "@/lib/instance-context";
 import { CreateOrderFormControlled } from "./create-order-form-controlled";
 import { SnapAgeDot } from "./snap-age-dot";

@@ -2,7 +2,8 @@
 
 import { Suspense, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { useEventSearch, useOutcomeSearch, useMarkets, usePositions, useWatchlist } from "@/lib/hooks";
+import { useEventSearch, useOutcomeSearch, useMarkets, usePositions } from "@/lib/hooks";
+import { useWatchlist } from "@/lib/watchlist-context";
 import type { MonitorMarket, MonitorSearchResult } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
 
