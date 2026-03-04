@@ -61,6 +61,14 @@ function UsersIcon() {
   );
 }
 
+function TrendingUpIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" /><polyline points="17 6 23 6 23 12" />
+    </svg>
+  );
+}
+
 function ChevronLeftIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -319,6 +327,22 @@ export function NavRail() {
             collapsed={navCollapsed}
           />
         ))}
+
+        {/* Crypto section */}
+        <div className={`px-1 pt-4 pb-1 ${navCollapsed ? "text-center" : ""}`}>
+          {navCollapsed ? (
+            <span className="block w-full h-px bg-border" />
+          ) : (
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">Crypto</span>
+          )}
+        </div>
+        <NavItem
+          href="/crypto"
+          label="Crypto"
+          icon={TrendingUpIcon}
+          active={pathname === "/crypto" || pathname.startsWith("/crypto/")}
+          collapsed={navCollapsed}
+        />
 
         {/* Admin section (conditionally rendered) */}
         <Suspense fallback={null}>
