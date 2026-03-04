@@ -97,6 +97,20 @@ function getHarmanPool(ctx: RouteContext, instance?: string | null): ReturnType<
   return ctx.harmanPools.values().next().value;
 }
 
+/** Find the pool containing a session_id. Searches all pools when instance is not specified. */
+async function findPoolForSession(ctx: RouteContext, sessionId: number, instance?: string | null): Promise<ReturnType<typeof postgres> | undefined> {
+  if (!ctx.harmanPools || ctx.harmanPools.size === 0) return undefined;
+  if (instance) return ctx.harmanPools.get(instance);
+  // Single pool — fast path
+  if (ctx.harmanPools.size === 1) return ctx.harmanPools.values().next().value;
+  // Search all pools for the session
+  for (const pool of ctx.harmanPools.values()) {
+    const check = await pool`SELECT id FROM sessions WHERE id = ${sessionId} LIMIT 1`;
+    if (check.length > 0) return pool;
+  }
+  return undefined;
+}
+
 export interface AuthInfo {
   userId: string;
   userEmail: string;
@@ -2620,7 +2634,7 @@ route("GET", "/v1/harman/sessions/:id/orders", async (req, ctx) => {
   const limit = Math.min(Math.max(
     url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
 
-  const rawSql = getHarmanPool(ctx, instance);
+  const rawSql = await findPoolForSession(ctx, sessionId, instance);
   if (!rawSql) return json({ error: "Harman instance not found" }, 404);
   const rows = await rawSql`
     SELECT id, client_order_id, exchange_order_id, ticker, side, action,
@@ -2652,7 +2666,7 @@ route("GET", "/v1/harman/sessions/:id/fills", async (req, ctx) => {
   const limit = Math.min(Math.max(
     url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
 
-  const rawSql = getHarmanPool(ctx, instance);
+  const rawSql = await findPoolForSession(ctx, sessionId, instance);
   if (!rawSql) return json({ error: "Harman instance not found" }, 404);
   const rows = await rawSql`
     SELECT f.id, f.order_id, f.trade_id, po.ticker, f.price_dollars,
@@ -2681,7 +2695,7 @@ route("GET", "/v1/harman/sessions/:id/settlements", async (req, ctx) => {
   const since = url.searchParams.get("since");
   const until = url.searchParams.get("until");
 
-  const rawSql = getHarmanPool(ctx, instance);
+  const rawSql = await findPoolForSession(ctx, sessionId, instance);
   if (!rawSql) return json({ error: "Harman instance not found" }, 404);
   const rows = await rawSql`
     SELECT id, ticker, market_result, revenue_dollars, created_at
@@ -2710,7 +2724,7 @@ route("GET", "/v1/harman/sessions/:id/audit", async (req, ctx) => {
   const limit = Math.min(Math.max(
     url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
 
-  const rawSql = getHarmanPool(ctx, instance);
+  const rawSql = await findPoolForSession(ctx, sessionId, instance);
   if (!rawSql) return json({ error: "Harman instance not found" }, 404);
   const rows = await rawSql`
     SELECT al.id, al.order_id, al.from_state, al.to_state, al.event, al.actor,
@@ -2745,7 +2759,7 @@ route("GET", "/v1/harman/sessions/:id/exchange-audit", async (req, ctx) => {
   const limit = Math.min(Math.max(
     url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 100, 1), 500);
 
-  const rawSql = getHarmanPool(ctx, instance);
+  const rawSql = await findPoolForSession(ctx, sessionId, instance);
   if (!rawSql) return json({ error: "Harman instance not found" }, 404);
   const rows = await rawSql`
     SELECT id, order_id, category, action, endpoint, status_code, duration_ms,
@@ -2772,7 +2786,7 @@ route("GET", "/v1/harman/sessions/:id/risk", async (req, ctx) => {
 
   const url = new URL(req.url);
   const instance = url.searchParams.get("instance");
-  const rawSql = getHarmanPool(ctx, instance);
+  const rawSql = await findPoolForSession(ctx, sessionId, instance);
   if (!rawSql) return json({ error: "Harman instance not found" }, 404);
 
   const sessions = await rawSql`SELECT max_notional FROM sessions WHERE id = ${sessionId}`;
