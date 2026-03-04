@@ -25,6 +25,10 @@ import {
   getSessionOrders,
   getOrderTimeline,
   getExchangeAudit,
+  getSecmasterStats,
+  getSecmasterMarkets,
+  getSecmasterPairs,
+  getSecmasterConditions,
 } from "./api";
 import type { WatchlistItem } from "./types";
 
@@ -189,6 +193,49 @@ export function useExchangeAudit(sessionId: number | null, instance?: string) {
     () => getExchangeAudit(sessionId!, instance),
     { refreshInterval: ORDER_REFRESH }
   );
+}
+
+// Secmaster hooks (via data-ts — not instance-scoped)
+export function useSecmasterStats() {
+  return useSWR("data-secmaster-stats", getSecmasterStats, {
+    refreshInterval: METADATA_REFRESH,
+  });
+}
+
+export function useSecmasterMarkets(filters: {
+  status?: string;
+  series?: string;
+  category?: string;
+  close_within_hours?: number;
+  limit?: number;
+}) {
+  const key = `data-secmaster-markets-${filters.status ?? ""}-${filters.series ?? ""}-${filters.category ?? ""}-${filters.close_within_hours ?? ""}-${filters.limit ?? 100}`;
+  return useSWR(key, () => getSecmasterMarkets(filters), {
+    refreshInterval: METADATA_REFRESH,
+  });
+}
+
+export function useSecmasterPairs(filters: {
+  status?: string;
+  base?: string;
+  market_type?: string;
+  limit?: number;
+}) {
+  const key = `data-secmaster-pairs-${filters.status ?? ""}-${filters.base ?? ""}-${filters.market_type ?? ""}-${filters.limit ?? 100}`;
+  return useSWR(key, () => getSecmasterPairs(filters), {
+    refreshInterval: METADATA_REFRESH,
+  });
+}
+
+export function useSecmasterConditions(filters: {
+  status?: string;
+  category?: string;
+  limit?: number;
+}) {
+  const key = `data-secmaster-conditions-${filters.status ?? ""}-${filters.category ?? ""}-${filters.limit ?? 100}`;
+  return useSWR(key, () => getSecmasterConditions(filters), {
+    refreshInterval: METADATA_REFRESH,
+  });
 }
 
 // Watchlist persistence (localStorage)

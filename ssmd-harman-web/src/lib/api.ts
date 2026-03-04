@@ -24,6 +24,10 @@ import type {
   HarmanSession,
   ExchangeAuditEntry,
   OrderTimelineResponse,
+  SecmasterStats,
+  SecmasterMarket,
+  SecmasterPair,
+  SecmasterCondition,
 } from "./types";
 
 // Dynamic instance routing — set via InstanceProvider
@@ -256,4 +260,53 @@ export const fetchWatchlist = (items: WatchlistItem[]): Promise<WatchlistRespons
     method: "POST",
     body: JSON.stringify({ items: items.map(({ ticker, exchange }) => ({ ticker, exchange })) }),
   });
+
+// Secmaster endpoints (via data-ts)
+export const getSecmasterStats = () =>
+  dataRequest<SecmasterStats>("/secmaster/stats");
+
+export const getSecmasterMarkets = async (params: {
+  status?: string;
+  series?: string;
+  category?: string;
+  close_within_hours?: number;
+  limit?: number;
+}): Promise<SecmasterMarket[]> => {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set("status", params.status);
+  if (params.series) qs.set("series", params.series);
+  if (params.category) qs.set("category", params.category);
+  if (params.close_within_hours) qs.set("close_within_hours", String(params.close_within_hours));
+  qs.set("limit", String(params.limit ?? 100));
+  const res = await dataRequest<{ markets: SecmasterMarket[] }>(`/markets?${qs.toString()}`);
+  return res.markets;
+};
+
+export const getSecmasterPairs = async (params: {
+  status?: string;
+  base?: string;
+  market_type?: string;
+  limit?: number;
+}): Promise<SecmasterPair[]> => {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set("status", params.status);
+  if (params.base) qs.set("base", params.base);
+  if (params.market_type) qs.set("market_type", params.market_type);
+  qs.set("limit", String(params.limit ?? 100));
+  const res = await dataRequest<{ pairs: SecmasterPair[] }>(`/pairs?${qs.toString()}`);
+  return res.pairs;
+};
+
+export const getSecmasterConditions = async (params: {
+  status?: string;
+  category?: string;
+  limit?: number;
+}): Promise<SecmasterCondition[]> => {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set("status", params.status);
+  if (params.category) qs.set("category", params.category);
+  qs.set("limit", String(params.limit ?? 100));
+  const res = await dataRequest<{ conditions: SecmasterCondition[] }>(`/conditions?${qs.toString()}`);
+  return res.conditions;
+};
 

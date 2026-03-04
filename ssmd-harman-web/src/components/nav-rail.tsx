@@ -240,6 +240,15 @@ function ClipboardIcon() {
   );
 }
 
+function DatabaseIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+    </svg>
+  );
+}
+
 function AdminSection({ collapsed, pathname }: { collapsed: boolean; pathname: string }) {
   const { data: me } = useMe();
   if (!me) return null;
@@ -258,6 +267,7 @@ function AdminSection({ collapsed, pathname }: { collapsed: boolean; pathname: s
       <NavItem href="/admin/sessions" label="Sessions" icon={UsersIcon} active={pathname === "/admin/sessions"} collapsed={collapsed} />
       <NavItem href="/admin/keys" label="Keys" icon={KeyIcon} active={pathname === "/admin/keys"} collapsed={collapsed} />
       <NavItem href="/admin/audit" label="Audit" icon={ClipboardIcon} active={pathname === "/admin/audit"} collapsed={collapsed} />
+      <NavItem href="/secmaster" label="Secmaster" icon={DatabaseIcon} active={pathname === "/secmaster"} collapsed={collapsed} />
     </>
   );
 }

@@ -373,3 +373,40 @@ export interface WatchlistResponse {
   results: WatchlistResult[];
   count: number;
 }
+
+/** Secmaster types */
+export interface SecmasterStats {
+  events: { total: number; by_status: Record<string, number>; by_category: Record<string, number> };
+  markets: { total: number; by_status: Record<string, number> };
+  pairs: { total: number; by_exchange: Record<string, number>; by_market_type: Record<string, number> };
+  conditions: { total: number; by_status: Record<string, number>; by_category: Record<string, number> };
+}
+
+export interface SecmasterMarket {
+  ticker: string;
+  title: string;
+  status: string;
+  close_time: string | null;
+  event_ticker: string;
+  series_ticker: string;
+  category: string;
+  volume: number | null;
+}
+
+export interface SecmasterPair {
+  pair_id: string;
+  symbol: string;
+  base: string;
+  quote: string;
+  market_type: string;
+  status: string;
+}
+
+export interface SecmasterCondition {
+  condition_id: string;
+  question: string;
+  status: string;
+  end_date: string | null;
+  token_count: number;
+  category: string | null;
+}
