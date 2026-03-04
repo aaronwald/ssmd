@@ -336,11 +336,19 @@ export interface TimelineEntry {
   category?: string;
 }
 
+export interface Settlement {
+  id: string;
+  ticker: string;
+  market_result: string;
+  revenue_dollars: string;
+  created_at: string;
+}
+
 export interface OrderTimelineResponse {
   order: Order;
   timeline: TimelineEntry[];
   fills: Fill[];
-  settlement: unknown | null;
+  settlement: Settlement | null;
 }
 
 /** Watchlist types */

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useOrderTimeline } from "@/lib/hooks";
 import { StateBadge } from "@/components/state-badge";
-import type { TimelineEntry, OrderState } from "@/lib/types";
+import type { TimelineEntry, OrderState, Settlement } from "@/lib/types";
 
 const typeColors: Record<string, { bg: string; text: string; label: string }> = {
   state_change: { bg: "bg-accent/15", text: "text-accent", label: "State" },
@@ -185,8 +185,22 @@ export function OrderTimeline({ orderId, instance }: { orderId: number; instance
 
       {/* Settlement info */}
       {settlement != null && (
-        <div className="text-xs bg-emerald/10 text-emerald rounded px-3 py-2">
-          Settlement: {JSON.stringify(settlement)}
+        <div className="text-xs rounded px-3 py-2 border border-border-subtle bg-bg-surface space-y-1">
+          <div className="flex items-center gap-2">
+            <span className={`inline-block rounded-md px-2 py-0.5 font-medium font-mono ${
+              settlement.market_result === "yes" ? "bg-green/15 text-green" :
+              settlement.market_result === "no" ? "bg-red/15 text-red" :
+              "bg-fg-subtle/15 text-fg-subtle"
+            }`}>
+              {settlement.market_result}
+            </span>
+            <span className="font-mono text-fg">
+              ${settlement.revenue_dollars}
+            </span>
+            <span className="text-fg-muted">
+              {new Date(settlement.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            </span>
+          </div>
         </div>
       )}
 
