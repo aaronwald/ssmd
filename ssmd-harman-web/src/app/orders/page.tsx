@@ -4,7 +4,6 @@ import { Suspense, useState, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useOrders, usePositions } from "@/lib/hooks";
 import { pump, reconcile, resume, massCancel } from "@/lib/api";
-import { InstanceBadge } from "@/components/nav";
 import { StateBadge } from "@/components/state-badge";
 import { OrderActions } from "@/components/order-actions";
 import { CreateOrderForm } from "@/components/create-order-form";
@@ -97,7 +96,6 @@ function OrdersContent() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold">Orders</h1>
-          <InstanceBadge />
         </div>
         <div className="flex items-center gap-3">
           <select
