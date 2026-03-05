@@ -2206,7 +2206,7 @@ pub async fn create_order_group(
                 },
             ));
         }
-        if !state.is_terminal() {
+        if state.is_open() {
             legs_notional += leg_notional;
         }
     }
