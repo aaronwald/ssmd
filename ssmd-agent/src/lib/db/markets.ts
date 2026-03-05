@@ -354,6 +354,7 @@ export async function listMarkets(
         canCloseEarly: markets.canCloseEarly,
         marketType: markets.marketType,
         openTime: markets.openTime,
+        expectedExpirationTime: markets.expectedExpirationTime,
         createdAt: markets.createdAt,
         updatedAt: markets.updatedAt,
         deletedAt: markets.deletedAt,
