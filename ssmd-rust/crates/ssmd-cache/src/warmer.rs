@@ -194,6 +194,65 @@ impl CacheWarmer {
         total_keys += market_rows.len() as u64;
         tracing::info!(market_entries = market_rows.len(), "Warmed monitor:markets:*");
 
+        // 4b. Warm lifecycle events into existing market hashes
+        let lifecycle_rows = self.client
+            .query(
+                r#"
+                SELECT mle.market_ticker, mle.event_type, mle.received_at::text,
+                       mle.metadata::text
+                FROM market_lifecycle_events mle
+                JOIN markets m ON m.ticker = mle.market_ticker
+                WHERE m.status = 'active'
+                  AND m.close_time > NOW()
+                ORDER BY mle.market_ticker, mle.received_at
+                "#,
+                &[],
+            )
+            .await?;
+
+        let mut lifecycle_by_market: std::collections::HashMap<String, Vec<serde_json::Value>> =
+            std::collections::HashMap::new();
+        for row in &lifecycle_rows {
+            let market_ticker: String = row.get(0);
+            let event_type: String = row.get(1);
+            let received_at: Option<String> = row.get(2);
+            let metadata_str: Option<String> = row.get(3);
+            let metadata: serde_json::Value = metadata_str
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::json!({}));
+
+            lifecycle_by_market
+                .entry(market_ticker)
+                .or_default()
+                .push(serde_json::json!({
+                    "type": event_type,
+                    "ts": received_at.unwrap_or_default(),
+                    "metadata": metadata,
+                }));
+        }
+
+        let mut lifecycle_count = 0u64;
+        for (market_ticker, events) in &lifecycle_by_market {
+            let event_ticker = extract_event_ticker(market_ticker);
+            let hash_key = format!("monitor:markets:{}", event_ticker);
+
+            let existing: Option<String> = cache.hget(&hash_key, market_ticker).await.unwrap_or(None);
+            if let Some(existing_str) = existing {
+                if let Ok(mut market_json) = serde_json::from_str::<serde_json::Value>(&existing_str) {
+                    if let Some(obj) = market_json.as_object_mut() {
+                        obj.insert("lifecycle_events".to_string(), serde_json::json!(events));
+                    }
+                    cache.hset(&hash_key, market_ticker, &market_json.to_string()).await?;
+                    lifecycle_count += 1;
+                }
+            }
+        }
+        tracing::info!(
+            markets_with_lifecycle = lifecycle_count,
+            total_lifecycle_events = lifecycle_rows.len(),
+            "Warmed lifecycle events into monitor:markets:*"
+        );
+
         // 5. Kraken Futures pairs → merged into monitor hierarchy
         total_keys += self.warm_pairs_monitor(cache).await?;
 
@@ -471,4 +530,22 @@ impl CacheWarmer {
 
         Ok(lsn)
     }
+}
+
+/// Extract event_ticker from market_ticker.
+/// Market tickers use '-' segments: the event_ticker is the first two segments.
+/// e.g. "KXNBAGAME-26MAR05BOSLAL-BOS" -> "KXNBAGAME-26MAR05BOSLAL"
+/// e.g. "KXBTCD-26MAR0211-T5060" -> "KXBTCD-26MAR0211"
+/// Single-segment tickers (no dash) return the full string.
+fn extract_event_ticker(market_ticker: &str) -> &str {
+    let mut dash_count = 0;
+    for (i, c) in market_ticker.char_indices() {
+        if c == '-' {
+            dash_count += 1;
+            if dash_count == 2 {
+                return &market_ticker[..i];
+            }
+        }
+    }
+    market_ticker
 }
