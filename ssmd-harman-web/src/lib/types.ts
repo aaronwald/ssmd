@@ -197,6 +197,7 @@ export interface MonitorMarket {
   title: string;
   status: string;
   close_time: string | null;
+  expected_expiration_time?: string | null;
   yes_bid: number | null;
   yes_ask: number | null;
   last: number | null;

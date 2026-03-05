@@ -51,6 +51,8 @@ export const MarketSchema = z.object({
   market_type: z.string().nullable().optional(),
   /** When the market opens for trading */
   open_time: z.string().nullable().optional(),
+  /** When the market is expected to expire/settle (for sports: ~game end time) */
+  expected_expiration_time: z.string().nullable().optional(),
 });
 
 /**

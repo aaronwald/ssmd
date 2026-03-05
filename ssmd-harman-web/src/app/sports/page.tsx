@@ -164,6 +164,56 @@ function countdownColor(targetDate: string | null): string {
   return "text-fg-muted";
 }
 
+// --- Game state from expected_expiration_time ---
+
+/** Estimated game duration by league (hours) — used to compute start time from EET */
+const GAME_DURATION_HOURS: Record<string, number> = {
+  NBA: 2.5, NHL: 2.5, NFL: 3.5, NCAAM: 2.5, NCAAW: 2.5, "NCAA BB": 2.5,
+  "NCAA Hockey": 2.5, EPL: 2, "La Liga": 2, UCL: 2, "Serie A": 2,
+  Bundesliga: 2, "Ligue 1": 2, MLS: 2, "MLB Spring": 3, WBC: 3,
+  ATP: 2.5, WTA: 2, CS2: 2, Valorant: 2, LoL: 1.5, "Dota 2": 1.5,
+  "NCAA Lax": 2, "Liga MX": 2, Europa: 2, AFL: 2.5, NRL: 2,
+};
+
+type GameState = "upcoming" | "in_progress" | "final" | "unknown";
+
+function getGameState(
+  markets: MonitorMarket[] | null,
+  eventTicker: string,
+  eventDate: string | null,
+): { state: GameState; countdownTarget: string | null; label: string } {
+  if (!markets || markets.length === 0) {
+    if (eventDate && isToday(eventDate)) return { state: "unknown", countdownTarget: null, label: "Today" };
+    return { state: "unknown", countdownTarget: null, label: "-" };
+  }
+
+  // Check if game is decided by price signal
+  const decided = markets.some(m => (m.yes_bid ?? 0) >= 0.95 || (m.yes_bid ?? 1) <= 0.05);
+  if (decided) return { state: "final", countdownTarget: null, label: "Final" };
+
+  // Use expected_expiration_time from first market
+  const eet = markets[0]?.expected_expiration_time;
+  if (!eet) {
+    if (eventDate && isToday(eventDate)) return { state: "unknown", countdownTarget: null, label: "Today" };
+    return { state: "unknown", countdownTarget: null, label: "-" };
+  }
+
+  const eetTime = new Date(eet).getTime();
+  const now = Date.now();
+  const league = seriesLabel(eventSeries(eventTicker));
+  const durationMs = (GAME_DURATION_HOURS[league] ?? 2.5) * 3600000;
+  const estimatedStart = eetTime - durationMs;
+
+  if (now < estimatedStart) {
+    return { state: "upcoming", countdownTarget: new Date(estimatedStart).toISOString(), label: "" };
+  }
+  if (now < eetTime + 3600000) {
+    // Game is in progress (between estimated start and EET + 1h buffer)
+    return { state: "in_progress", countdownTarget: null, label: "Live" };
+  }
+  return { state: "final", countdownTarget: null, label: "Final" };
+}
+
 // --- "Today" cross-series hook ---
 
 /** Fetch events for multiple series and merge, filtered to today only */
@@ -511,11 +561,23 @@ function GameRow({
   onMarketClick: (m: MonitorMarket) => void;
 }) {
   const eventDate = getEventDate(event);
-  const precise = eventDate && hasPreciseTime(eventDate);
-  const countdown = useCountdown(precise ? eventDate : null);
-  const isLive = !precise && eventDate && isToday(eventDate);
-  const cdColor = isLive ? "text-green" : countdownColor(precise ? eventDate : null);
+
+  // Use expected_expiration_time-based game state when markets are loaded
+  const gameState = useMemo(
+    () => getGameState(markets, event.ticker, eventDate),
+    [markets, event.ticker, eventDate],
+  );
+
+  const countdown = useCountdown(gameState.countdownTarget);
   const colSpan = showLeague ? 7 : 6;
+
+  // Color based on game state
+  const stateColor =
+    gameState.state === "in_progress" ? "text-green" :
+    gameState.state === "final" ? "text-fg-subtle" :
+    gameState.state === "upcoming" && gameState.countdownTarget
+      ? countdownColor(gameState.countdownTarget)
+      : "text-fg-muted";
 
   return (
     <>
@@ -545,8 +607,8 @@ function GameRow({
         <td className="px-4 py-2 text-right text-xs text-fg-muted">
           {eventDate ? fmtGameDate(eventDate) : "-"}
         </td>
-        <td className={`px-4 py-2 text-right text-xs font-mono ${cdColor}`}>
-          {countdown || (isLive ? "Live" : "-")}
+        <td className={`px-4 py-2 text-right text-xs font-mono ${stateColor}`}>
+          {countdown || gameState.label}
         </td>
         <td className="px-4 py-2 text-right text-xs text-fg-subtle">
           {event.market_count ?? 0}

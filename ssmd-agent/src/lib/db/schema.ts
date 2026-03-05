@@ -67,6 +67,7 @@ export const markets = pgTable("markets", {
   canCloseEarly: boolean("can_close_early"),
   marketType: varchar("market_type", { length: 16 }),
   openTime: timestamp("open_time", { withTimezone: true }),
+  expectedExpirationTime: timestamp("expected_expiration_time", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),

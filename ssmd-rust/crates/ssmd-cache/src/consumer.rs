@@ -266,10 +266,12 @@ impl CdcConsumer {
                     if status == "active" {
                         let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
                         let close_time = data.get("close_time").and_then(|v| v.as_str());
+                        let expected_expiration_time = data.get("expected_expiration_time").and_then(|v| v.as_str());
                         let val = serde_json::json!({
                             "title": title,
                             "status": status,
                             "close_time": close_time,
+                            "expected_expiration_time": expected_expiration_time,
                         });
                         if let Err(e) = cache.hset(&hash_key, market_ticker, &val.to_string()).await {
                             tracing::warn!(error = %e, "Failed to update monitor:markets index");

@@ -46,6 +46,7 @@ function toNewMarket(m: ApiMarket): NewMarket {
     canCloseEarly: m.can_close_early ?? null,
     marketType: m.market_type ?? null,
     openTime: m.open_time ? new Date(m.open_time) : null,
+    expectedExpirationTime: m.expected_expiration_time ? new Date(m.expected_expiration_time) : null,
   };
 }
 
@@ -114,6 +115,7 @@ export async function upsertMarkets(
           canCloseEarly: sql`excluded.can_close_early`,
           marketType: sql`excluded.market_type`,
           openTime: sql`excluded.open_time`,
+          expectedExpirationTime: sql`excluded.expected_expiration_time`,
           // updated_at is handled by trigger (only updates when data changes)
           deletedAt: sql`NULL`,
         },
@@ -312,6 +314,7 @@ export async function listMarkets(
           canCloseEarly: markets.canCloseEarly,
           marketType: markets.marketType,
           openTime: markets.openTime,
+          expectedExpirationTime: markets.expectedExpirationTime,
           createdAt: markets.createdAt,
           updatedAt: markets.updatedAt,
           deletedAt: markets.deletedAt,

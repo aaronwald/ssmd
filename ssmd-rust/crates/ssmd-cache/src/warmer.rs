@@ -165,7 +165,8 @@ impl CacheWarmer {
         let market_rows = self.client
             .query(
                 r#"
-                SELECT m.event_ticker, m.ticker, m.title, m.status, m.close_time::text
+                SELECT m.event_ticker, m.ticker, m.title, m.status, m.close_time::text,
+                       m.expected_expiration_time::text
                 FROM markets m
                 WHERE m.status = 'active'
                   AND m.close_time > NOW()
@@ -180,10 +181,12 @@ impl CacheWarmer {
             let title: Option<String> = row.get(2);
             let status: String = row.get(3);
             let close_time: Option<String> = row.get(4);
+            let expected_expiration_time: Option<String> = row.get(5);
             let val = serde_json::json!({
                 "title": title.unwrap_or_default(),
                 "status": status,
                 "close_time": close_time,
+                "expected_expiration_time": expected_expiration_time,
             });
             let hash_key = format!("monitor:markets:{}", event_ticker);
             cache.hset(&hash_key, &market_ticker, &val.to_string()).await?;
