@@ -4,9 +4,11 @@
  */
 import {
   parseApiKey,
+  hashSecret,
   verifySecret,
   getCachedKeyInfo,
   cacheKeyInfo,
+  buildCacheKey,
   checkRateLimit,
   incrementRateLimitHits,
   type CachedKeyInfo,
@@ -49,18 +51,26 @@ export async function validateApiKey(
 
   const { prefix, secret } = parsed;
 
-  // Check cache first
-  let keyInfo: CachedKeyInfo | null = await getCachedKeyInfo(prefix);
+  // Hash secret for cache key — the cache key itself proves the secret was verified
+  const secretHash = await hashSecret(secret);
+  const cacheKey = buildCacheKey(prefix, secretHash);
 
-  // Cache miss - check database
+  // Check cache — hit means secret was already verified
+  let keyInfo: CachedKeyInfo | null = await getCachedKeyInfo(cacheKey);
+
+  // Cache miss - verify against database
   if (!keyInfo) {
     const dbKey = await getApiKeyByPrefix(db, prefix);
     if (!dbKey) {
       return { valid: false, status: 401, error: "API key not found" };
     }
 
+    // Verify secret against stored hash
+    if (!(await verifySecret(secret, dbKey.keyHash))) {
+      return { valid: false, status: 401, error: "Invalid API key" };
+    }
+
     keyInfo = {
-      keyHash: dbKey.keyHash,
       userId: dbKey.userId,
       userEmail: dbKey.userEmail,
       scopes: dbKey.scopes,
@@ -74,8 +84,8 @@ export async function validateApiKey(
       disabledAt: dbKey.disabledAt?.toISOString() ?? null,
     };
 
-    // Cache for next time
-    await cacheKeyInfo(prefix, keyInfo);
+    // Cache for next time — no keyHash in the cached value
+    await cacheKeyInfo(cacheKey, keyInfo);
   }
 
   // Check if revoked
@@ -91,11 +101,6 @@ export async function validateApiKey(
   // Check if expired
   if (keyInfo.expiresAt && new Date(keyInfo.expiresAt) < new Date()) {
     return { valid: false, status: 401, error: "API key expired" };
-  }
-
-  // Verify secret
-  if (!(await verifySecret(secret, keyInfo.keyHash))) {
-    return { valid: false, status: 401, error: "Invalid API key" };
   }
 
   // Check rate limit

@@ -88,6 +88,7 @@ async fn main() {
     // Cloudflare Access JWT config
     let cf_jwks_url = std::env::var("CF_JWKS_URL").ok();
     let cf_aud = std::env::var("CF_AUD").ok();
+    let cf_iss = std::env::var("CF_ISS").ok();
     let data_ts_api_key = std::env::var("DATA_TS_API_KEY").ok();
     let data_ts_base_url = std::env::var("DATA_TS_BASE_URL").ok();
 
@@ -318,6 +319,7 @@ async fn main() {
         environment,
         cf_jwks_url,
         cf_aud,
+        cf_iss,
         cf_jwks: RwLock::new(None),
         data_ts_api_key,
         data_ts_base_url,

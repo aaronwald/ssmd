@@ -3,6 +3,24 @@ import { type NextRequest, NextResponse } from "next/server";
 const DATA_TS_URL = process.env.DATA_TS_URL || "";
 const DATA_TS_API_KEY = process.env.DATA_TS_API_KEY || "";
 
+const ALLOWED_PATH_PREFIXES = [
+  "/v1/monitor/",
+  "/v1/data/",
+  "/v1/secmaster/",
+  "/v1/events",
+  "/v1/markets",
+  "/v1/series",
+  "/v1/pairs",
+  "/v1/conditions",
+  "/v1/fees",
+  "/v1/harman/",
+  "/v1/health/",
+];
+
+function isPathAllowed(path: string): boolean {
+  return ALLOWED_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
@@ -16,6 +34,11 @@ export async function GET(
 
   const { path } = await params;
   const targetPath = `/v1/${path.join("/")}`;
+
+  if (!isPathAllowed(targetPath)) {
+    return NextResponse.json({ error: "Path not allowed" }, { status: 403 });
+  }
+
   const url = `${DATA_TS_URL}${targetPath}${req.nextUrl.search}`;
 
   try {
@@ -61,6 +84,11 @@ export async function POST(
 
   const { path } = await params;
   const targetPath = `/v1/${path.join("/")}`;
+
+  if (!isPathAllowed(targetPath)) {
+    return NextResponse.json({ error: "Path not allowed" }, { status: 403 });
+  }
+
   const url = `${DATA_TS_URL}${targetPath}${req.nextUrl.search}`;
 
   try {

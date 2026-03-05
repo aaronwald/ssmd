@@ -254,6 +254,9 @@ async fn validate_cf_jwt(state: &AppState, token: &str) -> Result<String, Status
     let mut validation = Validation::new(Algorithm::RS256);
     // CF Access uses the audience as an array containing the AUD value
     validation.set_audience(&[cf_aud]);
+    if let Some(ref iss) = state.cf_iss {
+        validation.set_issuer(&[iss.as_str()]);
+    }
 
     let token_data = decode::<CfClaims>(token, &decoding_key, &validation).map_err(|e| {
         tracing::warn!(error = %e, "CF JWT validation failed");
@@ -1480,7 +1483,7 @@ async fn update_session_risk_handler(
         None => None,
     };
 
-    match db::update_session_risk(&state.pool, session_id, max_notional).await {
+    match db::update_session_risk(&state.pool, session_id, &state.exchange_type, &state.environment, max_notional).await {
         Ok(true) => {
             let global = state.ems.risk_limits.max_notional;
             tracing::info!(session_id, ?max_notional, "session risk updated");

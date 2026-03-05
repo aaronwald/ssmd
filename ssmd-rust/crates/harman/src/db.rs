@@ -1443,10 +1443,13 @@ pub async fn list_sessions(
     Ok(sessions)
 }
 
-/// Update the per-session risk limit (NULL = reset to global)
+/// Update the per-session risk limit (NULL = reset to global).
+/// Scoped to exchange+environment so an admin cannot modify sessions belonging to another instance.
 pub async fn update_session_risk(
     pool: &Pool,
     session_id: i64,
+    exchange: &str,
+    environment: &str,
     max_notional: Option<Decimal>,
 ) -> Result<bool, String> {
     let client = pool
@@ -1456,8 +1459,8 @@ pub async fn update_session_risk(
 
     let count = client
         .execute(
-            "UPDATE sessions SET max_notional = $2 WHERE id = $1",
-            &[&session_id, &max_notional],
+            "UPDATE sessions SET max_notional = $2 WHERE id = $1 AND exchange = $3 AND environment = $4",
+            &[&session_id, &max_notional, &exchange, &environment],
         )
         .await
         .map_err(|e| format!("update session risk: {}", e))?;

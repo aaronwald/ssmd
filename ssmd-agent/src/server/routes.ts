@@ -735,7 +735,7 @@ route("DELETE", "/v1/keys/:prefix", async (req, ctx) => {
   }
 
   return json({ revoked });
-}, true, "admin:read");
+}, true, "admin:write");
 
 route("PATCH", "/v1/keys/:prefix", async (req, ctx) => {
   const auth = (req as Request & { auth: AuthInfo }).auth;

@@ -6,6 +6,7 @@ export {
 } from "./keys.ts";
 
 export {
+  buildCacheKey,
   getCachedKeyInfo,
   cacheKeyInfo,
   invalidateKeyCache,

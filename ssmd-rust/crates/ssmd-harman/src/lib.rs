@@ -128,6 +128,7 @@ pub struct AppState {
     // Cloudflare Access JWT auth (Path 4)
     pub cf_jwks_url: Option<String>,
     pub cf_aud: Option<String>,
+    pub cf_iss: Option<String>,
     pub cf_jwks: RwLock<Option<(Instant, Vec<CfJwk>)>>,
     pub data_ts_api_key: Option<String>,
     pub data_ts_base_url: Option<String>,
