@@ -344,9 +344,6 @@ function SportsContent() {
     }
   }, [displayEvents, expandedEvent]);
 
-  // 4. Fetch markets for expanded game
-  const { data: expandedMarkets } = useMarkets(expandedEvent);
-
   // Positions & watchlist
   const { data: positions } = usePositions();
   const watchlist = useWatchlist();
@@ -393,7 +390,6 @@ function SportsContent() {
           events={displayEvents}
           showLeague={isTodayMode}
           expandedEvent={expandedEvent}
-          expandedMarkets={expandedMarkets ?? null}
           positionTickers={positionTickers}
           watchlist={watchlist}
           toggleStar={toggleStar}
@@ -483,7 +479,6 @@ function GameList({
   events,
   showLeague,
   expandedEvent,
-  expandedMarkets,
   positionTickers,
   watchlist,
   toggleStar,
@@ -493,7 +488,6 @@ function GameList({
   events: MonitorEvent[];
   showLeague: boolean;
   expandedEvent: string | null;
-  expandedMarkets: MonitorMarket[] | null;
   positionTickers: Set<string>;
   watchlist: { has: (ticker: string) => boolean };
   toggleStar: (ticker: string, title?: string) => void;
@@ -522,7 +516,6 @@ function GameList({
                 event={e}
                 showLeague={showLeague}
                 isExpanded={expandedEvent === e.ticker}
-                markets={expandedEvent === e.ticker ? expandedMarkets : null}
                 positionTickers={positionTickers}
                 watchlist={watchlist}
                 toggleStar={toggleStar}
@@ -543,7 +536,6 @@ function GameRow({
   event,
   showLeague,
   isExpanded,
-  markets,
   positionTickers,
   watchlist,
   toggleStar,
@@ -553,18 +545,19 @@ function GameRow({
   event: MonitorEvent;
   showLeague: boolean;
   isExpanded: boolean;
-  markets: MonitorMarket[] | null;
   positionTickers: Set<string>;
   watchlist: { has: (ticker: string) => boolean };
   toggleStar: (ticker: string, title?: string) => void;
   onToggle: () => void;
   onMarketClick: (m: MonitorMarket) => void;
 }) {
+  // Always fetch markets for game state (SWR caches + dedupes)
+  const { data: markets } = useMarkets(event.ticker);
   const eventDate = getEventDate(event);
 
-  // Use expected_expiration_time-based game state when markets are loaded
+  // Use expected_expiration_time-based game state
   const gameState = useMemo(
-    () => getGameState(markets, event.ticker, eventDate),
+    () => getGameState(markets ?? null, event.ticker, eventDate),
     [markets, event.ticker, eventDate],
   );
 
