@@ -53,6 +53,7 @@ import {
   llmUsageDaily,
   dataAccessLog,
   apiRequestLog,
+  marketLifecycleEvents,
   getRawSql,
   type Database,
 } from "../lib/db/mod.ts";
@@ -74,7 +75,7 @@ import {
 } from "../lib/duckdb/queries.ts";
 import { VALID_DATA_FEEDS, FEED_PATHS } from "../lib/duckdb/feed-config.ts";
 import postgres from "postgres";
-import { and, inArray, isNull, eq, gte, lt, lte, desc, sql, ilike } from "drizzle-orm";
+import { and, inArray, isNull, eq, gte, lt, lte, desc, sql, ilike, like } from "drizzle-orm";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
 const USAGE_CACHE_TTL = 120; // 2 minutes
@@ -2448,6 +2449,36 @@ route("POST", "/v1/monitor/watchlist", async (req) => {
   }
 
   return json({ results, count: results.length });
+}, true, "datasets:read", "public");
+
+// Market lifecycle event audit
+route("GET", "/v1/monitor/lifecycle", async (req, ctx) => {
+  const url = new URL(req.url);
+  const ticker = url.searchParams.get("ticker") ?? undefined;
+  const eventTicker = url.searchParams.get("event_ticker") ?? undefined;
+  const since = url.searchParams.get("since") ?? undefined;
+  const limit = url.searchParams.get("limit")
+    ? Math.min(Math.max(parseInt(url.searchParams.get("limit")!), 1), 500)
+    : 100;
+
+  if (!ticker && !eventTicker) {
+    return json({ error: "At least one of 'ticker' or 'event_ticker' is required" }, 400);
+  }
+
+  // deno-lint-ignore no-explicit-any
+  const conds: any[] = [];
+  if (ticker) conds.push(eq(marketLifecycleEvents.marketTicker, ticker));
+  if (eventTicker) conds.push(like(marketLifecycleEvents.marketTicker, eventTicker + "%"));
+  if (since) conds.push(gte(marketLifecycleEvents.receivedAt, new Date(since)));
+
+  const rows = await ctx.db
+    .select()
+    .from(marketLifecycleEvents)
+    .where(and(...conds))
+    .orderBy(desc(marketLifecycleEvents.receivedAt))
+    .limit(limit);
+
+  return json({ events: rows, count: rows.length });
 }, true, "datasets:read", "public");
 
 // Chat completions proxy (OpenRouter)
