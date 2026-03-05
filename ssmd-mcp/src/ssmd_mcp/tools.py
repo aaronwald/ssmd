@@ -447,3 +447,22 @@ def harman_settlements(
         params["instance"] = instance
     result = api_get(cfg, f"/v1/harman/sessions/{session_id}/settlements", params if params else None)
     return json.dumps(result, indent=2, default=str)
+
+
+def query_market_lifecycle(
+    cfg: Config,
+    ticker: str | None = None,
+    event_ticker: str | None = None,
+    since: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Query market lifecycle events (created, activated, determined, settled, etc.)."""
+    params: dict[str, Any] = {"limit": limit}
+    if ticker:
+        params["ticker"] = ticker
+    if event_ticker:
+        params["event_ticker"] = event_ticker
+    if since:
+        params["since"] = since
+    result = api_get(cfg, "/v1/monitor/lifecycle", params)
+    return json.dumps(result, indent=2, default=str)

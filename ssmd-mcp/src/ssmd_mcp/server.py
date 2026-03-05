@@ -37,6 +37,7 @@ from ssmd_mcp.tools import (
     harman_order_timeline,
     harman_exchange_audit,
     harman_settlements,
+    query_market_lifecycle,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -739,6 +740,37 @@ TOOLS = [
             "required": ["session_id"],
         },
     ),
+    Tool(
+        name="query_market_lifecycle",
+        description=(
+            "Query market lifecycle events for a specific market ticker or event. "
+            "Returns the full lifecycle history: created, activated, deactivated, "
+            "close_date_updated, closed, determined, settled. "
+            "Use to audit game/market state transitions."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "Market ticker (e.g., KXNBAGAME-26MAR05BOSLAL-BOS).",
+                },
+                "event_ticker": {
+                    "type": "string",
+                    "description": "Event ticker to get lifecycle for all markets in the event.",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "ISO 8601 timestamp to filter events after.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default 50, max 500).",
+                    "default": 50,
+                },
+            },
+        },
+    ),
 ]
 
 
@@ -909,6 +941,14 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             ticker=arguments.get("ticker"),
             since=arguments.get("since"),
             instance=arguments.get("instance"),
+        )
+    elif name == "query_market_lifecycle":
+        return query_market_lifecycle(
+            cfg,
+            ticker=arguments.get("ticker"),
+            event_ticker=arguments.get("event_ticker"),
+            since=arguments.get("since"),
+            limit=arguments.get("limit", 50),
         )
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})
