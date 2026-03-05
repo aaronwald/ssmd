@@ -473,6 +473,53 @@ function SeriesPillBar({
   );
 }
 
+// --- Sortable columns ---
+
+type SortColumn = "league" | "game" | "time" | "markets";
+type SortDir = "asc" | "desc";
+
+function getSortValue(event: MonitorEvent, col: SortColumn): string | number {
+  switch (col) {
+    case "league":
+      return seriesLabel(eventSeries(event.ticker));
+    case "game":
+      return parseMatchup(event.title ?? event.ticker);
+    case "time": {
+      const d = getEventDate(event);
+      return d ? new Date(d).getTime() : Infinity;
+    }
+    case "markets":
+      return event.market_count ?? 0;
+  }
+}
+
+function SortHeader({
+  label,
+  column,
+  current,
+  dir,
+  onSort,
+  className,
+}: {
+  label: string;
+  column: SortColumn;
+  current: SortColumn;
+  dir: SortDir;
+  onSort: (col: SortColumn) => void;
+  className?: string;
+}) {
+  const active = current === column;
+  return (
+    <th
+      className={`px-4 py-2 cursor-pointer select-none hover:text-fg ${className ?? ""}`}
+      onClick={() => onSort(column)}
+    >
+      {label}
+      {active && <span className="ml-1">{dir === "asc" ? "\u25B4" : "\u25BE"}</span>}
+    </th>
+  );
+}
+
 // --- Game list ---
 
 function GameList({
@@ -494,6 +541,31 @@ function GameList({
   onToggleExpand: (eventTicker: string) => void;
   onMarketClick: (m: MonitorMarket) => void;
 }) {
+  const [sortCol, setSortCol] = useState<SortColumn>("time");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  const handleSort = useCallback((col: SortColumn) => {
+    setSortCol((prev) => {
+      if (prev === col) {
+        setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+        return col;
+      }
+      setSortDir(col === "markets" ? "desc" : "asc");
+      return col;
+    });
+  }, []);
+
+  const sortedEvents = useMemo(() => {
+    return [...events].sort((a, b) => {
+      const va = getSortValue(a, sortCol);
+      const vb = getSortValue(b, sortCol);
+      const cmp = typeof va === "number" && typeof vb === "number"
+        ? va - vb
+        : String(va).localeCompare(String(vb));
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [events, sortCol, sortDir]);
+
   return (
     <div className="bg-bg-raised border border-border rounded-lg overflow-hidden">
       <div className="overflow-x-auto">
@@ -501,16 +573,18 @@ function GameList({
           <thead>
             <tr className="text-left text-xs text-fg-muted border-b border-border">
               <th className="px-4 py-2 w-6"></th>
-              {showLeague && <th className="px-4 py-2">League</th>}
-              <th className="px-4 py-2">Game</th>
-              <th className="px-4 py-2 text-right">Time</th>
-              <th className="px-4 py-2 text-right">Countdown</th>
-              <th className="px-4 py-2 text-right">Markets</th>
+              {showLeague && (
+                <SortHeader label="League" column="league" current={sortCol} dir={sortDir} onSort={handleSort} />
+              )}
+              <SortHeader label="Game" column="game" current={sortCol} dir={sortDir} onSort={handleSort} />
+              <SortHeader label="Time" column="time" current={sortCol} dir={sortDir} onSort={handleSort} className="text-right" />
+              <th className="px-4 py-2 text-right">Status</th>
+              <SortHeader label="Markets" column="markets" current={sortCol} dir={sortDir} onSort={handleSort} className="text-right" />
               <th className="px-4 py-2 w-6"></th>
             </tr>
           </thead>
           <tbody>
-            {events.map((e) => (
+            {sortedEvents.map((e) => (
               <GameRow
                 key={e.ticker}
                 event={e}
