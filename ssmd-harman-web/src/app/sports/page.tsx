@@ -4,7 +4,7 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import useSWR from "swr";
 import { useSeries, useEvents, useMarkets, usePositions } from "@/lib/hooks";
 import { useWatchlist } from "@/lib/watchlist-context";
-import { getEvents } from "@/lib/api";
+import { getEvents, getMarkets } from "@/lib/api";
 import type { MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
 
@@ -177,41 +177,53 @@ const GAME_DURATION_HOURS: Record<string, number> = {
 
 type GameState = "upcoming" | "in_progress" | "final" | "unknown";
 
+/** Compute estimated start time from EET and league duration */
+function getEstimatedStart(markets: MonitorMarket[] | null, eventTicker: string): Date | null {
+  const eet = markets?.[0]?.expected_expiration_time;
+  if (!eet) return null;
+  const league = seriesLabel(eventSeries(eventTicker));
+  const durationMs = (GAME_DURATION_HOURS[league] ?? 2.5) * 3600000;
+  return new Date(new Date(eet).getTime() - durationMs);
+}
+
 function getGameState(
   markets: MonitorMarket[] | null,
   eventTicker: string,
-  eventDate: string | null,
 ): { state: GameState; countdownTarget: string | null; label: string } {
   if (!markets || markets.length === 0) {
-    if (eventDate && isToday(eventDate)) return { state: "unknown", countdownTarget: null, label: "Today" };
-    return { state: "unknown", countdownTarget: null, label: "-" };
+    return { state: "unknown", countdownTarget: null, label: "" };
   }
 
   // Check if game is decided by price signal
   const decided = markets.some(m => (m.yes_bid ?? 0) >= 0.95 || (m.yes_bid ?? 1) <= 0.05);
   if (decided) return { state: "final", countdownTarget: null, label: "Final" };
 
-  // Use expected_expiration_time from first market
-  const eet = markets[0]?.expected_expiration_time;
-  if (!eet) {
-    if (eventDate && isToday(eventDate)) return { state: "unknown", countdownTarget: null, label: "Today" };
-    return { state: "unknown", countdownTarget: null, label: "-" };
+  const estimatedStart = getEstimatedStart(markets, eventTicker);
+  if (!estimatedStart) {
+    return { state: "unknown", countdownTarget: null, label: "" };
   }
 
-  const eetTime = new Date(eet).getTime();
+  const eetTime = new Date(markets[0].expected_expiration_time!).getTime();
   const now = Date.now();
-  const league = seriesLabel(eventSeries(eventTicker));
-  const durationMs = (GAME_DURATION_HOURS[league] ?? 2.5) * 3600000;
-  const estimatedStart = eetTime - durationMs;
 
-  if (now < estimatedStart) {
-    return { state: "upcoming", countdownTarget: new Date(estimatedStart).toISOString(), label: "" };
+  if (now < estimatedStart.getTime()) {
+    return { state: "upcoming", countdownTarget: estimatedStart.toISOString(), label: "" };
   }
   if (now < eetTime + 3600000) {
-    // Game is in progress (between estimated start and EET + 1h buffer)
     return { state: "in_progress", countdownTarget: null, label: "Live" };
   }
   return { state: "final", countdownTarget: null, label: "Final" };
+}
+
+/** Format estimated start time as local time, e.g. "7:00 PM" */
+function fmtStartTime(markets: MonitorMarket[] | null, eventTicker: string): string {
+  const start = getEstimatedStart(markets, eventTicker);
+  if (!start) return "-";
+  return start.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/New_York",
+  });
 }
 
 // --- "Today" cross-series hook ---
@@ -522,6 +534,23 @@ function SortHeader({
 
 // --- Game list ---
 
+/** Fetch markets for all events to get EET for sorting/display */
+function useAllEventMarkets(events: MonitorEvent[]) {
+  const key = events.length > 0 ? `all-markets-${events.map(e => e.ticker).join(",")}` : null;
+  return useSWR(
+    key,
+    async () => {
+      const results = await Promise.all(
+        events.map((e) => getMarkets(e.ticker).catch(() => [] as MonitorMarket[]))
+      );
+      const map = new Map<string, MonitorMarket[]>();
+      events.forEach((e, i) => map.set(e.ticker, results[i]));
+      return map;
+    },
+    { refreshInterval: 30000 }
+  );
+}
+
 function GameList({
   events,
   showLeague,
@@ -544,6 +573,9 @@ function GameList({
   const [sortCol, setSortCol] = useState<SortColumn>("time");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
+  // Fetch markets for all events (for start time sorting)
+  const { data: allMarkets } = useAllEventMarkets(events);
+
   const handleSort = useCallback((col: SortColumn) => {
     setSortCol((prev) => {
       if (prev === col) {
@@ -557,14 +589,24 @@ function GameList({
 
   const sortedEvents = useMemo(() => {
     return [...events].sort((a, b) => {
-      const va = getSortValue(a, sortCol);
-      const vb = getSortValue(b, sortCol);
+      let va: string | number;
+      let vb: string | number;
+      if (sortCol === "time" && allMarkets) {
+        // Sort by estimated start time from EET
+        const startA = getEstimatedStart(allMarkets.get(a.ticker) ?? null, a.ticker);
+        const startB = getEstimatedStart(allMarkets.get(b.ticker) ?? null, b.ticker);
+        va = startA?.getTime() ?? Infinity;
+        vb = startB?.getTime() ?? Infinity;
+      } else {
+        va = getSortValue(a, sortCol);
+        vb = getSortValue(b, sortCol);
+      }
       const cmp = typeof va === "number" && typeof vb === "number"
         ? va - vb
         : String(va).localeCompare(String(vb));
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [events, sortCol, sortDir]);
+  }, [events, sortCol, sortDir, allMarkets]);
 
   return (
     <div className="bg-bg-raised border border-border rounded-lg overflow-hidden">
@@ -577,7 +619,7 @@ function GameList({
                 <SortHeader label="League" column="league" current={sortCol} dir={sortDir} onSort={handleSort} />
               )}
               <SortHeader label="Game" column="game" current={sortCol} dir={sortDir} onSort={handleSort} />
-              <SortHeader label="Time" column="time" current={sortCol} dir={sortDir} onSort={handleSort} className="text-right" />
+              <SortHeader label="Start" column="time" current={sortCol} dir={sortDir} onSort={handleSort} className="text-right" />
               <th className="px-4 py-2 text-right">Status</th>
               <SortHeader label="Markets" column="markets" current={sortCol} dir={sortDir} onSort={handleSort} className="text-right" />
               <th className="px-4 py-2 w-6"></th>
@@ -631,8 +673,8 @@ function GameRow({
 
   // Use expected_expiration_time-based game state
   const gameState = useMemo(
-    () => getGameState(markets ?? null, event.ticker, eventDate),
-    [markets, event.ticker, eventDate],
+    () => getGameState(markets ?? null, event.ticker),
+    [markets, event.ticker],
   );
 
   const countdown = useCountdown(gameState.countdownTarget);
@@ -672,7 +714,7 @@ function GameRow({
           {parseMatchup(event.title ?? event.ticker)}
         </td>
         <td className="px-4 py-2 text-right text-xs text-fg-muted">
-          {eventDate ? fmtGameDate(eventDate) : "-"}
+          {markets ? fmtStartTime(markets, event.ticker) : (eventDate ? fmtGameDate(eventDate) : "-")}
         </td>
         <td className={`px-4 py-2 text-right text-xs font-mono ${stateColor}`}>
           {countdown || gameState.label}
