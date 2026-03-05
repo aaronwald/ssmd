@@ -113,21 +113,22 @@ function CryptoContent() {
   }, [allSeries]);
 
   // 2. Auto-select series: URL param > localStorage > first hourly
-  const [selectedSeries, setSelectedSeries] = useState<string | null>(() => getUrlParam("series"));
+  const [selectedSeries, setSelectedSeries] = useState<string | null>(() => {
+    const fromUrl = getUrlParam("series");
+    if (fromUrl) return fromUrl;
+    try {
+      const stored = localStorage.getItem(SERIES_LS_KEY);
+      if (stored) return stored;
+    } catch {}
+    return null;
+  });
 
   useEffect(() => {
     if (selectedSeries) return; // already set
-    try {
-      const stored = localStorage.getItem(SERIES_LS_KEY);
-      if (stored && allSeries?.some((s) => s.ticker === stored)) {
-        setSelectedSeries(stored);
-        return;
-      }
-    } catch {}
     if (sortedSeries.length > 0) {
       setSelectedSeries(sortedSeries[0].ticker);
     }
-  }, [selectedSeries, allSeries, sortedSeries]);
+  }, [selectedSeries, sortedSeries]);
 
   const selectSeries = useCallback((ticker: string) => {
     setSelectedSeries(ticker);

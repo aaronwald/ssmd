@@ -1,12 +1,15 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect } from "react";
+import useSWR from "swr";
 import { useSeries, useEvents, useMarkets, usePositions } from "@/lib/hooks";
 import { useWatchlist } from "@/lib/watchlist-context";
+import { getEvents } from "@/lib/api";
 import type { MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
 
 const SERIES_LS_KEY = "sports-selected-series";
+const TODAY_KEY = "__TODAY__";
 
 function getUrlParam(key: string): string | null {
   if (typeof window === "undefined") return null;
@@ -66,31 +69,46 @@ function seriesLabel(ticker: string): string {
     .replace(/MATCH$/, "");
 }
 
+/** Extract series ticker from event ticker, e.g. "KXNBAGAME-26MAR05UTAWAS" → "KXNBAGAME" */
+function eventSeries(eventTicker: string): string {
+  const idx = eventTicker.indexOf("-");
+  return idx > 0 ? eventTicker.substring(0, idx) : eventTicker;
+}
+
 function parseMatchup(title: string): string {
   return title.replace(/\s*[Ww]inner\??$/, "").replace(" at ", " @ ");
 }
 
 /** Parse game date from event ticker, e.g. "KXNBAGAME-26MAR05UTAWAS" → "2026-03-05" */
 function parseGameDate(ticker: string): string | null {
-  // Match pattern: -YYMMMDD (e.g., -26MAR05, -26MAR07)
   const match = ticker.match(/-(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})/);
   if (!match) return null;
   const months: Record<string, string> = {
     JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06",
     JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12",
   };
-  const year = `20${match[1]}`;
-  const month = months[match[2]];
-  const day = match[3];
-  return `${year}-${month}-${day}`;
+  return `20${match[1]}-${months[match[2]]}-${match[3]}`;
 }
 
-/** Get displayable date for a sports event (from strike_date or parsed ticker) */
+/** Returns precise datetime if available, otherwise date-only string (no time) */
 function getEventDate(event: MonitorEvent): string | null {
   if (event.strike_date) return event.strike_date;
-  const parsed = parseGameDate(event.ticker);
-  if (parsed) return `${parsed}T23:59:00Z`; // EOD as approximate
-  return null;
+  return parseGameDate(event.ticker);
+}
+
+/** Returns true if the date string includes a time component (not just YYYY-MM-DD) */
+function hasPreciseTime(dateStr: string): boolean {
+  return dateStr.includes("T");
+}
+
+function isToday(dateStr: string): boolean {
+  // For date-only strings like "2026-03-05", compare directly to avoid timezone issues
+  if (!dateStr.includes("T")) {
+    const todayStr = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD
+    return dateStr === todayStr;
+  }
+  const d = new Date(dateStr);
+  return d.toDateString() === new Date().toDateString();
 }
 
 function fmtGameDate(dateStr: string): string {
@@ -99,11 +117,8 @@ function fmtGameDate(dateStr: string): string {
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
 
-  const isToday = d.toDateString() === today.toDateString();
-  const isTomorrow = d.toDateString() === tomorrow.toDateString();
-
-  if (isToday) return "Today";
-  if (isTomorrow) return "Tomorrow";
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === tomorrow.toDateString()) return "Tomorrow";
   return d.toLocaleDateString("en-US", {
     weekday: "short",
     month: "short",
@@ -149,6 +164,30 @@ function countdownColor(targetDate: string | null): string {
   return "text-fg-muted";
 }
 
+// --- "Today" cross-series hook ---
+
+/** Fetch events for multiple series and merge, filtered to today only */
+function useTodayEvents(seriesTickers: string[] | null) {
+  return useSWR(
+    seriesTickers && seriesTickers.length > 0
+      ? `sports-today-${seriesTickers.join(",")}`
+      : null,
+    async () => {
+      const results = await Promise.all(
+        seriesTickers!.map((s) => getEvents(s).catch(() => []))
+      );
+      const all = results.flat();
+      // Filter to today's games only
+      return all.filter((e) => {
+        if (e.status !== "active") return false;
+        const date = getEventDate(e);
+        return date && isToday(date);
+      });
+    },
+    { refreshInterval: 60000 }
+  );
+}
+
 // --- Main ---
 
 export default function SportsPage() {
@@ -165,29 +204,27 @@ function SportsContent() {
   const { data: allSeries } = useSeries("Sports");
   const sortedSeries = useMemo(() => {
     if (!allSeries) return [];
-    return [...allSeries].sort(
-      (a, b) => (b.active_events ?? 0) - (a.active_events ?? 0)
-    );
+    return [...allSeries]
+      .filter((s) => (s.active_events ?? 0) > 0)
+      .sort((a, b) => (b.active_events ?? 0) - (a.active_events ?? 0));
   }, [allSeries]);
 
-  // 2. Auto-select series: URL > localStorage > first
-  const [selectedSeries, setSelectedSeries] = useState<string | null>(() =>
-    getUrlParam("series")
+  // 2. Auto-select series: URL > localStorage > "Today"
+  const [selectedSeries, setSelectedSeries] = useState<string | null>(
+    () => getUrlParam("series") || TODAY_KEY
   );
 
   useEffect(() => {
     if (selectedSeries) return;
     try {
       const stored = localStorage.getItem(SERIES_LS_KEY);
-      if (stored && allSeries?.some((s) => s.ticker === stored)) {
+      if (stored && (stored === TODAY_KEY || allSeries?.some((s) => s.ticker === stored))) {
         setSelectedSeries(stored);
         return;
       }
     } catch {}
-    if (sortedSeries.length > 0) {
-      setSelectedSeries(sortedSeries[0].ticker);
-    }
-  }, [selectedSeries, allSeries, sortedSeries]);
+    setSelectedSeries(TODAY_KEY);
+  }, [selectedSeries, allSeries]);
 
   const selectSeries = useCallback((ticker: string) => {
     setSelectedSeries(ticker);
@@ -198,18 +235,47 @@ function SportsContent() {
     setUrlParams({ series: ticker });
   }, []);
 
-  // 3. Fetch events for selected series
-  const { data: events } = useEvents(selectedSeries);
+  const isTodayMode = selectedSeries === TODAY_KEY;
 
-  const futureEvents = useMemo(() => {
-    if (!events) return [];
+  // 3a. "Today" mode: fetch events across top series
+  const todaySeriesTickers = useMemo(() => {
+    if (!isTodayMode || !sortedSeries.length) return null;
+    // Fetch top 20 series by active events to keep API calls reasonable
+    return sortedSeries.slice(0, 20).map((s) => s.ticker);
+  }, [isTodayMode, sortedSeries]);
+
+  const { data: todayEvents } = useTodayEvents(todaySeriesTickers);
+
+  // 3b. Single-series mode: fetch events normally
+  const { data: singleSeriesEvents } = useEvents(
+    isTodayMode ? null : selectedSeries
+  );
+
+  // Compute displayed events
+  const displayEvents = useMemo(() => {
+    if (isTodayMode) {
+      if (!todayEvents) return [];
+      return [...todayEvents].sort((a, b) => {
+        const da = getEventDate(a);
+        const db = getEventDate(b);
+        if (!da && !db) return 0;
+        if (!da) return 1;
+        if (!db) return -1;
+        return new Date(da).getTime() - new Date(db).getTime();
+      });
+    }
+
+    if (!singleSeriesEvents) return [];
+    const todayStr = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD
     const now = Date.now();
-    return events
+    return singleSeriesEvents
       .filter((e) => {
         if (e.status !== "active") return false;
         const date = getEventDate(e);
-        // Include if we can't parse date (show all active) or if date is in the future
-        return !date || new Date(date).getTime() > now;
+        if (!date) return true;
+        // Date-only: show if today or future
+        if (!date.includes("T")) return date >= todayStr;
+        return new Date(date).getTime() > now;
       })
       .sort((a, b) => {
         const da = getEventDate(a);
@@ -219,14 +285,14 @@ function SportsContent() {
         if (!db) return -1;
         return new Date(da).getTime() - new Date(db).getTime();
       });
-  }, [events]);
+  }, [isTodayMode, todayEvents, singleSeriesEvents]);
 
   // Auto-expand first game
   useEffect(() => {
-    if (futureEvents.length > 0 && !expandedEvent) {
-      setExpandedEvent(futureEvents[0].ticker);
+    if (displayEvents.length > 0 && !expandedEvent) {
+      setExpandedEvent(displayEvents[0].ticker);
     }
-  }, [futureEvents, expandedEvent]);
+  }, [displayEvents, expandedEvent]);
 
   // 4. Fetch markets for expanded game
   const { data: expandedMarkets } = useMarkets(expandedEvent);
@@ -255,23 +321,27 @@ function SportsContent() {
     setExpandedEvent((prev) => (prev === eventTicker ? null : eventTicker));
   };
 
+  const eventsLoaded = isTodayMode ? todayEvents !== undefined : singleSeriesEvents !== undefined;
+
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold">Sports</h1>
 
-      {/* Series pills */}
+      {/* Series pills with "Today" first */}
       {sortedSeries.length > 0 && (
         <SeriesPillBar
           series={sortedSeries}
           selected={selectedSeries}
           onSelect={selectSeries}
+          todayCount={todayEvents?.length ?? null}
         />
       )}
 
       {/* Game list */}
-      {futureEvents.length > 0 && (
+      {displayEvents.length > 0 && (
         <GameList
-          events={futureEvents}
+          events={displayEvents}
+          showLeague={isTodayMode}
           expandedEvent={expandedEvent}
           expandedMarkets={expandedMarkets ?? null}
           positionTickers={positionTickers}
@@ -281,12 +351,14 @@ function SportsContent() {
           onMarketClick={(m) => setSlideOverMarket(m)}
         />
       )}
-      {selectedSeries && futureEvents.length === 0 && events && (
+      {selectedSeries && displayEvents.length === 0 && eventsLoaded && (
         <div className="bg-bg-raised border border-border rounded-lg p-4 text-center text-fg-subtle text-sm">
-          No upcoming games for {seriesLabel(selectedSeries)}
+          {isTodayMode
+            ? "No games today"
+            : `No upcoming games for ${seriesLabel(selectedSeries)}`}
         </div>
       )}
-      {!events && selectedSeries && (
+      {!eventsLoaded && selectedSeries && (
         <div className="bg-bg-raised border border-border rounded-lg p-8 text-center text-fg-subtle text-sm">
           Loading games...
         </div>
@@ -309,14 +381,31 @@ function SeriesPillBar({
   series,
   selected,
   onSelect,
+  todayCount,
 }: {
   series: MonitorSeries[];
   selected: string | null;
   onSelect: (ticker: string) => void;
+  todayCount: number | null;
 }) {
   return (
     <div className="relative">
       <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+        {/* "Today" pill */}
+        <button
+          onClick={() => onSelect(TODAY_KEY)}
+          className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+            selected === TODAY_KEY
+              ? "bg-accent text-bg"
+              : "bg-bg-raised border border-border text-fg-muted hover:text-fg hover:border-fg-subtle"
+          }`}
+        >
+          Today
+          {todayCount != null && (
+            <span className="ml-1 opacity-60">({todayCount})</span>
+          )}
+        </button>
+
         {series.map((s) => (
           <button
             key={s.ticker}
@@ -342,6 +431,7 @@ function SeriesPillBar({
 
 function GameList({
   events,
+  showLeague,
   expandedEvent,
   expandedMarkets,
   positionTickers,
@@ -351,6 +441,7 @@ function GameList({
   onMarketClick,
 }: {
   events: MonitorEvent[];
+  showLeague: boolean;
   expandedEvent: string | null;
   expandedMarkets: MonitorMarket[] | null;
   positionTickers: Set<string>;
@@ -366,6 +457,7 @@ function GameList({
           <thead>
             <tr className="text-left text-xs text-fg-muted border-b border-border">
               <th className="px-4 py-2 w-6"></th>
+              {showLeague && <th className="px-4 py-2">League</th>}
               <th className="px-4 py-2">Game</th>
               <th className="px-4 py-2 text-right">Time</th>
               <th className="px-4 py-2 text-right">Countdown</th>
@@ -378,6 +470,7 @@ function GameList({
               <GameRow
                 key={e.ticker}
                 event={e}
+                showLeague={showLeague}
                 isExpanded={expandedEvent === e.ticker}
                 markets={expandedEvent === e.ticker ? expandedMarkets : null}
                 positionTickers={positionTickers}
@@ -398,6 +491,7 @@ function GameList({
 
 function GameRow({
   event,
+  showLeague,
   isExpanded,
   markets,
   positionTickers,
@@ -407,6 +501,7 @@ function GameRow({
   onMarketClick,
 }: {
   event: MonitorEvent;
+  showLeague: boolean;
   isExpanded: boolean;
   markets: MonitorMarket[] | null;
   positionTickers: Set<string>;
@@ -416,8 +511,10 @@ function GameRow({
   onMarketClick: (m: MonitorMarket) => void;
 }) {
   const eventDate = getEventDate(event);
-  const countdown = useCountdown(eventDate);
-  const cdColor = countdownColor(eventDate);
+  const precise = eventDate && hasPreciseTime(eventDate);
+  const countdown = useCountdown(precise ? eventDate : null);
+  const cdColor = countdownColor(precise ? eventDate : null);
+  const colSpan = showLeague ? 7 : 6;
 
   return (
     <>
@@ -434,6 +531,13 @@ function GameRow({
             &#9654;
           </span>
         </td>
+        {showLeague && (
+          <td className="px-4 py-2">
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-bg-surface text-fg-muted">
+              {seriesLabel(eventSeries(event.ticker))}
+            </span>
+          </td>
+        )}
         <td className="px-4 py-2 font-medium">
           {parseMatchup(event.title ?? event.ticker)}
         </td>
@@ -465,7 +569,7 @@ function GameRow({
                 onClick={() => onMarketClick(m)}
               >
                 <td className="px-4 py-1.5"></td>
-                <td className="px-4 py-1.5 pl-10">
+                <td className="px-4 py-1.5 pl-10" colSpan={showLeague ? 2 : 1}>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -504,7 +608,7 @@ function GameRow({
       )}
       {isExpanded && !markets && (
         <tr className="border-b border-border-subtle bg-bg-surface">
-          <td colSpan={6} className="px-4 py-2 text-center text-fg-subtle text-xs">
+          <td colSpan={colSpan} className="px-4 py-2 text-center text-fg-subtle text-xs">
             Loading markets...
           </td>
         </tr>
