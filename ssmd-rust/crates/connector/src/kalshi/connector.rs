@@ -594,6 +594,7 @@ impl Connector for KalshiConnector {
 
                     // Create shard-specific metrics handle
                     let shard_metrics = connector_metrics.for_shard(shard_id);
+                    shard_metrics.init(&["ticker", "trade", "orderbook", "lifecycle", "event_lifecycle"]);
 
                     // Create command channel for CDC if enabled
                     let cmd_rx = if let Some(ref mut manager) = shard_manager {
@@ -690,6 +691,7 @@ impl Connector for KalshiConnector {
 
                 self.subscribe_global(&mut ws).await?;
                 let shard_metrics = connector_metrics.for_shard(0);
+                shard_metrics.init(&["ticker", "trade", "orderbook", "lifecycle", "event_lifecycle"]);
                 Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics, None);
             }
         } else if let Some(ref lifecycle) = self.lifecycle_config {
@@ -705,6 +707,7 @@ impl Connector for KalshiConnector {
 
                 self.subscribe_lifecycle_only(&mut ws).await?;
                 let shard_metrics = connector_metrics.for_shard(0);
+                shard_metrics.init(&["lifecycle", "event_lifecycle"]);
                 Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics, None);
             } else {
                 return Err(ConnectorError::ConnectionFailed(
@@ -723,6 +726,7 @@ impl Connector for KalshiConnector {
 
             self.subscribe_global(&mut ws).await?;
             let shard_metrics = connector_metrics.for_shard(0);
+            shard_metrics.init(&["ticker", "trade", "orderbook", "lifecycle", "event_lifecycle"]);
             Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics, None);
         }
 

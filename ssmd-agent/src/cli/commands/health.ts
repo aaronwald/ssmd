@@ -9,6 +9,13 @@ import { getRawSql, closeDb } from "../../lib/db/mod.ts";
 import { connect as natsConnect, type NatsConnection } from "npm:nats";
 import nodemailer from "nodemailer";
 
+// --- DQ Active Window ---
+// Kalshi markets are quiet from 3-4am EST (08:00-09:00 UTC).
+// DQ scoring uses a 23-hour active window: 4am-3am EST (09:00-08:00 UTC).
+const DQ_START_HOUR_UTC = 9;  // 4am EST — window opens
+const DQ_END_HOUR_UTC = 8;    // 3am EST — window closes
+const DQ_ACTIVE_HOURS = 23;   // 24 - 1 quiet hour
+
 // --- GCS Feed Configuration ---
 
 const GCS_BUCKET = "ssmd-data";
@@ -1016,8 +1023,8 @@ async function scoreCompleteness(
   const gaps = findGaps(files);
   const totalGapMinutes = gaps.reduce((sum, g) => sum + g.durationMinutes, 0);
 
-  // 4. Calculate file coverage (% of 96 expected 15-min slots)
-  const expectedSlots = 96; // 24h × 4 per hour
+  // 4. Calculate file coverage (% of expected 15-min slots in active window)
+  const expectedSlots = DQ_ACTIVE_HOURS * 4; // 92 slots (23h × 4 per hour)
   const presentSlots = getTimeSlots(files).size;
   const coveragePct = expectedSlots > 0 ? Math.round((presentSlots / expectedSlots) * 10000) / 100 : 0;
 
@@ -1197,7 +1204,7 @@ async function scoreSLA(
 
   // 1. Uptime: % of hours with at least one file
   const hoursWithData = new Set(files.map((f) => f.time.slice(0, 2))).size;
-  const uptimePct = Math.round((hoursWithData / 24) * 10000) / 100;
+  const uptimePct = Math.round((hoursWithData / DQ_ACTIVE_HOURS) * 10000) / 100;
 
   // 2. Freshness: age of most recent file
   // Sort files by time slot descending to find latest

@@ -129,6 +129,15 @@ pub struct StreamMetrics {
 }
 
 impl StreamMetrics {
+    /// Pre-initialize counter time series so Prometheus labels exist before first message.
+    /// This prevents `__missing__` feed labels in GMP alerts during quiet periods.
+    pub fn init(&self, message_types: &[&str]) {
+        for msg_type in message_types {
+            MESSAGES_TOTAL
+                .with_label_values(&[&self.feed, &self.stream, msg_type]);
+        }
+    }
+
     /// Increment message counter for a specific message type
     pub fn inc_message(&self, message_type: &str) {
         MESSAGES_TOTAL

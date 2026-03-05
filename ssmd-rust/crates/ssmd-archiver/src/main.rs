@@ -115,6 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let last_message_epoch_secs = last_message_epoch_secs.clone();
         let archiver_metrics = ArchiverMetrics::new(&feed);
         let metrics = archiver_metrics.for_stream(&stream_config.name);
+        metrics.init(&["ticker", "trade"]);
 
         info!(
             stream = %stream_config.stream,

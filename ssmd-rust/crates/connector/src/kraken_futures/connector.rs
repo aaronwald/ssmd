@@ -176,6 +176,7 @@ impl Connector for KrakenFuturesConnector {
         connector_metrics.set_shards_total(1);
         connector_metrics.set_markets_subscribed(0, self.product_ids.len());
         let shard_metrics = connector_metrics.for_shard(0);
+        shard_metrics.init(&["ticker", "trade", "orderbook"]);
 
         // Connect to Kraken Futures WS
         let mut ws = KrakenFuturesWebSocket::connect(self.ws_url.as_deref())

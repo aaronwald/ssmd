@@ -146,6 +146,8 @@ impl Connector for KrakenConnector {
         let connector_metrics = ConnectorMetrics::new("kraken", "spot");
         connector_metrics.set_shards_total(1);
         connector_metrics.set_markets_subscribed(0, self.symbols.len());
+        // Pre-init MESSAGES_TOTAL so the feed label exists in Prometheus
+        connector_metrics.for_shard(0).init(&["ticker", "trade"]);
 
         // Connect to Kraken WS
         let mut ws = KrakenWebSocket::connect(self.ws_url.as_deref())

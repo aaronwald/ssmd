@@ -329,6 +329,7 @@ impl Connector for PolymarketConnector {
             connector_metrics.set_markets_subscribed(shard_id, shard_tokens.len());
 
             let shard_metrics = connector_metrics.for_shard(shard_id);
+            shard_metrics.init(&["ticker", "trade", "orderbook"]);
             shard_metrics.set_connected();
 
             Self::spawn_shard_receiver(
