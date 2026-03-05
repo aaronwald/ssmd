@@ -87,6 +87,43 @@ export function MarketSlideOver({ market, onClose }: Props) {
           )}
         </div>
 
+        {/* Lifecycle timeline */}
+        {market.lifecycle_events && market.lifecycle_events.length > 0 && (
+          <div className="p-4 border-b border-border">
+            <h3 className="text-xs font-medium text-fg-muted mb-2">Lifecycle</h3>
+            <div className="space-y-0">
+              {market.lifecycle_events.map((ev, i) => (
+                <div key={i} className="flex items-start gap-2 relative">
+                  {/* Vertical line */}
+                  {i < market.lifecycle_events!.length - 1 && (
+                    <div className="absolute left-[5px] top-[14px] bottom-0 w-px bg-border" />
+                  )}
+                  {/* Dot */}
+                  <div className={`mt-[5px] w-[11px] h-[11px] rounded-full shrink-0 border-2 ${
+                    ev.type === "determined" || ev.type === "settled"
+                      ? "border-green bg-green/30"
+                      : ev.type === "deactivated"
+                        ? "border-red bg-red/30"
+                        : ev.type === "activated"
+                          ? "border-accent bg-accent/30"
+                          : "border-fg-subtle bg-bg-surface"
+                  }`} />
+                  <div className="pb-3 min-w-0">
+                    <div className="text-xs font-medium text-fg">{ev.type}</div>
+                    <div className="text-[10px] text-fg-muted">
+                      {new Date(ev.ts).toLocaleString("en-US", {
+                        month: "short", day: "numeric",
+                        hour: "numeric", minute: "2-digit", second: "2-digit",
+                        timeZone: "America/New_York",
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Order form or exchange mismatch message */}
         <div className="p-4">
           {canOrder ? (
