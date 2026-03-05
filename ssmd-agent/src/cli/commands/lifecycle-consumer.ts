@@ -1,5 +1,6 @@
 // ssmd-agent/src/cli/commands/lifecycle-consumer.ts
-// Daemon that consumes lifecycle events from NATS and stores them in PostgreSQL
+// Daemon that consumes Kalshi market_lifecycle_v2 events from NATS
+// and writes them to the market_lifecycle_events table
 
 import { parseArgs } from "https://deno.land/std@0.224.0/cli/parse_args.ts";
 import {
@@ -8,49 +9,32 @@ import {
   StringCodec,
   AckPolicy,
   DeliverPolicy,
+  Events,
 } from "npm:nats";
-import {
-  getDb,
-  closeDb,
-  insertLifecycleEvent,
-  getSeries,
-  upsertEventFromLifecycle,
-  upsertMarketFromLifecycle,
-  updateMarketStatus,
-  type NewMarketLifecycleEvent,
-  type Database,
-} from "../../lib/db/mod.ts";
+import { getDb, closeDb } from "../../lib/db/mod.ts";
+import { marketLifecycleEvents } from "../../lib/db/schema.ts";
 
 const sc = StringCodec();
 
-/**
- * Timestamped console output
- */
 function log(message: string): void {
-  const ts = new Date().toISOString();
-  console.log(`${ts} ${message}`);
+  console.log(`${new Date().toISOString()} ${message}`);
 }
 
 function logWarn(message: string): void {
-  const ts = new Date().toISOString();
-  console.warn(`${ts} WARN ${message}`);
+  console.warn(`${new Date().toISOString()} WARN ${message}`);
 }
 
 function logError(message: string): void {
-  const ts = new Date().toISOString();
-  console.error(`${ts} ERROR ${message}`);
+  console.error(`${new Date().toISOString()} ERROR ${message}`);
 }
 
-/**
- * Raw lifecycle message from NATS (matches connector output)
- */
+/** Raw lifecycle message from Kalshi WS (via NATS) */
 interface RawLifecycleMessage {
-  type: string;
+  type: string; // "market_lifecycle_v2"
   sid?: number;
-  seq?: number;
   msg: {
     market_ticker: string;
-    event_type: string;
+    event_type: string; // created, activated, deactivated, close_date_updated, closed, determined, settled
     open_ts?: number;
     close_ts?: number;
     determination_ts?: number;
@@ -60,37 +44,6 @@ interface RawLifecycleMessage {
   };
 }
 
-/**
- * Extract series ticker from event_ticker (e.g., "KXBTCD-26JAN2317" -> "KXBTCD")
- */
-function extractSeriesTicker(eventTicker: string): string {
-  const parts = eventTicker.split("-");
-  return parts[0];
-}
-
-/**
- * Convert raw NATS message to database record
- */
-function toDbRecord(raw: RawLifecycleMessage): NewMarketLifecycleEvent {
-  const msg = raw.msg;
-  return {
-    marketTicker: msg.market_ticker,
-    eventType: msg.event_type,
-    openTs: msg.open_ts ? new Date(msg.open_ts * 1000) : null,
-    closeTs: msg.close_ts ? new Date(msg.close_ts * 1000) : null,
-    settledTs: msg.settled_ts || msg.determination_ts
-      ? new Date((msg.settled_ts || msg.determination_ts!) * 1000)
-      : null,
-    metadata: {
-      result: msg.result,
-      ...msg.additional_metadata,
-    },
-  };
-}
-
-/**
- * Configuration for lifecycle consumer
- */
 interface ConsumerConfig {
   natsUrl: string;
   stream: string;
@@ -98,21 +51,20 @@ interface ConsumerConfig {
   consumerName: string;
 }
 
-/**
- * Load configuration from environment variables
- */
 function loadConfig(): ConsumerConfig {
   return {
     natsUrl: Deno.env.get("NATS_URL") ?? "nats://localhost:4222",
-    stream: Deno.env.get("NATS_STREAM") ?? "DEV_KALSHI",
-    filter: Deno.env.get("NATS_FILTER") ?? "dev.kalshi.lifecycle.>",
-    consumerName: Deno.env.get("CONSUMER_NAME") ?? "lifecycle-consumer",
+    stream: Deno.env.get("NATS_STREAM") ?? "PROD_KALSHI_LIFECYCLE",
+    filter: Deno.env.get("NATS_FILTER") ?? "prod.kalshi.json.lifecycle.>",
+    consumerName: Deno.env.get("CONSUMER_NAME") ?? "lifecycle-consumer-v1",
   };
 }
 
-/**
- * Main lifecycle consumer daemon
- */
+function epochToDate(epoch: number | undefined): Date | null {
+  if (epoch == null) return null;
+  return new Date(epoch * 1000);
+}
+
 export async function runLifecycleConsumer(args: string[] = Deno.args): Promise<void> {
   const flags = parseArgs(args, {
     boolean: ["help"],
@@ -121,14 +73,15 @@ export async function runLifecycleConsumer(args: string[] = Deno.args): Promise<
 
   if (flags.help) {
     console.log(`
-SSMD Lifecycle Consumer - Consume lifecycle events from NATS and store in PostgreSQL
+SSMD Lifecycle Consumer - Consume Kalshi market lifecycle events from NATS
+and write them to market_lifecycle_events table.
 
 Environment variables:
   DATABASE_URL     PostgreSQL connection string (required)
   NATS_URL         NATS server URL (default: nats://localhost:4222)
-  NATS_STREAM      JetStream stream name (default: DEV_KALSHI)
-  NATS_FILTER      Subject filter (default: dev.kalshi.lifecycle.>)
-  CONSUMER_NAME    Durable consumer name (default: lifecycle-consumer)
+  NATS_STREAM      JetStream stream name (default: PROD_KALSHI_LIFECYCLE)
+  NATS_FILTER      Subject filter (default: prod.kalshi.json.lifecycle.>)
+  CONSUMER_NAME    Durable consumer name (default: lifecycle-consumer-v1)
 `);
     return;
   }
@@ -141,20 +94,24 @@ Environment variables:
   log(`Filter: ${config.filter}`);
   log(`Consumer: ${config.consumerName}`);
 
-  // Verify DATABASE_URL is set
   if (!Deno.env.get("DATABASE_URL")) {
     logError("DATABASE_URL environment variable not set");
     Deno.exit(1);
   }
 
-  // Initialize database connection
   const db = getDb();
   log("Database connected");
 
-  // Connect to NATS
   let nc: NatsConnection;
   try {
-    nc = await connect({ servers: config.natsUrl });
+    nc = await connect({
+      servers: config.natsUrl,
+      reconnect: true,
+      maxReconnectAttempts: -1,
+      reconnectTimeWait: 2000,
+      pingInterval: 30000,
+      maxPingOut: 3,
+    });
     log("NATS connected");
   } catch (e) {
     logError(`Failed to connect to NATS: ${e}`);
@@ -162,46 +119,59 @@ Environment variables:
     Deno.exit(1);
   }
 
-  const js = nc.jetstream();
+  // Monitor NATS connection status
+  (async () => {
+    for await (const status of nc.status()) {
+      switch (status.type) {
+        case Events.Disconnect:
+          logWarn("NATS disconnected");
+          break;
+        case Events.Reconnect:
+          log(`NATS reconnected to ${status.data}`);
+          break;
+        case Events.Error:
+          logError(`NATS error: ${status.data}`);
+          break;
+        case Events.LDM:
+          logWarn("NATS entered lame duck mode");
+          break;
+      }
+    }
+  })().catch(() => {});
+
   const jsm = await nc.jetstreamManager();
 
-  // Create or get durable consumer
   try {
     await jsm.consumers.add(config.stream, {
       durable_name: config.consumerName,
       filter_subject: config.filter,
       ack_policy: AckPolicy.Explicit,
-      deliver_policy: DeliverPolicy.All,
+      deliver_policy: DeliverPolicy.New,
     });
     log(`Created durable consumer: ${config.consumerName}`);
   } catch (e) {
-    // Consumer might already exist, try to get it
     if (!String(e).includes("already exists")) {
       logError(`Failed to create consumer: ${e}`);
     }
   }
 
+  const js = nc.jetstream();
   const consumer = await js.consumers.get(config.stream, config.consumerName);
   log("Consumer ready, starting message consumption...");
 
-  // Stats
   let messagesProcessed = 0;
-  let messagesErrored = 0;
-  let marketsCreated = 0;
-  let marketsUpdated = 0;
-  let seriesNotFound = 0;
+  let eventsWritten = 0;
+  let errors = 0;
   const startTime = Date.now();
 
-  // Setup graceful shutdown
+  // Graceful shutdown
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     log("Shutting down...");
     const runtime = Math.round((Date.now() - startTime) / 1000);
-    log(`Processed: ${messagesProcessed} messages`);
-    log(`Markets created: ${marketsCreated}`);
-    log(`Markets updated: ${marketsUpdated}`);
-    log(`Series not found: ${seriesNotFound}`);
-    log(`Errors: ${messagesErrored}`);
-    log(`Runtime: ${runtime}s`);
+    log(`Processed: ${messagesProcessed}, written: ${eventsWritten}, errors: ${errors}, runtime: ${runtime}s`);
     await nc.drain();
     await nc.close();
     await closeDb();
@@ -211,111 +181,52 @@ Environment variables:
   Deno.addSignalListener("SIGINT", shutdown);
   Deno.addSignalListener("SIGTERM", shutdown);
 
-  // Consume messages
   const messages = await consumer.consume();
 
   for await (const msg of messages) {
     try {
       const raw = JSON.parse(sc.decode(msg.data)) as RawLifecycleMessage;
 
-      // Only process market_lifecycle_v2 messages
       if (raw.type !== "market_lifecycle_v2") {
         msg.ack();
         continue;
       }
 
-      const lifecycleMsg = raw.msg;
-      const eventType = lifecycleMsg.event_type;
-      const marketTicker = lifecycleMsg.market_ticker;
-      const metadata = lifecycleMsg.additional_metadata as Record<string, unknown> | undefined;
-
-      // Handle 'created' events - create event and market records
-      if (eventType === "created" && metadata) {
-        const eventTicker = metadata.event_ticker as string | undefined;
-        const title = metadata.title as string | undefined;
-        const expectedExpirationTs = metadata.expected_expiration_ts as number | undefined;
-
-        if (eventTicker && title) {
-          const seriesTicker = extractSeriesTicker(eventTicker);
-          const series = await getSeries(seriesTicker);
-
-          if (series) {
-            // Upsert event record
-            await upsertEventFromLifecycle(
-              db,
-              eventTicker,
-              title,
-              series.category,
-              seriesTicker
-            );
-
-            // Upsert market record
-            const closeTime = expectedExpirationTs
-              ? new Date(expectedExpirationTs * 1000)
-              : null;
-            await upsertMarketFromLifecycle(
-              db,
-              marketTicker,
-              eventTicker,
-              title,
-              closeTime
-            );
-
-            marketsCreated++;
-            log(
-              `[created] market=${marketTicker} event=${eventTicker} series=${seriesTicker} category=${series.category}`
-            );
-          } else {
-            logWarn(
-              `Series not found for ${seriesTicker} (event: ${eventTicker}), skipping market creation`
-            );
-            seriesNotFound++;
-          }
-        }
+      const m = raw.msg;
+      if (!m?.market_ticker || !m?.event_type) {
+        logWarn(`Skipping message with missing fields: ${msg.subject}`);
+        msg.ack();
+        continue;
       }
 
-      // Handle 'settled' and 'determined' events - update market status
-      if (eventType === "settled" || eventType === "determined") {
-        const updated = await updateMarketStatus(db, marketTicker, "settled");
-        if (updated) {
-          marketsUpdated++;
-          log(`[${eventType}] market=${marketTicker} status=settled`);
-        }
-      }
+      await db.insert(marketLifecycleEvents).values({
+        marketTicker: m.market_ticker,
+        eventType: m.event_type,
+        openTs: epochToDate(m.open_ts),
+        closeTs: epochToDate(m.close_ts),
+        settledTs: epochToDate(m.settled_ts ?? m.determination_ts),
+        metadata: {
+          ...(m.additional_metadata ?? {}),
+          ...(m.result != null ? { result: m.result } : {}),
+        },
+      });
 
-      // Handle 'closed' events - transition market from active to closed
-      if (eventType === "closed") {
-        const updated = await updateMarketStatus(db, marketTicker, "closed");
-        if (updated) {
-          marketsUpdated++;
-          log(`[closed] market=${marketTicker} status=closed`);
-        }
-      }
-
-      // Always insert lifecycle event (existing behavior)
-      const record = toDbRecord(raw);
-      await insertLifecycleEvent(db, record);
-
+      eventsWritten++;
       messagesProcessed++;
 
-      // Log progress every 100 messages
-      if (messagesProcessed % 100 === 0) {
-        log(
-          `Processed ${messagesProcessed} messages (created: ${marketsCreated}, updated: ${marketsUpdated})`
-        );
+      if (eventsWritten <= 5 || eventsWritten % 100 === 0) {
+        log(`[${m.event_type}] ${m.market_ticker} (total: ${eventsWritten})`);
       }
 
       msg.ack();
     } catch (e) {
+      errors++;
       logError(`Error processing message: ${e}`);
-      messagesErrored++;
-      // Negative ack to requeue (or just ack to skip bad messages)
       msg.nak();
     }
   }
 }
 
-// If run directly, start the consumer
 if (import.meta.main) {
   await runLifecycleConsumer();
 }

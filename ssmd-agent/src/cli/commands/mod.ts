@@ -190,6 +190,12 @@ export async function run(args: string[]): Promise<void> {
       break;
     }
 
+    case "lifecycle-consumer": {
+      const { runLifecycleConsumer } = await import("./lifecycle-consumer.ts");
+      await runLifecycleConsumer(args.slice(1));
+      break;
+    }
+
     case "agent":
       // Launch the existing agent REPL
       await import("../../cli.ts");
@@ -291,6 +297,7 @@ function printHelp(): void {
   console.log("  smoke-test        Integration smoke test for API endpoints");
   console.log("  verify-hourly     Verify current hourly KXBTCD contract is in secmaster");
   console.log("  funding-rate-consumer  Consume Kraken Futures funding rates from NATS");
+  console.log("  lifecycle-consumer  Consume Kalshi lifecycle events from NATS");
   console.log("  agent             Start interactive agent REPL");
   console.log("");
   console.log("OPTIONS:");
