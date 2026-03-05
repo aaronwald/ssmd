@@ -61,6 +61,14 @@ function UsersIcon() {
   );
 }
 
+function SportsIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /><path d="M2 12h20" />
+    </svg>
+  );
+}
+
 function TrendingUpIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -346,12 +354,12 @@ export function NavRail() {
           />
         ))}
 
-        {/* Crypto section */}
+        {/* Markets section */}
         <div className={`px-1 pt-4 pb-1 ${navCollapsed ? "text-center" : ""}`}>
           {navCollapsed ? (
             <span className="block w-full h-px bg-border" />
           ) : (
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">Crypto</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">Markets</span>
           )}
         </div>
         <NavItem
@@ -359,6 +367,13 @@ export function NavRail() {
           label="Crypto"
           icon={TrendingUpIcon}
           active={pathname === "/crypto" || pathname.startsWith("/crypto/")}
+          collapsed={navCollapsed}
+        />
+        <NavItem
+          href="/sports"
+          label="Sports"
+          icon={SportsIcon}
+          active={pathname === "/sports" || pathname.startsWith("/sports/")}
           collapsed={navCollapsed}
         />
 
