@@ -245,6 +245,14 @@ impl EventIngester {
                                 error!(error = %e, "failed to update cancelled state from WS");
                             } else {
                                 result.orders_updated += 1;
+                                // Cascade cancel to staged siblings in the same group
+                                if order.group_id.is_some() {
+                                    if let Err(e) = db::cancel_staged_group_siblings(
+                                        &self.pool, order.id, order.session_id,
+                                    ).await {
+                                        error!(error = %e, "failed to cancel staged group siblings");
+                                    }
+                                }
                             }
                         } else if status == OrderState::Filled
                             && order.state != OrderState::Filled
@@ -269,6 +277,14 @@ impl EventIngester {
                                 error!(error = %e, "failed to update filled state from WS");
                             } else {
                                 result.orders_updated += 1;
+                                // Cascade cancel to staged siblings in the same group
+                                if order.group_id.is_some() {
+                                    if let Err(e) = db::cancel_staged_group_siblings(
+                                        &self.pool, order.id, order.session_id,
+                                    ).await {
+                                        error!(error = %e, "failed to cancel staged group siblings");
+                                    }
+                                }
                             }
                         } else if status == OrderState::Acknowledged
                             && order.state == OrderState::Submitted
@@ -368,8 +384,10 @@ impl EventIngester {
                     0, None, "disconnected", None,
                     Some(serde_json::json!({"reason": reason})),
                 );
-                warn!(reason = %reason, "WS: disconnected");
-                self.ws_connected.store(false, Ordering::Relaxed);
+                error!(reason = %reason, "WS: disconnected — crashing pod for K8s restart + recovery");
+                // Flush the audit event before exit (give writer 500ms)
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                std::process::exit(1);
             }
         }
     }

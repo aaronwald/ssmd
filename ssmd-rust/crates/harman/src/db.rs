@@ -275,6 +275,24 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 012_audit_event_id applied");
     }
 
+    // Check if 013 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '013_daily_loss_limit'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 013: {}", e))?;
+
+    if row.is_none() {
+        let migration_013 = include_str!("../migrations/013_daily_loss_limit.sql");
+        client
+            .batch_execute(migration_013)
+            .await
+            .map_err(|e| format!("migration 013 failed: {}", e))?;
+        info!("migration 013_daily_loss_limit applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
@@ -378,7 +396,7 @@ pub async fn enqueue_order(
     // so we lock first, then aggregate in a separate query within the same tx.
     tx.query(
         "SELECT id FROM prediction_orders \
-         WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease') \
+         WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease') \
          FOR UPDATE",
         &[&session_id],
     )
@@ -389,7 +407,7 @@ pub async fn enqueue_order(
         .query_one(
             "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
              FROM prediction_orders \
-             WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
+             WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
             &[&session_id],
         )
         .await
@@ -399,24 +417,53 @@ pub async fn enqueue_order(
 
     let risk_state = RiskState { open_notional };
 
-    // Query per-session risk limit; fall back to global
+    // Query per-session risk limits; fall back to global
     let session_row = tx
         .query_one(
-            "SELECT max_notional FROM sessions WHERE id = $1",
+            "SELECT max_notional, daily_loss_limit FROM sessions WHERE id = $1",
             &[&session_id],
         )
         .await
         .map_err(|e| EnqueueError::Database(format!("session risk query: {}", e)))?;
 
-    let effective_limits = match session_row.get::<_, Option<Decimal>>("max_notional") {
-        Some(session_max) => RiskLimits { max_notional: session_max },
-        None => limits.clone(),
+    let effective_limits = RiskLimits {
+        max_notional: session_row
+            .get::<_, Option<Decimal>>("max_notional")
+            .unwrap_or(limits.max_notional),
+        max_order_notional: limits.max_order_notional,
+        daily_loss_limit: limits.daily_loss_limit,
     };
 
-    // Risk check
+    // Risk check (fat-finger + aggregate notional)
     risk_state
         .check_order(request, &effective_limits)
         .map_err(EnqueueError::RiskCheck)?;
+
+    // Daily loss check — query realized P&L from today's settlements
+    let daily_loss_limit = match session_row.get::<_, Option<Decimal>>("daily_loss_limit") {
+        Some(session_limit) => session_limit,
+        None => limits.daily_loss_limit,
+    };
+
+    let pnl_row = tx
+        .query_one(
+            "SELECT COALESCE(SUM(revenue_dollars - COALESCE(value_dollars, 0)), 0) AS daily_pnl \
+             FROM settlements \
+             WHERE session_id = $1 AND settled_time >= CURRENT_DATE",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| EnqueueError::Database(format!("daily pnl query: {}", e)))?;
+
+    let daily_pnl: Decimal = pnl_row.get::<_, Decimal>("daily_pnl");
+    if daily_pnl < -daily_loss_limit {
+        return Err(EnqueueError::RiskCheck(
+            crate::error::RiskCheckError::DailyLossExceeded {
+                daily_pnl,
+                limit: daily_loss_limit,
+            },
+        ));
+    }
 
     // Insert order
     let row = tx
@@ -1303,7 +1350,7 @@ pub async fn compute_risk_state(pool: &Pool, session_id: i64) -> Result<RiskStat
         .query_one(
             "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
              FROM prediction_orders \
-             WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
+             WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
             &[&session_id],
         )
         .await
@@ -2114,7 +2161,7 @@ pub async fn create_order_group(
     // Lock open order rows to serialize concurrent enqueues, then compute risk.
     tx.query(
         "SELECT id FROM prediction_orders \
-         WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease') \
+         WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease') \
          FOR UPDATE",
         &[&session_id],
     )
@@ -2125,7 +2172,7 @@ pub async fn create_order_group(
         .query_one(
             "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
              FROM prediction_orders \
-             WHERE session_id = $1 AND state IN ('pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
+             WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
             &[&session_id],
         )
         .await
@@ -2147,19 +2194,28 @@ pub async fn create_order_group(
         None => risk_limits.max_notional,
     };
 
-    // Compute notional for pending legs only (staged legs excluded from risk)
-    let mut pending_notional = Decimal::ZERO;
+    // Fat-finger check per leg + compute total notional for non-terminal legs
+    let mut legs_notional = Decimal::ZERO;
     for (req, _role, state) in legs {
-        if state.is_open() {
-            pending_notional += req.notional();
+        let leg_notional = req.notional();
+        if leg_notional > risk_limits.max_order_notional {
+            return Err(EnqueueError::RiskCheck(
+                crate::error::RiskCheckError::MaxOrderNotionalExceeded {
+                    order_notional: leg_notional,
+                    limit: risk_limits.max_order_notional,
+                },
+            ));
+        }
+        if !state.is_terminal() {
+            legs_notional += leg_notional;
         }
     }
 
-    if open_notional + pending_notional > effective_max {
+    if open_notional + legs_notional > effective_max {
         return Err(EnqueueError::RiskCheck(
             crate::error::RiskCheckError::MaxNotionalExceeded {
                 current: open_notional,
-                requested: pending_notional,
+                requested: legs_notional,
                 limit: effective_max,
             },
         ));
@@ -2778,4 +2834,108 @@ fn parse_cancel_reason(s: &str) -> CancelReason {
             CancelReason::ExchangeCancel
         }
     }
+}
+
+/// Cancel all staged siblings in the same order group when an order goes terminal.
+///
+/// When a root/entry order is cancelled by the exchange (e.g., market close),
+/// the staged exit legs (TP, SL) must also transition to Cancelled. Without this,
+/// staged orders linger and count toward open notional.
+///
+/// Also finalizes the group state if all legs are now terminal.
+///
+/// Returns the number of staged orders cancelled.
+pub async fn cancel_staged_group_siblings(
+    pool: &Pool,
+    order_id: i64,
+    session_id: i64,
+) -> Result<u64, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    // Find the group_id for this order
+    let row = client
+        .query_opt(
+            "SELECT group_id FROM prediction_orders WHERE id = $1 AND session_id = $2",
+            &[&order_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("lookup group_id: {}", e))?;
+
+    let group_id: Option<i64> = match row {
+        Some(r) => r.get("group_id"),
+        None => return Ok(0),
+    };
+
+    let group_id = match group_id {
+        Some(gid) => gid,
+        None => return Ok(0), // Not part of a group
+    };
+
+    // Cancel all staged siblings in the same group
+    let cancelled = client
+        .execute(
+            "UPDATE prediction_orders SET state = 'cancelled', cancel_reason = 'exchange_cancel' \
+             WHERE group_id = $1 AND session_id = $2 AND state = 'staged'",
+            &[&group_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("cancel staged siblings: {}", e))?;
+
+    if cancelled > 0 {
+        // Insert audit log entries for the cancelled staged orders
+        client
+            .execute(
+                "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+                 SELECT id, 'staged', 'cancelled', 'parent_terminal', 'ws_event' \
+                 FROM prediction_orders \
+                 WHERE group_id = $1 AND session_id = $2 AND state = 'cancelled' AND cancel_reason = 'exchange_cancel'",
+                &[&group_id, &session_id],
+            )
+            .await
+            .map_err(|e| format!("audit staged cancels: {}", e))?;
+
+        info!(group_id, cancelled, "cancelled staged group siblings");
+    }
+
+    // Finalize group if all legs are terminal
+    let all_terminal_row = client
+        .query_one(
+            "SELECT COUNT(*) FILTER (WHERE state NOT IN ('filled', 'cancelled', 'rejected', 'expired')) AS open_count \
+             FROM prediction_orders WHERE group_id = $1 AND session_id = $2",
+            &[&group_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("check group terminal: {}", e))?;
+
+    let open_count: i64 = all_terminal_row.get("open_count");
+    if open_count == 0 {
+        let any_filled = client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM prediction_orders WHERE group_id = $1 AND session_id = $2 AND state = 'filled') AS has_fill",
+                &[&group_id, &session_id],
+            )
+            .await
+            .map_err(|e| format!("check group fills: {}", e))?;
+
+        let final_state = if any_filled.get::<_, bool>("has_fill") {
+            "completed"
+        } else {
+            "cancelled"
+        };
+
+        client
+            .execute(
+                "UPDATE order_groups SET state = $1 WHERE id = $2",
+                &[&final_state, &group_id],
+            )
+            .await
+            .map_err(|e| format!("finalize group: {}", e))?;
+
+        info!(group_id, state = final_state, "group finalized after staged cancel");
+    }
+
+    Ok(cancelled)
 }

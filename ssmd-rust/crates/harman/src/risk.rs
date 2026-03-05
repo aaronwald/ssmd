@@ -8,12 +8,18 @@ use crate::types::OrderRequest;
 pub struct RiskLimits {
     /// Maximum total notional exposure in dollars
     pub max_notional: Decimal,
+    /// Maximum notional for a single order (fat-finger protection)
+    pub max_order_notional: Decimal,
+    /// Maximum daily realized loss in dollars (positive number, e.g., 50 = -$50 threshold)
+    pub daily_loss_limit: Decimal,
 }
 
 impl Default for RiskLimits {
     fn default() -> Self {
         Self {
-            max_notional: Decimal::new(100, 0), // $100 default
+            max_notional: Decimal::new(100, 0),       // $100 default
+            max_order_notional: Decimal::new(25, 0),   // $25 default
+            daily_loss_limit: Decimal::new(50, 0),     // $50 default
         }
     }
 }
@@ -41,8 +47,17 @@ impl RiskState {
         limits: &RiskLimits,
     ) -> Result<(), RiskCheckError> {
         let requested = order.notional();
-        let total = self.open_notional + requested;
 
+        // Fat-finger: single order notional cap
+        if requested > limits.max_order_notional {
+            return Err(RiskCheckError::MaxOrderNotionalExceeded {
+                order_notional: requested,
+                limit: limits.max_order_notional,
+            });
+        }
+
+        // Aggregate: total open notional cap
+        let total = self.open_notional + requested;
         if total > limits.max_notional {
             return Err(RiskCheckError::MaxNotionalExceeded {
                 current: self.open_notional,
@@ -82,6 +97,14 @@ mod tests {
         }
     }
 
+    /// Limits with high max_order_notional — for testing aggregate checks only
+    fn aggregate_limits() -> RiskLimits {
+        RiskLimits {
+            max_order_notional: Decimal::new(10000, 0), // $10k — effectively no fat-finger
+            ..RiskLimits::default()
+        }
+    }
+
     // ======================================================================
     // Basic pass/fail
     // ======================================================================
@@ -89,7 +112,7 @@ mod tests {
     #[test]
     fn test_order_passes_risk_check() {
         let state = RiskState::default();
-        let limits = RiskLimits::default(); // $100
+        let limits = RiskLimits::default();
         let order = make_order(Decimal::from(10), Decimal::new(50, 2)); // $5.00
         assert!(state.check_order(&order, &limits).is_ok());
     }
@@ -97,7 +120,7 @@ mod tests {
     #[test]
     fn test_order_exactly_at_limit() {
         let state = RiskState::default();
-        let limits = RiskLimits::default(); // $100
+        let limits = aggregate_limits();
         let order = make_order(Decimal::from(100), Decimal::new(100, 2)); // $100.00
         assert!(state.check_order(&order, &limits).is_ok());
     }
@@ -105,20 +128,10 @@ mod tests {
     #[test]
     fn test_order_exceeds_limit() {
         let state = RiskState::default();
-        let limits = RiskLimits::default(); // $100
+        let limits = aggregate_limits();
         let order = make_order(Decimal::from(101), Decimal::new(100, 2)); // $101.00
         let err = state.check_order(&order, &limits).unwrap_err();
-        match err {
-            RiskCheckError::MaxNotionalExceeded {
-                current,
-                requested,
-                limit,
-            } => {
-                assert_eq!(current, Decimal::ZERO);
-                assert_eq!(requested, Decimal::new(10100, 2));
-                assert_eq!(limit, Decimal::new(100, 0));
-            }
-        }
+        assert!(matches!(err, RiskCheckError::MaxNotionalExceeded { .. }));
     }
 
     // ======================================================================
@@ -170,7 +183,7 @@ mod tests {
     #[test]
     fn test_accumulation_to_exact_limit() {
         // Simulate multiple orders accumulating to exactly $100
-        let limits = RiskLimits::default();
+        let limits = aggregate_limits();
 
         // Start at $0
         let state = RiskState::default();
@@ -229,6 +242,7 @@ mod tests {
         let state = RiskState::default();
         let limits = RiskLimits {
             max_notional: Decimal::ZERO,
+            ..RiskLimits::default()
         };
         // Even the smallest order should fail
         let order = make_order(Decimal::from(1), Decimal::new(1, 2)); // $0.01
@@ -240,6 +254,7 @@ mod tests {
         let state = RiskState::default();
         let limits = RiskLimits {
             max_notional: Decimal::ZERO,
+            ..RiskLimits::default()
         };
         let order = make_order(Decimal::from(0), Decimal::new(50, 2)); // $0.00
         assert!(state.check_order(&order, &limits).is_ok());
@@ -304,6 +319,8 @@ mod tests {
         let state = RiskState::default();
         let limits = RiskLimits {
             max_notional: Decimal::new(50, 0), // $50
+            max_order_notional: Decimal::new(10000, 0),
+            ..RiskLimits::default()
         };
         let order = make_order(Decimal::from(100), Decimal::new(51, 2)); // $51.00
         assert!(state.check_order(&order, &limits).is_err());
@@ -339,7 +356,7 @@ mod tests {
     fn test_large_quantity_small_price_exceeds_limit() {
         // 10001 contracts at 1 cent = $100.01 → exceeds $100 limit
         let state = RiskState::default();
-        let limits = RiskLimits::default();
+        let limits = aggregate_limits();
         let order = make_order(Decimal::from(10001), Decimal::new(1, 2));
         assert!(state.check_order(&order, &limits).is_err());
     }
@@ -355,20 +372,55 @@ mod tests {
         };
         let limits = RiskLimits {
             max_notional: Decimal::new(90, 0), // $90
+            max_order_notional: Decimal::new(10000, 0),
+            ..RiskLimits::default()
         };
         let order = make_order(Decimal::from(20), Decimal::new(60, 2)); // $12.00 → $80 + $12 = $92 > $90
 
         let err = state.check_order(&order, &limits).unwrap_err();
-        match err {
-            RiskCheckError::MaxNotionalExceeded {
-                current,
-                requested,
-                limit,
-            } => {
-                assert_eq!(current, Decimal::new(80, 0));
-                assert_eq!(requested, Decimal::new(1200, 2)); // $12.00
-                assert_eq!(limit, Decimal::new(90, 0));
-            }
-        }
+        assert!(matches!(err, RiskCheckError::MaxNotionalExceeded { .. }));
+    }
+
+    // ======================================================================
+    // Fat-finger (max order notional) checks
+    // ======================================================================
+
+    #[test]
+    fn test_fat_finger_under_limit() {
+        let state = RiskState::default();
+        let limits = RiskLimits::default(); // $25 max_order_notional
+        let order = make_order(Decimal::from(40), Decimal::new(50, 2)); // $20.00
+        assert!(state.check_order(&order, &limits).is_ok());
+    }
+
+    #[test]
+    fn test_fat_finger_at_limit() {
+        let state = RiskState::default();
+        let limits = RiskLimits::default(); // $25 max_order_notional
+        let order = make_order(Decimal::from(50), Decimal::new(50, 2)); // $25.00
+        assert!(state.check_order(&order, &limits).is_ok());
+    }
+
+    #[test]
+    fn test_fat_finger_over_limit() {
+        let state = RiskState::default();
+        let limits = RiskLimits::default(); // $25 max_order_notional
+        let order = make_order(Decimal::from(100), Decimal::new(50, 2)); // $50.00
+        let err = state.check_order(&order, &limits).unwrap_err();
+        assert!(matches!(err, RiskCheckError::MaxOrderNotionalExceeded { .. }));
+    }
+
+    #[test]
+    fn test_fat_finger_checked_before_aggregate() {
+        // Even with zero existing notional, fat-finger rejects first
+        let state = RiskState::default();
+        let limits = RiskLimits {
+            max_notional: Decimal::new(1000, 0), // high aggregate
+            max_order_notional: Decimal::new(10, 0), // low per-order
+            ..RiskLimits::default()
+        };
+        let order = make_order(Decimal::from(20), Decimal::new(60, 2)); // $12.00 > $10
+        let err = state.check_order(&order, &limits).unwrap_err();
+        assert!(matches!(err, RiskCheckError::MaxOrderNotionalExceeded { .. }));
     }
 }

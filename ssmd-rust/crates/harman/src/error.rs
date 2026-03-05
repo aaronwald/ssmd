@@ -23,6 +23,18 @@ pub enum RiskCheckError {
         requested: rust_decimal::Decimal,
         limit: rust_decimal::Decimal,
     },
+
+    #[error("max order notional exceeded: order_notional={order_notional}, limit={limit}")]
+    MaxOrderNotionalExceeded {
+        order_notional: rust_decimal::Decimal,
+        limit: rust_decimal::Decimal,
+    },
+
+    #[error("daily loss limit exceeded: daily_pnl={daily_pnl}, limit={limit}")]
+    DailyLossExceeded {
+        daily_pnl: rust_decimal::Decimal,
+        limit: rust_decimal::Decimal,
+    },
 }
 
 /// Errors from order enqueue operations

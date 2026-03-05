@@ -1572,7 +1572,7 @@ async fn test_staged_legs_excluded_from_risk() {
     let registry = prometheus::Registry::new();
     let ems_metrics = ssmd_harman_ems::EmsMetrics::new(&registry);
     let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = Arc::new(mock);
-    let limits = RiskLimits { max_notional: Decimal::from(5) };
+    let limits = RiskLimits { max_notional: Decimal::from(5), ..RiskLimits::default() };
     let (audit_sender2, _audit_writer2) = harman::audit::create_audit_channel(pool.clone());
     let ems = Arc::new(ssmd_harman_ems::Ems::new(pool.clone(), exchange.clone(), limits, ems_metrics, audit_sender2.clone()));
     let oms_metrics = Arc::new(OmsMetrics::new(&registry));

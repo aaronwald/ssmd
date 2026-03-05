@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::interval;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -34,9 +34,11 @@ impl AuditSender {
     }
 
     /// Fire-and-forget. Never blocks the caller.
+    /// Crashes the process if the channel is full — don't silently drop audit data.
     pub fn send(&self, event: AuditEvent) {
         if self.tx.try_send(event).is_err() {
-            warn!("audit channel full, dropping event");
+            error!("audit channel full — crashing pod (don't silently drop audit data)");
+            std::process::exit(1);
         }
     }
 
@@ -228,7 +230,8 @@ impl AuditWriter {
                 error!(count, error = %e, "failed to flush audit events, retrying once");
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 if let Err(e2) = crate::db::batch_insert_audit(&self.pool, &events).await {
-                    error!(count, error = %e2, "retry failed, dropping audit batch");
+                    error!(count, error = %e2, "retry failed — crashing pod (don't silently drop audit data)");
+                    std::process::exit(1);
                 }
             }
         }

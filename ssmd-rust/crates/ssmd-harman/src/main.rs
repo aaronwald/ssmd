@@ -25,9 +25,17 @@ struct Args {
     #[arg(long, env = "LISTEN_ADDR", default_value = "0.0.0.0:8080")]
     listen_addr: String,
 
-    /// Maximum notional exposure in dollars
+    /// Maximum total notional exposure in dollars
     #[arg(long, env = "MAX_NOTIONAL", default_value = "100")]
     max_notional: f64,
+
+    /// Maximum notional for a single order (fat-finger protection) in dollars
+    #[arg(long, env = "MAX_ORDER_NOTIONAL", default_value = "25")]
+    max_order_notional: f64,
+
+    /// Maximum daily realized loss in dollars (session suspended when exceeded)
+    #[arg(long, env = "DAILY_LOSS_LIMIT", default_value = "50")]
+    daily_loss_limit: f64,
 
     /// Kalshi API base URL
     #[arg(
@@ -169,6 +177,10 @@ async fn main() {
     let risk_limits = harman::risk::RiskLimits {
         max_notional: rust_decimal::Decimal::from_f64_retain(args.max_notional)
             .unwrap_or(rust_decimal::Decimal::new(100, 0)),
+        max_order_notional: rust_decimal::Decimal::from_f64_retain(args.max_order_notional)
+            .unwrap_or(rust_decimal::Decimal::new(25, 0)),
+        daily_loss_limit: rust_decimal::Decimal::from_f64_retain(args.daily_loss_limit)
+            .unwrap_or(rust_decimal::Decimal::new(50, 0)),
     };
 
     // Reset stale processing items (watchdog: clear items stuck in processing state)
