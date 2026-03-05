@@ -47,6 +47,7 @@ Market data capture, archival, signal development, and order management platform
 | `ssmd-harman-tui` | Terminal UI for order management |
 | `harman` | Shared OMS types, DB, state machine |
 | `harman-test-exchange` | Kalshi-protocol mock exchange for testing |
+| `ssmd-signal-runner` | Signal evaluation against NATS streams (standalone binary) |
 | `middleware` | Transport, storage, and cache abstractions |
 | `connector` (lib) | Exchange-specific WebSocket clients, writers, CDC consumer, shard manager |
 | `schema` | Cap'n Proto message definitions |
@@ -59,12 +60,18 @@ Market data capture, archival, signal development, and order management platform
 | CLI | `src/cli/` | Secmaster sync, data quality, scaling, fees, deployment |
 | HTTP API | `src/server/` | REST API for market data and secmaster |
 | Signal Runner | `src/runtime/` | Real-time signal evaluation daemon |
-| Notifier | (standalone deploy) | Signal fire → ntfy.sh notification routing |
+| Notifier | `src/cli/commands/notifier.ts` | Signal fire → ntfy.sh notification routing (standalone deploy as ssmd-notifier) |
 | Momentum | `src/momentum/` | Paper trading momentum engine + backtesting |
 | Agent | `src/agent/` | LangGraph REPL with market data tools |
 | Funding Rate Consumer | `src/cli/commands/funding-rate-consumer.ts` | NATS → pair_snapshots (Kraken Futures) |
 | State Builders | `src/state/` | Orderbook, price history, volume profile |
 | Shared Lib | `src/lib/` | DB (Drizzle), API clients, types (Zod), pricing, auth |
+
+### Python (`ssmd-mcp/`)
+
+| Component | Path | Purpose |
+|-----------|------|---------|
+| MCP Server | `ssmd-mcp/` | Model Context Protocol server for Claude Code/Desktop/Cursor integration |
 
 ### Harman OMS (`ssmd-rust/crates/ssmd-harman*`, `harman*`)
 
@@ -78,6 +85,8 @@ Order management system for placing, tracking, and reconciling orders across exc
 - **Bracket/OCO groups** — linked order groups with automatic cancel-on-fill
 - **Fill integrity** — unsolicited orders and fills from the exchange are always imported
 - **Exchange adapter pattern** — Kalshi first via `ssmd-exchange-kalshi`, extensible to other exchanges
+
+**Auth:** 4-path priority — CF Access JWT → Bearer token (data-ts validated) → static write token → static admin token. WebSocket event mode for real-time order/fill updates on supported exchanges.
 
 **Deployment:** K8s operator CRD (`harmans.ssmd.ssmd.io`) manages one deployment + service per Harman instance.
 
@@ -212,6 +221,18 @@ REST API with API key auth (`X-API-Key` header). Scopes: `secmaster:read`, `data
 | `GET /v1/keys/usage` | Rate limit and token usage |
 | `GET /v1/settings` | Get all settings |
 | `PUT /v1/settings/:key` | Upsert setting |
+
+**Harman OMS (requires `admin` scope):**
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1/harman/sessions` | List all OMS sessions with risk/status summary |
+| `GET /v1/harman/sessions/:id/orders` | Query orders for a session |
+| `GET /v1/harman/sessions/:id/fills` | Query fills for a session |
+| `GET /v1/harman/orders/:id/timeline` | Full order lifecycle timeline |
+| `GET /v1/harman/sessions/:id/audit` | Exchange audit log |
+| `GET /v1/harman/sessions/:id/settlements` | Query settlements for a session |
+| `GET /v1/auth/validate` | Validate API key and return scopes |
 
 ### LangGraph Agent Tools
 
