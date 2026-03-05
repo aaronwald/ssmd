@@ -20,10 +20,11 @@ use uuid::Uuid;
 use ssmd_harman_ems::{Ems, EmsMetrics};
 
 /// Build an Ems instance with MockExchange and a test DB pool.
-fn build_test_ems(mock: MockExchange, pool: deadpool_postgres::Pool) -> Ems {
+async fn build_test_ems(mock: MockExchange, pool: deadpool_postgres::Pool) -> Ems {
     let registry = prometheus::Registry::new();
     let metrics = EmsMetrics::new(&registry);
-    let (audit_sender, _audit_writer) = harman::audit::create_audit_channel(pool.clone());
+    let (audit_sender, audit_writer) = harman::audit::create_audit_channel(pool.clone());
+    tokio::spawn(audit_writer.run());
     Ems::new(pool, Arc::new(mock), RiskLimits::default(), metrics, audit_sender)
 }
 
@@ -46,7 +47,7 @@ async fn setup() -> (deadpool_postgres::Pool, i64) {
 async fn test_ems_pump_submit_success() {
     let (pool, session_id) = setup().await;
     let mock = MockExchange::new();
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     // Enqueue an order via EMS
     let order = ems
@@ -89,7 +90,7 @@ async fn test_ems_pump_submit_rejected() {
         let mut state = mock.state.lock().await;
         state.submit_behavior = SubmitBehavior::Reject("insufficient balance".to_string());
     }
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     let order = ems
         .enqueue(
@@ -130,7 +131,7 @@ async fn test_ems_pump_submit_rate_limited() {
         let mut state = mock.state.lock().await;
         state.submit_behavior = SubmitBehavior::RateLimited(1000);
     }
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     let _order = ems
         .enqueue(
@@ -166,7 +167,7 @@ async fn test_ems_pump_submit_timeout() {
         let mut state = mock.state.lock().await;
         state.submit_behavior = SubmitBehavior::Timeout;
     }
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     let order = ems
         .enqueue(
@@ -203,7 +204,7 @@ async fn test_ems_pump_submit_timeout() {
 async fn test_ems_pump_cancel_success() {
     let (pool, session_id) = setup().await;
     let mock = MockExchange::new();
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     // Create and pump an order first
     let order = ems
@@ -250,7 +251,7 @@ async fn test_ems_pump_cancel_without_exchange_id() {
         let mut state = mock.state.lock().await;
         state.submit_behavior = SubmitBehavior::Timeout;
     }
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     // Insert order directly in Submitted state without exchange_order_id
     let order_id =
@@ -285,7 +286,7 @@ async fn test_ems_pump_cancel_not_found() {
         let mut state = mock.state.lock().await;
         state.cancel_behavior = CancelBehavior::NotFound;
     }
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     // Insert acknowledged order with exchange_order_id
     let order_id = insert_test_order(
@@ -323,7 +324,7 @@ async fn test_ems_pump_cancel_not_found() {
 async fn test_ems_pump_amend_success() {
     let (pool, session_id) = setup().await;
     let mock = MockExchange::new();
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     // Insert acknowledged order with exchange_order_id
     let order_id = insert_test_order(
@@ -361,7 +362,7 @@ async fn test_ems_pump_amend_not_found() {
         let mut state = mock.state.lock().await;
         state.amend_behavior = AmendBehavior::NotFound;
     }
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     let order_id = insert_test_order(
         &pool,
@@ -394,7 +395,7 @@ async fn test_ems_pump_amend_not_found() {
 async fn test_ems_pump_decrease_success() {
     let (pool, session_id) = setup().await;
     let mock = MockExchange::new();
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     let order_id = insert_test_order(
         &pool,
@@ -429,7 +430,7 @@ async fn test_ems_pump_decrease_not_found() {
         let mut state = mock.state.lock().await;
         state.decrease_behavior = DecreaseBehavior::NotFound;
     }
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     let order_id = insert_test_order(
         &pool,
@@ -461,7 +462,7 @@ async fn test_ems_pump_decrease_not_found() {
 async fn test_ems_pump_respects_shutdown() {
     let (pool, session_id) = setup().await;
     let mock = MockExchange::new();
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     // Enqueue an order
     let _order = ems
@@ -497,7 +498,7 @@ async fn test_ems_shutdown_mass_cancels_and_drains() {
         let mut state = mock.state.lock().await;
         state.cancel_all_count = 5;
     }
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     // Enqueue an order (will be in queue)
     let _order = ems
@@ -540,7 +541,7 @@ async fn test_ems_shutdown_mass_cancels_and_drains() {
 async fn test_ems_pump_empty_queue() {
     let (pool, session_id) = setup().await;
     let mock = MockExchange::new();
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     // Pump with nothing in queue
     let result = ems.pump(session_id).await;
@@ -559,7 +560,7 @@ async fn test_ems_pump_empty_queue() {
 async fn test_ems_metrics_increment() {
     let (pool, session_id) = setup().await;
     let mock = MockExchange::new();
-    let ems = build_test_ems(mock, pool.clone());
+    let ems = build_test_ems(mock, pool.clone()).await;
 
     // Submit 2 orders
     for i in 0..2 {
