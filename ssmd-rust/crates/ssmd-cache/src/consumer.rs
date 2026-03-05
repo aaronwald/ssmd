@@ -216,6 +216,9 @@ impl CdcConsumer {
                             "polymarket_conditions" => {
                                 self.handle_polymarket_condition_event(&event, &key, cache).await?;
                             }
+                            "market_lifecycle_events" => {
+                                self.handle_lifecycle_event(&event, cache).await?;
+                            }
                             _ => {
                                 // Other tables (series, series_fees, etc.) — no cache action needed
                             }
@@ -479,4 +482,111 @@ impl CdcConsumer {
 
         Ok(())
     }
+
+    /// Handle market_lifecycle_events CDC events — append lifecycle entries to
+    /// the existing market JSON in monitor:markets:{event} hash.
+    /// Only processes inserts (lifecycle events are append-only).
+    async fn handle_lifecycle_event(
+        &self,
+        event: &CdcEvent,
+        cache: &RedisCache,
+    ) -> Result<()> {
+        if event.op.as_str() != "insert" {
+            return Ok(());
+        }
+
+        let data = match &event.data {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+
+        let market_ticker = match data.get("market_ticker").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => {
+                tracing::warn!("Lifecycle event missing market_ticker");
+                return Ok(());
+            }
+        };
+
+        let event_type = data.get("event_type").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let received_at = data.get("received_at").and_then(|v| v.as_str());
+        let metadata = data.get("metadata");
+
+        // Derive event_ticker from market_ticker (first two '-' segments)
+        let event_ticker = extract_event_ticker(market_ticker);
+        let hash_key = format!("monitor:markets:{}", event_ticker);
+
+        // Read existing market JSON from Redis
+        let existing = match cache.hget(&hash_key, market_ticker).await {
+            Ok(Some(json_str)) => json_str,
+            Ok(None) => {
+                // Market not in cache yet — warmer will populate later
+                tracing::debug!(market_ticker, "Lifecycle event for uncached market, skipping");
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!(market_ticker, error = %e, "Failed to HGET market for lifecycle append");
+                return Ok(());
+            }
+        };
+
+        // Parse existing JSON and append lifecycle event
+        let mut market_json: serde_json::Value = match serde_json::from_str(&existing) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(market_ticker, error = %e, "Failed to parse market JSON");
+                return Ok(());
+            }
+        };
+
+        let lifecycle_entry = serde_json::json!({
+            "type": event_type,
+            "ts": received_at,
+            "metadata": metadata,
+        });
+
+        // Get or create the lifecycle_events array
+        let lifecycle_events = market_json
+            .as_object_mut()
+            .and_then(|obj| {
+                if !obj.contains_key("lifecycle_events") {
+                    obj.insert("lifecycle_events".to_string(), serde_json::json!([]));
+                }
+                obj.get_mut("lifecycle_events")
+            })
+            .and_then(|v| v.as_array_mut());
+
+        if let Some(arr) = lifecycle_events {
+            arr.push(lifecycle_entry);
+        }
+
+        // Write back
+        if let Err(e) = cache.hset(&hash_key, market_ticker, &market_json.to_string()).await {
+            tracing::warn!(market_ticker, error = %e, "Failed to write lifecycle event to cache");
+        } else {
+            self.metrics.redis_writes.with_label_values(&["hset"]).inc();
+            tracing::debug!(market_ticker, event_type, "Appended lifecycle event to cache");
+        }
+
+        Ok(())
+    }
+}
+
+/// Extract event_ticker from market_ticker.
+/// Market tickers use '-' segments: the event_ticker is the first two segments.
+/// e.g. "KXNBAGAME-26MAR05BOSLAL-BOS" -> "KXNBAGAME-26MAR05BOSLAL"
+/// e.g. "KXBTCD-26MAR0211-T5060" -> "KXBTCD-26MAR0211"
+/// Single-segment tickers (no dash) return the full string.
+fn extract_event_ticker(market_ticker: &str) -> &str {
+    let mut dash_count = 0;
+    for (i, c) in market_ticker.char_indices() {
+        if c == '-' {
+            dash_count += 1;
+            if dash_count == 2 {
+                return &market_ticker[..i];
+            }
+        }
+    }
+    // 0 or 1 dashes — the whole ticker is the event ticker
+    market_ticker
 }
