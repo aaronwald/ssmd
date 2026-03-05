@@ -107,6 +107,7 @@ export interface KalshiMarket {
   can_close_early?: boolean;
   market_type?: string;
   open_time?: string;
+  expected_expiration_time?: string;
 }
 
 /**
@@ -159,5 +160,6 @@ export function fromKalshiMarket(km: KalshiMarket): Market {
     can_close_early: km.can_close_early ?? null,
     market_type: km.market_type ?? null,
     open_time: km.open_time ?? null,
+    expected_expiration_time: km.expected_expiration_time ?? null,
   };
 }
