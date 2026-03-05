@@ -198,6 +198,11 @@ export interface MonitorMarket {
   status: string;
   close_time: string | null;
   expected_expiration_time?: string | null;
+  lifecycle_events?: Array<{
+    type: string;
+    ts: string;
+    metadata: Record<string, unknown>;
+  }> | null;
   yes_bid: number | null;
   yes_ask: number | null;
   last: number | null;

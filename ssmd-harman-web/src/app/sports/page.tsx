@@ -194,10 +194,30 @@ function getGameState(
     return { state: "unknown", countdownTarget: null, label: "" };
   }
 
-  // Check if game is decided by price signal
+  // Check lifecycle events first (authoritative signal from exchange)
+  for (const m of markets) {
+    if (m.lifecycle_events && m.lifecycle_events.length > 0) {
+      const hasDetermined = m.lifecycle_events.some(
+        (e) => e.type === "determined" || e.type === "settled"
+      );
+      if (hasDetermined) {
+        return { state: "final", countdownTarget: null, label: "Final" };
+      }
+
+      // Check for active halt (deactivated without subsequent activated)
+      const lastDeactivated = [...m.lifecycle_events].reverse().find((e) => e.type === "deactivated");
+      const lastActivated = [...m.lifecycle_events].reverse().find((e) => e.type === "activated");
+      if (lastDeactivated && (!lastActivated || new Date(lastDeactivated.ts) > new Date(lastActivated.ts))) {
+        return { state: "unknown", countdownTarget: null, label: "Halted" };
+      }
+    }
+  }
+
+  // Fallback: price heuristic for Final (when lifecycle data hasn't arrived yet)
   const decided = markets.some(m => (m.yes_bid ?? 0) >= 0.95 || (m.yes_bid ?? 1) <= 0.05);
   if (decided) return { state: "final", countdownTarget: null, label: "Final" };
 
+  // EET-based Live/Upcoming detection (unchanged)
   const estimatedStart = getEstimatedStart(markets, eventTicker);
   if (!estimatedStart) {
     return { state: "unknown", countdownTarget: null, label: "" };
