@@ -513,7 +513,8 @@ function GameRow({
   const eventDate = getEventDate(event);
   const precise = eventDate && hasPreciseTime(eventDate);
   const countdown = useCountdown(precise ? eventDate : null);
-  const cdColor = countdownColor(precise ? eventDate : null);
+  const isLive = !precise && eventDate && isToday(eventDate);
+  const cdColor = isLive ? "text-green" : countdownColor(precise ? eventDate : null);
   const colSpan = showLeague ? 7 : 6;
 
   return (
@@ -545,7 +546,7 @@ function GameRow({
           {eventDate ? fmtGameDate(eventDate) : "-"}
         </td>
         <td className={`px-4 py-2 text-right text-xs font-mono ${cdColor}`}>
-          {countdown || "-"}
+          {countdown || (isLive ? "Live" : "-")}
         </td>
         <td className="px-4 py-2 text-right text-xs text-fg-subtle">
           {event.market_count ?? 0}
