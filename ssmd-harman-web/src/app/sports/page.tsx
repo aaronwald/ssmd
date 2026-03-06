@@ -266,7 +266,7 @@ function useTodayEvents(seriesTickers: string[] | null) {
         return date && isToday(date);
       });
     },
-    { refreshInterval: 60000 }
+    { refreshInterval: 60000, keepPreviousData: true }
   );
 }
 
@@ -567,7 +567,7 @@ function useAllEventMarkets(events: MonitorEvent[]) {
       events.forEach((e, i) => map.set(e.ticker, results[i]));
       return map;
     },
-    { refreshInterval: 30000 }
+    { refreshInterval: 30000, keepPreviousData: true }
   );
 }
 

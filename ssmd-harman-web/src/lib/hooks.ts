@@ -120,7 +120,7 @@ export function useMarkets(event: string | null) {
   return useSWR(
     event ? `data-markets-${event}` : null,
     () => getMarkets(event!),
-    { refreshInterval: LIVE_REFRESH }
+    { refreshInterval: LIVE_REFRESH, keepPreviousData: true }
   );
 }
 
