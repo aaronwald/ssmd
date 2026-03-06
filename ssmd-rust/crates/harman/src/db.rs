@@ -429,6 +429,13 @@ fn infer_event(from: OrderState, to: OrderState) -> Result<OrderEvent, String> {
         (_, OrderState::PendingAmend) => Ok(OrderEvent::AmendRequest),
         (_, OrderState::PendingDecrease) => Ok(OrderEvent::DecreaseRequest),
         (OrderState::PendingCancel, OrderState::Cancelled) => Ok(OrderEvent::CancelConfirm),
+        // Exchange-initiated cancels (settlement, expiry, admin)
+        (OrderState::Submitted, OrderState::Cancelled) => Ok(OrderEvent::CancelConfirm),
+        (OrderState::Acknowledged, OrderState::Cancelled) => Ok(OrderEvent::CancelConfirm),
+        (OrderState::PartiallyFilled, OrderState::Cancelled) => Ok(OrderEvent::CancelConfirm),
+        (OrderState::PendingAmend, OrderState::Cancelled) => Ok(OrderEvent::CancelConfirm),
+        (OrderState::PendingDecrease, OrderState::Cancelled) => Ok(OrderEvent::CancelConfirm),
+        // Pre-exchange cancels (not yet on exchange, no confirmation needed)
         (OrderState::Staged, OrderState::Cancelled) => Ok(OrderEvent::CancelRequest),
         (OrderState::Pending, OrderState::Cancelled) => Ok(OrderEvent::CancelRequest),
         (_, OrderState::Expired) => Ok(OrderEvent::Expire),
@@ -771,6 +778,12 @@ pub async fn update_order_state(
         .map_err(|e| format!("get state: {}", e))?;
     let from_state: String = row.get("state");
 
+    let from = parse_state(&from_state);
+
+    // Validate transition through state machine
+    let _ = validate_transition(from, new_state)
+        .map_err(|e| format!("invalid transition {} -> {}: {}", from, new_state, e))?;
+
     let state_str = new_state.to_string();
     let cancel_str = cancel_reason.map(|r| r.to_string());
     let cancel_ref = cancel_str.as_deref();
@@ -790,10 +803,14 @@ pub async fn update_order_state(
     .await
     .map_err(|e| format!("update order: {}", e))?;
 
+    let event_name = infer_event(from, new_state)
+        .map(|e| e.to_string())
+        .unwrap_or_else(|_| state_str.clone());
+
     // Audit log
     tx.execute(
         "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, $3, $4, $5)",
-        &[&order_id, &from_state, &state_str, &state_str, &actor],
+        &[&order_id, &from_state, &state_str, &event_name, &actor],
     )
     .await
     .map_err(|e| format!("insert audit: {}", e))?;

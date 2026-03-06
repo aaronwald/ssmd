@@ -202,6 +202,14 @@ pub fn apply_event(
         // PendingCancel transitions
         (OrderState::PendingCancel, OrderEvent::CancelConfirm) => Ok(OrderState::Cancelled),
 
+        // Exchange-initiated cancels: exchange can unilaterally cancel orders
+        // (market settlement, expiry, admin action) from any resting/pending state
+        (OrderState::Submitted, OrderEvent::CancelConfirm) => Ok(OrderState::Cancelled),
+        (OrderState::Acknowledged, OrderEvent::CancelConfirm) => Ok(OrderState::Cancelled),
+        (OrderState::PartiallyFilled, OrderEvent::CancelConfirm) => Ok(OrderState::Cancelled),
+        (OrderState::PendingAmend, OrderEvent::CancelConfirm) => Ok(OrderState::Cancelled),
+        (OrderState::PendingDecrease, OrderEvent::CancelConfirm) => Ok(OrderState::Cancelled),
+
         // PendingAmend transitions
         (OrderState::PendingAmend, OrderEvent::AmendConfirm) => Ok(OrderState::Acknowledged),
         (OrderState::PendingAmend, OrderEvent::CancelRequest) => Ok(OrderState::PendingCancel),
@@ -610,8 +618,12 @@ mod tests {
     }
 
     #[test]
-    fn test_submitted_rejects_cancel_confirm() {
-        assert!(apply_event(OrderState::Submitted, &OrderEvent::CancelConfirm).is_err());
+    fn test_submitted_accepts_cancel_confirm() {
+        // Exchange can unilaterally cancel submitted orders (settlement, expiry)
+        assert_eq!(
+            apply_event(OrderState::Submitted, &OrderEvent::CancelConfirm).unwrap(),
+            OrderState::Cancelled
+        );
     }
 
     #[test]
@@ -631,9 +643,12 @@ mod tests {
     }
 
     #[test]
-    fn test_acknowledged_rejects_cancel_confirm() {
-        // Must go through PendingCancel first
-        assert!(apply_event(OrderState::Acknowledged, &OrderEvent::CancelConfirm).is_err());
+    fn test_acknowledged_accepts_cancel_confirm() {
+        // Exchange can unilaterally cancel acknowledged orders (settlement, expiry)
+        assert_eq!(
+            apply_event(OrderState::Acknowledged, &OrderEvent::CancelConfirm).unwrap(),
+            OrderState::Cancelled
+        );
     }
 
     // ======================================================================
