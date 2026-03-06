@@ -1247,4 +1247,125 @@ mod tests {
         let result = apply_group_event(GroupState::Cancelled, &GroupEvent::Complete);
         assert!(result.is_err());
     }
+
+    // ======================================================================
+    // Exhaustive transition matrix: 12 states × 13 events = 156 combinations
+    // ======================================================================
+
+    #[test]
+    fn test_exhaustive_transition_matrix() {
+        use std::collections::HashMap;
+
+        // Define ALL expected transitions as (from, event_name) -> expected_state
+        let mut expected: HashMap<(OrderState, &str), OrderState> = HashMap::new();
+
+        // Fills accepted from ALL non-terminal states
+        for &state in &[
+            OrderState::Pending, OrderState::Submitted, OrderState::Acknowledged,
+            OrderState::PartiallyFilled, OrderState::PendingCancel,
+            OrderState::PendingAmend, OrderState::PendingDecrease, OrderState::Staged,
+        ] {
+            expected.insert((state, "fill"), OrderState::Filled);
+        }
+
+        // PartialFill — preserves pending intent
+        expected.insert((OrderState::Pending, "partial_fill"), OrderState::PartiallyFilled);
+        expected.insert((OrderState::Submitted, "partial_fill"), OrderState::PartiallyFilled);
+        expected.insert((OrderState::Acknowledged, "partial_fill"), OrderState::PartiallyFilled);
+        expected.insert((OrderState::PartiallyFilled, "partial_fill"), OrderState::PartiallyFilled);
+        expected.insert((OrderState::PendingCancel, "partial_fill"), OrderState::PendingCancel);
+        expected.insert((OrderState::PendingAmend, "partial_fill"), OrderState::PendingAmend);
+        expected.insert((OrderState::PendingDecrease, "partial_fill"), OrderState::PendingDecrease);
+        expected.insert((OrderState::Staged, "partial_fill"), OrderState::PartiallyFilled);
+
+        // Pending transitions
+        expected.insert((OrderState::Pending, "submit"), OrderState::Submitted);
+        expected.insert((OrderState::Pending, "reject"), OrderState::Rejected);
+        expected.insert((OrderState::Pending, "cancel_request"), OrderState::Cancelled);
+
+        // Submitted transitions
+        expected.insert((OrderState::Submitted, "acknowledge"), OrderState::Acknowledged);
+        expected.insert((OrderState::Submitted, "reject"), OrderState::Rejected);
+        expected.insert((OrderState::Submitted, "expire"), OrderState::Expired);
+        expected.insert((OrderState::Submitted, "cancel_request"), OrderState::PendingCancel);
+
+        // Acknowledged transitions
+        expected.insert((OrderState::Acknowledged, "cancel_request"), OrderState::PendingCancel);
+        expected.insert((OrderState::Acknowledged, "amend_request"), OrderState::PendingAmend);
+        expected.insert((OrderState::Acknowledged, "decrease_request"), OrderState::PendingDecrease);
+        expected.insert((OrderState::Acknowledged, "expire"), OrderState::Expired);
+
+        // PartiallyFilled transitions
+        expected.insert((OrderState::PartiallyFilled, "cancel_request"), OrderState::PendingCancel);
+        expected.insert((OrderState::PartiallyFilled, "amend_request"), OrderState::PendingAmend);
+        expected.insert((OrderState::PartiallyFilled, "decrease_request"), OrderState::PendingDecrease);
+
+        // PendingCancel transitions
+        expected.insert((OrderState::PendingCancel, "cancel_confirm"), OrderState::Cancelled);
+
+        // Exchange-initiated cancels (CancelConfirm from any resting/pending state)
+        expected.insert((OrderState::Submitted, "cancel_confirm"), OrderState::Cancelled);
+        expected.insert((OrderState::Acknowledged, "cancel_confirm"), OrderState::Cancelled);
+        expected.insert((OrderState::PartiallyFilled, "cancel_confirm"), OrderState::Cancelled);
+        expected.insert((OrderState::PendingAmend, "cancel_confirm"), OrderState::Cancelled);
+        expected.insert((OrderState::PendingDecrease, "cancel_confirm"), OrderState::Cancelled);
+
+        // PendingAmend transitions
+        expected.insert((OrderState::PendingAmend, "amend_confirm"), OrderState::Acknowledged);
+        expected.insert((OrderState::PendingAmend, "cancel_request"), OrderState::PendingCancel);
+
+        // PendingDecrease transitions
+        expected.insert((OrderState::PendingDecrease, "decrease_confirm"), OrderState::Acknowledged);
+        expected.insert((OrderState::PendingDecrease, "cancel_request"), OrderState::PendingCancel);
+
+        // Staged transitions
+        expected.insert((OrderState::Staged, "activate"), OrderState::Pending);
+        expected.insert((OrderState::Staged, "cancel_request"), OrderState::Cancelled);
+
+        // Test all 156 combinations
+        let all_states = [
+            OrderState::Pending, OrderState::Submitted, OrderState::Acknowledged,
+            OrderState::PartiallyFilled, OrderState::Filled, OrderState::PendingCancel,
+            OrderState::PendingAmend, OrderState::PendingDecrease, OrderState::Cancelled,
+            OrderState::Rejected, OrderState::Expired, OrderState::Staged,
+        ];
+
+        let all_events: Vec<(&str, OrderEvent)> = vec![
+            ("submit", OrderEvent::Submit),
+            ("acknowledge", OrderEvent::Acknowledge { exchange_order_id: "test".into() }),
+            ("reject", OrderEvent::Reject { reason: "test".into() }),
+            ("partial_fill", OrderEvent::PartialFill { filled_qty: Decimal::from(1) }),
+            ("fill", OrderEvent::Fill { filled_qty: Decimal::from(1) }),
+            ("cancel_request", OrderEvent::CancelRequest),
+            ("cancel_confirm", OrderEvent::CancelConfirm),
+            ("amend_request", OrderEvent::AmendRequest),
+            ("amend_confirm", OrderEvent::AmendConfirm),
+            ("decrease_request", OrderEvent::DecreaseRequest),
+            ("decrease_confirm", OrderEvent::DecreaseConfirm),
+            ("expire", OrderEvent::Expire),
+            ("activate", OrderEvent::Activate),
+        ];
+
+        for &state in &all_states {
+            for (event_name, ref event) in &all_events {
+                let result = apply_event(state, event);
+                match expected.get(&(state, event_name)) {
+                    Some(&expected_state) => {
+                        assert_eq!(
+                            result.unwrap(), expected_state,
+                            "({}, {}) should produce {} but got different result",
+                            state, event_name, expected_state
+                        );
+                    }
+                    None => {
+                        assert!(
+                            result.is_err(),
+                            "({}, {}) should be invalid but produced {:?}",
+                            state, event_name, result
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
