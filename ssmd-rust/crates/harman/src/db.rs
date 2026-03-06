@@ -2598,17 +2598,39 @@ pub async fn get_groups_needing_evaluation(
 pub async fn update_group_state(
     pool: &Pool,
     group_id: i64,
-    state: GroupState,
+    new_state: GroupState,
 ) -> Result<(), String> {
     let client = pool
         .get()
         .await
         .map_err(|e| format!("pool error: {}", e))?;
 
+    // Read current state for validation
+    let row = client
+        .query_one(
+            "SELECT state FROM order_groups WHERE id = $1",
+            &[&group_id],
+        )
+        .await
+        .map_err(|e| format!("get group state: {}", e))?;
+
+    let current_str: String = row.get("state");
+    let current = parse_group_state(&current_str);
+
+    // Validate through group state machine
+    let event = match new_state {
+        GroupState::Completed => crate::state::GroupEvent::Complete,
+        GroupState::Cancelled => crate::state::GroupEvent::Cancel,
+        GroupState::Active => return Err("cannot transition back to active".to_string()),
+    };
+    let _ = crate::state::apply_group_event(current, &event)
+        .map_err(|e| format!("invalid group transition: {}", e))?;
+
+    let state_str = new_state.to_string();
     client
         .execute(
             "UPDATE order_groups SET state = $1 WHERE id = $2",
-            &[&state.to_string(), &group_id],
+            &[&state_str, &group_id],
         )
         .await
         .map_err(|e| format!("update group state: {}", e))?;

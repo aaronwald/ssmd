@@ -2,6 +2,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::error::TransitionError;
+use crate::types::GroupState;
 
 /// States an order can be in
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -266,6 +267,40 @@ pub fn resolve_via_event(
         Ok(new_state) if new_state != *local_state => Some(new_state),
         Ok(_) => None,  // No state change needed
         Err(_) => None,  // Invalid transition — needs special handling
+    }
+}
+
+/// Events that can change a group's state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupEvent {
+    /// All exit legs filled or entry cancelled → group done
+    Complete,
+    /// All legs cancelled or entry rejected → group cancelled
+    Cancel,
+}
+
+impl std::fmt::Display for GroupEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GroupEvent::Complete => write!(f, "complete"),
+            GroupEvent::Cancel => write!(f, "cancel"),
+        }
+    }
+}
+
+/// Apply an event to a group state.
+pub fn apply_group_event(
+    current: GroupState,
+    event: &GroupEvent,
+) -> Result<GroupState, TransitionError> {
+    match (current, event) {
+        (GroupState::Active, GroupEvent::Complete) => Ok(GroupState::Completed),
+        (GroupState::Active, GroupEvent::Cancel) => Ok(GroupState::Cancelled),
+        (state, evt) => Err(TransitionError::InvalidTransition {
+            from: OrderState::Pending, // placeholder — TransitionError uses OrderState
+            event: format!("group_{}", evt),
+            reason: format!("group event {} not valid in state {}", evt, state),
+        }),
     }
 }
 
@@ -1183,5 +1218,33 @@ mod tests {
         assert_eq!(s, OrderState::Acknowledged);
         let s = apply_event(s, &OrderEvent::Fill { filled_qty: Decimal::from(10) }).unwrap();
         assert_eq!(s, OrderState::Filled);
+    }
+
+    // ======================================================================
+    // Group state machine tests
+    // ======================================================================
+
+    #[test]
+    fn test_group_active_to_completed() {
+        let result = apply_group_event(GroupState::Active, &GroupEvent::Complete);
+        assert_eq!(result.unwrap(), GroupState::Completed);
+    }
+
+    #[test]
+    fn test_group_active_to_cancelled() {
+        let result = apply_group_event(GroupState::Active, &GroupEvent::Cancel);
+        assert_eq!(result.unwrap(), GroupState::Cancelled);
+    }
+
+    #[test]
+    fn test_group_completed_rejects_cancel() {
+        let result = apply_group_event(GroupState::Completed, &GroupEvent::Cancel);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_group_cancelled_rejects_complete() {
+        let result = apply_group_event(GroupState::Cancelled, &GroupEvent::Complete);
+        assert!(result.is_err());
     }
 }
