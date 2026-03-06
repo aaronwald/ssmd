@@ -194,6 +194,7 @@ impl OmsRunner {
             self.oms.pool.clone(),
             self.oms.metrics.clone(),
             self.oms.audit.clone(),
+            self.pump_trigger.clone(),
         );
 
         info!("WS event ingester started");

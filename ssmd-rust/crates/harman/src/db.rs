@@ -2960,3 +2960,147 @@ pub async fn cancel_staged_group_siblings(
 
     Ok(cancelled)
 }
+
+/// Handle group state changes when an order fills.
+///
+/// Role-aware: if the filled order is a bracket entry, activates staged exit legs
+/// (and returns the count so the caller can trigger a pump). If the filled order
+/// is a bracket exit (TP/SL), cancels the other staged exit sibling(s) and
+/// finalizes the group. For OCO, delegates to `cancel_staged_group_siblings`.
+///
+/// Returns the number of staged orders that were **activated** (needing a pump).
+pub async fn handle_group_on_fill(
+    pool: &Pool,
+    order_id: i64,
+    session_id: i64,
+) -> Result<u64, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    // Look up the filled order's group_id, leg_role, and group_type
+    let row = client
+        .query_opt(
+            "SELECT o.group_id, o.leg_role, g.group_type \
+             FROM prediction_orders o \
+             LEFT JOIN order_groups g ON g.id = o.group_id \
+             WHERE o.id = $1 AND o.session_id = $2",
+            &[&order_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("lookup group info: {}", e))?;
+
+    let row = match row {
+        Some(r) => r,
+        None => return Ok(0),
+    };
+
+    let group_id: Option<i64> = row.get("group_id");
+    let group_id = match group_id {
+        Some(gid) => gid,
+        None => return Ok(0), // Not part of a group
+    };
+
+    let leg_role: Option<String> = row.get("leg_role");
+    let group_type: Option<String> = row.get("group_type");
+
+    match (group_type.as_deref(), leg_role.as_deref()) {
+        // Bracket entry filled → activate staged TP/SL exit legs
+        (Some("bracket"), Some("entry")) => {
+            let activated = activate_staged_siblings(pool, order_id, group_id, session_id).await?;
+            Ok(activated)
+        }
+        // Bracket exit filled (TP or SL) → cancel the other exit leg(s)
+        (Some("bracket"), Some("take_profit" | "stop_loss")) => {
+            let _ = cancel_staged_group_siblings(pool, order_id, session_id).await?;
+            Ok(0)
+        }
+        // OCO: cancel other legs (they're open, not staged)
+        (Some("oco"), _) => {
+            // OCO legs are both Pending/Acknowledged, not Staged.
+            // cancel_staged_group_siblings handles staged; for open legs,
+            // the evaluate_triggers path in groups.rs handles the cancel via EMS.
+            // Here we just cancel any staged siblings (should be none for OCO).
+            let _ = cancel_staged_group_siblings(pool, order_id, session_id).await?;
+            Ok(0)
+        }
+        _ => {
+            // Unknown group_type or leg_role — log and no-op
+            warn!(order_id, group_id, ?leg_role, ?group_type, "unrecognized group/role on fill");
+            Ok(0)
+        }
+    }
+}
+
+/// Activate all staged siblings of an order in the same group.
+///
+/// Transitions them from staged → pending and inserts queue items so they
+/// get pumped to the exchange. Returns the number of activated orders.
+async fn activate_staged_siblings(
+    pool: &Pool,
+    order_id: i64,
+    group_id: i64,
+    session_id: i64,
+) -> Result<u64, String> {
+    let mut client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("begin tx: {}", e))?;
+
+    // Find all staged siblings (same group, different order)
+    let staged_rows = tx
+        .query(
+            "SELECT id FROM prediction_orders \
+             WHERE group_id = $1 AND session_id = $2 AND state = 'staged' AND id != $3",
+            &[&group_id, &session_id, &order_id],
+        )
+        .await
+        .map_err(|e| format!("find staged siblings: {}", e))?;
+
+    let mut activated = 0u64;
+    for row in &staged_rows {
+        let sibling_id: i64 = row.get("id");
+
+        tx.execute(
+            "UPDATE prediction_orders SET state = 'pending' \
+             WHERE id = $1 AND session_id = $2 AND state = 'staged'",
+            &[&sibling_id, &session_id],
+        )
+        .await
+        .map_err(|e| format!("activate sibling {}: {}", sibling_id, e))?;
+
+        tx.execute(
+            "INSERT INTO order_queue (order_id, action, actor) VALUES ($1, 'submit', 'trigger')",
+            &[&sibling_id],
+        )
+        .await
+        .map_err(|e| format!("queue sibling {}: {}", sibling_id, e))?;
+
+        tx.execute(
+            "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+             VALUES ($1, 'staged', 'pending', 'activate', 'ws_fill_trigger')",
+            &[&sibling_id],
+        )
+        .await
+        .map_err(|e| format!("audit sibling {}: {}", sibling_id, e))?;
+
+        activated += 1;
+        debug!(order_id = sibling_id, group_id, "activated staged sibling on entry fill");
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit: {}", e))?;
+
+    if activated > 0 {
+        info!(group_id, activated, "activated staged exit legs after entry fill");
+    }
+
+    Ok(activated)
+}

@@ -20,12 +20,14 @@ use harman::state::OrderState;
 use harman::types::{CancelReason, ExchangeFill};
 
 use crate::OmsMetrics;
+use crate::runner::PumpTrigger;
 
 /// Ingests WS events and writes to DB via shared processors.
 pub struct EventIngester {
     pool: Pool,
     metrics: Arc<OmsMetrics>,
     audit: AuditSender,
+    pump_trigger: PumpTrigger,
     /// Set to true when WS is connected, false on disconnect.
     pub ws_connected: Arc<AtomicBool>,
 }
@@ -39,11 +41,12 @@ pub struct IngestResult {
 }
 
 impl EventIngester {
-    pub fn new(pool: Pool, metrics: Arc<OmsMetrics>, audit: AuditSender) -> Self {
+    pub fn new(pool: Pool, metrics: Arc<OmsMetrics>, audit: AuditSender, pump_trigger: PumpTrigger) -> Self {
         Self {
             pool,
             metrics,
             audit,
+            pump_trigger,
             ws_connected: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -285,12 +288,25 @@ impl EventIngester {
                                 error!(error = %e, "failed to update filled state from WS");
                             } else {
                                 result.orders_updated += 1;
-                                // Cascade cancel to staged siblings in the same group
+                                // Role-aware group handling on fill:
+                                // Entry fill → activate staged TP/SL exits
+                                // Exit fill → cancel sibling exit
                                 if order.group_id.is_some() {
-                                    if let Err(e) = db::cancel_staged_group_siblings(
+                                    match db::handle_group_on_fill(
                                         &self.pool, order.id, order.session_id,
                                     ).await {
-                                        error!(error = %e, "failed to cancel staged group siblings");
+                                        Ok(activated) if activated > 0 => {
+                                            info!(
+                                                order_id = order.id,
+                                                activated,
+                                                "bracket entry filled — activated exit legs, triggering pump"
+                                            );
+                                            self.pump_trigger.notify(order.session_id);
+                                        }
+                                        Ok(_) => {}
+                                        Err(e) => {
+                                            error!(error = %e, "failed to handle group on fill");
+                                        }
                                     }
                                 }
                             }
