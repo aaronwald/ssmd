@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, Fragment } from "react";
 import useSWR from "swr";
 import { useSeries, useEvents, useMarkets, usePositions } from "@/lib/hooks";
 import { getEvents, getMarkets } from "@/lib/api";
 import type { MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
+import { usePinnedEvents } from "@/lib/pinned-events";
 
 const SERIES_LS_KEY = "sports-selected-series";
 const TODAY_KEY = "__TODAY__";
@@ -375,6 +376,9 @@ function SportsContent() {
     }
   }, [displayEvents, expandedEvent]);
 
+  // Pinned events
+  const { isPinned, toggle: togglePin } = usePinnedEvents();
+
   // Positions
   const { data: positions } = usePositions();
 
@@ -413,6 +417,8 @@ function SportsContent() {
           showLeague={isTodayMode}
           expandedEvent={expandedEvent}
           positionTickers={positionTickers}
+          isPinned={isPinned}
+          togglePin={togglePin}
           onToggleExpand={toggleExpand}
           onMarketClick={(m) => setSlideOverMarket(m)}
         />
@@ -564,6 +570,8 @@ function GameList({
   showLeague,
   expandedEvent,
   positionTickers,
+  isPinned,
+  togglePin,
   onToggleExpand,
   onMarketClick,
 }: {
@@ -571,6 +579,8 @@ function GameList({
   showLeague: boolean;
   expandedEvent: string | null;
   positionTickers: Set<string>;
+  isPinned: (ticker: string) => boolean;
+  togglePin: (ticker: string) => void;
   onToggleExpand: (eventTicker: string) => void;
   onMarketClick: (m: MonitorMarket) => void;
 }) {
@@ -593,10 +603,15 @@ function GameList({
 
   const sortedEvents = useMemo(() => {
     return [...events].sort((a, b) => {
+      // Pinned events always sort to top
+      const aPinned = isPinned(a.ticker) ? 0 : 1;
+      const bPinned = isPinned(b.ticker) ? 0 : 1;
+      if (aPinned !== bPinned) return aPinned - bPinned;
+
+      // Within same group, apply normal sort
       let va: string | number;
       let vb: string | number;
       if (sortCol === "time" && allMarkets) {
-        // Sort by estimated start time from EET
         const startA = getEstimatedStart(allMarkets.get(a.ticker) ?? null, a.ticker);
         const startB = getEstimatedStart(allMarkets.get(b.ticker) ?? null, b.ticker);
         va = startA?.getTime() ?? Infinity;
@@ -605,12 +620,13 @@ function GameList({
         va = getSortValue(a, sortCol);
         vb = getSortValue(b, sortCol);
       }
-      const cmp = typeof va === "number" && typeof vb === "number"
-        ? va - vb
-        : String(va).localeCompare(String(vb));
+      const cmp =
+        typeof va === "number" && typeof vb === "number"
+          ? va - vb
+          : String(va).localeCompare(String(vb));
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [events, sortCol, sortDir, allMarkets]);
+  }, [events, sortCol, sortDir, allMarkets, isPinned]);
 
   return (
     <div className="bg-bg-raised border border-border rounded-lg overflow-hidden">
@@ -630,17 +646,29 @@ function GameList({
             </tr>
           </thead>
           <tbody>
-            {sortedEvents.map((e) => (
-              <GameRow
-                key={e.ticker}
-                event={e}
-                showLeague={showLeague}
-                isExpanded={expandedEvent === e.ticker}
-                positionTickers={positionTickers}
-                onToggle={() => onToggleExpand(e.ticker)}
-                onMarketClick={onMarketClick}
-              />
-            ))}
+            {sortedEvents.map((e, i) => {
+              const showSeparator =
+                i > 0 && isPinned(sortedEvents[i - 1].ticker) && !isPinned(e.ticker);
+              return (
+                <Fragment key={e.ticker}>
+                  {showSeparator && (
+                    <tr>
+                      <td colSpan={showLeague ? 7 : 6} className="h-px bg-accent/20" />
+                    </tr>
+                  )}
+                  <GameRow
+                    event={e}
+                    showLeague={showLeague}
+                    isExpanded={expandedEvent === e.ticker}
+                    positionTickers={positionTickers}
+                    isPinned={isPinned(e.ticker)}
+                    onTogglePin={() => togglePin(e.ticker)}
+                    onToggle={() => onToggleExpand(e.ticker)}
+                    onMarketClick={onMarketClick}
+                  />
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -655,6 +683,8 @@ function GameRow({
   showLeague,
   isExpanded,
   positionTickers,
+  isPinned,
+  onTogglePin,
   onToggle,
   onMarketClick,
 }: {
@@ -662,6 +692,8 @@ function GameRow({
   showLeague: boolean;
   isExpanded: boolean;
   positionTickers: Set<string>;
+  isPinned: boolean;
+  onTogglePin: () => void;
   onToggle: () => void;
   onMarketClick: (m: MonitorMarket) => void;
 }) {
@@ -689,16 +721,23 @@ function GameRow({
   return (
     <>
       <tr
-        className={`border-b border-border-subtle hover:bg-bg-surface-hover cursor-pointer ${
+        className={`group border-b border-border-subtle hover:bg-bg-surface-hover cursor-pointer ${
           isExpanded ? "bg-accent/5" : ""
         }`}
         onClick={onToggle}
       >
-        <td className="px-4 py-2">
-          <span
-            className={`text-xs transition-transform inline-block ${isExpanded ? "rotate-90" : ""}`}
-          >
-            &#9654;
+        <td className="px-2 py-2">
+          <span className="inline-flex items-center gap-1">
+            <button
+              onClick={(e) => { e.stopPropagation(); onTogglePin(); }}
+              className={`text-xs leading-none ${isPinned ? "text-accent" : "text-transparent group-hover:text-fg-subtle hover:!text-accent"} transition-colors`}
+              title={isPinned ? "Unpin" : "Pin to top"}
+            >
+              &#9650;
+            </button>
+            <span className={`text-xs transition-transform inline-block ${isExpanded ? "rotate-90" : ""}`}>
+              &#9654;
+            </span>
           </span>
         </td>
         {showLeague && (
