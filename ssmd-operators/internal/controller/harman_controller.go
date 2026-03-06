@@ -205,7 +205,7 @@ func (r *HarmanReconciler) constructDeployment(harman *ssmdv1alpha1.Harman) *app
 		{Name: "EXCHANGE_TYPE", Value: string(harman.Spec.Exchange.Type)},
 		{Name: "EXCHANGE_ENVIRONMENT", Value: string(harman.Spec.Exchange.Environment)},
 		{Name: "EXCHANGE_BASE_URL", Value: baseURL},
-		{Name: "RUST_LOG", Value: "ssmd_harman=info,harman=info"},
+		{Name: "RUST_LOG", Value: "warn,ssmd_harman=warn,harman=warn"},
 		// Database secret
 		{
 			Name: "DATABASE_URL",

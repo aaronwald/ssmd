@@ -451,7 +451,7 @@ func (r *ConnectorReconciler) constructDeployment(ctx context.Context, connector
 
 	// Build environment variables
 	env := []corev1.EnvVar{
-		{Name: "RUST_LOG", Value: "info,ssmd_connector=debug"},
+		{Name: "RUST_LOG", Value: "warn,ssmd_connector=warn"},
 	}
 
 	// Add NATS URL

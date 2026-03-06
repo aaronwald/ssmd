@@ -456,7 +456,7 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 
 	// Build environment variables
 	env := []corev1.EnvVar{
-		{Name: "RUST_LOG", Value: "info,ssmd_archiver=debug"},
+		{Name: "RUST_LOG", Value: "warn,ssmd_archiver=warn"},
 	}
 
 	// Build volumes - always include config volume
