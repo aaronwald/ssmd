@@ -65,6 +65,10 @@ type SnapSpec struct {
 	// Resources configures CPU/memory for the snap pod
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// EnvVars specifies additional environment variables to set on the snap pod
+	// +optional
+	EnvVars []corev1.EnvVar `json:"envVars,omitempty"`
 }
 
 // SnapPhase represents the current phase of the Snap

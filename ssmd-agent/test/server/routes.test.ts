@@ -5,7 +5,7 @@ import { createRouter, API_VERSION, type RouteContext } from "../../src/server/r
 const mockDb = {} as RouteContext["db"];
 
 function createTestRouter() {
-  const ctx: RouteContext = { dataDir: "/tmp/test-data", db: mockDb };
+  const ctx: RouteContext = { dataDir: "/tmp/test-data", db: mockDb, harmanPools: new Map() };
   return createRouter(ctx);
 }
 

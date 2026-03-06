@@ -34,6 +34,7 @@ function createTestRouter(authResult?: AuthResult | null) {
   const ctx: RouteContext = {
     dataDir: "/tmp/test-data",
     db: mockDb,
+    harmanPools: new Map(),
     authOverride: (_apiKey: string | null, _db: Database) =>
       Promise.resolve(authResult ?? mockAuth()),
   };

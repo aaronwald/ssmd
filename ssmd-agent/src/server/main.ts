@@ -3,6 +3,7 @@ import { createServer } from "./mod.ts";
 import { initDuckDB, closeDuckDB } from "../lib/duckdb/mod.ts";
 
 const port = parseInt(Deno.env.get("PORT") ?? "8080");
+const internalPort = Deno.env.get("INTERNAL_PORT") ? parseInt(Deno.env.get("INTERNAL_PORT")!) : undefined;
 const dataDir = Deno.env.get("DATA_DIR") ?? "/data";
 const databaseUrl = Deno.env.get("DATABASE_URL");
 const redisUrl = Deno.env.get("REDIS_URL");
@@ -37,7 +38,7 @@ await initDuckDB().catch((err) => {
   console.error("DuckDB init failed (queries will be unavailable):", err.message);
 });
 
-const server = createServer({ port, dataDir, databaseUrl, redisUrl, harmanDatabaseUrls });
+const server = createServer({ port, dataDir, databaseUrl, redisUrl, harmanDatabaseUrls, internalPort });
 
 // Handle shutdown gracefully
 Deno.addSignalListener("SIGINT", async () => {

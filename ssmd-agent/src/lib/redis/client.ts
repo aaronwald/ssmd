@@ -13,10 +13,16 @@ export async function getRedis(): Promise<Redis> {
   const redisUrl = Deno.env.get("REDIS_URL") ?? "redis://localhost:6379";
   const url = new URL(redisUrl);
 
-  redisClient = await connect({
+  const options: { hostname: string; port: number; password?: string } = {
     hostname: url.hostname,
     port: parseInt(url.port || "6379"),
-  });
+  };
+
+  if (url.password) {
+    options.password = decodeURIComponent(url.password);
+  }
+
+  redisClient = await connect(options);
 
   return redisClient;
 }

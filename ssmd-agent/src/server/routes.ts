@@ -124,7 +124,7 @@ export interface AuthInfo {
 }
 
 type Handler = (req: Request, ctx: RouteContext) => Promise<Response>;
-type ApiSurface = "public" | "internal";
+export type ApiSurface = "public" | "internal";
 
 interface Route {
   method: string;
@@ -2950,8 +2950,11 @@ function extractApiKey(req: Request): string | null {
   return null;
 }
 
-// Router function
-export function createRouter(ctx: RouteContext): (req: Request) => Promise<Response> {
+// Private: builds a request handler from a route list
+function buildHandler(
+  routeList: Route[],
+  ctx: RouteContext
+): (req: Request) => Promise<Response> {
   // Initialize request log buffer for billing (only if real DB provided)
   let requestLogger: RequestLogBuffer | null = null;
   if (ctx.db && typeof ctx.db.insert === "function") {
@@ -2962,7 +2965,7 @@ export function createRouter(ctx: RouteContext): (req: Request) => Promise<Respo
   return async (req: Request) => {
     const url = new URL(req.url);
 
-    for (const r of routes) {
+    for (const r of routeList) {
       if (req.method !== r.method) continue;
 
       const match = r.pattern.exec(url);
@@ -3057,4 +3060,21 @@ export function createRouter(ctx: RouteContext): (req: Request) => Promise<Respo
 
     return json({ error: "Not found" }, 404);
   };
+}
+
+// Router function — all routes (backwards compatible)
+export function createRouter(ctx: RouteContext): (req: Request) => Promise<Response> {
+  return buildHandler(routes, ctx);
+}
+
+// Filtered router — only routes matching the given surface (plus always-included paths)
+export function createFilteredRouter(
+  ctx: RouteContext,
+  allowedSurface: ApiSurface
+): (req: Request) => Promise<Response> {
+  const alwaysInclude = new Set(["/health", "/version", "/metrics"]);
+  const filtered = routes.filter(
+    (r) => r.surface === allowedSurface || alwaysInclude.has(r.pattern.pathname)
+  );
+  return buildHandler(filtered, ctx);
 }

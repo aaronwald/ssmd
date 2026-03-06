@@ -193,6 +193,9 @@ func (r *SnapReconciler) constructDeployment(snap *ssmdv1alpha1.Snap) *appsv1.De
 		{Name: "SNAP_LISTEN_ADDR", Value: "0.0.0.0:9090"},
 	}
 
+	// Append user-specified env vars
+	env = append(env, snap.Spec.EnvVars...)
+
 	runAsNonRoot := true
 	runAsUser := int64(1000)
 	readOnlyRootFilesystem := true
