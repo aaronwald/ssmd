@@ -562,6 +562,70 @@ pub fn mock_exchange_status(
     }
 }
 
+/// Walk an order through valid state transitions to reach a target state.
+///
+/// Uses `update_order_state` which validates through `apply_event()`.
+/// Orders start in Pending state after creation via `create_bracket`/`enqueue_order`.
+/// For orders inserted directly via `insert_test_order` (at arbitrary states),
+/// use this only for subsequent transitions.
+#[allow(dead_code)]
+pub async fn walk_to_state(pool: &Pool, order_id: i64, session_id: i64, target: OrderState) {
+    let transitions: Vec<(OrderState, Option<&str>)> = match target {
+        OrderState::Pending => vec![], // already pending after creation
+        OrderState::Submitted => vec![(OrderState::Submitted, None)],
+        OrderState::Acknowledged => vec![
+            (OrderState::Submitted, None),
+            (OrderState::Acknowledged, Some("walk-exch-id")),
+        ],
+        OrderState::PartiallyFilled => vec![
+            (OrderState::Submitted, None),
+            (OrderState::Acknowledged, Some("walk-exch-id")),
+            (OrderState::PartiallyFilled, None),
+        ],
+        OrderState::Filled => vec![
+            (OrderState::Submitted, None),
+            (OrderState::Acknowledged, Some("walk-exch-id")),
+            (OrderState::Filled, None),
+        ],
+        OrderState::PendingCancel => vec![
+            (OrderState::Submitted, None),
+            (OrderState::Acknowledged, Some("walk-exch-id")),
+            (OrderState::PendingCancel, None),
+        ],
+        OrderState::Cancelled => vec![
+            // Pending → Cancelled is valid directly (CancelRequest, not yet on exchange)
+            (OrderState::Cancelled, None),
+        ],
+        OrderState::PendingAmend => vec![
+            (OrderState::Submitted, None),
+            (OrderState::Acknowledged, Some("walk-exch-id")),
+            (OrderState::PendingAmend, None),
+        ],
+        OrderState::PendingDecrease => vec![
+            (OrderState::Submitted, None),
+            (OrderState::Acknowledged, Some("walk-exch-id")),
+            (OrderState::PendingDecrease, None),
+        ],
+        OrderState::Rejected => vec![(OrderState::Rejected, None)],
+        OrderState::Expired => vec![
+            (OrderState::Submitted, None),
+            (OrderState::Expired, None),
+        ],
+        OrderState::Staged => panic!("walk_to_state: Staged is an initial state, not a target"),
+    };
+
+    for (state, exchange_id) in transitions {
+        db::update_order_state(pool, order_id, session_id, state, exchange_id, None, "test")
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "walk_to_state: failed transitioning order {} to {}: {}",
+                    order_id, state, e
+                )
+            });
+    }
+}
+
 /// Helper to build a mock ExchangeFill.
 pub fn mock_fill(
     order_id: &str,
