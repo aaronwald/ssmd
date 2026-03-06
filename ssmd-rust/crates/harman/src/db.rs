@@ -2963,13 +2963,17 @@ pub async fn cancel_staged_group_siblings(
     order_id: i64,
     session_id: i64,
 ) -> Result<u64, String> {
-    let client = pool
+    let mut client = pool
         .get()
         .await
         .map_err(|e| format!("pool error: {}", e))?;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("begin tx: {}", e))?;
 
     // Find the group_id for this order
-    let row = client
+    let row = tx
         .query_opt(
             "SELECT group_id FROM prediction_orders WHERE id = $1 AND session_id = $2",
             &[&order_id, &session_id],
@@ -2987,34 +2991,41 @@ pub async fn cancel_staged_group_siblings(
         None => return Ok(0), // Not part of a group
     };
 
-    // Cancel all staged siblings in the same group
-    let cancelled = client
-        .execute(
+    // Validate Staged→Cancelled through state machine
+    let _ = validate_transition(OrderState::Staged, OrderState::Cancelled)
+        .map_err(|e| format!("cannot cancel staged siblings: {}", e))?;
+
+    // Cancel all staged siblings, returning their IDs for audit
+    let cancelled_rows = tx
+        .query(
             "UPDATE prediction_orders SET state = 'cancelled', cancel_reason = 'exchange_cancel' \
-             WHERE group_id = $1 AND session_id = $2 AND state = 'staged'",
+             WHERE group_id = $1 AND session_id = $2 AND state = 'staged' \
+             RETURNING id",
             &[&group_id, &session_id],
         )
         .await
         .map_err(|e| format!("cancel staged siblings: {}", e))?;
 
-    if cancelled > 0 {
-        // Insert audit log entries for the cancelled staged orders
-        client
-            .execute(
-                "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
-                 SELECT id, 'staged', 'cancelled', 'parent_terminal', 'ws_event' \
-                 FROM prediction_orders \
-                 WHERE group_id = $1 AND session_id = $2 AND state = 'cancelled' AND cancel_reason = 'exchange_cancel'",
-                &[&group_id, &session_id],
-            )
-            .await
-            .map_err(|e| format!("audit staged cancels: {}", e))?;
+    let cancelled = cancelled_rows.len() as u64;
 
+    // Insert audit log entries for each cancelled order (using exact IDs from RETURNING)
+    for row in &cancelled_rows {
+        let cancelled_id: i64 = row.get("id");
+        tx.execute(
+            "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+             VALUES ($1, 'staged', 'cancelled', 'cancel_request', 'ws_event')",
+            &[&cancelled_id],
+        )
+        .await
+        .map_err(|e| format!("audit staged cancel {}: {}", cancelled_id, e))?;
+    }
+
+    if cancelled > 0 {
         info!(group_id, cancelled, "cancelled staged group siblings");
     }
 
     // Finalize group if all legs are terminal
-    let all_terminal_row = client
+    let all_terminal_row = tx
         .query_one(
             "SELECT COUNT(*) FILTER (WHERE state NOT IN ('filled', 'cancelled', 'rejected', 'expired')) AS open_count \
              FROM prediction_orders WHERE group_id = $1 AND session_id = $2",
@@ -3025,7 +3036,7 @@ pub async fn cancel_staged_group_siblings(
 
     let open_count: i64 = all_terminal_row.get("open_count");
     if open_count == 0 {
-        let any_filled = client
+        let any_filled = tx
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM prediction_orders WHERE group_id = $1 AND session_id = $2 AND state = 'filled') AS has_fill",
                 &[&group_id, &session_id],
@@ -3039,17 +3050,17 @@ pub async fn cancel_staged_group_siblings(
             "cancelled"
         };
 
-        client
-            .execute(
-                "UPDATE order_groups SET state = $1 WHERE id = $2",
-                &[&final_state, &group_id],
-            )
-            .await
-            .map_err(|e| format!("finalize group: {}", e))?;
+        tx.execute(
+            "UPDATE order_groups SET state = $1 WHERE id = $2",
+            &[&final_state, &group_id],
+        )
+        .await
+        .map_err(|e| format!("finalize group: {}", e))?;
 
         info!(group_id, state = final_state, "group finalized after staged cancel");
     }
 
+    tx.commit().await.map_err(|e| format!("commit: {}", e))?;
     Ok(cancelled)
 }
 
