@@ -1627,23 +1627,24 @@ pub async fn atomic_cancel_order(
     let current_state_str: String = row.get("state");
     let current_state = parse_state(&current_state_str);
 
-    // Only cancel if in cancellable state
-    if !matches!(
-        current_state,
-        OrderState::Pending | OrderState::Submitted | OrderState::Acknowledged | OrderState::PartiallyFilled
-    ) {
-        return Err(format!(
-            "cannot cancel order in {} state",
-            current_state
-        ));
-    }
+    // Determine target state based on whether order is on the exchange
+    let target = if current_state == OrderState::Pending {
+        OrderState::Cancelled
+    } else {
+        OrderState::PendingCancel
+    };
+
+    // Validate through state machine
+    let _ = validate_transition(current_state, target)
+        .map_err(|e| format!("cannot cancel order in {} state: {}", current_state, e))?;
 
     let cancel_str = cancel_reason.to_string();
+    let target_str = target.to_string();
 
-    // Update state to PendingCancel
+    // Update state
     tx.execute(
-        "UPDATE prediction_orders SET state = 'pending_cancel', cancel_reason = $1 WHERE id = $2",
-        &[&cancel_str, &order_id],
+        "UPDATE prediction_orders SET state = $1, cancel_reason = $2 WHERE id = $3",
+        &[&target_str, &cancel_str, &order_id],
     )
     .await
     .map_err(|e| format!("update state: {}", e))?;
@@ -1656,10 +1657,14 @@ pub async fn atomic_cancel_order(
     .await
     .map_err(|e| format!("enqueue cancel: {}", e))?;
 
+    let event_name = infer_event(current_state, target)
+        .map(|e| e.to_string())
+        .unwrap_or_else(|_| "cancel_request".to_string());
+
     // Audit log
     tx.execute(
-        "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, 'pending_cancel', 'cancel_request', 'api')",
-        &[&order_id, &current_state_str],
+        "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, $3, $4, $5)",
+        &[&order_id, &current_state_str, &target_str, &event_name, &"api"],
     )
     .await
     .map_err(|e| format!("insert audit: {}", e))?;
@@ -1711,16 +1716,9 @@ pub async fn atomic_amend_order(
     let current_state_str: String = row.get("state");
     let current_state = parse_state(&current_state_str);
 
-    // Only amend if in amendable state
-    if !matches!(
-        current_state,
-        OrderState::Acknowledged | OrderState::PartiallyFilled
-    ) {
-        return Err(format!(
-            "cannot amend order in {} state",
-            current_state
-        ));
-    }
+    // Validate through state machine
+    let _ = validate_transition(current_state, OrderState::PendingAmend)
+        .map_err(|e| format!("cannot amend order in {} state: {}", current_state, e))?;
 
     // Build metadata
     let mut metadata = serde_json::Map::new();
@@ -1802,16 +1800,9 @@ pub async fn atomic_decrease_order(
     let quantity: Decimal = row.get("quantity");
     let filled_quantity: Decimal = row.get("filled_quantity");
 
-    // Only decrease if in decreasable state
-    if !matches!(
-        current_state,
-        OrderState::Acknowledged | OrderState::PartiallyFilled
-    ) {
-        return Err(format!(
-            "cannot decrease order in {} state",
-            current_state
-        ));
-    }
+    // Validate through state machine
+    let _ = validate_transition(current_state, OrderState::PendingDecrease)
+        .map_err(|e| format!("cannot decrease order in {} state: {}", current_state, e))?;
 
     // Validate reduce_by doesn't exceed remaining quantity
     let remaining = quantity - filled_quantity;
