@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import type { MonitorMarket } from "@/lib/types";
+import type { MonitorMarket, Side, Action } from "@/lib/types";
 import { useInstance } from "@/lib/instance-context";
 import { CreateOrderFormControlled } from "./create-order-form-controlled";
+import { CreateBracketFormControlled } from "./create-bracket-form-controlled";
 
 const EXCHANGE_LABELS: Record<string, string> = {
   kalshi: "Kalshi",
@@ -16,10 +17,14 @@ const EXCHANGE_LABELS: Record<string, string> = {
 interface Props {
   market: MonitorMarket;
   onClose: () => void;
+  initialSide?: Side;
+  initialAction?: Action;
+  initialPrice?: string;
 }
 
-export function MarketSlideOver({ market, onClose }: Props) {
+export function MarketSlideOver({ market, onClose, initialSide, initialAction, initialPrice }: Props) {
   const { instances } = useInstance();
+  const [orderMode, setOrderMode] = useState<"single" | "bracket">("single");
   const bid = market.yes_bid ?? market.bid ?? market.best_bid ?? null;
   const ask = market.yes_ask ?? market.ask ?? market.best_ask ?? null;
   const last = market.last ?? (market.price != null ? Number(market.price) : null);
@@ -128,7 +133,29 @@ export function MarketSlideOver({ market, onClose }: Props) {
         <div className="p-4">
           {canOrder ? (
             <>
-              <h3 className="text-sm font-medium text-fg mb-3">Place Order</h3>
+              {/* Single / Bracket toggle */}
+              <div className="flex gap-1 mb-3 bg-bg-surface rounded-full p-0.5 border border-border">
+                <button
+                  onClick={() => setOrderMode("single")}
+                  className={`flex-1 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                    orderMode === "single"
+                      ? "bg-accent text-bg"
+                      : "text-fg-muted hover:text-fg"
+                  }`}
+                >
+                  Single
+                </button>
+                <button
+                  onClick={() => setOrderMode("bracket")}
+                  className={`flex-1 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                    orderMode === "bracket"
+                      ? "bg-accent text-bg"
+                      : "text-fg-muted hover:text-fg"
+                  }`}
+                >
+                  Bracket
+                </button>
+              </div>
               {compatible.length > 1 && (
                 <div className="mb-3">
                   <label className="block text-xs text-fg-muted mb-1">Instance</label>
@@ -143,14 +170,31 @@ export function MarketSlideOver({ market, onClose }: Props) {
                   </select>
                 </div>
               )}
-              <CreateOrderFormControlled
-                ticker={market.ticker}
-                yesBid={bid}
-                yesAsk={ask}
-                last={last}
-                instanceId={selectedInstance}
-                onSuccess={onClose}
-              />
+              {orderMode === "single" ? (
+                <CreateOrderFormControlled
+                  ticker={market.ticker}
+                  yesBid={bid}
+                  yesAsk={ask}
+                  last={last}
+                  instanceId={selectedInstance}
+                  onSuccess={onClose}
+                  initialSide={initialSide}
+                  initialAction={initialAction}
+                  initialPrice={initialPrice}
+                />
+              ) : (
+                <CreateBracketFormControlled
+                  ticker={market.ticker}
+                  yesBid={bid}
+                  yesAsk={ask}
+                  last={last}
+                  instanceId={selectedInstance}
+                  onSuccess={onClose}
+                  initialSide={initialSide}
+                  initialAction={initialAction}
+                  initialPrice={initialPrice}
+                />
+              )}
             </>
           ) : (
             <div className="rounded-lg border border-border bg-bg-surface p-4 text-center space-y-2">

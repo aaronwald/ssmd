@@ -133,8 +133,8 @@ export const amendOrder = (id: number, body: { new_price_dollars?: string; new_q
 export const decreaseOrder = (id: number, body: { reduce_by: string }) =>
   request<Order>(`/v1/orders/${id}/decrease`, { method: "POST", body: JSON.stringify(body) });
 
-export const createBracket = (req: CreateBracketRequest) =>
-  request<OrderGroup>("/v1/groups/bracket", { method: "POST", body: JSON.stringify(req) });
+export const createBracket = (req: CreateBracketRequest, instanceId?: string) =>
+  request<OrderGroup>("/v1/groups/bracket", { method: "POST", body: JSON.stringify(req) }, instanceId);
 
 export const createOco = (req: CreateOcoRequest) =>
   request<OrderGroup>("/v1/groups/oco", { method: "POST", body: JSON.stringify(req) });

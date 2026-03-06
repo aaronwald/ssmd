@@ -4,7 +4,7 @@ import { useState, useMemo, useCallback, useEffect, Fragment } from "react";
 import useSWR from "swr";
 import { useSeries, useEvents, useMarkets, usePositions } from "@/lib/hooks";
 import { getEvents, getMarkets } from "@/lib/api";
-import type { MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
+import type { MonitorSeries, MonitorEvent, MonitorMarket, Side, Action } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
 import { usePinnedEvents } from "@/lib/pinned-events";
 
@@ -277,9 +277,12 @@ export default function SportsPage() {
 }
 
 function SportsContent() {
-  const [slideOverMarket, setSlideOverMarket] = useState<MonitorMarket | null>(
-    null
-  );
+  const [slideOver, setSlideOver] = useState<{
+    market: MonitorMarket;
+    side: Side;
+    action: Action;
+    price: string;
+  } | null>(null);
   const [expandedEvent, setExpandedEvent] = useState<string | null>(null);
 
   // 1. Fetch all Sports series, sort by active events
@@ -420,7 +423,7 @@ function SportsContent() {
           isPinned={isPinned}
           togglePin={togglePin}
           onToggleExpand={toggleExpand}
-          onMarketClick={(m) => setSlideOverMarket(m)}
+          onQuickTrade={(m, side, action, price) => setSlideOver({ market: m, side, action, price })}
         />
       )}
       {selectedSeries && displayEvents.length === 0 && eventsLoaded && (
@@ -437,10 +440,13 @@ function SportsContent() {
       )}
 
       {/* Slide-over */}
-      {slideOverMarket && (
+      {slideOver && (
         <MarketSlideOver
-          market={slideOverMarket}
-          onClose={() => setSlideOverMarket(null)}
+          market={slideOver.market}
+          onClose={() => setSlideOver(null)}
+          initialSide={slideOver.side}
+          initialAction={slideOver.action}
+          initialPrice={slideOver.price}
         />
       )}
     </div>
@@ -573,7 +579,7 @@ function GameList({
   isPinned,
   togglePin,
   onToggleExpand,
-  onMarketClick,
+  onQuickTrade,
 }: {
   events: MonitorEvent[];
   showLeague: boolean;
@@ -582,7 +588,7 @@ function GameList({
   isPinned: (ticker: string) => boolean;
   togglePin: (ticker: string) => void;
   onToggleExpand: (eventTicker: string) => void;
-  onMarketClick: (m: MonitorMarket) => void;
+  onQuickTrade: (m: MonitorMarket, side: Side, action: Action, price: string) => void;
 }) {
   const [sortCol, setSortCol] = useState<SortColumn>("time");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
@@ -664,7 +670,7 @@ function GameList({
                     isPinned={isPinned(e.ticker)}
                     onTogglePin={() => togglePin(e.ticker)}
                     onToggle={() => onToggleExpand(e.ticker)}
-                    onMarketClick={onMarketClick}
+                    onQuickTrade={onQuickTrade}
                   />
                 </Fragment>
               );
@@ -686,7 +692,7 @@ function GameRow({
   isPinned,
   onTogglePin,
   onToggle,
-  onMarketClick,
+  onQuickTrade,
 }: {
   event: MonitorEvent;
   showLeague: boolean;
@@ -695,7 +701,7 @@ function GameRow({
   isPinned: boolean;
   onTogglePin: () => void;
   onToggle: () => void;
-  onMarketClick: (m: MonitorMarket) => void;
+  onQuickTrade: (m: MonitorMarket, side: Side, action: Action, price: string) => void;
 }) {
   // Always fetch markets for game state (SWR caches + dedupes)
   const { data: markets } = useMarkets(event.ticker);
@@ -774,8 +780,7 @@ function GameRow({
             return (
               <tr
                 key={m.ticker}
-                className="border-b border-border-subtle bg-bg-surface hover:bg-bg-surface-hover cursor-pointer"
-                onClick={() => onMarketClick(m)}
+                className="border-b border-border-subtle bg-bg-surface hover:bg-bg-surface-hover"
               >
                 <td className="px-4 py-1.5"></td>
                 <td className="px-4 py-1.5 pl-10" colSpan={showLeague ? 2 : 1}>
@@ -800,7 +805,38 @@ function GameRow({
                 <td className="px-4 py-1.5 text-right font-mono text-xs">
                   {fmtInt(m.volume ?? null)}
                 </td>
-                <td className="px-4 py-1.5 text-fg-muted">&rarr;</td>
+                <td className="px-2 py-1.5">
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => onQuickTrade(m, "yes", "buy", ask != null ? ask.toFixed(2) : "")}
+                      className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green/10 text-green hover:bg-green/20 transition-colors"
+                      title="Buy Yes @ ask"
+                    >
+                      BY
+                    </button>
+                    <button
+                      onClick={() => onQuickTrade(m, "yes", "sell", bid != null ? bid.toFixed(2) : "")}
+                      className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-red/10 text-red hover:bg-red/20 transition-colors"
+                      title="Sell Yes @ bid"
+                    >
+                      SY
+                    </button>
+                    <button
+                      onClick={() => onQuickTrade(m, "no", "buy", bid != null ? (1 - bid).toFixed(2) : "")}
+                      className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green/10 text-green hover:bg-green/20 transition-colors"
+                      title="Buy No @ no ask"
+                    >
+                      BN
+                    </button>
+                    <button
+                      onClick={() => onQuickTrade(m, "no", "sell", ask != null ? (1 - ask).toFixed(2) : "")}
+                      className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-red/10 text-red hover:bg-red/20 transition-colors"
+                      title="Sell No @ no bid"
+                    >
+                      SN
+                    </button>
+                  </div>
+                </td>
               </tr>
             );
           })}

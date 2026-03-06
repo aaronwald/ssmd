@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { createOrder } from "@/lib/api";
 import type { Side, Action, TimeInForce } from "@/lib/types";
@@ -14,17 +14,26 @@ interface Props {
   last: number | null;
   instanceId?: string;
   onSuccess?: () => void;
+  initialSide?: Side;
+  initialAction?: Action;
+  initialPrice?: string;
 }
 
-export function CreateOrderFormControlled({ ticker, yesBid, yesAsk, last, instanceId, onSuccess }: Props) {
+export function CreateOrderFormControlled({ ticker, yesBid, yesAsk, last, instanceId, onSuccess, initialSide, initialAction, initialPrice }: Props) {
   const { mutate } = useSWRConfig();
-  const [side, setSide] = useState<Side>("yes");
-  const [action, setAction] = useState<Action>("buy");
+  const [side, setSide] = useState<Side>(initialSide ?? "yes");
+  const [action, setAction] = useState<Action>(initialAction ?? "buy");
   const [quantity, setQuantity] = useState("");
-  const [price, setPrice] = useState("");
+  const [price, setPrice] = useState(initialPrice ?? "");
   const [tif, setTif] = useState<TimeInForce>("gtc");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (initialSide) setSide(initialSide);
+    if (initialAction) setAction(initialAction);
+    if (initialPrice) setPrice(initialPrice);
+  }, [initialSide, initialAction, initialPrice]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
