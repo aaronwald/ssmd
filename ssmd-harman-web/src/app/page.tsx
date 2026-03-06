@@ -10,8 +10,18 @@ export default function Dashboard() {
   const { data: positions } = usePositions();
   const { data: info } = useInfo();
   const feed = info?.exchange ?? "kalshi";
-  const { data: snapMap, error: snapError } = useSnapMap(feed);
   const [hideZero, setHideZero] = useState(false);
+
+  // Collect all position tickers for targeted snap lookup
+  const positionTickers = useMemo(() => {
+    if (!positions) return undefined;
+    const tickers = new Set<string>();
+    for (const p of positions.local) tickers.add(p.ticker);
+    for (const p of positions.exchange) tickers.add(p.ticker);
+    return tickers.size > 0 ? Array.from(tickers) : undefined;
+  }, [positions]);
+
+  const { data: snapMap, error: snapError } = useSnapMap(feed, positionTickers);
 
   const filteredExchange = useMemo(() => {
     if (!positions) return [];

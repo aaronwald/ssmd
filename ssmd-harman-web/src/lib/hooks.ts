@@ -87,10 +87,13 @@ export function useRisk() {
   });
 }
 
-export function useSnapMap(feed: string = "kalshi") {
-  return useSWR(instanceKey(`snap-${feed}`), () => getSnapMap(feed), {
-    refreshInterval: REFRESH_INTERVAL,
-  });
+export function useSnapMap(feed: string, tickers: string[] | undefined) {
+  const tickerKey = tickers && tickers.length > 0 ? tickers.sort().join(",") : null;
+  return useSWR(
+    tickerKey ? instanceKey(`snap-${feed}-${tickerKey}`) : null,
+    () => getSnapMap(feed, tickers!),
+    { refreshInterval: REFRESH_INTERVAL },
+  );
 }
 
 // Monitor hierarchy hooks — global market data (not instance-scoped)

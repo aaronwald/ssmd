@@ -183,8 +183,10 @@ export const searchTickers = (q: string) =>
   request<{ tickers: string[]; degraded?: boolean }>(`/v1/tickers?q=${encodeURIComponent(q)}`);
 
 // Market data (snap) — returns normalized snapshots keyed by ticker
-export const getSnapMap = async (feed: string = "kalshi"): Promise<Map<string, NormalizedSnapshot>> => {
-  const raw = await request<SnapResponse>(`/v1/snap?feed=${encodeURIComponent(feed)}`);
+export const getSnapMap = async (feed: string, tickers: string[]): Promise<Map<string, NormalizedSnapshot>> => {
+  if (tickers.length === 0) return new Map();
+  const url = `/v1/snap?feed=${encodeURIComponent(feed)}&tickers=${encodeURIComponent(tickers.join(","))}`;
+  const raw = await request<SnapResponse>(url);
   const map = new Map<string, NormalizedSnapshot>();
   for (const s of raw.snapshots) {
     const ticker = s._ticker;

@@ -1723,8 +1723,8 @@ struct SnapQuery {
     tickers: Option<String>,
 }
 
-/// GET /v1/snap — proxy to data-ts snap endpoint for live market data.
-/// Caches for 30 seconds per feed.
+/// GET /v1/snap?tickers=X,Y — proxy to data-ts snap endpoint for live market data.
+/// Requires `tickers` parameter (no scan-all). Returns 400 if missing.
 async fn snap_handler(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SessionContext>,
@@ -1735,6 +1735,17 @@ async fn snap_handler(
     }
 
     let feed = query.feed.as_deref().unwrap_or(&state.exchange_type);
+
+    let tickers = match &query.tickers {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "tickers parameter is required"})),
+            )
+                .into_response();
+        }
+    };
 
     let base_url = match &state.auth_validate_url {
         Some(url) => url.replace("/v1/auth/validate", ""),
@@ -1747,10 +1758,7 @@ async fn snap_handler(
         }
     };
 
-    let mut url = format!("{}/v1/data/snap?feed={}", base_url, feed);
-    if let Some(tickers) = &query.tickers {
-        url.push_str(&format!("&tickers={}", tickers));
-    }
+    let url = format!("{}/v1/data/snap?feed={}&tickers={}", base_url, feed, tickers);
 
     let mut req = state.http_client.get(&url).timeout(Duration::from_secs(10));
     if let Ok(key) = std::env::var("DATA_TS_API_KEY") {
