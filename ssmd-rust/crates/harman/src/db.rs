@@ -293,6 +293,24 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 013_daily_loss_limit applied");
     }
 
+    // Check if 014 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '014_nullable_audit_session_id'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 014: {}", e))?;
+
+    if row.is_none() {
+        let migration_014 = include_str!("../migrations/014_nullable_audit_session_id.sql");
+        client
+            .batch_execute(migration_014)
+            .await
+            .map_err(|e| format!("migration 014 failed: {}", e))?;
+        info!("migration 014_nullable_audit_session_id applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
@@ -359,7 +377,7 @@ pub async fn batch_insert_audit(
                 warn!(
                     category = event.category,
                     action = %event.action,
-                    session_id = event.session_id,
+                    session_id = ?event.session_id,
                     "skipping audit event: {e:?}"
                 );
                 skipped += 1;

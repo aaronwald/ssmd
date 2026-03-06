@@ -9,7 +9,7 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub struct AuditEvent {
     pub event_id: Uuid,
-    pub session_id: i64,
+    pub session_id: Option<i64>,
     pub order_id: Option<i64>,
     pub category: &'static str,
     pub action: String,
@@ -58,7 +58,7 @@ impl AuditSender {
     ) {
         self.send(AuditEvent {
             event_id: Uuid::new_v4(),
-            session_id,
+            session_id: Some(session_id),
             order_id,
             category: "rest_call",
             action: action.to_string(),
@@ -75,7 +75,7 @@ impl AuditSender {
 
     pub fn ws_event(
         &self,
-        session_id: i64,
+        session_id: Option<i64>,
         order_id: Option<i64>,
         action: &str,
         request: Option<Value>,
@@ -108,7 +108,7 @@ impl AuditSender {
     ) {
         self.send(AuditEvent {
             event_id: Uuid::new_v4(),
-            session_id,
+            session_id: Some(session_id),
             order_id: Some(order_id),
             category: "fallback",
             action: action.to_string(),
@@ -133,7 +133,7 @@ impl AuditSender {
     ) {
         self.send(AuditEvent {
             event_id: Uuid::new_v4(),
-            session_id,
+            session_id: Some(session_id),
             order_id,
             category: "reconciliation",
             action: action.to_string(),
@@ -157,7 +157,7 @@ impl AuditSender {
     ) {
         self.send(AuditEvent {
             event_id: Uuid::new_v4(),
-            session_id,
+            session_id: Some(session_id),
             order_id: None,
             category: "risk",
             action: action.to_string(),

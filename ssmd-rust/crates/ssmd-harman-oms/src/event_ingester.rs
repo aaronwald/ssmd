@@ -116,10 +116,10 @@ impl EventIngester {
                     }
                 };
 
-                let session_id = order.as_ref().map(|o| o.session_id).unwrap_or(0);
+                let session_id_opt = order.as_ref().map(|o| o.session_id);
 
                 self.audit.ws_event(
-                    session_id,
+                    session_id_opt,
                     order.as_ref().map(|o| o.id),
                     "fill",
                     Some(serde_json::json!({
@@ -131,6 +131,14 @@ impl EventIngester {
                     })),
                     None,
                 );
+
+                // Fill import requires a concrete session_id.
+                // If the order is unknown (external fill), we can't import without a session.
+                let Some(session_id) = session_id_opt else {
+                    error!(exchange_order_id = %exchange_order_id, "fill for unknown order — no session to import into");
+                    return;
+                };
+
                 let fill = ExchangeFill {
                     trade_id,
                     order_id: exchange_order_id,
@@ -200,7 +208,7 @@ impl EventIngester {
                 {
                     Ok(Some(order)) => {
                         self.audit.ws_event(
-                            order.session_id,
+                            Some(order.session_id),
                             Some(order.id),
                             "order_update",
                             Some(serde_json::json!({
@@ -316,7 +324,7 @@ impl EventIngester {
                         // Unknown order — WS user_orders doesn't carry side/action/price/quantity,
                         // so we can't construct a full ExchangeOrder for the importer.
                         self.audit.ws_event(
-                            0,
+                            None,
                             None,
                             "order_update",
                             Some(serde_json::json!({
@@ -344,7 +352,7 @@ impl EventIngester {
             }
 
             ExchangeEvent::PositionUpdate { .. } => {
-                self.audit.ws_event(0, None, "position_update", None, None);
+                self.audit.ws_event(None, None, "position_update", None, None);
                 debug!("WS: position update (informational)");
             }
 
@@ -354,7 +362,7 @@ impl EventIngester {
                 settled_time,
             } => {
                 self.audit.ws_event(
-                    0,
+                    None,
                     None,
                     "market_settled",
                     Some(serde_json::json!({
@@ -374,14 +382,14 @@ impl EventIngester {
             }
 
             ExchangeEvent::Connected => {
-                self.audit.ws_event(0, None, "connected", None, None);
+                self.audit.ws_event(None, None, "connected", None, None);
                 info!("WS: connected");
                 self.ws_connected.store(true, Ordering::Relaxed);
             }
 
             ExchangeEvent::Disconnected { reason } => {
                 self.audit.ws_event(
-                    0, None, "disconnected", None,
+                    None, None, "disconnected", None,
                     Some(serde_json::json!({"reason": reason})),
                 );
                 error!(reason = %reason, "WS: disconnected — crashing pod for K8s restart + recovery");
