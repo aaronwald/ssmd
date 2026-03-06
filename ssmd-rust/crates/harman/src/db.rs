@@ -736,13 +736,8 @@ pub async fn update_order_state(
     let from_state: String = row.get("state");
 
     let state_str = new_state.to_string();
-    let cancel_str = cancel_reason.map(|r| match r {
-        CancelReason::UserRequested => "user_requested",
-        CancelReason::RiskLimitBreached => "risk_limit_breached",
-        CancelReason::Shutdown => "shutdown",
-        CancelReason::Expired => "expired",
-        CancelReason::ExchangeCancel => "exchange_cancel",
-    });
+    let cancel_str = cancel_reason.map(|r| r.to_string());
+    let cancel_ref = cancel_str.as_deref();
 
     tx.execute(
         "UPDATE prediction_orders SET state = $1, exchange_order_id = COALESCE($2, exchange_order_id), \
@@ -751,7 +746,7 @@ pub async fn update_order_state(
         &[
             &state_str,
             &exchange_order_id,
-            &cancel_str,
+            &cancel_ref,
             &order_id,
             &session_id,
         ],
@@ -1587,13 +1582,7 @@ pub async fn atomic_cancel_order(
         ));
     }
 
-    let cancel_str = match cancel_reason {
-        CancelReason::UserRequested => "user_requested",
-        CancelReason::RiskLimitBreached => "risk_limit_breached",
-        CancelReason::Shutdown => "shutdown",
-        CancelReason::Expired => "expired",
-        CancelReason::ExchangeCancel => "exchange_cancel",
-    };
+    let cancel_str = cancel_reason.to_string();
 
     // Update state to PendingCancel
     tx.execute(

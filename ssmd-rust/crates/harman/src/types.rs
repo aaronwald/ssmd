@@ -180,6 +180,18 @@ pub enum CancelReason {
     ExchangeCancel,
 }
 
+impl std::fmt::Display for CancelReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CancelReason::UserRequested => write!(f, "user_requested"),
+            CancelReason::RiskLimitBreached => write!(f, "risk_limit_breached"),
+            CancelReason::Shutdown => write!(f, "shutdown"),
+            CancelReason::Expired => write!(f, "expired"),
+            CancelReason::ExchangeCancel => write!(f, "exchange_cancel"),
+        }
+    }
+}
+
 /// Request to create an order
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderRequest {
