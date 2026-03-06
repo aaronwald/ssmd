@@ -14,8 +14,9 @@ use tracing::{debug, error, info, warn};
 
 use harman::audit::AuditSender;
 use harman::db;
-use harman::exchange::ExchangeEvent;
+use harman::exchange::{ExchangeAdapter, ExchangeEvent};
 use harman::fill_processor;
+use harman::settlement_recorder;
 use harman::state::OrderState;
 use harman::types::{CancelReason, ExchangeFill};
 
@@ -25,6 +26,7 @@ use crate::runner::PumpTrigger;
 /// Ingests WS events and writes to DB via shared processors.
 pub struct EventIngester {
     pool: Pool,
+    exchange: Arc<dyn ExchangeAdapter>,
     metrics: Arc<OmsMetrics>,
     audit: AuditSender,
     pump_trigger: PumpTrigger,
@@ -41,9 +43,16 @@ pub struct IngestResult {
 }
 
 impl EventIngester {
-    pub fn new(pool: Pool, metrics: Arc<OmsMetrics>, audit: AuditSender, pump_trigger: PumpTrigger) -> Self {
+    pub fn new(
+        pool: Pool,
+        exchange: Arc<dyn ExchangeAdapter>,
+        metrics: Arc<OmsMetrics>,
+        audit: AuditSender,
+        pump_trigger: PumpTrigger,
+    ) -> Self {
         Self {
             pool,
+            exchange,
             metrics,
             audit,
             pump_trigger,
@@ -388,13 +397,56 @@ impl EventIngester {
                     })),
                     None,
                 );
-                info!(
-                    ticker = %ticker,
-                    market_result = ?market_result,
-                    settled_time = %settled_time,
-                    "WS: market settled"
-                );
-                result.settlements_noted += 1;
+
+                // Check if any session holds an unsettled position for this ticker.
+                // If so, fetch full settlement data from REST and record it.
+                match db::sessions_with_unsettled_position(&self.pool, ticker).await {
+                    Ok(session_ids) if !session_ids.is_empty() => {
+                        info!(
+                            ticker = %ticker,
+                            market_result = ?market_result,
+                            sessions = ?session_ids,
+                            "WS: market settled — fetching settlement from REST"
+                        );
+
+                        match self.exchange.get_settlements(None).await {
+                            Ok(settlements) => {
+                                for session_id in &session_ids {
+                                    match settlement_recorder::record_settlements(
+                                        &self.pool,
+                                        *session_id,
+                                        &settlements,
+                                        "ws_settlement",
+                                    ).await {
+                                        Ok(count) => {
+                                            if count > 0 {
+                                                info!(
+                                                    session_id,
+                                                    count,
+                                                    ticker = %ticker,
+                                                    "recorded settlements from WS event"
+                                                );
+                                            }
+                                            result.settlements_noted += count;
+                                        }
+                                        Err(e) => {
+                                            error!(error = %e, ticker = %ticker, "failed to record settlements from WS event");
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, ticker = %ticker, "failed to fetch settlements from REST after WS event");
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        debug!(ticker = %ticker, "WS: market settled (no local position)");
+                    }
+                    Err(e) => {
+                        error!(error = %e, ticker = %ticker, "failed to check unsettled positions");
+                    }
+                }
             }
 
             ExchangeEvent::Connected => {

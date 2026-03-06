@@ -2672,6 +2672,33 @@ pub async fn get_settled_event_tickers(
     Ok(rows.iter().map(|r| r.get("event_ticker")).collect())
 }
 
+/// Find all session IDs that have fills for a given ticker and no settlement recorded.
+///
+/// Used by the WS event ingester to decide whether a MarketSettled event is relevant
+/// (i.e., we hold a position that needs settlement recording).
+pub async fn sessions_with_unsettled_position(
+    pool: &Pool,
+    ticker: &str,
+) -> Result<Vec<i64>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT DISTINCT session_id FROM fills f \
+             JOIN prediction_orders o ON f.order_id = o.id \
+             WHERE o.ticker = $1 \
+               AND o.session_id NOT IN (SELECT session_id FROM settlements WHERE ticker = $1)",
+            &[&ticker],
+        )
+        .await
+        .map_err(|e| format!("sessions_with_unsettled_position: {}", e))?;
+
+    Ok(rows.iter().map(|r| r.get("session_id")).collect())
+}
+
 /// List all settlements for a session.
 pub async fn list_settlements(
     pool: &Pool,
