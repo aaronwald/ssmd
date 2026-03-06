@@ -25,8 +25,8 @@ interface Props {
 export function MarketSlideOver({ market, onClose, initialSide, initialAction, initialPrice }: Props) {
   const { instances } = useInstance();
   const [orderMode, setOrderMode] = useState<"single" | "bracket">("single");
-  const bid = market.yes_bid ?? market.bid ?? market.best_bid ?? null;
-  const ask = market.yes_ask ?? market.ask ?? market.best_ask ?? null;
+  const yesBid = market.yes_bid ?? market.bid ?? market.best_bid ?? null;
+  const yesAsk = market.yes_ask ?? market.ask ?? market.best_ask ?? null;
   const last = market.last ?? (market.price != null ? Number(market.price) : null);
   const fmtPrice = (v: number | null) => v != null ? `$${v.toFixed(2)}` : "—";
 
@@ -64,12 +64,12 @@ export function MarketSlideOver({ market, onClose, initialSide, initialAction, i
           </div>
           <div className="grid grid-cols-3 gap-3 text-center">
             <div>
-              <div className="text-xs text-fg-muted">Bid</div>
-              <div className="font-mono text-sm text-fg">{fmtPrice(bid)}</div>
+              <div className="text-xs text-fg-muted">Yes Bid</div>
+              <div className="font-mono text-sm text-fg">{fmtPrice(yesBid)}</div>
             </div>
             <div>
-              <div className="text-xs text-fg-muted">Ask</div>
-              <div className="font-mono text-sm text-fg">{fmtPrice(ask)}</div>
+              <div className="text-xs text-fg-muted">Yes Ask</div>
+              <div className="font-mono text-sm text-fg">{fmtPrice(yesAsk)}</div>
             </div>
             <div>
               <div className="text-xs text-fg-muted">Last</div>
@@ -173,8 +173,8 @@ export function MarketSlideOver({ market, onClose, initialSide, initialAction, i
               {orderMode === "single" ? (
                 <CreateOrderFormControlled
                   ticker={market.ticker}
-                  yesBid={bid}
-                  yesAsk={ask}
+                  yesBid={yesBid}
+                  yesAsk={yesAsk}
                   last={last}
                   instanceId={selectedInstance}
                   onSuccess={onClose}
@@ -185,8 +185,8 @@ export function MarketSlideOver({ market, onClose, initialSide, initialAction, i
               ) : (
                 <CreateBracketFormControlled
                   ticker={market.ticker}
-                  yesBid={bid}
-                  yesAsk={ask}
+                  yesBid={yesBid}
+                  yesAsk={yesAsk}
                   last={last}
                   instanceId={selectedInstance}
                   onSuccess={onClose}

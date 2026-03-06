@@ -62,6 +62,11 @@ export function CreateOrderFormControlled({ ticker, yesBid, yesAsk, last, instan
 
   const fmtPrice = (v: number | null) => v != null ? v.toFixed(2) : "—";
 
+  // Display prices flipped for No side (No bid = 1 - Yes ask, No ask = 1 - Yes bid)
+  const dispBid = side === "no" ? (yesAsk != null ? +(1 - yesAsk).toFixed(2) : null) : yesBid;
+  const dispAsk = side === "no" ? (yesBid != null ? +(1 - yesBid).toFixed(2) : null) : yesAsk;
+  const dispLast = side === "no" ? (last != null ? +(1 - last).toFixed(2) : null) : last;
+
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       {/* Ticker (read-only) */}
@@ -75,11 +80,12 @@ export function CreateOrderFormControlled({ ticker, yesBid, yesAsk, last, instan
         />
       </div>
 
-      {/* Bid/Ask context */}
+      {/* Bid/Ask context — flip for No side */}
       <div className="flex gap-4 text-xs text-fg-muted">
-        <span>Bid: <span className="font-mono text-fg">${fmtPrice(yesBid)}</span></span>
-        <span>Ask: <span className="font-mono text-fg">${fmtPrice(yesAsk)}</span></span>
-        <span>Last: <span className="font-mono text-fg">${fmtPrice(last)}</span></span>
+        <span>Bid: <span className="font-mono text-fg">${fmtPrice(dispBid)}</span></span>
+        <span>Ask: <span className="font-mono text-fg">${fmtPrice(dispAsk)}</span></span>
+        <span>Last: <span className="font-mono text-fg">${fmtPrice(dispLast)}</span></span>
+        <span className="text-fg-subtle">({side === "yes" ? "Yes" : "No"} side)</span>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -129,26 +135,26 @@ export function CreateOrderFormControlled({ ticker, yesBid, yesAsk, last, instan
           className="w-full rounded-md border border-border bg-bg-surface px-3 py-1.5 text-sm font-mono text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"
           placeholder="0.55"
         />
-        {/* Quick-fill price buttons */}
+        {/* Quick-fill price buttons — use side-adjusted prices */}
         <div className="flex gap-2 mt-1.5">
-          {yesBid != null && (
-            <button type="button" onClick={() => setPrice(yesBid.toFixed(2))} className="text-xs text-accent hover:underline">
-              Bid ${yesBid.toFixed(2)}
+          {dispBid != null && (
+            <button type="button" onClick={() => setPrice(dispBid.toFixed(2))} className="text-xs text-accent hover:underline">
+              Bid ${dispBid.toFixed(2)}
             </button>
           )}
-          {yesAsk != null && (
-            <button type="button" onClick={() => setPrice(yesAsk.toFixed(2))} className="text-xs text-accent hover:underline">
-              Ask ${yesAsk.toFixed(2)}
+          {dispAsk != null && (
+            <button type="button" onClick={() => setPrice(dispAsk.toFixed(2))} className="text-xs text-accent hover:underline">
+              Ask ${dispAsk.toFixed(2)}
             </button>
           )}
-          {yesBid != null && yesAsk != null && (
-            <button type="button" onClick={() => setPrice(((yesBid + yesAsk) / 2).toFixed(2))} className="text-xs text-accent hover:underline">
-              Mid ${((yesBid + yesAsk) / 2).toFixed(2)}
+          {dispBid != null && dispAsk != null && (
+            <button type="button" onClick={() => setPrice(((dispBid + dispAsk) / 2).toFixed(2))} className="text-xs text-accent hover:underline">
+              Mid ${((dispBid + dispAsk) / 2).toFixed(2)}
             </button>
           )}
-          {last != null && (
-            <button type="button" onClick={() => setPrice(last.toFixed(2))} className="text-xs text-accent hover:underline">
-              Last ${last.toFixed(2)}
+          {dispLast != null && (
+            <button type="button" onClick={() => setPrice(dispLast.toFixed(2))} className="text-xs text-accent hover:underline">
+              Last ${dispLast.toFixed(2)}
             </button>
           )}
         </div>
