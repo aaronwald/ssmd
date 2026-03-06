@@ -76,6 +76,7 @@ async fn build_test_state(
         environment: "demo".to_string(),
         cf_jwks_url: None,
         cf_aud: None,
+        cf_iss: None,
         cf_jwks: tokio::sync::RwLock::new(None),
         data_ts_api_key: None,
         data_ts_base_url: None,
