@@ -21,6 +21,9 @@ def _get_client(cfg: Config) -> httpx.Client:
     }
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
+    if cfg.cf_client_id and cfg.cf_client_secret:
+        headers["CF-Access-Client-Id"] = cfg.cf_client_id
+        headers["CF-Access-Client-Secret"] = cfg.cf_client_secret
     return httpx.Client(
         base_url=cfg.api_url,
         headers=headers,
@@ -37,9 +40,12 @@ def api_get(cfg: Config, path: str, params: dict[str, Any] | None = None) -> dic
             resp = client.get(path, params=params)
             resp.raise_for_status()
             return resp.json()
+    except httpx.HTTPStatusError as e:
+        logger.error("API GET %s returned %d: %s", path, e.response.status_code, e.response.text[:200])
+        return {"error": f"API returned {e.response.status_code}: {e.response.text[:200]}"}
     except httpx.HTTPError as e:
         logger.error("API GET %s failed: %s", path, e)
-        return {"error": "API request failed"}
+        return {"error": f"API request failed: {e}"}
 
 
 def api_post(cfg: Config, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -51,9 +57,12 @@ def api_post(cfg: Config, path: str, json_body: dict[str, Any] | None = None) ->
             resp = client.post(path, json=json_body)
             resp.raise_for_status()
             return resp.json()
+    except httpx.HTTPStatusError as e:
+        logger.error("API POST %s returned %d: %s", path, e.response.status_code, e.response.text[:200])
+        return {"error": f"API returned {e.response.status_code}: {e.response.text[:200]}"}
     except httpx.HTTPError as e:
         logger.error("API POST %s failed: %s", path, e)
-        return {"error": "API request failed"}
+        return {"error": f"API request failed: {e}"}
 
 
 def lookup_markets(cfg: Config, ids: list[str], feed: str | None = None) -> list[dict[str, Any]]:

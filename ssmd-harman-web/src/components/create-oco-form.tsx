@@ -79,7 +79,12 @@ export function CreateOcoForm() {
           <select value={l2Tif} onChange={(e) => setL2Tif(e.target.value as TimeInForce)} className={selectCls}><option value="gtc">GTC</option><option value="ioc">IOC</option></select>
         </div>
       </div>
-      {error && <p className="text-xs text-red">{error}</p>}
+      {error && (
+        <div className="rounded-md border border-red bg-red/10 px-3 py-2">
+          <p className="text-sm font-medium text-red">Order failed</p>
+          <p className="text-xs text-red/80 mt-0.5">{error}</p>
+        </div>
+      )}
       <button type="submit" disabled={submitting} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-fg hover:bg-accent-hover transition-colors disabled:opacity-50">
         {submitting ? "Submitting..." : "Create OCO"}
       </button>

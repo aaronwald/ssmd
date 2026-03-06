@@ -2602,8 +2602,8 @@ route("POST", "/v1/chat/completions", async (req, ctx) => {
 
 // ============================================================
 // Harman Admin Routes — sessions, orders, fills, audit, timeline
-// All require admin:read scope. Uses a separate postgres connection
-// (HARMAN_DATABASE_URL) for harman tables in the harman database.
+// All require admin:read scope. Exposed on public surface (API key auth).
+// Uses a separate postgres connection (HARMAN_DATABASE_URL) for harman tables.
 // ============================================================
 
 route("GET", "/v1/harman/sessions", async (_req, ctx) => {
@@ -2648,7 +2648,7 @@ route("GET", "/v1/harman/sessions", async (_req, ctx) => {
 
   const merged = results.flat().sort((a, b) => a.id - b.id);
   return json({ sessions: merged });
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 route("GET", "/v1/harman/sessions/:id/orders", async (req, ctx) => {
   if (!ctx.harmanPools || ctx.harmanPools.size === 0) return json({ error: "Harman database not configured" }, 503);
@@ -2681,7 +2681,7 @@ route("GET", "/v1/harman/sessions/:id/orders", async (req, ctx) => {
     LIMIT ${limit}
   `;
   return json({ orders: rows });
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 route("GET", "/v1/harman/sessions/:id/fills", async (req, ctx) => {
   if (!ctx.harmanPools || ctx.harmanPools.size === 0) return json({ error: "Harman database not configured" }, 503);
@@ -2712,7 +2712,7 @@ route("GET", "/v1/harman/sessions/:id/fills", async (req, ctx) => {
     LIMIT ${limit}
   `;
   return json({ fills: rows });
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 route("GET", "/v1/harman/sessions/:id/settlements", async (req, ctx) => {
   if (!ctx.harmanPools || ctx.harmanPools.size === 0) return json({ error: "Harman database not configured" }, 503);
@@ -2738,7 +2738,7 @@ route("GET", "/v1/harman/sessions/:id/settlements", async (req, ctx) => {
     ORDER BY created_at DESC
   `;
   return json({ settlements: rows });
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 route("GET", "/v1/harman/sessions/:id/audit", async (req, ctx) => {
   if (!ctx.harmanPools || ctx.harmanPools.size === 0) return json({ error: "Harman database not configured" }, 503);
@@ -2771,7 +2771,7 @@ route("GET", "/v1/harman/sessions/:id/audit", async (req, ctx) => {
     LIMIT ${limit}
   `;
   return json({ entries: rows });
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 route("GET", "/v1/harman/sessions/:id/exchange-audit", async (req, ctx) => {
   if (!ctx.harmanPools || ctx.harmanPools.size === 0) return json({ error: "Harman database not configured" }, 503);
@@ -2807,7 +2807,7 @@ route("GET", "/v1/harman/sessions/:id/exchange-audit", async (req, ctx) => {
     LIMIT ${limit}
   `;
   return json({ entries: rows });
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 route("GET", "/v1/harman/sessions/:id/risk", async (req, ctx) => {
   if (!ctx.harmanPools || ctx.harmanPools.size === 0) return json({ error: "Harman database not configured" }, 503);
@@ -2843,7 +2843,7 @@ route("GET", "/v1/harman/sessions/:id/risk", async (req, ctx) => {
       available: maxNotional - openNotional,
     },
   });
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 route("GET", "/v1/harman/orders/:id/timeline", async (req, ctx) => {
   if (!ctx.harmanPools || ctx.harmanPools.size === 0) return json({ error: "Harman database not configured" }, 503);
@@ -2925,7 +2925,7 @@ route("GET", "/v1/harman/orders/:id/timeline", async (req, ctx) => {
     fills,
     settlement: settlements[0] ?? null,
   });
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 // Helper to create JSON response
 function json(data: unknown, status = 200): Response {

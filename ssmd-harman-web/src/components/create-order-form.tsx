@@ -112,7 +112,12 @@ export function CreateOrderForm() {
           </select>
         </div>
       </div>
-      {error && <p className="text-xs text-red">{error}</p>}
+      {error && (
+        <div className="rounded-md border border-red bg-red/10 px-3 py-2">
+          <p className="text-sm font-medium text-red">Order failed</p>
+          <p className="text-xs text-red/80 mt-0.5">{error}</p>
+        </div>
+      )}
       <button
         type="submit"
         disabled={submitting}

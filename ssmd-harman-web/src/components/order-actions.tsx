@@ -90,7 +90,7 @@ export function OrderActions({ order }: { order: Order }) {
         />
         <button onClick={handleAmend} disabled={loading} className="text-xs text-green hover:text-green/80">OK</button>
         <button onClick={() => setMode("idle")} className="text-xs text-fg-muted hover:text-fg">X</button>
-        {error && <span className="text-xs text-red">{error}</span>}
+        {error && <span className="text-xs font-medium text-red bg-red/10 px-1.5 py-0.5 rounded">{error}</span>}
       </div>
     );
   }
@@ -107,7 +107,7 @@ export function OrderActions({ order }: { order: Order }) {
         />
         <button onClick={handleDecrease} disabled={loading} className="text-xs text-green hover:text-green/80">OK</button>
         <button onClick={() => setMode("idle")} className="text-xs text-fg-muted hover:text-fg">X</button>
-        {error && <span className="text-xs text-red">{error}</span>}
+        {error && <span className="text-xs font-medium text-red bg-red/10 px-1.5 py-0.5 rounded">{error}</span>}
       </div>
     );
   }
@@ -129,7 +129,7 @@ export function OrderActions({ order }: { order: Order }) {
           Decrease
         </button>
       )}
-      {error && <span className="text-xs text-red">{error}</span>}
+      {error && <span className="text-xs font-medium text-red bg-red/10 px-1.5 py-0.5 rounded">{error}</span>}
     </div>
   );
 }

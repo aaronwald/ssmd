@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 class Config:
     api_url: str = ""
     api_key: str = ""
+    cf_client_id: str = ""
+    cf_client_secret: str = ""
 
 
 def load_config() -> Config:
@@ -17,4 +19,6 @@ def load_config() -> Config:
     return Config(
         api_url=os.getenv("SSMD_API_URL", ""),
         api_key=os.getenv("SSMD_API_KEY", ""),
+        cf_client_id=os.getenv("SSMD_CF_CLIENT_ID", ""),
+        cf_client_secret=os.getenv("SSMD_CF_CLIENT_SECRET", ""),
     )
