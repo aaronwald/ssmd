@@ -462,13 +462,21 @@ async fn test_full_bracket_lifecycle_via_handle_group_on_fill() {
     assert_order_state(&pool, tp_order.id, OrderState::Pending).await.unwrap();
     assert_order_state(&pool, sl_order.id, OrderState::Pending).await.unwrap();
 
-    // Step 2: TP submitted and acknowledged
+    // Step 2: TP submitted and acknowledged (walk through valid transitions)
+    db::update_order_state(
+        &pool, tp_order.id, session_id, OrderState::Submitted,
+        None, None, "test",
+    ).await.unwrap();
     db::update_order_state(
         &pool, tp_order.id, session_id, OrderState::Acknowledged,
         Some("exch-gf9-tp"), None, "test",
     ).await.unwrap();
 
-    // Step 3: SL submitted and acknowledged
+    // Step 3: SL submitted and acknowledged (walk through valid transitions)
+    db::update_order_state(
+        &pool, sl_order.id, session_id, OrderState::Submitted,
+        None, None, "test",
+    ).await.unwrap();
     db::update_order_state(
         &pool, sl_order.id, session_id, OrderState::Acknowledged,
         Some("exch-gf9-sl"), None, "test",

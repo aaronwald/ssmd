@@ -1504,7 +1504,11 @@ async fn test_oco_fill_cancels_other() {
 
     let (group, orders) = app_state.oms.create_oco(session_id, leg1, leg2).await.unwrap();
 
-    // Simulate first leg acknowledged and filled
+    // Simulate first leg submitted, acknowledged and filled (walk through valid transitions)
+    db::update_order_state(
+        &pool, orders[0].id, session_id, OrderState::Submitted,
+        None, None, "test",
+    ).await.unwrap();
     db::update_order_state(
         &pool, orders[0].id, session_id, OrderState::Acknowledged,
         Some("exch-oco-1"), None, "test",
@@ -1514,7 +1518,11 @@ async fn test_oco_fill_cancels_other() {
         None, None, "test",
     ).await.unwrap();
 
-    // Second leg acknowledged (on exchange)
+    // Second leg submitted and acknowledged (walk through valid transitions)
+    db::update_order_state(
+        &pool, orders[1].id, session_id, OrderState::Submitted,
+        None, None, "test",
+    ).await.unwrap();
     db::update_order_state(
         &pool, orders[1].id, session_id, OrderState::Acknowledged,
         Some("exch-oco-2"), None, "test",
