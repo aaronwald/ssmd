@@ -19,8 +19,6 @@ import type {
   InfoResponse,
   MeResponse,
   AdminUsersResponse,
-  WatchlistItem,
-  WatchlistResponse,
   HarmanSession,
   ExchangeAuditEntry,
   OrderTimelineResponse,
@@ -253,13 +251,6 @@ export const getExchangeAudit = async (sessionId: number, instance?: string): Pr
   const res = await dataRequest<{ entries: ExchangeAuditEntry[] }>(`/harman/sessions/${sessionId}/exchange-audit${qs}`);
   return res.entries;
 };
-
-// Watchlist — batch snap lookup via data-ts
-export const fetchWatchlist = (items: WatchlistItem[]): Promise<WatchlistResponse> =>
-  dataRequest<WatchlistResponse>("/monitor/watchlist", {
-    method: "POST",
-    body: JSON.stringify({ items: items.map(({ ticker, exchange }) => ({ ticker, exchange })) }),
-  });
 
 // Secmaster endpoints (via data-ts)
 export const getSecmasterStats = () =>

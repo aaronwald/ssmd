@@ -706,20 +706,6 @@ export default function DocsPage() {
             curl={`curl "$HARMAN_URL/v1/search?q=bitcoin&limit=10" \\
   -H "Authorization: Bearer $HARMAN_TOKEN"`}
           />
-          <Endpoint
-            method="POST"
-            path="/v1/watchlist"
-            scope="harman:write"
-            description="Update the watchlist for the current session."
-            body={`{
-  "tickers": ["KXBTCD-26MAR28-B50000", "KXBTCD-26MAR28-B55000"]
-}`}
-            response={`{ "tickers": ["KXBTCD-26MAR28-B50000", "KXBTCD-26MAR28-B55000"] }`}
-            curl={`curl -X POST $HARMAN_URL/v1/watchlist \\
-  -H "Authorization: Bearer $HARMAN_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{"tickers":["KXBTCD-26MAR28-B50000","KXBTCD-26MAR28-B55000"]}'`}
-          />
         </Section>
 
         {/* ============================================================= */}

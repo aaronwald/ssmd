@@ -3,7 +3,6 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import useSWR from "swr";
 import { useSeries, useEvents, useMarkets, usePositions } from "@/lib/hooks";
-import { useWatchlist } from "@/lib/watchlist-context";
 import { getEvents, getMarkets } from "@/lib/api";
 import type { MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
@@ -376,9 +375,8 @@ function SportsContent() {
     }
   }, [displayEvents, expandedEvent]);
 
-  // Positions & watchlist
+  // Positions
   const { data: positions } = usePositions();
-  const watchlist = useWatchlist();
 
   const positionTickers = useMemo(() => {
     if (!positions) return new Set<string>();
@@ -387,14 +385,6 @@ function SportsContent() {
     for (const p of positions.local) set.add(p.ticker);
     return set;
   }, [positions]);
-
-  const toggleStar = (ticker: string, title?: string) => {
-    if (watchlist.has(ticker)) {
-      watchlist.remove(ticker);
-    } else {
-      watchlist.add({ ticker, exchange: "kalshi", title });
-    }
-  };
 
   const toggleExpand = (eventTicker: string) => {
     setExpandedEvent((prev) => (prev === eventTicker ? null : eventTicker));
@@ -423,8 +413,6 @@ function SportsContent() {
           showLeague={isTodayMode}
           expandedEvent={expandedEvent}
           positionTickers={positionTickers}
-          watchlist={watchlist}
-          toggleStar={toggleStar}
           onToggleExpand={toggleExpand}
           onMarketClick={(m) => setSlideOverMarket(m)}
         />
@@ -576,8 +564,6 @@ function GameList({
   showLeague,
   expandedEvent,
   positionTickers,
-  watchlist,
-  toggleStar,
   onToggleExpand,
   onMarketClick,
 }: {
@@ -585,8 +571,6 @@ function GameList({
   showLeague: boolean;
   expandedEvent: string | null;
   positionTickers: Set<string>;
-  watchlist: { has: (ticker: string) => boolean };
-  toggleStar: (ticker: string, title?: string) => void;
   onToggleExpand: (eventTicker: string) => void;
   onMarketClick: (m: MonitorMarket) => void;
 }) {
@@ -653,8 +637,6 @@ function GameList({
                 showLeague={showLeague}
                 isExpanded={expandedEvent === e.ticker}
                 positionTickers={positionTickers}
-                watchlist={watchlist}
-                toggleStar={toggleStar}
                 onToggle={() => onToggleExpand(e.ticker)}
                 onMarketClick={onMarketClick}
               />
@@ -673,8 +655,6 @@ function GameRow({
   showLeague,
   isExpanded,
   positionTickers,
-  watchlist,
-  toggleStar,
   onToggle,
   onMarketClick,
 }: {
@@ -682,8 +662,6 @@ function GameRow({
   showLeague: boolean;
   isExpanded: boolean;
   positionTickers: Set<string>;
-  watchlist: { has: (ticker: string) => boolean };
-  toggleStar: (ticker: string, title?: string) => void;
   onToggle: () => void;
   onMarketClick: (m: MonitorMarket) => void;
 }) {
@@ -762,15 +740,6 @@ function GameRow({
               >
                 <td className="px-4 py-1.5"></td>
                 <td className="px-4 py-1.5 pl-10" colSpan={showLeague ? 2 : 1}>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleStar(m.ticker, m.title);
-                    }}
-                    className={`text-sm mr-2 ${watchlist.has(m.ticker) ? "text-yellow" : "text-fg-subtle hover:text-yellow"}`}
-                  >
-                    {watchlist.has(m.ticker) ? "\u2605" : "\u2606"}
-                  </button>
                   <span className="font-mono text-xs">{teamName}</span>
                   {hasPosition && (
                     <span

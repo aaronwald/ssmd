@@ -5,30 +5,21 @@ import { createContext, useContext, useState, useEffect, type ReactNode } from "
 interface LayoutContextValue {
   navCollapsed: boolean;
   toggleNav: () => void;
-  watchlistOpen: boolean;
-  toggleWatchlist: () => void;
-  setWatchlistOpen: (open: boolean) => void;
 }
 
 const LayoutContext = createContext<LayoutContextValue>({
   navCollapsed: false,
   toggleNav: () => {},
-  watchlistOpen: true,
-  toggleWatchlist: () => {},
-  setWatchlistOpen: () => {},
 });
 
 export function LayoutProvider({ children }: { children: ReactNode }) {
   const [navCollapsed, setNavCollapsed] = useState(false);
-  const [watchlistOpen, setWatchlistOpen] = useState(true);
 
   // Restore from localStorage after mount
   useEffect(() => {
     try {
       const nav = localStorage.getItem("harman-nav-collapsed");
       if (nav === "true") setNavCollapsed(true);
-      const wl = localStorage.getItem("harman-watchlist-open");
-      if (wl === "false") setWatchlistOpen(false);
     } catch {}
   }, []);
 
@@ -38,19 +29,6 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
       try { localStorage.setItem("harman-nav-collapsed", String(next)); } catch {}
       return next;
     });
-  };
-
-  const toggleWatchlist = () => {
-    setWatchlistOpen((prev) => {
-      const next = !prev;
-      try { localStorage.setItem("harman-watchlist-open", String(next)); } catch {}
-      return next;
-    });
-  };
-
-  const setWatchlistOpenPersist = (open: boolean) => {
-    setWatchlistOpen(open);
-    try { localStorage.setItem("harman-watchlist-open", String(open)); } catch {}
   };
 
   // Keyboard shortcut: [ to toggle nav
@@ -65,7 +43,7 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <LayoutContext.Provider value={{ navCollapsed, toggleNav, watchlistOpen, toggleWatchlist, setWatchlistOpen: setWatchlistOpenPersist }}>
+    <LayoutContext.Provider value={{ navCollapsed, toggleNav }}>
       {children}
     </LayoutContext.Provider>
   );

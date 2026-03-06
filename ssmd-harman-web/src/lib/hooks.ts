@@ -1,6 +1,5 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
 import useSWR from "swr";
 import {
   getHealth,
@@ -20,7 +19,6 @@ import {
   getMe,
   getAdminUsers,
   getApiInstance,
-  fetchWatchlist,
   getHarmanSessions,
   getSessionOrders,
   getOrderTimeline,
@@ -30,8 +28,6 @@ import {
   getSecmasterPairs,
   getSecmasterConditions,
 } from "./api";
-import type { WatchlistItem } from "./types";
-
 const REFRESH_INTERVAL = 2500;
 const METADATA_REFRESH = 60000; // 60s for metadata (categories, series, events)
 const LIVE_REFRESH = 2500; // 2.5s for live prices (markets)
@@ -238,54 +234,3 @@ export function useSecmasterConditions(filters: {
   });
 }
 
-// Watchlist persistence (localStorage)
-const WATCHLIST_KEY = "harman-watchlist";
-
-export function useWatchlist() {
-  const [items, setItems] = useState<WatchlistItem[]>([]);
-
-  // Load from localStorage after mount (SSR-safe)
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(WATCHLIST_KEY);
-      if (raw) setItems(JSON.parse(raw));
-    } catch { /* ignore corrupt data */ }
-  }, []);
-
-  const persist = useCallback((next: WatchlistItem[]) => {
-    setItems(next);
-    try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next)); } catch { /* quota */ }
-  }, []);
-
-  const add = useCallback((item: WatchlistItem) => {
-    setItems((prev) => {
-      if (prev.some((i) => i.ticker === item.ticker)) return prev;
-      const next = [...prev, item];
-      try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next)); } catch { /* quota */ }
-      return next;
-    });
-  }, []);
-
-  const remove = useCallback((ticker: string) => {
-    setItems((prev) => {
-      const next = prev.filter((i) => i.ticker !== ticker);
-      try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next)); } catch { /* quota */ }
-      return next;
-    });
-  }, []);
-
-  const has = useCallback((ticker: string) => items.some((i) => i.ticker === ticker), [items]);
-
-  const clear = useCallback(() => persist([]), [persist]);
-
-  return { items, add, remove, has, clear };
-}
-
-// Watchlist live data (SWR)
-export function useWatchlistData(items: WatchlistItem[]) {
-  const key = items.length > 0 ? `data-watchlist-${items.map((i) => i.ticker).join(",")}` : null;
-  return useSWR(key, () => fetchWatchlist(items), {
-    refreshInterval: LIVE_REFRESH,
-    dedupingInterval: 1000,
-  });
-}

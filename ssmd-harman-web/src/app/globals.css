@@ -26,7 +26,6 @@
   --radius-lg: 12px;
   --width-nav-expanded: 220px;
   --width-nav-collapsed: 56px;
-  --width-watchlist: 288px;
 }
 
 @keyframes pulse-dot {

@@ -357,29 +357,6 @@ export interface OrderTimelineResponse {
   settlement: Settlement | null;
 }
 
-/** Watchlist types */
-export interface WatchlistItem {
-  ticker: string;
-  exchange: string;
-  title?: string;
-}
-
-export interface WatchlistResult {
-  ticker: string;
-  exchange: string;
-  yes_bid: number | null;
-  yes_ask: number | null;
-  last: number | null;
-  volume: number | null;
-  open_interest: number | null;
-  snap_at: number | null;
-}
-
-export interface WatchlistResponse {
-  results: WatchlistResult[];
-  count: number;
-}
-
 /** Secmaster types */
 export interface SecmasterStats {
   events: { total: number; by_status: Record<string, number>; by_category: Record<string, number> };

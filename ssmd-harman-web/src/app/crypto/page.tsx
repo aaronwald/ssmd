@@ -2,7 +2,6 @@
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useSeries, useEvents, useMarkets, usePositions } from "@/lib/hooks";
-import { useWatchlist } from "@/lib/watchlist-context";
 import type { MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
 
@@ -167,9 +166,8 @@ function CryptoContent() {
   // 5. Fetch markets for selected event
   const { data: markets } = useMarkets(selectedEvent);
 
-  // Positions & watchlist for overlay
+  // Positions
   const { data: positions } = usePositions();
-  const watchlist = useWatchlist();
 
   const positionTickers = useMemo(() => {
     if (!positions) return new Set<string>();
@@ -178,14 +176,6 @@ function CryptoContent() {
     for (const p of positions.local) set.add(p.ticker);
     return set;
   }, [positions]);
-
-  const toggleStar = (ticker: string, title?: string) => {
-    if (watchlist.has(ticker)) {
-      watchlist.remove(ticker);
-    } else {
-      watchlist.add({ ticker, exchange: "kalshi", title });
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -220,8 +210,6 @@ function CryptoContent() {
           eventTicker={selectedEvent}
           markets={markets}
           positionTickers={positionTickers}
-          watchlist={watchlist}
-          toggleStar={toggleStar}
           onMarketClick={(m) => setSlideOverMarket(m)}
         />
       )}
@@ -347,15 +335,11 @@ function StrikeTable({
   eventTicker,
   markets,
   positionTickers,
-  watchlist,
-  toggleStar,
   onMarketClick,
 }: {
   eventTicker: string;
   markets: MonitorMarket[];
   positionTickers: Set<string>;
-  watchlist: { has: (ticker: string) => boolean };
-  toggleStar: (ticker: string, title?: string) => void;
   onMarketClick: (m: MonitorMarket) => void;
 }) {
   // Sort by strike descending
@@ -374,7 +358,6 @@ function StrikeTable({
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-fg-muted border-b border-border">
-                <th className="px-4 py-2 w-6"></th>
                 <th className="px-4 py-2">Strike</th>
                 <th className="px-4 py-2 text-right">Bid</th>
                 <th className="px-4 py-2 text-right">Ask</th>
@@ -400,15 +383,6 @@ function StrikeTable({
                     }`}
                     onClick={() => onMarketClick(m)}
                   >
-                    <td className="px-4 py-1.5">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); toggleStar(m.ticker, m.title); }}
-                        className={`text-sm ${watchlist.has(m.ticker) ? "text-yellow" : "text-fg-subtle hover:text-yellow"}`}
-                        title={watchlist.has(m.ticker) ? "Remove from watchlist" : "Add to watchlist"}
-                      >
-                        {watchlist.has(m.ticker) ? "\u2605" : "\u2606"}
-                      </button>
-                    </td>
                     <td className="px-4 py-1.5 font-mono text-xs">
                       {fmtStrike(m.ticker)}
                       {hasPosition && (

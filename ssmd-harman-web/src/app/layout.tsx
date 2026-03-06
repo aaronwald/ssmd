@@ -2,12 +2,9 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { InstanceProvider } from "@/lib/instance-context";
 import { LayoutProvider } from "@/lib/layout-context";
-import { WatchlistProvider } from "@/lib/watchlist-context";
 import { InstanceGate } from "@/components/instance-gate";
 import { NavRail } from "@/components/nav-rail";
 import { StatsBar } from "@/components/stats-bar";
-import { WatchlistPanel } from "@/components/watchlist-panel";
-import { WatchlistToggle } from "@/components/watchlist-toggle";
 import "./globals.css";
 
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
@@ -24,7 +21,6 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased bg-bg text-fg`}>
         <InstanceProvider>
           <LayoutProvider>
-          <WatchlistProvider>
             <div className="flex h-screen overflow-hidden">
               {/* Left: NavRail */}
               <NavRail />
@@ -36,12 +32,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                   <InstanceGate>{children}</InstanceGate>
                 </main>
               </div>
-
-              {/* Right: WatchlistPanel */}
-              <WatchlistPanel />
-              <WatchlistToggle />
             </div>
-          </WatchlistProvider>
           </LayoutProvider>
         </InstanceProvider>
       </body>
