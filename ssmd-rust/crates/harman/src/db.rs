@@ -2422,18 +2422,30 @@ pub async fn activate_staged_order(
         .await
         .map_err(|e| format!("begin tx: {}", e))?;
 
-    let updated = tx
-        .execute(
-            "UPDATE prediction_orders SET state = 'pending' \
-             WHERE id = $1 AND session_id = $2 AND state = 'staged'",
+    // Read current state for validation
+    let row = tx
+        .query_opt(
+            "SELECT state FROM prediction_orders WHERE id = $1 AND session_id = $2 FOR UPDATE",
             &[&order_id, &session_id],
         )
         .await
-        .map_err(|e| format!("activate staged: {}", e))?;
+        .map_err(|e| format!("get state: {}", e))?;
 
-    if updated == 0 {
-        return Err(format!("order {} not in staged state", order_id));
-    }
+    let row = row.ok_or_else(|| format!("order {} not found", order_id))?;
+    let from_state_str: String = row.get("state");
+    let from = parse_state(&from_state_str);
+
+    // Validate through state machine (Staged→Pending)
+    let _ = validate_transition(from, OrderState::Pending)
+        .map_err(|e| format!("cannot activate order {}: {}", order_id, e))?;
+
+    tx.execute(
+        "UPDATE prediction_orders SET state = 'pending' \
+         WHERE id = $1 AND session_id = $2",
+        &[&order_id, &session_id],
+    )
+    .await
+    .map_err(|e| format!("activate staged: {}", e))?;
 
     tx.execute(
         "INSERT INTO order_queue (order_id, action, actor) VALUES ($1, 'submit', 'trigger')",
@@ -2444,8 +2456,8 @@ pub async fn activate_staged_order(
 
     tx.execute(
         "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
-         VALUES ($1, 'staged', 'pending', 'activate', 'trigger')",
-        &[&order_id],
+         VALUES ($1, $2, 'pending', 'activate', 'trigger')",
+        &[&order_id, &from_state_str],
     )
     .await
     .map_err(|e| format!("insert audit: {}", e))?;
@@ -3146,6 +3158,10 @@ async fn activate_staged_siblings(
     let mut activated = 0u64;
     for row in &staged_rows {
         let sibling_id: i64 = row.get("id");
+
+        // Validate Staged→Pending through state machine
+        let _ = validate_transition(OrderState::Staged, OrderState::Pending)
+            .map_err(|e| format!("cannot activate sibling {}: {}", sibling_id, e))?;
 
         tx.execute(
             "UPDATE prediction_orders SET state = 'pending' \
