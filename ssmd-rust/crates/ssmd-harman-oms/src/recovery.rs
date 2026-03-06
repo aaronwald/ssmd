@@ -88,7 +88,7 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                     "success", None,
                 );
                 // Use shared resolution logic
-                let new_state = match state::resolve_exchange_state(&order.state, &exchange_status.status) {
+                let new_state = match state::resolve_via_event(&order.state, &exchange_status.status) {
                     Some(s) => {
                         info!(
                             order_id = order.id,

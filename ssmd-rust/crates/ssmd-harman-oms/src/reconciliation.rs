@@ -401,7 +401,7 @@ async fn resolve_stale_orders(
                     "success", None,
                 );
                 let new_state =
-                    match state::resolve_exchange_state(&order.state, &exchange_status.status) {
+                    match state::resolve_via_event(&order.state, &exchange_status.status) {
                         Some(s) => Some(s),
                         None => {
                             if order.state == OrderState::PendingCancel

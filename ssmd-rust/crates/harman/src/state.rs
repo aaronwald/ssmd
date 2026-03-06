@@ -231,37 +231,41 @@ pub fn apply_event(
     }
 }
 
-/// Resolve a local order state against exchange state.
+/// Resolve a local order state against exchange state using the state machine.
 ///
-/// Returns `Some(new_state)` for deterministic resolutions, `None` when
-/// special handling is needed (e.g., PendingCancel + Resting requires
-/// re-sending the cancel). Used by both recovery and reconciliation.
-pub fn resolve_exchange_state(
+/// Maps exchange states to OrderEvents and validates through apply_event().
+/// Returns Some(new_state) for valid transitions that change state,
+/// None when no change is needed or special handling is required.
+pub fn resolve_via_event(
     local_state: &OrderState,
     exchange_state: &crate::types::ExchangeOrderState,
 ) -> Option<OrderState> {
     use crate::types::ExchangeOrderState;
-    match (local_state, exchange_state) {
-        (OrderState::Submitted, ExchangeOrderState::Resting) => Some(OrderState::Acknowledged),
-        (OrderState::Submitted, ExchangeOrderState::Executed) => Some(OrderState::Filled),
-        (OrderState::Submitted, ExchangeOrderState::NotFound) => Some(OrderState::Rejected),
-        (OrderState::Submitted, ExchangeOrderState::Cancelled) => Some(OrderState::Cancelled),
-        (OrderState::PendingCancel, ExchangeOrderState::Cancelled) => Some(OrderState::Cancelled),
-        (OrderState::PendingCancel, ExchangeOrderState::Executed) => Some(OrderState::Filled),
-        (OrderState::PendingCancel, ExchangeOrderState::NotFound) => Some(OrderState::Cancelled),
-        // PendingAmend/PendingDecrease: exchange says it's done → Acknowledged
-        (OrderState::PendingAmend, ExchangeOrderState::Resting) => Some(OrderState::Acknowledged),
-        (OrderState::PendingAmend, ExchangeOrderState::Executed) => Some(OrderState::Filled),
-        (OrderState::PendingAmend, ExchangeOrderState::Cancelled) => Some(OrderState::Cancelled),
-        (OrderState::PendingDecrease, ExchangeOrderState::Resting) => Some(OrderState::Acknowledged),
-        (OrderState::PendingDecrease, ExchangeOrderState::Executed) => Some(OrderState::Filled),
-        (OrderState::PendingDecrease, ExchangeOrderState::Cancelled) => Some(OrderState::Cancelled),
-        // Acknowledged: order was filled or cancelled on exchange (e.g., mass cancel, IOC fill)
-        (OrderState::Acknowledged, ExchangeOrderState::Executed) => Some(OrderState::Filled),
-        (OrderState::Acknowledged, ExchangeOrderState::Cancelled) => Some(OrderState::Cancelled),
-        // Acknowledged + Resting: consistent, no state change needed
-        // PendingCancel + Resting: needs special handling (re-send cancel)
-        _ => None,
+
+    let event = match (local_state, exchange_state) {
+        // PendingAmend/PendingDecrease + Resting means amend/decrease was not applied
+        // Map to confirm events to return to Acknowledged state
+        (OrderState::PendingAmend, ExchangeOrderState::Resting) => OrderEvent::AmendConfirm,
+        (OrderState::PendingDecrease, ExchangeOrderState::Resting) => OrderEvent::DecreaseConfirm,
+        // NotFound for PendingCancel means the cancel was effective
+        (OrderState::PendingCancel, ExchangeOrderState::NotFound) => OrderEvent::CancelConfirm,
+        // General mappings
+        (_, ExchangeOrderState::Resting) => OrderEvent::Acknowledge {
+            exchange_order_id: String::new(),
+        },
+        (_, ExchangeOrderState::Executed) => OrderEvent::Fill {
+            filled_qty: rust_decimal::Decimal::ZERO,
+        },
+        (_, ExchangeOrderState::Cancelled) => OrderEvent::CancelConfirm,
+        (_, ExchangeOrderState::NotFound) => OrderEvent::Reject {
+            reason: "not_found_on_exchange".to_string(),
+        },
+    };
+
+    match apply_event(*local_state, &event) {
+        Ok(new_state) if new_state != *local_state => Some(new_state),
+        Ok(_) => None,  // No state change needed
+        Err(_) => None,  // Invalid transition — needs special handling
     }
 }
 
@@ -795,108 +799,78 @@ mod tests {
     }
 
     // ======================================================================
-    // resolve_exchange_state tests
+    // resolve_via_event tests
     // ======================================================================
 
     #[test]
-    fn test_resolve_submitted_resting() {
-        let result = resolve_exchange_state(
-            &OrderState::Submitted,
-            &crate::types::ExchangeOrderState::Resting,
-        );
+    fn test_via_event_submitted_resting() {
+        let result = resolve_via_event(&OrderState::Submitted, &crate::types::ExchangeOrderState::Resting);
         assert_eq!(result, Some(OrderState::Acknowledged));
     }
 
     #[test]
-    fn test_resolve_submitted_executed() {
-        let result = resolve_exchange_state(
-            &OrderState::Submitted,
-            &crate::types::ExchangeOrderState::Executed,
-        );
+    fn test_via_event_submitted_executed() {
+        let result = resolve_via_event(&OrderState::Submitted, &crate::types::ExchangeOrderState::Executed);
         assert_eq!(result, Some(OrderState::Filled));
     }
 
     #[test]
-    fn test_resolve_submitted_not_found() {
-        let result = resolve_exchange_state(
-            &OrderState::Submitted,
-            &crate::types::ExchangeOrderState::NotFound,
-        );
+    fn test_via_event_submitted_not_found() {
+        let result = resolve_via_event(&OrderState::Submitted, &crate::types::ExchangeOrderState::NotFound);
         assert_eq!(result, Some(OrderState::Rejected));
     }
 
     #[test]
-    fn test_resolve_submitted_cancelled() {
-        let result = resolve_exchange_state(
-            &OrderState::Submitted,
-            &crate::types::ExchangeOrderState::Cancelled,
-        );
+    fn test_via_event_submitted_cancelled() {
+        let result = resolve_via_event(&OrderState::Submitted, &crate::types::ExchangeOrderState::Cancelled);
         assert_eq!(result, Some(OrderState::Cancelled));
     }
 
     #[test]
-    fn test_resolve_pending_cancel_cancelled() {
-        let result = resolve_exchange_state(
-            &OrderState::PendingCancel,
-            &crate::types::ExchangeOrderState::Cancelled,
-        );
+    fn test_via_event_pending_cancel_cancelled() {
+        let result = resolve_via_event(&OrderState::PendingCancel, &crate::types::ExchangeOrderState::Cancelled);
         assert_eq!(result, Some(OrderState::Cancelled));
     }
 
     #[test]
-    fn test_resolve_pending_cancel_executed() {
-        let result = resolve_exchange_state(
-            &OrderState::PendingCancel,
-            &crate::types::ExchangeOrderState::Executed,
-        );
+    fn test_via_event_pending_cancel_executed() {
+        let result = resolve_via_event(&OrderState::PendingCancel, &crate::types::ExchangeOrderState::Executed);
         assert_eq!(result, Some(OrderState::Filled));
     }
 
     #[test]
-    fn test_resolve_pending_cancel_resting_needs_special_handling() {
-        // PendingCancel + Resting means cancel hasn't been processed yet — needs re-send
-        let result = resolve_exchange_state(
-            &OrderState::PendingCancel,
-            &crate::types::ExchangeOrderState::Resting,
-        );
+    fn test_via_event_pending_cancel_resting_needs_special_handling() {
+        let result = resolve_via_event(&OrderState::PendingCancel, &crate::types::ExchangeOrderState::Resting);
         assert_eq!(result, None);
     }
 
     #[test]
-    fn test_resolve_acknowledged_executed() {
-        let result = resolve_exchange_state(
-            &OrderState::Acknowledged,
-            &crate::types::ExchangeOrderState::Executed,
-        );
-        assert_eq!(result, Some(OrderState::Filled));
-    }
-
-    #[test]
-    fn test_resolve_acknowledged_cancelled() {
-        let result = resolve_exchange_state(
-            &OrderState::Acknowledged,
-            &crate::types::ExchangeOrderState::Cancelled,
-        );
+    fn test_via_event_pending_cancel_not_found() {
+        let result = resolve_via_event(&OrderState::PendingCancel, &crate::types::ExchangeOrderState::NotFound);
         assert_eq!(result, Some(OrderState::Cancelled));
     }
 
     #[test]
-    fn test_resolve_acknowledged_resting_no_change() {
-        // Acknowledged + Resting is consistent — returns None (no state change)
-        let result = resolve_exchange_state(
-            &OrderState::Acknowledged,
-            &crate::types::ExchangeOrderState::Resting,
-        );
+    fn test_via_event_acknowledged_executed() {
+        let result = resolve_via_event(&OrderState::Acknowledged, &crate::types::ExchangeOrderState::Executed);
+        assert_eq!(result, Some(OrderState::Filled));
+    }
+
+    #[test]
+    fn test_via_event_acknowledged_cancelled() {
+        let result = resolve_via_event(&OrderState::Acknowledged, &crate::types::ExchangeOrderState::Cancelled);
+        assert_eq!(result, Some(OrderState::Cancelled));
+    }
+
+    #[test]
+    fn test_via_event_acknowledged_resting_no_change() {
+        let result = resolve_via_event(&OrderState::Acknowledged, &crate::types::ExchangeOrderState::Resting);
         assert_eq!(result, None);
     }
 
     #[test]
-    fn test_resolve_acknowledged_notfound_returns_none() {
-        // Acknowledged + NotFound is unusual — returns None for manual investigation
-        let result = resolve_exchange_state(
-            &OrderState::Acknowledged,
-            &crate::types::ExchangeOrderState::NotFound,
-        );
+    fn test_via_event_acknowledged_notfound_returns_none() {
+        let result = resolve_via_event(&OrderState::Acknowledged, &crate::types::ExchangeOrderState::NotFound);
         assert_eq!(result, None);
     }
 
@@ -1092,60 +1066,42 @@ mod tests {
     }
 
     // ======================================================================
-    // resolve_exchange_state for new states
+    // resolve_via_event for PendingAmend/PendingDecrease states
     // ======================================================================
 
     #[test]
-    fn test_resolve_pending_amend_resting() {
-        let result = resolve_exchange_state(
-            &OrderState::PendingAmend,
-            &crate::types::ExchangeOrderState::Resting,
-        );
+    fn test_via_event_pending_amend_resting() {
+        let result = resolve_via_event(&OrderState::PendingAmend, &crate::types::ExchangeOrderState::Resting);
         assert_eq!(result, Some(OrderState::Acknowledged));
     }
 
     #[test]
-    fn test_resolve_pending_amend_executed() {
-        let result = resolve_exchange_state(
-            &OrderState::PendingAmend,
-            &crate::types::ExchangeOrderState::Executed,
-        );
+    fn test_via_event_pending_amend_executed() {
+        let result = resolve_via_event(&OrderState::PendingAmend, &crate::types::ExchangeOrderState::Executed);
         assert_eq!(result, Some(OrderState::Filled));
     }
 
     #[test]
-    fn test_resolve_pending_amend_cancelled() {
-        let result = resolve_exchange_state(
-            &OrderState::PendingAmend,
-            &crate::types::ExchangeOrderState::Cancelled,
-        );
+    fn test_via_event_pending_amend_cancelled() {
+        let result = resolve_via_event(&OrderState::PendingAmend, &crate::types::ExchangeOrderState::Cancelled);
         assert_eq!(result, Some(OrderState::Cancelled));
     }
 
     #[test]
-    fn test_resolve_pending_decrease_resting() {
-        let result = resolve_exchange_state(
-            &OrderState::PendingDecrease,
-            &crate::types::ExchangeOrderState::Resting,
-        );
+    fn test_via_event_pending_decrease_resting() {
+        let result = resolve_via_event(&OrderState::PendingDecrease, &crate::types::ExchangeOrderState::Resting);
         assert_eq!(result, Some(OrderState::Acknowledged));
     }
 
     #[test]
-    fn test_resolve_pending_decrease_executed() {
-        let result = resolve_exchange_state(
-            &OrderState::PendingDecrease,
-            &crate::types::ExchangeOrderState::Executed,
-        );
+    fn test_via_event_pending_decrease_executed() {
+        let result = resolve_via_event(&OrderState::PendingDecrease, &crate::types::ExchangeOrderState::Executed);
         assert_eq!(result, Some(OrderState::Filled));
     }
 
     #[test]
-    fn test_resolve_pending_decrease_cancelled() {
-        let result = resolve_exchange_state(
-            &OrderState::PendingDecrease,
-            &crate::types::ExchangeOrderState::Cancelled,
-        );
+    fn test_via_event_pending_decrease_cancelled() {
+        let result = resolve_via_event(&OrderState::PendingDecrease, &crate::types::ExchangeOrderState::Cancelled);
         assert_eq!(result, Some(OrderState::Cancelled));
     }
 
