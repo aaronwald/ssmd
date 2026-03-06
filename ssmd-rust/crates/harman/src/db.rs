@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::error::EnqueueError;
 use crate::risk::{RiskLimits, RiskState};
-use crate::state::OrderState;
+use crate::state::{apply_event, OrderEvent, OrderState};
 use crate::types::{
     Action, CancelReason, GroupState, GroupType, LegRole, MarketResult, Order, OrderGroup,
     OrderRequest, QueueAction, Settlement, Side, TimeInForce,
@@ -406,6 +406,42 @@ pub async fn batch_insert_audit(
         warn!(skipped, inserted = count, "some audit events skipped");
     }
     Ok(count)
+}
+
+/// Map a (from_state, to_state) pair to the OrderEvent that would cause it.
+/// Used to validate transitions through the state machine.
+fn infer_event(from: OrderState, to: OrderState) -> Result<OrderEvent, String> {
+    match (from, to) {
+        (_, OrderState::Submitted) => Ok(OrderEvent::Submit),
+        (_, OrderState::Acknowledged) => Ok(OrderEvent::Acknowledge {
+            exchange_order_id: String::new(),
+        }),
+        (_, OrderState::Rejected) => Ok(OrderEvent::Reject {
+            reason: String::new(),
+        }),
+        (_, OrderState::Filled) => Ok(OrderEvent::Fill {
+            filled_qty: Decimal::ZERO,
+        }),
+        (_, OrderState::PartiallyFilled) => Ok(OrderEvent::PartialFill {
+            filled_qty: Decimal::ZERO,
+        }),
+        (_, OrderState::PendingCancel) => Ok(OrderEvent::CancelRequest),
+        (_, OrderState::PendingAmend) => Ok(OrderEvent::AmendRequest),
+        (_, OrderState::PendingDecrease) => Ok(OrderEvent::DecreaseRequest),
+        (OrderState::PendingCancel, OrderState::Cancelled) => Ok(OrderEvent::CancelConfirm),
+        (OrderState::Staged, OrderState::Cancelled) => Ok(OrderEvent::CancelRequest),
+        (OrderState::Pending, OrderState::Cancelled) => Ok(OrderEvent::CancelRequest),
+        (_, OrderState::Expired) => Ok(OrderEvent::Expire),
+        (OrderState::Staged, OrderState::Pending) => Ok(OrderEvent::Activate),
+        _ => Err(format!("unmapped transition: {} -> {}", from, to)),
+    }
+}
+
+/// Validate a state transition through the state machine.
+/// Returns the validated new state or an error.
+fn validate_transition(from: OrderState, to: OrderState) -> Result<OrderState, String> {
+    let event = infer_event(from, to)?;
+    apply_event(from, &event).map_err(|e| format!("{}", e))
 }
 
 /// The core transactional enqueue operation.
@@ -3136,4 +3172,50 @@ async fn activate_staged_siblings(
     }
 
     Ok(activated)
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+    use crate::state::OrderState;
+
+    #[test]
+    fn test_infer_event_submit() {
+        let event = infer_event(OrderState::Pending, OrderState::Submitted).unwrap();
+        assert_eq!(event.to_string(), "submit");
+    }
+
+    #[test]
+    fn test_infer_event_cancel_from_pending() {
+        let event = infer_event(OrderState::Pending, OrderState::Cancelled).unwrap();
+        assert_eq!(event.to_string(), "cancel_request");
+    }
+
+    #[test]
+    fn test_infer_event_cancel_confirm() {
+        let event = infer_event(OrderState::PendingCancel, OrderState::Cancelled).unwrap();
+        assert_eq!(event.to_string(), "cancel_confirm");
+    }
+
+    #[test]
+    fn test_infer_event_activate() {
+        let event = infer_event(OrderState::Staged, OrderState::Pending).unwrap();
+        assert_eq!(event.to_string(), "activate");
+    }
+
+    #[test]
+    fn test_validate_transition_valid() {
+        assert!(validate_transition(OrderState::Pending, OrderState::Submitted).is_ok());
+    }
+
+    #[test]
+    fn test_validate_transition_invalid() {
+        assert!(validate_transition(OrderState::Pending, OrderState::Acknowledged).is_err());
+    }
+
+    #[test]
+    fn test_validate_transition_cancel_from_pending() {
+        let result = validate_transition(OrderState::Pending, OrderState::Cancelled);
+        assert_eq!(result.unwrap(), OrderState::Cancelled);
+    }
 }
