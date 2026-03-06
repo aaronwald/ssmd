@@ -34,6 +34,13 @@ jobs:
       - name: Rust clippy
         run: make rust-clippy
 
+      - name: Check for raw state writes outside db.rs
+        run: |
+          if rg "SET state\s*=" ssmd-rust/crates/ --glob '!harman/src/db.rs' --glob '!*/tests/*' -l; then
+            echo "ERROR: Found raw SQL state writes outside db.rs. Use validate_transition() in db.rs instead."
+            exit 1
+          fi
+
       - name: Rust test
         run: make rust-test
 
