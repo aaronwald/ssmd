@@ -53,11 +53,25 @@ async function request<T>(
     ...(options.headers as Record<string, string>),
   };
 
-  const res = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers,
-    credentials: "include",
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}${path}`, {
+      ...options,
+      headers,
+      credentials: "include",
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("Request timed out — server may be unavailable");
+    }
+    throw new Error("Network error — server may be unavailable");
+  }
+  clearTimeout(timeout);
 
   if (!res.ok) {
     const body = await res.text();

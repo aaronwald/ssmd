@@ -23,7 +23,7 @@ interface Props {
 }
 
 export function MarketSlideOver({ market, onClose, initialSide, initialAction, initialPrice }: Props) {
-  const { instances } = useInstance();
+  const { instance: globalInstance, instances } = useInstance();
   const [orderMode, setOrderMode] = useState<"single" | "bracket">("single");
   const yesBid = market.yes_bid ?? market.bid ?? market.best_bid ?? null;
   const yesAsk = market.yes_ask ?? market.ask ?? market.best_ask ?? null;
@@ -35,9 +35,9 @@ export function MarketSlideOver({ market, onClose, initialSide, initialAction, i
   const compatible = instances.filter(
     (i) => i.healthy && (i.exchange === marketExchange || i.exchange === "test")
   );
-  const [selectedInstance, setSelectedInstance] = useState<string>(
-    compatible[0]?.id ?? ""
-  );
+  // Prefer the globally selected instance if it's compatible
+  const defaultInstance = compatible.find((i) => i.id === globalInstance)?.id ?? compatible[0]?.id ?? "";
+  const [selectedInstance, setSelectedInstance] = useState<string>(defaultInstance);
   const canOrder = compatible.length > 0;
 
   return (

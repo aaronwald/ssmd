@@ -3,7 +3,7 @@
 import { useState, useMemo, useCallback, useEffect, Fragment } from "react";
 import useSWR from "swr";
 import { useSeries, useEvents, useMarkets, usePositions } from "@/lib/hooks";
-import { getEvents, getMarkets } from "@/lib/api";
+import { getEvents } from "@/lib/api";
 import type { MonitorSeries, MonitorEvent, MonitorMarket, Side, Action } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
 import { usePinnedEvents } from "@/lib/pinned-events";
@@ -554,22 +554,8 @@ function SortHeader({
 
 // --- Game list ---
 
-/** Fetch markets for all events to get EET for sorting/display */
-function useAllEventMarkets(events: MonitorEvent[]) {
-  const key = events.length > 0 ? `all-markets-${events.map(e => e.ticker).join(",")}` : null;
-  return useSWR(
-    key,
-    async () => {
-      const results = await Promise.all(
-        events.map((e) => getMarkets(e.ticker).catch(() => [] as MonitorMarket[]))
-      );
-      const map = new Map<string, MonitorMarket[]>();
-      events.forEach((e, i) => map.set(e.ticker, results[i]));
-      return map;
-    },
-    { refreshInterval: 30000, keepPreviousData: true }
-  );
-}
+// Removed useAllEventMarkets — was fetching markets for ALL events in parallel,
+// crushing the proxy. GameRow fetches markets only when expanded.
 
 function GameList({
   events,
@@ -593,9 +579,6 @@ function GameList({
   const [sortCol, setSortCol] = useState<SortColumn>("time");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
-  // Fetch markets for all events (for start time sorting)
-  const { data: allMarkets } = useAllEventMarkets(events);
-
   const handleSort = useCallback((col: SortColumn) => {
     setSortCol((prev) => {
       if (prev === col) {
@@ -615,24 +598,15 @@ function GameList({
       if (aPinned !== bPinned) return aPinned - bPinned;
 
       // Within same group, apply normal sort
-      let va: string | number;
-      let vb: string | number;
-      if (sortCol === "time" && allMarkets) {
-        const startA = getEstimatedStart(allMarkets.get(a.ticker) ?? null, a.ticker);
-        const startB = getEstimatedStart(allMarkets.get(b.ticker) ?? null, b.ticker);
-        va = startA?.getTime() ?? Infinity;
-        vb = startB?.getTime() ?? Infinity;
-      } else {
-        va = getSortValue(a, sortCol);
-        vb = getSortValue(b, sortCol);
-      }
+      const va = getSortValue(a, sortCol);
+      const vb = getSortValue(b, sortCol);
       const cmp =
         typeof va === "number" && typeof vb === "number"
           ? va - vb
           : String(va).localeCompare(String(vb));
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [events, sortCol, sortDir, allMarkets, isPinned]);
+  }, [events, sortCol, sortDir, isPinned]);
 
   return (
     <div className="bg-bg-raised border border-border rounded-lg overflow-hidden">
