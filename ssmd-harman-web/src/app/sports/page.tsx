@@ -772,72 +772,89 @@ function GameRow({
       {isExpanded && markets && (
         <>
           {markets.map((m) => {
-            const bid = m.yes_bid ?? null;
-            const ask = m.yes_ask ?? null;
+            const yesBid = m.yes_bid ?? null;
+            const yesAsk = m.yes_ask ?? null;
+            const noBid = yesAsk != null ? +(1 - yesAsk).toFixed(2) : null;
+            const noAsk = yesBid != null ? +(1 - yesBid).toFixed(2) : null;
+            const yesLast = m.last ?? null;
+            const noLast = yesLast != null ? +(1 - yesLast).toFixed(2) : null;
             const hasPosition = positionTickers.has(m.ticker);
             const teamName = m.ticker.split("-").pop() ?? m.ticker;
 
             return (
-              <tr
-                key={m.ticker}
-                className="border-b border-border-subtle bg-bg-surface hover:bg-bg-surface-hover"
-              >
-                <td className="px-4 py-1.5"></td>
-                <td className="px-4 py-1.5 pl-10" colSpan={showLeague ? 2 : 1}>
-                  <span className="font-mono text-xs">{teamName}</span>
-                  {hasPosition && (
-                    <span
-                      className="ml-1 text-accent text-xs"
-                      title="Has position"
-                    >
-                      ●
-                    </span>
-                  )}
-                </td>
-                <td className="px-4 py-1.5 text-right font-mono text-xs">
-                  {fmtPrice(bid)}{" "}
-                  <span className="text-fg-subtle">/</span>{" "}
-                  {fmtPrice(ask)}
-                </td>
-                <td className="px-4 py-1.5 text-right font-mono text-xs">
-                  {fmtPrice(m.last ?? null)}
-                </td>
-                <td className="px-4 py-1.5 text-right font-mono text-xs">
-                  {fmtInt(m.volume ?? null)}
-                </td>
-                <td className="px-2 py-1.5">
-                  <div className="flex gap-1">
-                    <button
-                      onClick={() => onQuickTrade(m, "yes", "buy", ask != null ? ask.toFixed(2) : "")}
-                      className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green/10 text-green hover:bg-green/20 transition-colors"
-                      title="Buy Yes @ ask"
-                    >
-                      BY
-                    </button>
-                    <button
-                      onClick={() => onQuickTrade(m, "yes", "sell", bid != null ? bid.toFixed(2) : "")}
-                      className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-red/10 text-red hover:bg-red/20 transition-colors"
-                      title="Sell Yes @ bid"
-                    >
-                      SY
-                    </button>
-                    <button
-                      onClick={() => onQuickTrade(m, "no", "buy", bid != null ? (1 - bid).toFixed(2) : "")}
-                      className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green/10 text-green hover:bg-green/20 transition-colors"
-                      title="Buy No @ no ask"
-                    >
-                      BN
-                    </button>
-                    <button
-                      onClick={() => onQuickTrade(m, "no", "sell", ask != null ? (1 - ask).toFixed(2) : "")}
-                      className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-red/10 text-red hover:bg-red/20 transition-colors"
-                      title="Sell No @ no bid"
-                    >
-                      SN
-                    </button>
-                  </div>
-                </td>
-              </tr>
+              <Fragment key={m.ticker}>
+                {/* Yes row */}
+                <tr className="border-b border-border-subtle bg-bg-surface hover:bg-bg-surface-hover">
+                  <td className="px-4 py-1.5"></td>
+                  <td className="px-4 py-1.5 pl-10" colSpan={showLeague ? 2 : 1}>
+                    <span className="font-mono text-xs">{teamName}</span>
+                    {hasPosition && (
+                      <span className="ml-1 text-accent text-xs" title="Has position">●</span>
+                    )}
+                    <span className="ml-2 text-[10px] font-medium text-green">YES</span>
+                  </td>
+                  <td className="px-4 py-1.5 text-right font-mono text-xs">
+                    {fmtPrice(yesBid)} <span className="text-fg-subtle">/</span> {fmtPrice(yesAsk)}
+                  </td>
+                  <td className="px-4 py-1.5 text-right font-mono text-xs">
+                    {fmtPrice(yesLast)}
+                  </td>
+                  <td className="px-4 py-1.5 text-right font-mono text-xs">
+                    {fmtInt(m.volume ?? null)}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => onQuickTrade(m, "yes", "buy", yesAsk != null ? yesAsk.toFixed(2) : "")}
+                        className="px-2 py-0.5 rounded text-[10px] font-medium bg-green/10 text-green hover:bg-green/20 transition-colors"
+                        title="Buy Yes @ ask"
+                      >
+                        Buy
+                      </button>
+                      <button
+                        onClick={() => onQuickTrade(m, "yes", "sell", yesBid != null ? yesBid.toFixed(2) : "")}
+                        className="px-2 py-0.5 rounded text-[10px] font-medium bg-red/10 text-red hover:bg-red/20 transition-colors"
+                        title="Sell Yes @ bid"
+                      >
+                        Sell
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                {/* No row */}
+                <tr className="border-b border-border-subtle bg-bg-surface hover:bg-bg-surface-hover">
+                  <td className="px-4 py-1.5"></td>
+                  <td className="px-4 py-1.5 pl-10" colSpan={showLeague ? 2 : 1}>
+                    <span className="font-mono text-xs">{teamName}</span>
+                    <span className="ml-2 text-[10px] font-medium text-red">NO</span>
+                  </td>
+                  <td className="px-4 py-1.5 text-right font-mono text-xs">
+                    {fmtPrice(noBid)} <span className="text-fg-subtle">/</span> {fmtPrice(noAsk)}
+                  </td>
+                  <td className="px-4 py-1.5 text-right font-mono text-xs">
+                    {fmtPrice(noLast)}
+                  </td>
+                  <td className="px-4 py-1.5 text-right font-mono text-xs"></td>
+                  <td className="px-2 py-1.5">
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => onQuickTrade(m, "no", "buy", noAsk != null ? noAsk.toFixed(2) : "")}
+                        className="px-2 py-0.5 rounded text-[10px] font-medium bg-green/10 text-green hover:bg-green/20 transition-colors"
+                        title="Buy No @ ask"
+                      >
+                        Buy
+                      </button>
+                      <button
+                        onClick={() => onQuickTrade(m, "no", "sell", noBid != null ? noBid.toFixed(2) : "")}
+                        className="px-2 py-0.5 rounded text-[10px] font-medium bg-red/10 text-red hover:bg-red/20 transition-colors"
+                        title="Sell No @ bid"
+                      >
+                        Sell
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </Fragment>
             );
           })}
         </>
