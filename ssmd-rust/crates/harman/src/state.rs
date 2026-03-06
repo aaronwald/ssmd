@@ -171,10 +171,16 @@ pub fn apply_event(
         (OrderState::Pending, OrderEvent::Submit) => Ok(OrderState::Submitted),
         (OrderState::Pending, OrderEvent::Reject { .. }) => Ok(OrderState::Rejected),
 
+        // Pending can be cancelled directly (not yet on exchange, no confirmation needed)
+        (OrderState::Pending, OrderEvent::CancelRequest) => Ok(OrderState::Cancelled),
+
         // Submitted transitions
         (OrderState::Submitted, OrderEvent::Acknowledge { .. }) => Ok(OrderState::Acknowledged),
         (OrderState::Submitted, OrderEvent::Reject { .. }) => Ok(OrderState::Rejected),
         (OrderState::Submitted, OrderEvent::Expire) => Ok(OrderState::Expired),
+
+        // Submitted can request cancel (needs exchange confirmation)
+        (OrderState::Submitted, OrderEvent::CancelRequest) => Ok(OrderState::PendingCancel),
 
         // Acknowledged transitions
         (OrderState::Acknowledged, OrderEvent::CancelRequest) => Ok(OrderState::PendingCancel),
@@ -476,6 +482,20 @@ mod tests {
         assert_eq!(result.unwrap(), OrderState::Cancelled);
     }
 
+    #[test]
+    fn test_cancel_request_from_pending() {
+        // User should be able to cancel an order before it's submitted
+        let result = apply_event(OrderState::Pending, &OrderEvent::CancelRequest);
+        assert_eq!(result.unwrap(), OrderState::Cancelled);
+    }
+
+    #[test]
+    fn test_cancel_request_from_submitted() {
+        // Cancel from submitted needs exchange confirmation
+        let result = apply_event(OrderState::Submitted, &OrderEvent::CancelRequest);
+        assert_eq!(result.unwrap(), OrderState::PendingCancel);
+    }
+
     // ======================================================================
     // Terminal states reject ALL events (exhaustive)
     // ======================================================================
@@ -569,11 +589,6 @@ mod tests {
     // ======================================================================
 
     #[test]
-    fn test_pending_rejects_cancel_request() {
-        assert!(apply_event(OrderState::Pending, &OrderEvent::CancelRequest).is_err());
-    }
-
-    #[test]
     fn test_pending_rejects_acknowledge() {
         assert!(apply_event(
             OrderState::Pending,
@@ -592,12 +607,6 @@ mod tests {
     #[test]
     fn test_pending_rejects_expire() {
         assert!(apply_event(OrderState::Pending, &OrderEvent::Expire).is_err());
-    }
-
-    #[test]
-    fn test_submitted_rejects_cancel_request() {
-        // Can't cancel what hasn't been acknowledged yet
-        assert!(apply_event(OrderState::Submitted, &OrderEvent::CancelRequest).is_err());
     }
 
     #[test]
