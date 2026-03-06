@@ -155,7 +155,6 @@ async fn resolve_ambiguous_orders(oms: &Oms, session_id: i64) -> Result<(), Stri
                         session_id,
                         new_state,
                         Some(&exchange_status.exchange_order_id),
-                        Some(exchange_status.filled_quantity),
                         cancel_reason.as_ref(),
                         "recovery",
                     )

@@ -256,7 +256,6 @@ impl EventIngester {
                                 order.session_id,
                                 OrderState::Cancelled,
                                 Some(&exchange_order_id),
-                                Some(filled_quantity),
                                 Some(&cancel_reason),
                                 "ws_event",
                             )
@@ -288,7 +287,6 @@ impl EventIngester {
                                 order.session_id,
                                 OrderState::Filled,
                                 Some(&exchange_order_id),
-                                Some(filled_quantity),
                                 None,
                                 "ws_event",
                             )
@@ -333,7 +331,6 @@ impl EventIngester {
                                 order.session_id,
                                 OrderState::Acknowledged,
                                 Some(&exchange_order_id),
-                                Some(filled_quantity),
                                 None,
                                 "ws_event",
                             )

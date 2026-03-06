@@ -1326,7 +1326,7 @@ async fn test_bracket_entry_fill_activates_exits() {
     // Simulate entry being filled (after dequeue so it doesn't overwrite)
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Filled,
-        Some("exch-bracket-entry"), Some(Decimal::from(5)), None, "test",
+        Some("exch-bracket-entry"), None, "test",
     ).await.unwrap();
 
     // Debug: verify DB state before evaluate_triggers
@@ -1403,11 +1403,11 @@ async fn test_bracket_exit_fill_completes_group() {
     // Simulate: entry filled, TP filled, SL still staged
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Filled,
-        Some("exch-b3-entry"), Some(Decimal::from(5)), None, "test",
+        Some("exch-b3-entry"), None, "test",
     ).await.unwrap();
     db::update_order_state(
         &pool, tp_order.id, session_id, OrderState::Filled,
-        Some("exch-b3-tp"), Some(Decimal::from(5)), None, "test",
+        Some("exch-b3-tp"), None, "test",
     ).await.unwrap();
 
     // Evaluate triggers
@@ -1445,7 +1445,7 @@ async fn test_bracket_entry_rejected_cancels_group() {
     // Simulate entry rejected
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Rejected,
-        None, None, None, "test",
+        None, None, "test",
     ).await.unwrap();
 
     // Evaluate triggers
@@ -1507,17 +1507,17 @@ async fn test_oco_fill_cancels_other() {
     // Simulate first leg acknowledged and filled
     db::update_order_state(
         &pool, orders[0].id, session_id, OrderState::Acknowledged,
-        Some("exch-oco-1"), None, None, "test",
+        Some("exch-oco-1"), None, "test",
     ).await.unwrap();
     db::update_order_state(
         &pool, orders[0].id, session_id, OrderState::Filled,
-        None, Some(Decimal::from(5)), None, "test",
+        None, None, "test",
     ).await.unwrap();
 
     // Second leg acknowledged (on exchange)
     db::update_order_state(
         &pool, orders[1].id, session_id, OrderState::Acknowledged,
-        Some("exch-oco-2"), None, None, "test",
+        Some("exch-oco-2"), None, "test",
     ).await.unwrap();
 
     // Evaluate triggers

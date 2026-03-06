@@ -154,7 +154,6 @@ pub async fn import_fills(
                     session_id,
                     new_state,
                     None,
-                    Some(filled_qty),
                     None,
                     actor,
                 )

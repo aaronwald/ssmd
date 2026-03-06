@@ -98,7 +98,6 @@ impl Oms {
                     session_id,
                     OrderState::Cancelled,
                     None,
-                    None,
                     Some(&harman::types::CancelReason::UserRequested),
                     "group_cancel",
                 )
@@ -170,7 +169,6 @@ impl Oms {
                             session_id,
                             OrderState::Cancelled,
                             None,
-                            None,
                             Some(&harman::types::CancelReason::UserRequested),
                             "trigger",
                         )
@@ -198,7 +196,6 @@ impl Oms {
                         exit.id,
                         session_id,
                         OrderState::Cancelled,
-                        None,
                         None,
                         Some(&harman::types::CancelReason::UserRequested),
                         "trigger",

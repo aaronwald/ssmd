@@ -209,7 +209,6 @@ async fn handle_submit(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Subm
                 OrderState::Acknowledged,
                 Some(&exchange_order_id),
                 None,
-                None,
                 "pump",
             )
             .await
@@ -246,7 +245,6 @@ async fn handle_submit(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Subm
                 item.order_id,
                 session_id,
                 OrderState::Rejected,
-                None,
                 None,
                 None,
                 "pump",
@@ -352,7 +350,6 @@ async fn handle_cancel(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Canc
                 session_id,
                 OrderState::Cancelled,
                 None,
-                None,
                 Some(&CancelReason::UserRequested),
                 "pump",
             )
@@ -390,7 +387,6 @@ async fn handle_cancel(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Canc
                 session_id,
                 OrderState::Cancelled,
                 None,
-                None,
                 Some(&CancelReason::UserRequested),
                 "pump",
             )
@@ -425,7 +421,6 @@ async fn handle_cancel(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Canc
                 item.order_id,
                 session_id,
                 OrderState::Cancelled,
-                None,
                 None,
                 Some(&CancelReason::UserRequested),
                 "pump",
@@ -504,7 +499,6 @@ async fn handle_amend(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Amend
                 OrderState::Acknowledged,
                 None,
                 None,
-                None,
                 "pump",
             )
             .await
@@ -529,7 +523,6 @@ async fn handle_amend(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Amend
                 item.order_id,
                 session_id,
                 OrderState::Acknowledged,
-                None,
                 None,
                 None,
                 "pump",
@@ -628,7 +621,6 @@ async fn handle_amend(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Amend
                 session_id,
                 OrderState::Cancelled,
                 None,
-                None,
                 Some(&CancelReason::ExchangeCancel),
                 "pump",
             )
@@ -677,7 +669,6 @@ async fn handle_amend(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Amend
                 OrderState::Acknowledged,
                 None,
                 None,
-                None,
                 "pump",
             )
             .await
@@ -711,7 +702,6 @@ async fn handle_decrease(ems: &Ems, session_id: i64, item: &db::QueueItem) -> De
                 OrderState::Acknowledged,
                 None,
                 None,
-                None,
                 "pump",
             )
             .await
@@ -739,7 +729,6 @@ async fn handle_decrease(ems: &Ems, session_id: i64, item: &db::QueueItem) -> De
                     OrderState::Acknowledged,
                     None,
                     None,
-                    None,
                     "pump",
                 )
                 .await
@@ -760,7 +749,6 @@ async fn handle_decrease(ems: &Ems, session_id: i64, item: &db::QueueItem) -> De
                 item.order_id,
                 session_id,
                 OrderState::Acknowledged,
-                None,
                 None,
                 None,
                 "pump",
@@ -832,7 +820,6 @@ async fn handle_decrease(ems: &Ems, session_id: i64, item: &db::QueueItem) -> De
                 session_id,
                 OrderState::Cancelled,
                 None,
-                None,
                 Some(&CancelReason::ExchangeCancel),
                 "pump",
             )
@@ -880,7 +867,6 @@ async fn handle_decrease(ems: &Ems, session_id: i64, item: &db::QueueItem) -> De
                 item.order_id,
                 session_id,
                 OrderState::Acknowledged,
-                None,
                 None,
                 None,
                 "pump",

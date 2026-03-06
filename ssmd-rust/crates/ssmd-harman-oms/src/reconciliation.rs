@@ -457,7 +457,6 @@ async fn resolve_stale_orders(
                         session_id,
                         new_state,
                         Some(&exchange_status.exchange_order_id),
-                        Some(exchange_status.filled_quantity),
                         cancel_reason.as_ref(),
                         "reconciliation",
                     )
@@ -504,7 +503,6 @@ async fn resolve_stale_orders(
                         session_id,
                         OrderState::Cancelled,
                         order.exchange_order_id.as_deref(),
-                        Some(order.filled_quantity),
                         Some(&cancel_reason),
                         "reconciliation",
                     )
@@ -536,7 +534,6 @@ async fn resolve_stale_orders(
                                 session_id,
                                 OrderState::Cancelled,
                                 order.exchange_order_id.as_deref(),
-                                Some(order.filled_quantity),
                                 Some(&cancel_reason),
                                 "reconciliation",
                             )

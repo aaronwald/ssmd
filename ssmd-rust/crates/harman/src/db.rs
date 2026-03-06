@@ -311,6 +311,24 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 014_nullable_audit_session_id applied");
     }
 
+    // Check if 015 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '015_remove_filled_quantity'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 015: {}", e))?;
+
+    if row.is_none() {
+        let migration_015 = include_str!("../migrations/015_remove_filled_quantity.sql");
+        client
+            .batch_execute(migration_015)
+            .await
+            .map_err(|e| format!("migration 015 failed: {}", e))?;
+        info!("migration 015_remove_filled_quantity applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
@@ -423,7 +441,7 @@ pub async fn enqueue_order(
 
     let risk_row = tx
         .query_one(
-            "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
+            "SELECT COALESCE(SUM(price_dollars * (quantity - filled_qty(id))), 0) as open_notional \
              FROM prediction_orders \
              WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
             &[&session_id],
@@ -589,7 +607,7 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
             "SELECT q.id as queue_id, q.order_id, q.action, q.metadata, \
                     o.id, o.session_id, o.client_order_id, o.exchange_order_id, \
                     o.ticker, o.side, o.action as order_action, o.quantity, o.price_dollars, \
-                    o.filled_quantity, o.time_in_force, o.state, o.cancel_reason, \
+                    filled_qty(o.id) as filled_quantity, o.time_in_force, o.state, o.cancel_reason, \
                     o.group_id, o.leg_role, o.created_at, o.updated_at \
              FROM order_queue q \
              JOIN prediction_orders o ON o.id = q.order_id \
@@ -694,7 +712,6 @@ pub async fn update_order_state(
     session_id: i64,
     new_state: OrderState,
     exchange_order_id: Option<&str>,
-    filled_quantity: Option<Decimal>,
     cancel_reason: Option<&CancelReason>,
     actor: &str,
 ) -> Result<(), String> {
@@ -729,12 +746,11 @@ pub async fn update_order_state(
 
     tx.execute(
         "UPDATE prediction_orders SET state = $1, exchange_order_id = COALESCE($2, exchange_order_id), \
-         filled_quantity = COALESCE($3, filled_quantity), cancel_reason = COALESCE($4, cancel_reason) \
-         WHERE id = $5 AND session_id = $6",
+         cancel_reason = COALESCE($3, cancel_reason) \
+         WHERE id = $4 AND session_id = $5",
         &[
             &state_str,
             &exchange_order_id,
-            &filled_quantity,
             &cancel_str,
             &order_id,
             &session_id,
@@ -1229,7 +1245,7 @@ pub async fn get_ambiguous_orders(pool: &Pool, session_id: i64) -> Result<Vec<Or
         .query(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
-                    filled_quantity, time_in_force, state, cancel_reason, \
+                    filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
                     group_id, leg_role, created_at, updated_at \
              FROM prediction_orders \
              WHERE session_id = $1 AND state IN ('submitted', 'acknowledged', 'pending_cancel', 'pending_amend', 'pending_decrease') \
@@ -1253,7 +1269,7 @@ pub async fn get_order(pool: &Pool, order_id: i64, session_id: i64) -> Result<Op
         .query_opt(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
-                    filled_quantity, time_in_force, state, cancel_reason, \
+                    filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
                     group_id, leg_role, created_at, updated_at \
              FROM prediction_orders WHERE id = $1 AND session_id = $2",
             &[&order_id, &session_id],
@@ -1279,7 +1295,7 @@ pub async fn get_order_by_client_id(
         .query_opt(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
-                    filled_quantity, time_in_force, state, cancel_reason, \
+                    filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
                     group_id, leg_role, created_at, updated_at \
              FROM prediction_orders WHERE client_order_id = $1 AND session_id = $2",
             &[&client_order_id, &session_id],
@@ -1307,7 +1323,7 @@ pub async fn find_order_by_exchange_id(
         .query_opt(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
-                    filled_quantity, time_in_force, state, cancel_reason, \
+                    filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
                     group_id, leg_role, created_at, updated_at \
              FROM prediction_orders WHERE exchange_order_id = $1",
             &[&exchange_order_id],
@@ -1334,7 +1350,7 @@ pub async fn list_orders(
             .query(
                 "SELECT id, session_id, client_order_id, exchange_order_id, \
                         ticker, side, action, quantity, price_dollars, \
-                        filled_quantity, time_in_force, state, cancel_reason, \
+                        filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
                         group_id, leg_role, created_at, updated_at \
                  FROM prediction_orders WHERE session_id = $1 AND state = $2 ORDER BY id",
                 &[&session_id, &state.to_string()],
@@ -1345,7 +1361,7 @@ pub async fn list_orders(
             .query(
                 "SELECT id, session_id, client_order_id, exchange_order_id, \
                         ticker, side, action, quantity, price_dollars, \
-                        filled_quantity, time_in_force, state, cancel_reason, \
+                        filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
                         group_id, leg_role, created_at, updated_at \
                  FROM prediction_orders WHERE session_id = $1 ORDER BY id",
                 &[&session_id],
@@ -1366,7 +1382,7 @@ pub async fn compute_risk_state(pool: &Pool, session_id: i64) -> Result<RiskStat
 
     let row = client
         .query_one(
-            "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
+            "SELECT COALESCE(SUM(price_dollars * (quantity - filled_qty(id))), 0) as open_notional \
              FROM prediction_orders \
              WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
             &[&session_id],
@@ -1729,7 +1745,7 @@ pub async fn atomic_decrease_order(
     // Lock the order row and get current state (scoped to session)
     let row = tx
         .query_opt(
-            "SELECT state, quantity, filled_quantity FROM prediction_orders WHERE id = $1 AND session_id = $2 FOR UPDATE",
+            "SELECT state, quantity, filled_qty(id) as filled_quantity FROM prediction_orders WHERE id = $1 AND session_id = $2 FOR UPDATE",
             &[&order_id, &session_id],
         )
         .await
@@ -1897,7 +1913,7 @@ pub struct LocalPosition {
 
 /// Compute local positions from all filled orders in a session.
 ///
-/// Groups by ticker, sums Buy filled_quantity (positive) and Sell filled_quantity (negative).
+/// Groups by ticker, sums Buy fills (positive) and Sell fills (negative).
 pub async fn compute_local_positions(
     pool: &Pool,
     session_id: i64,
@@ -1909,12 +1925,13 @@ pub async fn compute_local_positions(
 
     let rows = client
         .query(
-            "SELECT ticker, action, SUM(filled_quantity) as total_filled \
-             FROM prediction_orders \
-             WHERE session_id = $1 AND filled_quantity > 0 \
-               AND ticker NOT IN (SELECT ticker FROM settlements WHERE session_id = $1) \
-             GROUP BY ticker, action \
-             ORDER BY ticker",
+            "SELECT o.ticker, o.action, SUM(f.quantity) as total_filled \
+             FROM prediction_orders o \
+             JOIN fills f ON f.order_id = o.id \
+             WHERE o.session_id = $1 \
+               AND o.ticker NOT IN (SELECT ticker FROM settlements WHERE session_id = $1) \
+             GROUP BY o.ticker, o.action \
+             ORDER BY o.ticker",
             &[&session_id],
         )
         .await
@@ -1961,10 +1978,11 @@ pub async fn compute_all_local_positions(
 
     let rows = client
         .query(
-            "SELECT o.ticker, o.action, SUM(o.filled_quantity) as total_filled \
+            "SELECT o.ticker, o.action, SUM(f.quantity) as total_filled \
              FROM prediction_orders o \
              JOIN sessions s ON o.session_id = s.id \
-             WHERE s.exchange = $1 AND s.environment = $2 AND o.filled_quantity > 0 \
+             JOIN fills f ON f.order_id = o.id \
+             WHERE s.exchange = $1 AND s.environment = $2 \
                AND o.ticker NOT IN (SELECT ticker FROM settlements WHERE session_id = o.session_id) \
              GROUP BY o.ticker, o.action \
              ORDER BY o.ticker",
@@ -2045,8 +2063,8 @@ pub async fn create_external_order(
         .query_one(
             "INSERT INTO prediction_orders \
              (session_id, client_order_id, exchange_order_id, ticker, side, action, \
-              quantity, price_dollars, filled_quantity, time_in_force, state) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'gtc', 'filled') \
+              quantity, price_dollars, time_in_force, state) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'gtc', 'filled') \
              RETURNING id",
             &[
                 &params.session_id,
@@ -2057,7 +2075,6 @@ pub async fn create_external_order(
                 &params.action.to_string(),
                 &params.quantity,
                 &params.price_dollars,
-                &params.quantity, // filled_quantity = quantity (fully filled)
             ],
         )
         .await
@@ -2087,7 +2104,7 @@ pub async fn create_external_order(
 /// Create a synthetic order for an external resting order (placed on exchange website).
 ///
 /// Unlike `create_external_order()` (for fills), this creates the order in 'acknowledged'
-/// state with filled_quantity=0, representing a live resting order on the exchange.
+/// state representing a live resting order on the exchange.
 ///
 /// If an order with the same exchange_order_id already exists, returns its ID.
 pub async fn create_external_resting_order(
@@ -2117,8 +2134,8 @@ pub async fn create_external_resting_order(
         .query_one(
             "INSERT INTO prediction_orders \
              (session_id, client_order_id, exchange_order_id, ticker, side, action, \
-              quantity, price_dollars, filled_quantity, time_in_force, state) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 'gtc', 'acknowledged') \
+              quantity, price_dollars, time_in_force, state) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'gtc', 'acknowledged') \
              RETURNING id",
             &[
                 &params.session_id,
@@ -2191,7 +2208,7 @@ pub async fn create_order_group(
 
     let risk_row = tx
         .query_one(
-            "SELECT COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional \
+            "SELECT COALESCE(SUM(price_dollars * (quantity - filled_qty(id))), 0) as open_notional \
              FROM prediction_orders \
              WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
             &[&session_id],
@@ -2420,7 +2437,7 @@ pub async fn get_group_orders(
         .query(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
-                    filled_quantity, time_in_force, state, cancel_reason, \
+                    filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
                     group_id, leg_role, created_at, updated_at \
              FROM prediction_orders \
              WHERE group_id = $1 AND session_id = $2 \
@@ -2470,7 +2487,7 @@ pub async fn get_groups_needing_evaluation(
             .query(
                 "SELECT id, session_id, client_order_id, exchange_order_id, \
                         ticker, side, action, quantity, price_dollars, \
-                        filled_quantity, time_in_force, state, cancel_reason, \
+                        filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
                         group_id, leg_role, created_at, updated_at \
                  FROM prediction_orders \
                  WHERE group_id = $1 AND session_id = $2 \

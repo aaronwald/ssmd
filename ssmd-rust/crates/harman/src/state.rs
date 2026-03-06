@@ -154,7 +154,7 @@ pub fn apply_event(
         (_, OrderEvent::Fill { .. }) => Ok(OrderState::Filled),
         (OrderState::PendingCancel, OrderEvent::PartialFill { .. }) => {
             // Partial fill while cancel is pending: stay in PendingCancel to preserve cancel intent.
-            // The filled_quantity is updated in the DB, but the cancel request remains active.
+            // The fill is recorded in the fills table, but the cancel request remains active.
             Ok(OrderState::PendingCancel)
         }
         (OrderState::PendingAmend, OrderEvent::PartialFill { .. }) => {

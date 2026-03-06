@@ -2620,7 +2620,7 @@ route("GET", "/v1/harman/sessions", async (_req, ctx) => {
     FROM sessions s
     LEFT JOIN LATERAL (
       SELECT COUNT(*) FILTER (WHERE state NOT IN ('filled','cancelled','rejected','expired')) as open_count,
-             COALESCE(SUM(price_dollars * (quantity - filled_quantity))
+             COALESCE(SUM(price_dollars * (quantity - filled_qty(id)))
                FILTER (WHERE state NOT IN ('filled','cancelled','rejected','expired')), 0) as open_notional
       FROM prediction_orders WHERE session_id = s.id
     ) o ON true
@@ -2669,7 +2669,7 @@ route("GET", "/v1/harman/sessions/:id/orders", async (req, ctx) => {
   if (!rawSql) return json({ error: "Harman instance not found" }, 404);
   const rows = await rawSql`
     SELECT id, client_order_id, exchange_order_id, ticker, side, action,
-           quantity, price_dollars, filled_quantity, state, cancel_reason,
+           quantity, price_dollars, filled_qty(id) as filled_quantity, state, cancel_reason,
            created_at, updated_at
     FROM prediction_orders
     WHERE session_id = ${sessionId}
@@ -2826,7 +2826,7 @@ route("GET", "/v1/harman/sessions/:id/risk", async (req, ctx) => {
 
   const riskRows = await rawSql`
     SELECT COUNT(*)::int as open_orders,
-           COALESCE(SUM(price_dollars * (quantity - filled_quantity)), 0) as open_notional
+           COALESCE(SUM(price_dollars * (quantity - filled_qty(id))), 0) as open_notional
     FROM prediction_orders
     WHERE session_id = ${sessionId}
       AND state NOT IN ('filled','cancelled','rejected','expired')
@@ -2871,7 +2871,7 @@ route("GET", "/v1/harman/orders/:id/timeline", async (req, ctx) => {
   // 1. Fetch order
   const orders = await rawSql`
     SELECT id, client_order_id, exchange_order_id, session_id, ticker, side, action,
-           quantity, price_dollars, filled_quantity, state, cancel_reason,
+           quantity, price_dollars, filled_qty(id) as filled_quantity, state, cancel_reason,
            created_at, updated_at
     FROM prediction_orders WHERE id = ${orderId}
   `;

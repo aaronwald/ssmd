@@ -109,7 +109,7 @@ async fn test_handle_group_on_fill_bracket_entry_activates_exits() {
     let _ = db::dequeue_order(&pool, session_id).await;
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Filled,
-        Some("exch-gf1-entry"), Some(Decimal::from(5)), None, "test",
+        Some("exch-gf1-entry"), None, "test",
     ).await.unwrap();
 
     // Call handle_group_on_fill — this is what the event ingester calls
@@ -161,7 +161,7 @@ async fn test_handle_group_on_fill_bracket_tp_fill_cancels_sl() {
     let _ = db::dequeue_order(&pool, session_id).await;
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Filled,
-        Some("exch-gf2-entry"), Some(Decimal::from(5)), None, "test",
+        Some("exch-gf2-entry"), None, "test",
     ).await.unwrap();
 
     // Activate exits (entry fill)
@@ -170,7 +170,7 @@ async fn test_handle_group_on_fill_bracket_tp_fill_cancels_sl() {
     // Now simulate TP being filled
     db::update_order_state(
         &pool, tp_order.id, session_id, OrderState::Filled,
-        Some("exch-gf2-tp"), Some(Decimal::from(5)), None, "test",
+        Some("exch-gf2-tp"), None, "test",
     ).await.unwrap();
 
     // Call handle_group_on_fill for TP fill — should cancel SL
@@ -220,14 +220,14 @@ async fn test_handle_group_on_fill_bracket_sl_fill_cancels_tp() {
     let _ = db::dequeue_order(&pool, session_id).await;
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Filled,
-        Some("exch-gf3-entry"), Some(Decimal::from(5)), None, "test",
+        Some("exch-gf3-entry"), None, "test",
     ).await.unwrap();
     db::handle_group_on_fill(&pool, entry_order.id, session_id).await.unwrap();
 
     // SL filled (instead of TP this time)
     db::update_order_state(
         &pool, sl_order.id, session_id, OrderState::Filled,
-        Some("exch-gf3-sl"), Some(Decimal::from(5)), None, "test",
+        Some("exch-gf3-sl"), None, "test",
     ).await.unwrap();
 
     let activated = db::handle_group_on_fill(&pool, sl_order.id, session_id)
@@ -279,7 +279,7 @@ async fn test_bracket_entry_cancel_cascades_to_staged() {
     let _ = db::dequeue_order(&pool, session_id).await;
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Cancelled,
-        None, Some(Decimal::ZERO), Some(&harman::types::CancelReason::ExchangeCancel), "test",
+        None, Some(&harman::types::CancelReason::ExchangeCancel), "test",
     ).await.unwrap();
 
     // Cancel staged siblings (what event_ingester does on cancel path)
@@ -325,7 +325,7 @@ async fn test_handle_group_on_fill_idempotent() {
     let _ = db::dequeue_order(&pool, session_id).await;
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Filled,
-        Some("exch-gf5-entry"), Some(Decimal::from(5)), None, "test",
+        Some("exch-gf5-entry"), None, "test",
     ).await.unwrap();
 
     // First call activates
@@ -408,7 +408,7 @@ async fn test_handle_group_on_fill_oco() {
     // Simulate first leg filled
     db::update_order_state(
         &pool, first.id, session_id, OrderState::Filled,
-        Some("exch-gf8-leg1"), Some(Decimal::from(5)), None, "test",
+        Some("exch-gf8-leg1"), None, "test",
     ).await.unwrap();
 
     // handle_group_on_fill for OCO — should not activate anything
@@ -454,7 +454,7 @@ async fn test_full_bracket_lifecycle_via_handle_group_on_fill() {
     let _ = db::dequeue_order(&pool, session_id).await;
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Filled,
-        Some("exch-gf9-entry"), Some(Decimal::from(10)), None, "test",
+        Some("exch-gf9-entry"), None, "test",
     ).await.unwrap();
 
     let activated = db::handle_group_on_fill(&pool, entry_order.id, session_id).await.unwrap();
@@ -465,19 +465,19 @@ async fn test_full_bracket_lifecycle_via_handle_group_on_fill() {
     // Step 2: TP submitted and acknowledged
     db::update_order_state(
         &pool, tp_order.id, session_id, OrderState::Acknowledged,
-        Some("exch-gf9-tp"), Some(Decimal::ZERO), None, "test",
+        Some("exch-gf9-tp"), None, "test",
     ).await.unwrap();
 
     // Step 3: SL submitted and acknowledged
     db::update_order_state(
         &pool, sl_order.id, session_id, OrderState::Acknowledged,
-        Some("exch-gf9-sl"), Some(Decimal::ZERO), None, "test",
+        Some("exch-gf9-sl"), None, "test",
     ).await.unwrap();
 
     // Step 4: TP filled
     db::update_order_state(
         &pool, tp_order.id, session_id, OrderState::Filled,
-        Some("exch-gf9-tp"), Some(Decimal::from(10)), None, "test",
+        Some("exch-gf9-tp"), None, "test",
     ).await.unwrap();
 
     let activated = db::handle_group_on_fill(&pool, tp_order.id, session_id).await.unwrap();
@@ -532,12 +532,12 @@ async fn test_handle_group_on_fill_entry_fill_exits_already_cancelled() {
     // Manually cancel the exit legs first (simulating a race or user cancel)
     db::update_order_state(
         &pool, tp_order.id, session_id, OrderState::Cancelled,
-        None, Some(Decimal::ZERO),
+        None,
         Some(&harman::types::CancelReason::UserRequested), "test",
     ).await.unwrap();
     db::update_order_state(
         &pool, sl_order.id, session_id, OrderState::Cancelled,
-        None, Some(Decimal::ZERO),
+        None,
         Some(&harman::types::CancelReason::UserRequested), "test",
     ).await.unwrap();
 
@@ -545,7 +545,7 @@ async fn test_handle_group_on_fill_entry_fill_exits_already_cancelled() {
     let _ = db::dequeue_order(&pool, session_id).await;
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Filled,
-        Some("exch-gf10-entry"), Some(Decimal::from(5)), None, "test",
+        Some("exch-gf10-entry"), None, "test",
     ).await.unwrap();
 
     // Should activate 0 (no staged legs left)

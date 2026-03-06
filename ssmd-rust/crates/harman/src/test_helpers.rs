@@ -356,8 +356,8 @@ pub async fn insert_test_order_with_coid(
         .query_one(
             "INSERT INTO prediction_orders \
              (session_id, client_order_id, exchange_order_id, ticker, side, action, \
-              quantity, price_dollars, filled_quantity, time_in_force, state) \
-             VALUES ($1, $2, $3, $4, 'yes', 'buy', 10, 0.50, 0, 'gtc', $5) \
+              quantity, price_dollars, time_in_force, state) \
+             VALUES ($1, $2, $3, $4, 'yes', 'buy', 10, 0.50, 'gtc', $5) \
              RETURNING id",
             &[
                 &session_id,
