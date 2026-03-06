@@ -686,6 +686,9 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
     // Update order state to submitted (for submit actions)
     if action == QueueAction::Submit {
         let from_state: String = row.get("state");
+        let from = parse_state(&from_state);
+        let _ = validate_transition(from, OrderState::Submitted)
+            .map_err(|e| format!("dequeue: invalid transition {} -> submitted: {}", from, e))?;
         tx.execute(
             "UPDATE prediction_orders SET state = 'submitted' WHERE id = $1",
             &[&order_id],
