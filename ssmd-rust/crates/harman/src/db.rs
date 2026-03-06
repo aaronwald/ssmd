@@ -1879,13 +1879,34 @@ pub async fn drain_queue_for_shutdown(pool: &Pool, session_id: i64) -> Result<u6
     // Mark non-terminal orders as rejected
     for row in &rows {
         let order_id: i64 = row.get("order_id");
-        tx.execute(
-            "UPDATE prediction_orders SET state = 'rejected', cancel_reason = 'shutdown' \
-             WHERE id = $1 AND state NOT IN ('filled', 'cancelled', 'rejected', 'expired')",
-            &[&order_id],
-        )
-        .await
-        .map_err(|e| format!("reject order: {}", e))?;
+
+        // Read current state before update (for audit)
+        let state_row = tx
+            .query_opt(
+                "SELECT state FROM prediction_orders WHERE id = $1 AND state NOT IN ('filled', 'cancelled', 'rejected', 'expired')",
+                &[&order_id],
+            )
+            .await
+            .map_err(|e| format!("get state: {}", e))?;
+
+        if let Some(sr) = state_row {
+            let from_state: String = sr.get("state");
+
+            tx.execute(
+                "UPDATE prediction_orders SET state = 'rejected', cancel_reason = 'shutdown' \
+                 WHERE id = $1 AND state NOT IN ('filled', 'cancelled', 'rejected', 'expired')",
+                &[&order_id],
+            )
+            .await
+            .map_err(|e| format!("reject order: {}", e))?;
+
+            tx.execute(
+                "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, 'rejected', 'shutdown_drain', 'shutdown')",
+                &[&order_id, &from_state],
+            )
+            .await
+            .map_err(|e| format!("audit shutdown: {}", e))?;
+        }
     }
 
     tx.commit()
@@ -1921,13 +1942,34 @@ pub async fn drain_queue_for_shutdown_all(pool: &Pool) -> Result<u64, String> {
 
     for row in &rows {
         let order_id: i64 = row.get("order_id");
-        tx.execute(
-            "UPDATE prediction_orders SET state = 'rejected', cancel_reason = 'shutdown' \
-             WHERE id = $1 AND state NOT IN ('filled', 'cancelled', 'rejected', 'expired')",
-            &[&order_id],
-        )
-        .await
-        .map_err(|e| format!("reject order: {}", e))?;
+
+        // Read current state before update (for audit)
+        let state_row = tx
+            .query_opt(
+                "SELECT state FROM prediction_orders WHERE id = $1 AND state NOT IN ('filled', 'cancelled', 'rejected', 'expired')",
+                &[&order_id],
+            )
+            .await
+            .map_err(|e| format!("get state: {}", e))?;
+
+        if let Some(sr) = state_row {
+            let from_state: String = sr.get("state");
+
+            tx.execute(
+                "UPDATE prediction_orders SET state = 'rejected', cancel_reason = 'shutdown' \
+                 WHERE id = $1 AND state NOT IN ('filled', 'cancelled', 'rejected', 'expired')",
+                &[&order_id],
+            )
+            .await
+            .map_err(|e| format!("reject order: {}", e))?;
+
+            tx.execute(
+                "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) VALUES ($1, $2, 'rejected', 'shutdown_drain', 'shutdown')",
+                &[&order_id, &from_state],
+            )
+            .await
+            .map_err(|e| format!("audit shutdown: {}", e))?;
+        }
     }
 
     tx.commit()
