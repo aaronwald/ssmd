@@ -612,6 +612,9 @@ pub async fn walk_to_state(pool: &Pool, order_id: i64, session_id: i64, target: 
             (OrderState::Expired, None),
         ],
         OrderState::Staged => panic!("walk_to_state: Staged is an initial state, not a target"),
+        OrderState::Monitoring => {
+            panic!("walk_to_state: Monitoring is reached from Staged, not Pending. Use update_order_state directly.");
+        }
     };
 
     for (state, exchange_id) in transitions {

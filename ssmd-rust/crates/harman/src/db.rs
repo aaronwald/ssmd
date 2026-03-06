@@ -440,6 +440,9 @@ fn infer_event(from: OrderState, to: OrderState) -> Result<OrderEvent, String> {
         (OrderState::Pending, OrderState::Cancelled) => Ok(OrderEvent::CancelRequest),
         (_, OrderState::Expired) => Ok(OrderEvent::Expire),
         (OrderState::Staged, OrderState::Pending) => Ok(OrderEvent::Activate),
+        (OrderState::Staged, OrderState::Monitoring) => Ok(OrderEvent::Monitor),
+        (OrderState::Monitoring, OrderState::Pending) => Ok(OrderEvent::Activate),
+        (OrderState::Monitoring, OrderState::Cancelled) => Ok(OrderEvent::CancelRequest),
         _ => Err(format!("unmapped transition: {} -> {}", from, to)),
     }
 }
@@ -2956,6 +2959,7 @@ fn parse_state(s: &str) -> OrderState {
         "rejected" => OrderState::Rejected,
         "expired" => OrderState::Expired,
         "staged" => OrderState::Staged,
+        "monitoring" => OrderState::Monitoring,
         _ => {
             warn!(state = s, "unknown order state in DB, defaulting to Pending");
             OrderState::Pending

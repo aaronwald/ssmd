@@ -32,6 +32,8 @@ pub enum OrderState {
     Expired,
     /// Order created but waiting for trigger activation (not on exchange, no risk)
     Staged,
+    /// Order waiting for price trigger (PriceMonitor watches NATS ticks)
+    Monitoring,
 }
 
 impl OrderState {
@@ -57,6 +59,7 @@ impl OrderState {
                 | OrderState::PendingCancel
                 | OrderState::PendingAmend
                 | OrderState::PendingDecrease
+                | OrderState::Monitoring
         )
     }
 }
@@ -76,6 +79,7 @@ impl std::fmt::Display for OrderState {
             OrderState::Rejected => "rejected",
             OrderState::Expired => "expired",
             OrderState::Staged => "staged",
+            OrderState::Monitoring => "monitoring",
         };
         write!(f, "{}", s)
     }
@@ -110,6 +114,8 @@ pub enum OrderEvent {
     Expire,
     /// Trigger condition met, activate staged order
     Activate,
+    /// Trigger condition set, move to price monitoring
+    Monitor,
 }
 
 impl std::fmt::Display for OrderEvent {
@@ -128,6 +134,7 @@ impl std::fmt::Display for OrderEvent {
             OrderEvent::DecreaseConfirm => write!(f, "decrease_confirm"),
             OrderEvent::Expire => write!(f, "expire"),
             OrderEvent::Activate => write!(f, "activate"),
+            OrderEvent::Monitor => write!(f, "monitor"),
         }
     }
 }
@@ -222,6 +229,11 @@ pub fn apply_event(
         // Staged transitions
         (OrderState::Staged, OrderEvent::Activate) => Ok(OrderState::Pending),
         (OrderState::Staged, OrderEvent::CancelRequest) => Ok(OrderState::Cancelled),
+        (OrderState::Staged, OrderEvent::Monitor) => Ok(OrderState::Monitoring),
+
+        // Monitoring transitions (PriceMonitor)
+        (OrderState::Monitoring, OrderEvent::Activate) => Ok(OrderState::Pending),
+        (OrderState::Monitoring, OrderEvent::CancelRequest) => Ok(OrderState::Cancelled),
 
         // All other transitions are invalid
         (state, evt) => Err(TransitionError::InvalidTransition {
@@ -369,6 +381,7 @@ mod tests {
             OrderState::PendingAmend,
             OrderState::PendingDecrease,
             OrderState::Staged,
+            OrderState::Monitoring,
         ];
         for state in non_terminal {
             let result = apply_event(state, &OrderEvent::Fill { filled_qty: Decimal::from(1) });
@@ -445,6 +458,7 @@ mod tests {
             OrderState::PendingAmend,
             OrderState::PendingDecrease,
             OrderState::Staged,
+            OrderState::Monitoring,
         ];
         for state in non_terminal {
             let result = apply_event(state, &OrderEvent::PartialFill { filled_qty: Decimal::from(1) });
@@ -802,6 +816,7 @@ mod tests {
         assert!(!OrderState::PendingCancel.is_terminal());
         assert!(!OrderState::PendingAmend.is_terminal());
         assert!(!OrderState::PendingDecrease.is_terminal());
+        assert!(!OrderState::Monitoring.is_terminal());
     }
 
     #[test]
@@ -1145,6 +1160,16 @@ mod tests {
     // ======================================================================
 
     #[test]
+    fn test_monitoring_is_not_terminal() {
+        assert!(!OrderState::Monitoring.is_terminal());
+    }
+
+    #[test]
+    fn test_monitoring_is_open() {
+        assert!(OrderState::Monitoring.is_open());
+    }
+
+    #[test]
     fn test_staged_is_not_terminal() {
         assert!(!OrderState::Staged.is_terminal());
     }
@@ -1207,6 +1232,59 @@ mod tests {
         assert_eq!(format!("{}", OrderEvent::Activate), "activate");
     }
 
+    // ======================================================================
+    // Monitoring state tests (PriceMonitor)
+    // ======================================================================
+
+    #[test]
+    fn test_staged_to_monitoring() {
+        let result = apply_event(OrderState::Staged, &OrderEvent::Monitor);
+        assert_eq!(result.unwrap(), OrderState::Monitoring);
+    }
+
+    #[test]
+    fn test_monitoring_to_pending() {
+        let result = apply_event(OrderState::Monitoring, &OrderEvent::Activate);
+        assert_eq!(result.unwrap(), OrderState::Pending);
+    }
+
+    #[test]
+    fn test_monitoring_cancel() {
+        let result = apply_event(OrderState::Monitoring, &OrderEvent::CancelRequest);
+        assert_eq!(result.unwrap(), OrderState::Cancelled);
+    }
+
+    #[test]
+    fn test_monitoring_accepts_fill() {
+        let result = apply_event(OrderState::Monitoring, &OrderEvent::Fill { filled_qty: Decimal::from(1) });
+        assert_eq!(result.unwrap(), OrderState::Filled);
+    }
+
+    #[test]
+    fn test_monitoring_display() {
+        assert_eq!(OrderState::Monitoring.to_string(), "monitoring");
+    }
+
+    #[test]
+    fn test_monitor_event_display() {
+        assert_eq!(format!("{}", OrderEvent::Monitor), "monitor");
+    }
+
+    #[test]
+    fn test_lifecycle_staged_monitor_activate_then_fill() {
+        // Staged → Monitoring → Pending → Submitted → Acknowledged → Filled
+        let s = apply_event(OrderState::Staged, &OrderEvent::Monitor).unwrap();
+        assert_eq!(s, OrderState::Monitoring);
+        let s = apply_event(s, &OrderEvent::Activate).unwrap();
+        assert_eq!(s, OrderState::Pending);
+        let s = apply_event(s, &OrderEvent::Submit).unwrap();
+        assert_eq!(s, OrderState::Submitted);
+        let s = apply_event(s, &OrderEvent::Acknowledge { exchange_order_id: "e1".into() }).unwrap();
+        assert_eq!(s, OrderState::Acknowledged);
+        let s = apply_event(s, &OrderEvent::Fill { filled_qty: Decimal::from(10) }).unwrap();
+        assert_eq!(s, OrderState::Filled);
+    }
+
     #[test]
     fn test_lifecycle_staged_activate_then_fill() {
         // Staged → Pending → Submitted → Acknowledged → Filled
@@ -1264,6 +1342,7 @@ mod tests {
             OrderState::Pending, OrderState::Submitted, OrderState::Acknowledged,
             OrderState::PartiallyFilled, OrderState::PendingCancel,
             OrderState::PendingAmend, OrderState::PendingDecrease, OrderState::Staged,
+            OrderState::Monitoring,
         ] {
             expected.insert((state, "fill"), OrderState::Filled);
         }
@@ -1277,6 +1356,7 @@ mod tests {
         expected.insert((OrderState::PendingAmend, "partial_fill"), OrderState::PendingAmend);
         expected.insert((OrderState::PendingDecrease, "partial_fill"), OrderState::PendingDecrease);
         expected.insert((OrderState::Staged, "partial_fill"), OrderState::PartiallyFilled);
+        expected.insert((OrderState::Monitoring, "partial_fill"), OrderState::PartiallyFilled);
 
         // Pending transitions
         expected.insert((OrderState::Pending, "submit"), OrderState::Submitted);
@@ -1321,13 +1401,19 @@ mod tests {
         // Staged transitions
         expected.insert((OrderState::Staged, "activate"), OrderState::Pending);
         expected.insert((OrderState::Staged, "cancel_request"), OrderState::Cancelled);
+        expected.insert((OrderState::Staged, "monitor"), OrderState::Monitoring);
 
-        // Test all 156 combinations
+        // Monitoring transitions (PriceMonitor)
+        expected.insert((OrderState::Monitoring, "activate"), OrderState::Pending);
+        expected.insert((OrderState::Monitoring, "cancel_request"), OrderState::Cancelled);
+
+        // Test all combinations
         let all_states = [
             OrderState::Pending, OrderState::Submitted, OrderState::Acknowledged,
             OrderState::PartiallyFilled, OrderState::Filled, OrderState::PendingCancel,
             OrderState::PendingAmend, OrderState::PendingDecrease, OrderState::Cancelled,
             OrderState::Rejected, OrderState::Expired, OrderState::Staged,
+            OrderState::Monitoring,
         ];
 
         let all_events: Vec<(&str, OrderEvent)> = vec![
@@ -1344,6 +1430,7 @@ mod tests {
             ("decrease_confirm", OrderEvent::DecreaseConfirm),
             ("expire", OrderEvent::Expire),
             ("activate", OrderEvent::Activate),
+            ("monitor", OrderEvent::Monitor),
         ];
 
         for &state in &all_states {
