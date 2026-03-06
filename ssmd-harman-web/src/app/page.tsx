@@ -67,6 +67,8 @@ export default function Dashboard() {
                         <th className="pb-2 pr-4 text-right">Position</th>
                         <th className="pb-2 pr-4 text-right">Buy Filled</th>
                         <th className="pb-2 pr-4 text-right">Sell Filled</th>
+                        <th className="pb-2 pr-4 text-right">Bid</th>
+                        <th className="pb-2 pr-4 text-right">Ask</th>
                         <th className="pb-2 pr-4 text-right">Last</th>
                         <th className="pb-2 text-right">Mkt Value</th>
                       </tr>
@@ -85,6 +87,8 @@ export default function Dashboard() {
                             <td className={`py-2 pr-4 font-mono text-right ${netQty > 0 ? "text-green" : netQty < 0 ? "text-red" : "text-fg-subtle"}`}>{p.net_quantity}</td>
                             <td className="py-2 pr-4 font-mono text-right">{p.buy_filled}</td>
                             <td className="py-2 pr-4 font-mono text-right">{p.sell_filled}</td>
+                            <td className="py-2 pr-4 font-mono text-right text-fg-muted">{snap?.yesBid != null ? snap.yesBid.toFixed(2) : "—"}</td>
+                            <td className="py-2 pr-4 font-mono text-right text-fg-muted">{snap?.yesAsk != null ? snap.yesAsk.toFixed(2) : "—"}</td>
                             <td className="py-2 pr-4 font-mono text-right text-fg-muted">{snap?.last != null ? snap.last.toFixed(2) : "—"}</td>
                             <td className="py-2 font-mono text-right text-fg-muted">{mktVal != null ? `$${mktVal.toFixed(2)}` : "—"}</td>
                           </tr>
