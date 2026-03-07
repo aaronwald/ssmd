@@ -54,7 +54,7 @@ interface NdjsonRow {
 interface FetchResult {
   symbol: string;
   base: string;
-  rows: NdjsonRow[];
+  rowCount: number;
   error?: string;
 }
 
@@ -113,28 +113,36 @@ export async function runHolsGenerate(
     Deno.exit(1);
   }
 
-  // 2. Fetch OHLCV for each symbol (concurrent with rate limiting)
+  // 2. Fetch OHLCV for each symbol, streaming rows to NDJSON file
+  const ndjsonPath = `/tmp/hols-ohlcv-${endDateStr}.ndjson`;
+  const ndjsonFile = await Deno.open(ndjsonPath, { write: true, create: true, truncate: true });
+  const encoder = new TextEncoder();
+  const writeRow = async (row: NdjsonRow): Promise<void> => {
+    await ndjsonFile.write(encoder.encode(JSON.stringify(row) + "\n"));
+  };
+
   console.log(`[hols] Fetching with concurrency=${CONCURRENCY}, rate=${RATE_LIMIT_MS}ms between requests`);
-  const results = await fetchAllConcurrent(symbols, startDate, endDate);
+  let results: FetchResult[];
+  try {
+    results = await fetchAllConcurrent(symbols, startDate, endDate, writeRow);
+  } finally {
+    ndjsonFile.close();
+  }
 
   const successes = results.filter((r) => !r.error);
   const failures = results.filter((r) => !!r.error);
-  const allRows = successes.flatMap((r) => r.rows);
+  const totalRows = successes.reduce((sum, r) => sum + r.rowCount, 0);
 
   console.log(
-    `[hols] Fetch complete: ${successes.length} ok, ${failures.length} failed, ${allRows.length} total rows`,
+    `[hols] Fetch complete: ${successes.length} ok, ${failures.length} failed, ${totalRows} total rows`,
   );
 
-  if (allRows.length === 0) {
+  if (totalRows === 0) {
     console.error("[hols] No data fetched. Exiting.");
     Deno.exit(1);
   }
 
-  // 3. Write NDJSON
-  const ndjsonPath = `/tmp/hols-ohlcv-${endDateStr}.ndjson`;
-  const ndjsonContent = allRows.map((r) => JSON.stringify(r)).join("\n") + "\n";
-  await Deno.writeTextFile(ndjsonPath, ndjsonContent);
-  console.log(`[hols] Wrote ${allRows.length} rows to ${ndjsonPath}`);
+  console.log(`[hols] Wrote ${totalRows} rows to ${ndjsonPath}`);
 
   // 4. Convert to Parquet via DuckDB
   const parquetPath = `/tmp/hols-ohlcv-${endDateStr}.parquet`;
@@ -162,7 +170,7 @@ export async function runHolsGenerate(
       symbolCount: symbols.length,
       successCount: successes.length,
       failCount: failures.length,
-      totalRows: allRows.length,
+      totalRows,
       fileSizeKB,
       durationSec,
       failures: failures.map((f) => ({
@@ -199,6 +207,7 @@ async function fetchAllConcurrent(
   symbols: { symbol: string; base: string }[],
   startDate: Date,
   endDate: Date,
+  writeRow: (row: NdjsonRow) => Promise<void>,
 ): Promise<FetchResult[]> {
   const results: FetchResult[] = new Array(symbols.length);
   let completed = 0;
@@ -210,14 +219,14 @@ async function fetchAllConcurrent(
       if (idx >= symbols.length) break;
 
       const { symbol, base } = symbols[idx];
-      const result = await fetchWithRetry(symbol, base, startDate, endDate);
+      const result = await fetchWithRetry(symbol, base, startDate, endDate, writeRow);
       results[idx] = result;
       completed++;
 
       if (result.error) {
         console.log(`[hols] [${completed}/${symbols.length}] ${symbol} FAIL: ${result.error}`);
       } else {
-        console.log(`[hols] [${completed}/${symbols.length}] ${symbol} OK: ${result.rows.length} candles`);
+        console.log(`[hols] [${completed}/${symbols.length}] ${symbol} OK: ${result.rowCount} candles`);
       }
 
       await sleep(RATE_LIMIT_MS);
@@ -234,10 +243,11 @@ async function fetchWithRetry(
   base: string,
   startDate: Date,
   endDate: Date,
+  writeRow: (row: NdjsonRow) => Promise<void>,
 ): Promise<FetchResult> {
   const startMs = startDate.getTime();
   const endMs = endDate.getTime() + 86400_000;
-  const allRows: NdjsonRow[] = [];
+  let rowCount = 0;
   const seen = new Set<number>();
 
   // Paginate: API returns max 2000 1m candles per request.
@@ -253,7 +263,7 @@ async function fetchWithRetry(
 
     const candles = await fetchPage(url);
     if (candles === null) {
-      return { symbol, base, rows: [], error: `Failed after ${MAX_RETRIES} retries` };
+      return { symbol, base, rowCount: 0, error: `Failed after ${MAX_RETRIES} retries` };
     }
     if (candles.length === 0) break;
 
@@ -262,7 +272,7 @@ async function fetchWithRetry(
       if (c.time >= startMs && c.time < endMs && !seen.has(c.time)) {
         seen.add(c.time);
         const timeSec = Math.floor(c.time / 1000);
-        allRows.push({
+        await writeRow({
           symbol,
           source: "kraken_futures",
           date: new Date(c.time).toISOString(),
@@ -279,6 +289,7 @@ async function fetchWithRetry(
           marketorder_volume: null,
           marketorder_volume_from: null,
         });
+        rowCount++;
         addedCount++;
       }
     }
@@ -292,8 +303,7 @@ async function fetchWithRetry(
     await sleep(RATE_LIMIT_MS);
   }
 
-  allRows.sort((a, b) => a.unix - b.unix);
-  return { symbol, base, rows: allRows };
+  return { symbol, base, rowCount };
 }
 
 async function fetchPage(url: string): Promise<OhlcvCandle[] | null> {
