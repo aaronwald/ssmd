@@ -28,6 +28,12 @@ export function MarketSlideOver({ market, onClose, initialSide, initialAction, i
   const yesBid = market.yes_bid ?? market.bid ?? market.best_bid ?? null;
   const yesAsk = market.yes_ask ?? market.ask ?? market.best_ask ?? null;
   const last = market.last ?? (market.price != null ? Number(market.price) : null);
+  const isNoSide = initialSide === "no";
+  // Show prices for the selected side
+  const displayBid = isNoSide ? (yesAsk != null ? +(1 - yesAsk).toFixed(2) : null) : yesBid;
+  const displayAsk = isNoSide ? (yesBid != null ? +(1 - yesBid).toFixed(2) : null) : yesAsk;
+  const displayLast = isNoSide ? (last != null ? +(1 - last).toFixed(2) : null) : last;
+  const sideLabel = isNoSide ? "No" : "Yes";
   const fmtPrice = (v: number | null) => v != null ? `$${v.toFixed(2)}` : "—";
 
   const marketExchange = market.exchange || "kalshi";
@@ -64,16 +70,16 @@ export function MarketSlideOver({ market, onClose, initialSide, initialAction, i
           </div>
           <div className="grid grid-cols-3 gap-3 text-center">
             <div>
-              <div className="text-xs text-fg-muted">Yes Bid</div>
-              <div className="font-mono text-sm text-fg">{fmtPrice(yesBid)}</div>
+              <div className="text-xs text-fg-muted">{sideLabel} Bid</div>
+              <div className="font-mono text-sm text-fg">{fmtPrice(displayBid)}</div>
             </div>
             <div>
-              <div className="text-xs text-fg-muted">Yes Ask</div>
-              <div className="font-mono text-sm text-fg">{fmtPrice(yesAsk)}</div>
+              <div className="text-xs text-fg-muted">{sideLabel} Ask</div>
+              <div className="font-mono text-sm text-fg">{fmtPrice(displayAsk)}</div>
             </div>
             <div>
               <div className="text-xs text-fg-muted">Last</div>
-              <div className="font-mono text-sm text-fg">{fmtPrice(last)}</div>
+              <div className="font-mono text-sm text-fg">{fmtPrice(displayLast)}</div>
             </div>
           </div>
           <div className="flex gap-4 text-xs text-fg-muted">

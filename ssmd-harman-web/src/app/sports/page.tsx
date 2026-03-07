@@ -108,16 +108,17 @@ function getEventEstimatedStart(event: MonitorEvent): Date | null {
 
 /** Returns true if the date string includes a time component (not just YYYY-MM-DD) */
 function hasPreciseTime(dateStr: string): boolean {
-  return dateStr.includes("T");
+  // Postgres ::text gives "2026-03-07 21:05:00+00", ISO gives "2026-03-07T21:05:00Z"
+  return dateStr.includes("T") || /\d{4}-\d{2}-\d{2} \d{2}:/.test(dateStr);
 }
 
 function isToday(dateStr: string): boolean {
-  // For date-only strings like "2026-03-05", compare directly to avoid timezone issues
-  if (!dateStr.includes("T")) {
+  if (!hasPreciseTime(dateStr)) {
+    // Pure date string like "2026-03-05"
     const todayStr = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD
     return dateStr === todayStr;
   }
-  // For EET timestamps, compare in ET (Kalshi uses EST for contract naming)
+  // Timestamp (ISO "T" or Postgres space format) — compare in ET
   const d = new Date(dateStr);
   const todayET = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const dateET = d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
@@ -405,7 +406,7 @@ function SportsContent() {
         if (tickerDate) return tickerDate >= todayStr;
         const date = getEventDate(e);
         if (!date) return true;
-        if (!date.includes("T")) return date >= todayStr;
+        if (!hasPreciseTime(date)) return date >= todayStr;
         // For timestamp dates, check if it's today or future in ET
         const dateET = new Date(date).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
         return dateET >= todayStr;
