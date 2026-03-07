@@ -131,7 +131,8 @@ impl CacheWarmer {
                 r#"
                 SELECT e.series_ticker, e.event_ticker, e.title, e.status,
                        e.strike_date::text,
-                       COUNT(m.ticker) AS market_count
+                       COUNT(m.ticker) AS market_count,
+                       MIN(m.expected_expiration_time)::text AS expected_expiration_time
                 FROM events e
                 JOIN markets m ON m.event_ticker = e.event_ticker
                   AND m.status = 'active' AND m.close_time > NOW()
@@ -149,11 +150,13 @@ impl CacheWarmer {
             let status: String = row.get(3);
             let strike_date: Option<String> = row.get(4);
             let market_count: i64 = row.get(5);
+            let expected_expiration_time: Option<String> = row.get(6);
             let val = serde_json::json!({
                 "title": title.unwrap_or_default(),
                 "status": status,
                 "strike_date": strike_date,
                 "market_count": market_count,
+                "expected_expiration_time": expected_expiration_time,
             });
             let hash_key = format!("monitor:events:{}", series_ticker);
             cache.hset(&hash_key, &event_ticker, &val.to_string()).await?;

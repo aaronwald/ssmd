@@ -188,6 +188,7 @@ export interface MonitorEvent {
   title: string;
   status?: string;
   strike_date?: string | null;
+  expected_expiration_time?: string | null;
   market_count?: number;
   exchange?: string;
   // Kraken

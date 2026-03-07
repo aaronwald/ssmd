@@ -92,8 +92,18 @@ function parseGameDate(ticker: string): string | null {
 
 /** Returns precise datetime if available, otherwise date-only string (no time) */
 function getEventDate(event: MonitorEvent): string | null {
+  if (event.expected_expiration_time) return event.expected_expiration_time;
   if (event.strike_date) return event.strike_date;
   return parseGameDate(event.ticker);
+}
+
+/** Compute estimated start time from event-level EET (no market data needed) */
+function getEventEstimatedStart(event: MonitorEvent): Date | null {
+  const eet = event.expected_expiration_time;
+  if (!eet) return null;
+  const league = seriesLabel(eventSeries(event.ticker));
+  const durationMs = (GAME_DURATION_HOURS[league] ?? 2.5) * 3600000;
+  return new Date(new Date(eet).getTime() - durationMs);
 }
 
 /** Returns true if the date string includes a time component (not just YYYY-MM-DD) */
@@ -107,8 +117,11 @@ function isToday(dateStr: string): boolean {
     const todayStr = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD
     return dateStr === todayStr;
   }
+  // For EET timestamps, compare in ET (Kalshi uses EST for contract naming)
   const d = new Date(dateStr);
-  return d.toDateString() === new Date().toDateString();
+  const todayET = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const dateET = d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  return dateET === todayET;
 }
 
 function fmtGameDate(dateStr: string): string {
@@ -259,9 +272,8 @@ function useTodayEvents(seriesTickers: string[] | null) {
         seriesTickers!.map((s) => getEvents(s).catch(() => []))
       );
       const all = results.flat();
-      // Filter to today's games only
+      // Filter to today's games — keep settled/finalized so results stay visible
       return all.filter((e) => {
-        if (e.status !== "active") return false;
         const date = getEventDate(e);
         return date && isToday(date);
       });
@@ -386,15 +398,17 @@ function SportsContent() {
 
     if (!singleSeriesEvents) return [];
     const todayStr = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD
-    const now = Date.now();
     return singleSeriesEvents
       .filter((e) => {
-        if (e.status !== "active") return false;
+        // Use ticker date (always date-only) for day filtering — not EET
+        const tickerDate = parseGameDate(e.ticker);
+        if (tickerDate) return tickerDate >= todayStr;
         const date = getEventDate(e);
         if (!date) return true;
-        // Date-only: show if today or future
         if (!date.includes("T")) return date >= todayStr;
-        return new Date(date).getTime() > now;
+        // For timestamp dates, check if it's today or future in ET
+        const dateET = new Date(date).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+        return dateET >= todayStr;
       })
       .sort((a, b) => {
         const da = getEventDate(a);
@@ -597,6 +611,9 @@ function getSortValue(event: MonitorEvent, col: SortColumn): string | number {
     case "game":
       return parseMatchup(event.title ?? event.ticker);
     case "time": {
+      // Prefer EET-derived start time for accurate sorting
+      const start = getEventEstimatedStart(event);
+      if (start) return start.getTime();
       const d = getEventDate(event);
       return d ? new Date(d).getTime() : Infinity;
     }
@@ -759,13 +776,25 @@ function GameRow({
 }) {
   // Only fetch markets when expanded — prevents 429 rate limit flood
   const { data: markets } = useMarkets(isExpanded ? event.ticker : null);
-  const eventDate = getEventDate(event);
 
-  // Game state: use market data when available, otherwise show date info
-  const gameState = useMemo(
-    () => markets ? getGameState(markets, event.ticker) : { state: "unknown" as GameState, countdownTarget: null, label: "" },
-    [markets, event.ticker],
-  );
+  // Compute start time from event-level EET (available for all rows, no market fetch needed)
+  const estimatedStart = useMemo(() => getEventEstimatedStart(event), [event]);
+
+  // Game state: use market data when available, otherwise derive from event-level EET
+  const gameState = useMemo(() => {
+    if (markets) return getGameState(markets, event.ticker);
+    // Derive basic game state from event-level EET without market data
+    if (!estimatedStart) return { state: "unknown" as GameState, countdownTarget: null, label: "" };
+    const now = Date.now();
+    const eetTime = new Date(event.expected_expiration_time!).getTime();
+    if (now < estimatedStart.getTime()) {
+      return { state: "upcoming" as GameState, countdownTarget: estimatedStart.toISOString(), label: "" };
+    }
+    if (now < eetTime + 3600000) {
+      return { state: "in_progress" as GameState, countdownTarget: null, label: "Live" };
+    }
+    return { state: "final" as GameState, countdownTarget: null, label: "Final" };
+  }, [markets, event, estimatedStart]);
 
   const countdown = useCountdown(gameState.countdownTarget);
   const colSpan = showLeague ? 7 : 6;
@@ -811,7 +840,9 @@ function GameRow({
           {parseMatchup(event.title ?? event.ticker)}
         </td>
         <td className="px-4 py-2 text-right text-xs text-fg-muted">
-          {markets ? fmtStartTime(markets, event.ticker) : (eventDate ? fmtGameDate(eventDate) : "-")}
+          {estimatedStart
+            ? estimatedStart.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })
+            : "-"}
         </td>
         <td className={`px-4 py-2 text-right text-xs font-mono ${stateColor}`}>
           {countdown || gameState.label}
