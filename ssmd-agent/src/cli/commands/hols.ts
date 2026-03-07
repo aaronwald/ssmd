@@ -13,7 +13,8 @@ import nodemailer from "nodemailer";
 
 const KRAKEN_CHARTS_BASE = "https://futures.kraken.com/api/charts/v1/trade";
 const API_TIMEOUT_MS = 15000;
-const RATE_LIMIT_MS = 1000;
+const CONCURRENCY = 10;
+const RATE_LIMIT_MS = 200;
 const MAX_RETRIES = 3;
 const DEFAULT_LOOKBACK_DAYS = 3;
 const GCS_BUCKET = "ssmd-data";
@@ -112,26 +113,9 @@ export async function runHolsGenerate(
     Deno.exit(1);
   }
 
-  // 2. Fetch OHLCV for each symbol
-  const results: FetchResult[] = [];
-  for (let i = 0; i < symbols.length; i++) {
-    const { symbol, base } = symbols[i];
-    console.log(`[hols] [${i + 1}/${symbols.length}] Fetching ${symbol}...`);
-
-    const result = await fetchWithRetry(symbol, base, startDate, endDate);
-    results.push(result);
-
-    if (result.error) {
-      console.log(`[hols]   FAIL: ${result.error}`);
-    } else {
-      console.log(`[hols]   OK: ${result.rows.length} candles`);
-    }
-
-    // Rate limit: 1 req/sec (skip sleep on last symbol)
-    if (i < symbols.length - 1) {
-      await sleep(RATE_LIMIT_MS);
-    }
-  }
+  // 2. Fetch OHLCV for each symbol (concurrent with rate limiting)
+  console.log(`[hols] Fetching with concurrency=${CONCURRENCY}, rate=${RATE_LIMIT_MS}ms between requests`);
+  const results = await fetchAllConcurrent(symbols, startDate, endDate);
 
   const successes = results.filter((r) => !r.error);
   const failures = results.filter((r) => !!r.error);
@@ -210,6 +194,40 @@ export async function runHolsGenerate(
 }
 
 // --- Internal helpers ---
+
+async function fetchAllConcurrent(
+  symbols: { symbol: string; base: string }[],
+  startDate: Date,
+  endDate: Date,
+): Promise<FetchResult[]> {
+  const results: FetchResult[] = new Array(symbols.length);
+  let completed = 0;
+  let queue = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const idx = queue++;
+      if (idx >= symbols.length) break;
+
+      const { symbol, base } = symbols[idx];
+      const result = await fetchWithRetry(symbol, base, startDate, endDate);
+      results[idx] = result;
+      completed++;
+
+      if (result.error) {
+        console.log(`[hols] [${completed}/${symbols.length}] ${symbol} FAIL: ${result.error}`);
+      } else {
+        console.log(`[hols] [${completed}/${symbols.length}] ${symbol} OK: ${result.rows.length} candles`);
+      }
+
+      await sleep(RATE_LIMIT_MS);
+    }
+  }
+
+  const workers = Array.from({ length: CONCURRENCY }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
 
 async function fetchWithRetry(
   symbol: string,
