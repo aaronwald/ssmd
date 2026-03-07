@@ -13,6 +13,7 @@ WORKDIR /app
 COPY deno.json ./
 COPY src/server/ ./src/server/
 COPY src/lib/ ./src/lib/
+COPY src/config.ts ./src/config.ts
 COPY src/cli/ ./src/cli/
 
 # Cache dependencies (server only; CLI deps cached at runtime for CronJob use)
