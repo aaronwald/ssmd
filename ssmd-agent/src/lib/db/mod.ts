@@ -161,6 +161,7 @@ export {
   listPairs,
   getPair,
   getPairStats,
+  listActivePerpSymbols,
   insertPerpSnapshots,
   getPairSnapshots,
   cleanupOldSnapshots,

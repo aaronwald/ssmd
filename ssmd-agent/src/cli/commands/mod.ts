@@ -32,6 +32,7 @@ import { handleVolume } from "./volume-analysis.ts";
 import { handleBilling } from "./billing.ts";
 import { handleSmokeTest } from "./smoke-test.ts";
 import { handleVerifyHourly } from "./verify-hourly.ts";
+import { handleHols } from "./hols.ts";
 
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
@@ -184,6 +185,10 @@ export async function run(args: string[]): Promise<void> {
       await handleVerifyHourly(flags);
       break;
 
+    case "hols":
+      await handleHols(subcommand, flags);
+      break;
+
     case "funding-rate-consumer": {
       const { runFundingRateConsumer } = await import("./funding-rate-consumer.ts");
       await runFundingRateConsumer(args.slice(1));
@@ -296,6 +301,7 @@ function printHelp(): void {
   console.log("  billing           Billing aggregation and credit management");
   console.log("  smoke-test        Integration smoke test for API endpoints");
   console.log("  verify-hourly     Verify current hourly KXBTCD contract is in secmaster");
+  console.log("  hols              HOLS strategy — OHLCV data generation");
   console.log("  funding-rate-consumer  Consume Kraken Futures funding rates from NATS");
   console.log("  lifecycle-consumer  Consume Kalshi lifecycle events from NATS");
   console.log("  agent             Start interactive agent REPL");

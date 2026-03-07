@@ -314,6 +314,27 @@ export async function getPairSnapshots(
 }
 
 /**
+ * List all active Kraken perpetual symbols (wsName field = Kraken API symbol).
+ * Used by hols generate to know which symbols to fetch OHLCV for.
+ */
+export async function listActivePerpSymbols(
+  db: Database,
+  exchange = "kraken",
+): Promise<{ symbol: string; base: string }[]> {
+  const rows = await db
+    .select({
+      symbol: pairs.wsName,
+      base: pairs.base,
+    })
+    .from(pairs)
+    .where(
+      sql`${pairs.exchange} = ${exchange} AND ${pairs.marketType} = 'perpetual' AND ${pairs.status} = 'active' AND ${pairs.deletedAt} IS NULL`,
+    );
+
+  return rows.map((r: { symbol: string | null; base: string }) => ({ symbol: r.symbol!, base: r.base }));
+}
+
+/**
  * Delete pair snapshots older than the retention period.
  * Called after each sync to keep the table bounded.
  */
