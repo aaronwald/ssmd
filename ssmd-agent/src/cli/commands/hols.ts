@@ -237,24 +237,26 @@ async function fetchWithRetry(
       }
 
       // Filter candles for the target date
+      // Kraken charts API returns timestamps in milliseconds
       const targetDate = new Date(dateStr + "T00:00:00Z");
-      const targetUnix = Math.floor(targetDate.getTime() / 1000);
-      const nextDayUnix = targetUnix + 86400;
+      const targetMs = targetDate.getTime();
+      const nextDayMs = targetMs + 86400_000;
 
       const filtered = data.candles.filter(
-        (c) => c.time >= targetUnix && c.time < nextDayUnix,
+        (c) => c.time >= targetMs && c.time < nextDayMs,
       );
 
       const rows: NdjsonRow[] = filtered.map((c) => {
-        const openDate = new Date(c.time * 1000);
-        const closeDate = new Date((c.time + 86400) * 1000);
+        const timeSec = Math.floor(c.time / 1000);
+        const openDate = new Date(c.time);
+        const closeDate = new Date(c.time + 86400_000);
         return {
           symbol,
           source: "kraken_futures",
           date: openDate.toISOString(),
           date_close: closeDate.toISOString(),
-          unix: c.time,
-          close_unix: c.time + 86400,
+          unix: timeSec,
+          close_unix: timeSec + 86400,
           open: parseFloat(c.open),
           high: parseFloat(c.high),
           low: parseFloat(c.low),
