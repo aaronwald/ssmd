@@ -9,6 +9,7 @@ export const FEED_CONFIG: Record<string, FeedInfo> = {
   "kalshi": { prefix: "kalshi", stream: "crypto", messageTypes: ["ticker", "trade", "market_lifecycle_v2"] },
   "kraken-futures": { prefix: "kraken-futures", stream: "futures", messageTypes: ["ticker", "trade"] },
   "polymarket": { prefix: "polymarket", stream: "markets", messageTypes: ["book", "last_trade_price", "price_change", "best_bid_ask"] },
+  "hols": { prefix: "hols", stream: "crypto/daily", messageTypes: ["ohlcv"] },
 };
 
 export interface FeedInfo {
@@ -59,22 +60,38 @@ export async function listParquetFiles(
   const from = new Date(dateFrom);
   const to = new Date(dateTo);
 
+  // HOLS uses a flat layout: {prefix}/{stream}/{date}/ohlcv.parquet
+  // Archiver uses double-nesting: {prefix}/{prefix}/{stream}/{date}/{type}_{HHMM}.parquet
+  const isFlat = config.prefix === "hols";
+
   for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
     const dateStr = d.toISOString().slice(0, 10);
-    const prefix = `${config.prefix}/${config.prefix}/${config.stream}/${dateStr}/`;
+    const gcsPrefix = isFlat
+      ? `${config.prefix}/${config.stream}/${dateStr}/`
+      : `${config.prefix}/${config.prefix}/${config.stream}/${dateStr}/`;
 
-    const [gcsFiles] = await storage.bucket(bucket).getFiles({ prefix });
+    const [gcsFiles] = await storage.bucket(bucket).getFiles({ prefix: gcsPrefix });
 
     for (const gcsFile of gcsFiles) {
       if (!gcsFile.name.endsWith(".parquet")) continue;
 
       const fileName = gcsFile.name.split("/").pop() ?? "";
       const baseName = fileName.replace(".parquet", "");
-      const lastUnderscore = baseName.lastIndexOf("_");
-      if (lastUnderscore === -1) continue;
 
-      const fileType = baseName.substring(0, lastUnderscore);
-      const hour = baseName.substring(lastUnderscore + 1);
+      let fileType: string;
+      let hour: string;
+
+      if (isFlat) {
+        // Flat layout: ohlcv.parquet (no hour suffix)
+        fileType = baseName;
+        hour = dateStr;
+      } else {
+        // Archiver layout: ticker_0000.parquet
+        const lastUnderscore = baseName.lastIndexOf("_");
+        if (lastUnderscore === -1) continue;
+        fileType = baseName.substring(0, lastUnderscore);
+        hour = baseName.substring(lastUnderscore + 1);
+      }
 
       // Filter by message type if specified
       if (msgType && fileType !== msgType) continue;
