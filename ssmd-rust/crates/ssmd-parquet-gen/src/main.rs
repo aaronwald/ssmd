@@ -52,6 +52,10 @@ struct Args {
     /// Dry run — list files without writing
     #[arg(long, default_value_t = false)]
     dry_run: bool,
+
+    /// Strict mode — exit non-zero if any messages have no registered schema
+    #[arg(long, default_value_t = false)]
+    strict: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -152,6 +156,24 @@ async fn main() -> Result<()> {
 
     if total_records == 0 && !hour_filtering {
         bail!("No records processed — check feed/stream/date");
+    }
+
+    if args.strict {
+        let mut total_no_schema: usize = 0;
+        for s in &stats {
+            for (msg_type, &count) in &s.lines_no_schema {
+                if count > 0 {
+                    tracing::error!(msg_type = %msg_type, count, "no schema registered");
+                    total_no_schema += count;
+                }
+            }
+        }
+        if total_no_schema > 0 {
+            bail!(
+                "{} messages had no registered schema (strict mode)",
+                total_no_schema
+            );
+        }
     }
 
     Ok(())
