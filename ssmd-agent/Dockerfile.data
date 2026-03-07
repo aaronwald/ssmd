@@ -16,8 +16,8 @@ COPY src/lib/ ./src/lib/
 COPY src/config.ts ./src/config.ts
 COPY src/cli/ ./src/cli/
 
-# Cache dependencies (server only; CLI deps cached at runtime for CronJob use)
-RUN deno cache src/server/main.ts
+# Cache dependencies (server + CLI for CronJob use)
+RUN deno cache --no-lock src/server/main.ts src/cli/main.ts
 
 # Pre-install DuckDB httpfs extension (DuckDB's internal downloader hangs in K8s).
 # Version must match @duckdb/node-api in deno.json (currently 1.4.4).
