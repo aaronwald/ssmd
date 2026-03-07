@@ -15,6 +15,7 @@ const KRAKEN_CHARTS_BASE = "https://futures.kraken.com/api/charts/v1/trade";
 const API_TIMEOUT_MS = 15000;
 const RATE_LIMIT_MS = 1000;
 const MAX_RETRIES = 3;
+const DEFAULT_LOOKBACK_DAYS = 3;
 const GCS_BUCKET = "ssmd-data";
 
 interface OhlcvCandle {
@@ -68,7 +69,7 @@ export async function handleHols(
       break;
     default:
       console.error(`Unknown hols subcommand: ${subcommand ?? "(none)"}`);
-      console.log("Usage: ssmd hols generate [--date YYYY-MM-DD] [--dry-run]");
+      console.log("Usage: ssmd hols generate [--date YYYY-MM-DD] [--days N] [--dry-run]");
       Deno.exit(1);
   }
 }
@@ -79,17 +80,22 @@ export async function runHolsGenerate(
   const startTime = Date.now();
   const dryRun = !!flags["dry-run"];
 
-  // Determine target date (default: yesterday UTC)
-  let dateStr: string;
+  // Determine date range (default: last 3 days ending yesterday UTC)
+  const lookbackDays = flags.days ? parseInt(flags.days as string, 10) : DEFAULT_LOOKBACK_DAYS;
+  let endDateStr: string;
   if (flags.date && typeof flags.date === "string") {
-    dateStr = flags.date;
+    endDateStr = flags.date;
   } else {
     const yesterday = new Date();
     yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-    dateStr = yesterday.toISOString().slice(0, 10);
+    endDateStr = yesterday.toISOString().slice(0, 10);
   }
+  const endDate = new Date(endDateStr + "T00:00:00Z");
+  const startDate = new Date(endDate);
+  startDate.setUTCDate(startDate.getUTCDate() - lookbackDays + 1);
+  const startDateStr = startDate.toISOString().slice(0, 10);
 
-  console.log(`[hols] Generating OHLCV for date=${dateStr} dry-run=${dryRun}`);
+  console.log(`[hols] Generating OHLCV for ${startDateStr} to ${endDateStr} (${lookbackDays} days) dry-run=${dryRun}`);
 
   // 1. Query secmaster for active Kraken perpetuals
   const db = getDb();
@@ -112,7 +118,7 @@ export async function runHolsGenerate(
     const { symbol, base } = symbols[i];
     console.log(`[hols] [${i + 1}/${symbols.length}] Fetching ${symbol}...`);
 
-    const result = await fetchWithRetry(symbol, base, dateStr);
+    const result = await fetchWithRetry(symbol, base, startDate, endDate);
     results.push(result);
 
     if (result.error) {
@@ -141,20 +147,20 @@ export async function runHolsGenerate(
   }
 
   // 3. Write NDJSON
-  const ndjsonPath = `/tmp/hols-ohlcv-${dateStr}.ndjson`;
+  const ndjsonPath = `/tmp/hols-ohlcv-${endDateStr}.ndjson`;
   const ndjsonContent = allRows.map((r) => JSON.stringify(r)).join("\n") + "\n";
   await Deno.writeTextFile(ndjsonPath, ndjsonContent);
   console.log(`[hols] Wrote ${allRows.length} rows to ${ndjsonPath}`);
 
   // 4. Convert to Parquet via DuckDB
-  const parquetPath = `/tmp/hols-ohlcv-${dateStr}.parquet`;
+  const parquetPath = `/tmp/hols-ohlcv-${endDateStr}.parquet`;
   await convertToParquet(ndjsonPath, parquetPath);
   const parquetStat = await Deno.stat(parquetPath);
   const fileSizeKB = Math.round((parquetStat.size ?? 0) / 1024);
   console.log(`[hols] Parquet written: ${parquetPath} (${fileSizeKB} KB)`);
 
   // 5. Upload to GCS
-  const gcsPath = `hols/crypto/daily/${dateStr}/ohlcv.parquet`;
+  const gcsPath = `hols/crypto/daily/${endDateStr}/ohlcv.parquet`;
   if (dryRun) {
     console.log(`[hols] DRY RUN: would upload to gs://${GCS_BUCKET}/${gcsPath}`);
   } else {
@@ -168,7 +174,7 @@ export async function runHolsGenerate(
     console.log("[hols] DRY RUN: skipping email");
   } else {
     await sendReport({
-      dateStr,
+      dateStr: `${startDateStr} to ${endDateStr}`,
       symbolCount: symbols.length,
       successCount: successes.length,
       failCount: failures.length,
@@ -208,7 +214,8 @@ export async function runHolsGenerate(
 async function fetchWithRetry(
   symbol: string,
   base: string,
-  dateStr: string,
+  startDate: Date,
+  endDate: Date,
 ): Promise<FetchResult> {
   const url = `${KRAKEN_CHARTS_BASE}/${symbol}/1d`;
   let lastError: string | undefined;
@@ -236,14 +243,13 @@ async function fetchWithRetry(
         continue;
       }
 
-      // Filter candles for the target date
+      // Filter candles for the date range
       // Kraken charts API returns timestamps in milliseconds
-      const targetDate = new Date(dateStr + "T00:00:00Z");
-      const targetMs = targetDate.getTime();
-      const nextDayMs = targetMs + 86400_000;
+      const startMs = startDate.getTime();
+      const endMs = endDate.getTime() + 86400_000;
 
       const filtered = data.candles.filter(
-        (c) => c.time >= targetMs && c.time < nextDayMs,
+        (c) => c.time >= startMs && c.time < endMs,
       );
 
       const rows: NdjsonRow[] = filtered.map((c) => {
