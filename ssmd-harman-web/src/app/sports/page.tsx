@@ -266,7 +266,7 @@ function useTodayEvents(seriesTickers: string[] | null) {
         return date && isToday(date);
       });
     },
-    { refreshInterval: 60000, keepPreviousData: true }
+    { refreshInterval: 60000, keepPreviousData: true, dedupingInterval: 5000 }
   );
 }
 
@@ -299,6 +299,12 @@ function SportsContent() {
     () => getUrlParam("series") || TODAY_KEY
   );
 
+  // Category filter for Today mode (multi-select)
+  const [categoryFilter, setCategoryFilter] = useState<Set<string>>(() => {
+    const param = getUrlParam("cat");
+    return param ? new Set(param.split(",")) : new Set();
+  });
+
   useEffect(() => {
     if (selectedSeries) return;
     try {
@@ -314,10 +320,21 @@ function SportsContent() {
   const selectSeries = useCallback((ticker: string) => {
     setSelectedSeries(ticker);
     setExpandedEvent(null);
+    if (ticker !== TODAY_KEY) setCategoryFilter(new Set());
     try {
       localStorage.setItem(SERIES_LS_KEY, ticker);
     } catch {}
-    setUrlParams({ series: ticker });
+    setUrlParams({ series: ticker, cat: null });
+  }, []);
+
+  const toggleCategory = useCallback((seriesTicker: string) => {
+    setCategoryFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(seriesTicker)) next.delete(seriesTicker);
+      else next.add(seriesTicker);
+      setUrlParams({ cat: next.size > 0 ? [...next].join(",") : null });
+      return next;
+    });
   }, []);
 
   const isTodayMode = selectedSeries === TODAY_KEY;
@@ -336,11 +353,28 @@ function SportsContent() {
     isTodayMode ? null : selectedSeries
   );
 
+  // Leagues present in today's events (for category filter chips)
+  const todayLeagues = useMemo(() => {
+    if (!todayEvents) return [];
+    const counts = new Map<string, number>();
+    for (const e of todayEvents) {
+      const s = eventSeries(e.ticker);
+      counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([ticker, count]) => ({ ticker, count }));
+  }, [todayEvents]);
+
   // Compute displayed events
   const displayEvents = useMemo(() => {
     if (isTodayMode) {
       if (!todayEvents) return [];
-      return [...todayEvents].sort((a, b) => {
+      let filtered = todayEvents;
+      if (categoryFilter.size > 0) {
+        filtered = filtered.filter((e) => categoryFilter.has(eventSeries(e.ticker)));
+      }
+      return [...filtered].sort((a, b) => {
         const da = getEventDate(a);
         const db = getEventDate(b);
         if (!da && !db) return 0;
@@ -370,7 +404,7 @@ function SportsContent() {
         if (!db) return -1;
         return new Date(da).getTime() - new Date(db).getTime();
       });
-  }, [isTodayMode, todayEvents, singleSeriesEvents]);
+  }, [isTodayMode, todayEvents, singleSeriesEvents, categoryFilter]);
 
   // Auto-expand first game
   useEffect(() => {
@@ -401,15 +435,31 @@ function SportsContent() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold">Sports</h1>
+      <h1 className="text-xl font-bold">
+        Sports
+        {displayEvents.length > 0 && (
+          <span className="ml-2 text-sm font-normal text-fg-muted">
+            ({displayEvents.length} games)
+          </span>
+        )}
+      </h1>
 
-      {/* Series pills with "Today" first */}
+      {/* Series pills — wrapping grid */}
       {sortedSeries.length > 0 && (
         <SeriesPillBar
           series={sortedSeries}
           selected={selectedSeries}
           onSelect={selectSeries}
           todayCount={todayEvents?.length ?? null}
+        />
+      )}
+
+      {/* Category filter chips within Today mode */}
+      {isTodayMode && todayLeagues.length > 1 && (
+        <CategoryFilterBar
+          leagues={todayLeagues}
+          active={categoryFilter}
+          onToggle={toggleCategory}
         />
       )}
 
@@ -429,7 +479,9 @@ function SportsContent() {
       {selectedSeries && displayEvents.length === 0 && eventsLoaded && (
         <div className="bg-bg-raised border border-border rounded-lg p-4 text-center text-fg-subtle text-sm">
           {isTodayMode
-            ? "No games today"
+            ? categoryFilter.size > 0
+              ? "No games today for selected categories"
+              : "No games today"
             : `No upcoming games for ${seriesLabel(selectedSeries)}`}
         </div>
       )}
@@ -467,40 +519,68 @@ function SeriesPillBar({
   todayCount: number | null;
 }) {
   return (
-    <div className="relative">
-      <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-        {/* "Today" pill */}
+    <div className="flex flex-wrap gap-2">
+      {/* "Today" pill */}
+      <button
+        onClick={() => onSelect(TODAY_KEY)}
+        className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+          selected === TODAY_KEY
+            ? "bg-accent text-bg"
+            : "bg-bg-raised border border-border text-fg-muted hover:text-fg hover:border-fg-subtle"
+        }`}
+      >
+        Today
+        {todayCount != null && (
+          <span className="ml-1 opacity-60">({todayCount})</span>
+        )}
+      </button>
+
+      {series.map((s) => (
         <button
-          onClick={() => onSelect(TODAY_KEY)}
-          className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-            selected === TODAY_KEY
+          key={s.ticker}
+          onClick={() => onSelect(s.ticker)}
+          className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+            selected === s.ticker
               ? "bg-accent text-bg"
               : "bg-bg-raised border border-border text-fg-muted hover:text-fg hover:border-fg-subtle"
           }`}
         >
-          Today
-          {todayCount != null && (
-            <span className="ml-1 opacity-60">({todayCount})</span>
+          {seriesLabel(s.ticker)}
+          {s.active_events != null && (
+            <span className="ml-1 opacity-60">({s.active_events})</span>
           )}
         </button>
+      ))}
+    </div>
+  );
+}
 
-        {series.map((s) => (
-          <button
-            key={s.ticker}
-            onClick={() => onSelect(s.ticker)}
-            className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-              selected === s.ticker
-                ? "bg-accent text-bg"
-                : "bg-bg-raised border border-border text-fg-muted hover:text-fg hover:border-fg-subtle"
-            }`}
-          >
-            {seriesLabel(s.ticker)}
-            {s.active_events != null && (
-              <span className="ml-1 opacity-60">({s.active_events})</span>
-            )}
-          </button>
-        ))}
-      </div>
+function CategoryFilterBar({
+  leagues,
+  active,
+  onToggle,
+}: {
+  leagues: { ticker: string; count: number }[];
+  active: Set<string>;
+  onToggle: (ticker: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      <span className="text-xs text-fg-subtle py-1 mr-1">Filter:</span>
+      {leagues.map(({ ticker, count }) => (
+        <button
+          key={ticker}
+          onClick={() => onToggle(ticker)}
+          className={`px-2 py-1 rounded text-xs transition-colors ${
+            active.has(ticker)
+              ? "bg-accent/20 text-accent border border-accent/40"
+              : "bg-bg-surface border border-border-subtle text-fg-muted hover:text-fg hover:border-fg-subtle"
+          }`}
+        >
+          {seriesLabel(ticker)}
+          <span className="ml-1 opacity-60">{count}</span>
+        </button>
+      ))}
     </div>
   );
 }
@@ -677,13 +757,13 @@ function GameRow({
   onToggle: () => void;
   onQuickTrade: (m: MonitorMarket, side: Side, action: Action, price: string) => void;
 }) {
-  // Always fetch markets for game state (SWR caches + dedupes)
-  const { data: markets } = useMarkets(event.ticker);
+  // Only fetch markets when expanded — prevents 429 rate limit flood
+  const { data: markets } = useMarkets(isExpanded ? event.ticker : null);
   const eventDate = getEventDate(event);
 
-  // Use expected_expiration_time-based game state
+  // Game state: use market data when available, otherwise show date info
   const gameState = useMemo(
-    () => getGameState(markets ?? null, event.ticker),
+    () => markets ? getGameState(markets, event.ticker) : { state: "unknown" as GameState, countdownTarget: null, label: "" },
     [markets, event.ticker],
   );
 
