@@ -235,7 +235,7 @@ async function fetchWithRetry(
   startDate: Date,
   endDate: Date,
 ): Promise<FetchResult> {
-  const url = `${KRAKEN_CHARTS_BASE}/${symbol}/1d`;
+  const url = `${KRAKEN_CHARTS_BASE}/${symbol}/5m`;
   let lastError: string | undefined;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -273,14 +273,14 @@ async function fetchWithRetry(
       const rows: NdjsonRow[] = filtered.map((c) => {
         const timeSec = Math.floor(c.time / 1000);
         const openDate = new Date(c.time);
-        const closeDate = new Date(c.time + 86400_000);
+        const closeDate = new Date(c.time + 300_000);
         return {
           symbol,
           source: "kraken_futures",
           date: openDate.toISOString(),
           date_close: closeDate.toISOString(),
           unix: timeSec,
-          close_unix: timeSec + 86400,
+          close_unix: timeSec + 300,
           open: parseFloat(c.open),
           high: parseFloat(c.high),
           low: parseFloat(c.low),
