@@ -22,4 +22,4 @@ USER ssmd
 # Health check endpoint
 EXPOSE 8080
 
-CMD ["run", "--allow-net", "--allow-env", "src/main.ts"]
+CMD ["run", "--no-lock", "--allow-net", "--allow-env", "src/main.ts"]
