@@ -449,6 +449,9 @@ pub async fn batch_insert_audit(
 fn infer_event(from: OrderState, to: OrderState) -> Result<OrderEvent, String> {
     match (from, to) {
         (_, OrderState::Submitted) => Ok(OrderEvent::Submit),
+        // Specific transitions to Acknowledged that use confirm events
+        (OrderState::PendingAmend, OrderState::Acknowledged) => Ok(OrderEvent::AmendConfirm),
+        (OrderState::PendingDecrease, OrderState::Acknowledged) => Ok(OrderEvent::DecreaseConfirm),
         (_, OrderState::Acknowledged) => Ok(OrderEvent::Acknowledge {
             exchange_order_id: String::new(),
         }),
