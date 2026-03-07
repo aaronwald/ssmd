@@ -561,6 +561,14 @@ pub struct CreateOrderRequest {
     pub price_dollars: Decimal,
     #[serde(default = "default_tif")]
     pub time_in_force: TimeInForce,
+    #[serde(default)]
+    pub order_type: Option<OrderType>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "rust_decimal::serde::str_option"
+    )]
+    pub trigger_price: Option<Decimal>,
 }
 
 fn default_tif() -> TimeInForce {
@@ -2205,9 +2213,91 @@ async fn create_bracket_group(
             .into_response();
     }
 
+    // Validate trigger_price on bracket legs
+    if req.entry.trigger_price.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "entry order cannot have trigger_price"})),
+        )
+            .into_response();
+    }
+    if req.take_profit.trigger_price.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "take_profit order cannot have trigger_price"})),
+        )
+            .into_response();
+    }
+
+    let min_price = Decimal::new(1, 2); // 0.01
+    let max_price = Decimal::new(99, 2); // 0.99
+
+    if let Some(tp) = req.stop_loss.trigger_price {
+        if tp < min_price || tp > max_price {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "stop_loss trigger_price must be between 0.01 and 0.99"})),
+            )
+                .into_response();
+        }
+
+        let entry_price = req.entry.price_dollars;
+        // For SL: trigger must be on the "losing" side of entry
+        // Sell action (long exit) = price dropping = trigger < entry
+        // Buy action (short exit) = price rising = trigger > entry
+        match req.stop_loss.action {
+            Action::Sell => {
+                if tp >= entry_price {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "sell stop_loss trigger_price must be below entry price"})),
+                    )
+                        .into_response();
+                }
+            }
+            Action::Buy => {
+                if tp <= entry_price {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "buy stop_loss trigger_price must be above entry price"})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
+        // SL submit price must be at or beyond trigger (worse execution)
+        let sl_price = req.stop_loss.price_dollars;
+        match req.stop_loss.action {
+            Action::Sell => {
+                if sl_price > tp {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "sell stop_loss price must be at or below trigger_price (slippage tolerance)"})),
+                    )
+                        .into_response();
+                }
+            }
+            Action::Buy => {
+                if sl_price < tp {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "buy stop_loss price must be at or above trigger_price (slippage tolerance)"})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+
     let entry = to_order_request(&req.entry);
     let tp = to_order_request(&req.take_profit);
-    let sl = to_order_request(&req.stop_loss);
+    let mut sl = to_order_request(&req.stop_loss);
+
+    // Force SL with trigger_price to Market (IOC) order type
+    if sl.trigger_price.is_some() {
+        sl.order_type = OrderType::Market;
+    }
 
     match state.oms.create_bracket(ctx.session_id, entry, tp, sl).await {
         Ok((group, orders)) => {
@@ -2435,7 +2525,7 @@ fn to_order_request(req: &CreateOrderRequest) -> OrderRequest {
         quantity: req.quantity,
         price_dollars: req.price_dollars,
         time_in_force: req.time_in_force,
-        order_type: OrderType::default(),
-        trigger_price: None,
+        order_type: req.order_type.unwrap_or_default(),
+        trigger_price: req.trigger_price,
     }
 }
