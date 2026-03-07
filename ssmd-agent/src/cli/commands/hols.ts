@@ -235,52 +235,40 @@ async function fetchWithRetry(
   startDate: Date,
   endDate: Date,
 ): Promise<FetchResult> {
-  const url = `${KRAKEN_CHARTS_BASE}/${symbol}/5m`;
-  let lastError: string | undefined;
+  const startMs = startDate.getTime();
+  const endMs = endDate.getTime() + 86400_000;
+  const allRows: NdjsonRow[] = [];
+  const seen = new Set<number>();
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    if (attempt > 0) {
-      const backoffMs = 1000 * Math.pow(2, attempt);
-      await sleep(backoffMs);
+  // Paginate: API returns max 2000 1m candles per request.
+  // Use `to` param (seconds) to page backwards.
+  let toSec = Math.floor(endMs / 1000);
+  const startSec = Math.floor(startMs / 1000);
+  const maxPages = 5;
+
+  for (let page = 0; page < maxPages; page++) {
+    const url = page === 0
+      ? `${KRAKEN_CHARTS_BASE}/${symbol}/1m`
+      : `${KRAKEN_CHARTS_BASE}/${symbol}/1m?to=${toSec}`;
+
+    const candles = await fetchPage(url);
+    if (candles === null) {
+      return { symbol, base, rows: [], error: `Failed after ${MAX_RETRIES} retries` };
     }
+    if (candles.length === 0) break;
 
-    try {
-      const resp = await fetch(url, {
-        signal: AbortSignal.timeout(API_TIMEOUT_MS),
-        headers: { Accept: "application/json" },
-      });
-
-      if (!resp.ok) {
-        lastError = `HTTP ${resp.status} ${resp.statusText}`;
-        continue;
-      }
-
-      const data = (await resp.json()) as ChartsResponse;
-      if (!data.candles || !Array.isArray(data.candles)) {
-        lastError = "Invalid response: missing candles array";
-        continue;
-      }
-
-      // Filter candles for the date range
-      // Kraken charts API returns timestamps in milliseconds
-      const startMs = startDate.getTime();
-      const endMs = endDate.getTime() + 86400_000;
-
-      const filtered = data.candles.filter(
-        (c) => c.time >= startMs && c.time < endMs,
-      );
-
-      const rows: NdjsonRow[] = filtered.map((c) => {
+    let addedCount = 0;
+    for (const c of candles) {
+      if (c.time >= startMs && c.time < endMs && !seen.has(c.time)) {
+        seen.add(c.time);
         const timeSec = Math.floor(c.time / 1000);
-        const openDate = new Date(c.time);
-        const closeDate = new Date(c.time + 300_000);
-        return {
+        allRows.push({
           symbol,
           source: "kraken_futures",
-          date: openDate.toISOString(),
-          date_close: closeDate.toISOString(),
+          date: new Date(c.time).toISOString(),
+          date_close: new Date(c.time + 60_000).toISOString(),
           unix: timeSec,
-          close_unix: timeSec + 300,
+          close_unix: timeSec + 60,
           open: parseFloat(c.open),
           high: parseFloat(c.high),
           low: parseFloat(c.low),
@@ -290,16 +278,43 @@ async function fetchWithRetry(
           tradecount: null,
           marketorder_volume: null,
           marketorder_volume_from: null,
-        };
-      });
-
-      return { symbol, base, rows };
-    } catch (e) {
-      lastError = e instanceof Error ? e.message : String(e);
+        });
+        addedCount++;
+      }
     }
+
+    // Check if we've reached far enough back
+    const oldestSec = Math.floor(candles[0].time / 1000);
+    if (oldestSec <= startSec || addedCount === 0) break;
+
+    // Page back: set `to` to the oldest candle we received
+    toSec = oldestSec;
+    await sleep(RATE_LIMIT_MS);
   }
 
-  return { symbol, base, rows: [], error: lastError };
+  allRows.sort((a, b) => a.unix - b.unix);
+  return { symbol, base, rows: allRows };
+}
+
+async function fetchPage(url: string): Promise<OhlcvCandle[] | null> {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      await sleep(1000 * Math.pow(2, attempt));
+    }
+    try {
+      const resp = await fetch(url, {
+        signal: AbortSignal.timeout(API_TIMEOUT_MS),
+        headers: { Accept: "application/json" },
+      });
+      if (!resp.ok) continue;
+      const data = (await resp.json()) as ChartsResponse;
+      if (!data.candles || !Array.isArray(data.candles)) continue;
+      return data.candles;
+    } catch {
+      // retry
+    }
+  }
+  return null;
 }
 
 async function convertToParquet(
