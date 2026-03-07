@@ -51,9 +51,7 @@ var _ = Describe("Archiver Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					Spec: ssmdv1alpha1.ArchiverSpec{
-						Date: "2026-01-01",
-					},
+					Spec: ssmdv1alpha1.ArchiverSpec{},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

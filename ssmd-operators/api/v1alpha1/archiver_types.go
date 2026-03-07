@@ -24,11 +24,6 @@ import (
 
 // ArchiverSpec defines the desired state of Archiver
 type ArchiverSpec struct {
-	// Date is the trading day in YYYY-MM-DD format
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^\d{4}-\d{2}-\d{2}$`
-	Date string `json:"date"`
-
 	// Image is the container image to use (optional, defaults from feed ConfigMap)
 	// +optional
 	Image string `json:"image,omitempty"`
@@ -269,7 +264,6 @@ type ArchiverStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Date",type="string",JSONPath=".spec.date"
 // +kubebuilder:printcolumn:name="Stream",type="string",JSONPath=".spec.sources[0].stream"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Archived",type="integer",JSONPath=".status.messagesArchived"

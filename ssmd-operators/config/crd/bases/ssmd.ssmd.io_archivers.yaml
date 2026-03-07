@@ -15,9 +15,6 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.date
-      name: Date
-      type: string
     - jsonPath: .spec.sources[0].stream
       name: Stream
       type: string
@@ -58,10 +55,6 @@ spec:
           spec:
             description: spec defines the desired state of Archiver
             properties:
-              date:
-                description: Date is the trading day in YYYY-MM-DD format
-                pattern: ^\d{4}-\d{2}-\d{2}$
-                type: string
               feed:
                 description: Feed is the feed name for directory structure (e.g.,
                   "kalshi")
@@ -279,8 +272,6 @@ spec:
                       * * * *" for hourly)
                     type: string
                 type: object
-            required:
-            - date
             type: object
           status:
             description: status defines the observed state of Archiver

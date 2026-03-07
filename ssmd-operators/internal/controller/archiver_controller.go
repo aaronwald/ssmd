@@ -218,7 +218,6 @@ func (r *ArchiverReconciler) constructPVC(archiver *ssmdv1alpha1.Archiver) *core
 		"app.kubernetes.io/name":       "ssmd-archiver",
 		"app.kubernetes.io/instance":   archiver.Name,
 		"app.kubernetes.io/managed-by": "ssmd-operator",
-		"ssmd.io/date":                 archiver.Spec.Date,
 	}
 
 	// Default size if not specified
@@ -440,7 +439,6 @@ func (r *ArchiverReconciler) constructDeployment(archiver *ssmdv1alpha1.Archiver
 		"app.kubernetes.io/name":       "ssmd-archiver",
 		"app.kubernetes.io/instance":   archiver.Name,
 		"app.kubernetes.io/managed-by": "ssmd-operator",
-		"ssmd.io/date":                 archiver.Spec.Date,
 	}
 
 	replicas := int32(1)
@@ -719,7 +717,6 @@ func (r *ArchiverReconciler) constructSyncJob(archiver *ssmdv1alpha1.Archiver) *
 		"app.kubernetes.io/name":       "ssmd-archiver-sync",
 		"app.kubernetes.io/instance":   archiver.Name,
 		"app.kubernetes.io/managed-by": "ssmd-operator",
-		"ssmd.io/date":                 archiver.Spec.Date,
 	}
 
 	// Build the gsutil rsync command
