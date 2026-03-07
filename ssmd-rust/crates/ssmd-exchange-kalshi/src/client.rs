@@ -291,17 +291,28 @@ impl ExchangeAdapter for KalshiRestClient {
         // Kalshi API always uses yes_price for both Yes and No side orders.
         // For No-side orders, the exchange interprets yes_price as the complement
         // (i.e., no_price = 100 - yes_price). We pass our price_dollars converted to cents.
+        // Kalshi has no native "market" order type — all orders are limit.
+        // For triggered SL (OrderType::Market), we submit as limit with IOC TIF.
+        let effective_type = match order.order_type {
+            harman::types::OrderType::Market => "limit".to_string(),
+            harman::types::OrderType::Limit => "limit".to_string(),
+        };
+        let effective_tif = match order.order_type {
+            harman::types::OrderType::Market => "immediate_or_cancel".to_string(),
+            harman::types::OrderType::Limit => order.time_in_force.to_kalshi_str().to_string(),
+        };
+
         let body = KalshiOrderRequest {
             ticker: order.ticker.clone(),
             client_order_id: order.client_order_id.to_string(),
             side: order.side.to_string(),
             action: order.action.to_string(),
-            order_type: "limit".to_string(),
+            order_type: effective_type,
             count_fp: order.quantity.normalize().to_string(),
             yes_price: (order.price_dollars * Decimal::from(100))
                 .to_i32()
                 .unwrap_or(0),
-            time_in_force: order.time_in_force.to_kalshi_str().to_string(),
+            time_in_force: effective_tif,
             subaccount: 0,
         };
 
@@ -978,6 +989,8 @@ mod tests {
             quantity: Decimal::from(10),
             price_dollars: Decimal::new(50, 2),
             time_in_force: harman::types::TimeInForce::Gtc,
+            order_type: harman::types::OrderType::default(),
+            trigger_price: None,
         }
     }
 

@@ -6,7 +6,9 @@ edition.workspace = true
 [dependencies]
 harman = { path = "../harman" }
 ssmd-harman-ems = { path = "../ssmd-harman-ems" }
+async-nats = { workspace = true }
 deadpool-postgres = { workspace = true }
+futures-util = { workspace = true }
 tokio-postgres = { workspace = true }
 prometheus = { workspace = true }
 rust_decimal = { workspace = true }

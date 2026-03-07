@@ -50,7 +50,7 @@ async fn build_test_state(
     ));
     let oms_metrics = Arc::new(OmsMetrics::new(&registry));
     let oms = Arc::new(Oms::new(pool.clone(), exchange, ems.clone(), oms_metrics, audit_sender));
-    let runner = Arc::new(OmsRunner::new(oms.clone(), None, session_id, None));
+    let runner = Arc::new(OmsRunner::new(oms.clone(), None, session_id, None, None));
     let pump_trigger = runner.pump_trigger();
     Arc::new(AppState {
         ems,
@@ -1256,6 +1256,8 @@ fn test_order_request(ticker: &str, side: Side, action: Action, qty: Decimal, pr
         quantity: qty,
         price_dollars: price,
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     }
 }
 

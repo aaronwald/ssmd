@@ -12,7 +12,7 @@ use crate::risk::{RiskLimits, RiskState};
 use crate::state::{apply_event, OrderEvent, OrderState};
 use crate::types::{
     Action, CancelReason, GroupState, GroupType, LegRole, MarketResult, Order, OrderGroup,
-    OrderRequest, QueueAction, Settlement, Side, TimeInForce,
+    OrderRequest, OrderType, QueueAction, Settlement, Side, TimeInForce,
 };
 
 /// Create a connection pool from a database URL
@@ -329,6 +329,42 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 015_remove_filled_quantity applied");
     }
 
+    // Check if 016 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '016_valid_order_state'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 016: {}", e))?;
+
+    if row.is_none() {
+        let migration_016 = include_str!("../migrations/016_valid_order_state.sql");
+        client
+            .batch_execute(migration_016)
+            .await
+            .map_err(|e| format!("migration 016 failed: {}", e))?;
+        info!("migration 016_valid_order_state applied");
+    }
+
+    // Check if 017 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '017_price_monitor'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 017: {}", e))?;
+
+    if row.is_none() {
+        let migration_017 = include_str!("../migrations/017_price_monitor.sql");
+        client
+            .batch_execute(migration_017)
+            .await
+            .map_err(|e| format!("migration 017 failed: {}", e))?;
+        info!("migration 017_price_monitor applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
@@ -478,7 +514,7 @@ pub async fn enqueue_order(
     // so we lock first, then aggregate in a separate query within the same tx.
     tx.query(
         "SELECT id FROM prediction_orders \
-         WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease') \
+         WHERE session_id = $1 AND state IN ('staged', 'monitoring', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease') \
          FOR UPDATE",
         &[&session_id],
     )
@@ -489,7 +525,7 @@ pub async fn enqueue_order(
         .query_one(
             "SELECT COALESCE(SUM(price_dollars * (quantity - filled_qty(id))), 0) as open_notional \
              FROM prediction_orders \
-             WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
+             WHERE session_id = $1 AND state IN ('staged', 'monitoring', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
             &[&session_id],
         )
         .await
@@ -550,8 +586,8 @@ pub async fn enqueue_order(
     // Insert order
     let row = tx
         .query_one(
-            "INSERT INTO prediction_orders (session_id, client_order_id, ticker, side, action, quantity, price_dollars, time_in_force, state) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') \
+            "INSERT INTO prediction_orders (session_id, client_order_id, ticker, side, action, quantity, price_dollars, time_in_force, state, order_type, trigger_price) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10) \
              RETURNING id, created_at, updated_at",
             &[
                 &session_id,
@@ -562,6 +598,8 @@ pub async fn enqueue_order(
                 &request.quantity,
                 &request.price_dollars,
                 &request.time_in_force.to_string(),
+                &request.order_type.to_string(),
+                &request.trigger_price,
             ],
         )
         .await
@@ -615,6 +653,8 @@ pub async fn enqueue_order(
         time_in_force: request.time_in_force,
         state: OrderState::Pending,
         cancel_reason: None,
+        order_type: request.order_type,
+        trigger_price: request.trigger_price,
         group_id: None,
         leg_role: None,
         created_at,
@@ -654,7 +694,7 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
                     o.id, o.session_id, o.client_order_id, o.exchange_order_id, \
                     o.ticker, o.side, o.action as order_action, o.quantity, o.price_dollars, \
                     filled_qty(o.id) as filled_quantity, o.time_in_force, o.state, o.cancel_reason, \
-                    o.group_id, o.leg_role, o.created_at, o.updated_at \
+                    o.order_type, o.trigger_price, o.group_id, o.leg_role, o.created_at, o.updated_at \
              FROM order_queue q \
              JOIN prediction_orders o ON o.id = q.order_id \
              WHERE NOT q.processing AND o.session_id = $1 \
@@ -731,6 +771,8 @@ pub async fn dequeue_order(pool: &Pool, session_id: i64) -> Result<Option<QueueI
         cancel_reason: row
             .get::<_, Option<String>>("cancel_reason")
             .map(|s| parse_cancel_reason(&s)),
+        order_type: parse_order_type(row.get("order_type")),
+        trigger_price: row.get("trigger_price"),
         group_id: row.get("group_id"),
         leg_role: row
             .get::<_, Option<String>>("leg_role")
@@ -1300,7 +1342,7 @@ pub async fn get_ambiguous_orders(pool: &Pool, session_id: i64) -> Result<Vec<Or
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
                     filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
-                    group_id, leg_role, created_at, updated_at \
+                    order_type, trigger_price, group_id, leg_role, created_at, updated_at \
              FROM prediction_orders \
              WHERE session_id = $1 AND state IN ('submitted', 'acknowledged', 'pending_cancel', 'pending_amend', 'pending_decrease') \
              ORDER BY id",
@@ -1324,7 +1366,7 @@ pub async fn get_order(pool: &Pool, order_id: i64, session_id: i64) -> Result<Op
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
                     filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
-                    group_id, leg_role, created_at, updated_at \
+                    order_type, trigger_price, group_id, leg_role, created_at, updated_at \
              FROM prediction_orders WHERE id = $1 AND session_id = $2",
             &[&order_id, &session_id],
         )
@@ -1350,7 +1392,7 @@ pub async fn get_order_by_client_id(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
                     filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
-                    group_id, leg_role, created_at, updated_at \
+                    order_type, trigger_price, group_id, leg_role, created_at, updated_at \
              FROM prediction_orders WHERE client_order_id = $1 AND session_id = $2",
             &[&client_order_id, &session_id],
         )
@@ -1378,7 +1420,7 @@ pub async fn find_order_by_exchange_id(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
                     filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
-                    group_id, leg_role, created_at, updated_at \
+                    order_type, trigger_price, group_id, leg_role, created_at, updated_at \
              FROM prediction_orders WHERE exchange_order_id = $1",
             &[&exchange_order_id],
         )
@@ -1405,7 +1447,7 @@ pub async fn list_orders(
                 "SELECT id, session_id, client_order_id, exchange_order_id, \
                         ticker, side, action, quantity, price_dollars, \
                         filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
-                        group_id, leg_role, created_at, updated_at \
+                        order_type, trigger_price, group_id, leg_role, created_at, updated_at \
                  FROM prediction_orders WHERE session_id = $1 AND state = $2 ORDER BY id",
                 &[&session_id, &state.to_string()],
             )
@@ -1416,7 +1458,7 @@ pub async fn list_orders(
                 "SELECT id, session_id, client_order_id, exchange_order_id, \
                         ticker, side, action, quantity, price_dollars, \
                         filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
-                        group_id, leg_role, created_at, updated_at \
+                        order_type, trigger_price, group_id, leg_role, created_at, updated_at \
                  FROM prediction_orders WHERE session_id = $1 ORDER BY id",
                 &[&session_id],
             )
@@ -1438,7 +1480,7 @@ pub async fn compute_risk_state(pool: &Pool, session_id: i64) -> Result<RiskStat
         .query_one(
             "SELECT COALESCE(SUM(price_dollars * (quantity - filled_qty(id))), 0) as open_notional \
              FROM prediction_orders \
-             WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
+             WHERE session_id = $1 AND state IN ('staged', 'monitoring', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
             &[&session_id],
         )
         .await
@@ -1630,8 +1672,13 @@ pub async fn atomic_cancel_order(
     let current_state_str: String = row.get("state");
     let current_state = parse_state(&current_state_str);
 
-    // Determine target state based on whether order is on the exchange
-    let target = if current_state == OrderState::Pending {
+    // Determine target state based on whether order is on the exchange.
+    // Pre-exchange states (Pending, Staged, Monitoring) go straight to Cancelled.
+    // On-exchange states (Submitted, Acknowledged, etc.) go to PendingCancel.
+    let target = if matches!(
+        current_state,
+        OrderState::Pending | OrderState::Staged | OrderState::Monitoring
+    ) {
         OrderState::Cancelled
     } else {
         OrderState::PendingCancel
@@ -1652,13 +1699,16 @@ pub async fn atomic_cancel_order(
     .await
     .map_err(|e| format!("update state: {}", e))?;
 
-    // Enqueue cancel
-    tx.execute(
-        "INSERT INTO order_queue (order_id, action, actor) VALUES ($1, 'cancel', 'api')",
-        &[&order_id],
-    )
-    .await
-    .map_err(|e| format!("enqueue cancel: {}", e))?;
+    // Only enqueue cancel for on-exchange orders (PendingCancel).
+    // Pre-exchange orders (Cancelled directly) have nothing to cancel.
+    if target == OrderState::PendingCancel {
+        tx.execute(
+            "INSERT INTO order_queue (order_id, action, actor) VALUES ($1, 'cancel', 'api')",
+            &[&order_id],
+        )
+        .await
+        .map_err(|e| format!("enqueue cancel: {}", e))?;
+    }
 
     let event_name = infer_event(current_state, target)
         .map(|e| e.to_string())
@@ -2280,7 +2330,7 @@ pub async fn create_order_group(
     // Lock open order rows to serialize concurrent enqueues, then compute risk.
     tx.query(
         "SELECT id FROM prediction_orders \
-         WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease') \
+         WHERE session_id = $1 AND state IN ('staged', 'monitoring', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease') \
          FOR UPDATE",
         &[&session_id],
     )
@@ -2291,7 +2341,7 @@ pub async fn create_order_group(
         .query_one(
             "SELECT COALESCE(SUM(price_dollars * (quantity - filled_qty(id))), 0) as open_notional \
              FROM prediction_orders \
-             WHERE session_id = $1 AND state IN ('staged', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
+             WHERE session_id = $1 AND state IN ('staged', 'monitoring', 'pending', 'submitted', 'acknowledged', 'partially_filled', 'pending_cancel', 'pending_amend', 'pending_decrease')",
             &[&session_id],
         )
         .await
@@ -2369,8 +2419,8 @@ pub async fn create_order_group(
             .query_one(
                 "INSERT INTO prediction_orders \
                  (session_id, client_order_id, ticker, side, action, quantity, price_dollars, \
-                  time_in_force, state, group_id, leg_role) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+                  time_in_force, state, group_id, leg_role, order_type, trigger_price) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
                  RETURNING id, created_at, updated_at",
                 &[
                     &session_id,
@@ -2384,6 +2434,8 @@ pub async fn create_order_group(
                     &state_str,
                     &group_id,
                     &role_str,
+                    &req.order_type.to_string(),
+                    &req.trigger_price,
                 ],
             )
             .await
@@ -2433,6 +2485,8 @@ pub async fn create_order_group(
             time_in_force: req.time_in_force,
             state: *initial_state,
             cancel_reason: None,
+            order_type: req.order_type,
+            trigger_price: req.trigger_price,
             group_id: Some(group_id),
             leg_role: Some(*role),
             created_at,
@@ -2531,7 +2585,7 @@ pub async fn get_group_orders(
             "SELECT id, session_id, client_order_id, exchange_order_id, \
                     ticker, side, action, quantity, price_dollars, \
                     filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
-                    group_id, leg_role, created_at, updated_at \
+                    order_type, trigger_price, group_id, leg_role, created_at, updated_at \
              FROM prediction_orders \
              WHERE group_id = $1 AND session_id = $2 \
              ORDER BY id",
@@ -2581,7 +2635,7 @@ pub async fn get_groups_needing_evaluation(
                 "SELECT id, session_id, client_order_id, exchange_order_id, \
                         ticker, side, action, quantity, price_dollars, \
                         filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
-                        group_id, leg_role, created_at, updated_at \
+                        order_type, trigger_price, group_id, leg_role, created_at, updated_at \
                  FROM prediction_orders \
                  WHERE group_id = $1 AND session_id = $2 \
                  ORDER BY id",
@@ -2892,6 +2946,8 @@ fn row_to_order(row: &tokio_postgres::Row) -> Order {
         cancel_reason: row
             .get::<_, Option<String>>("cancel_reason")
             .map(|s| parse_cancel_reason(&s)),
+        order_type: parse_order_type(row.get("order_type")),
+        trigger_price: row.get("trigger_price"),
         group_id: row.get("group_id"),
         leg_role: row
             .get::<_, Option<String>>("leg_role")
@@ -2930,6 +2986,17 @@ fn parse_action(s: &str) -> Action {
         _ => {
             warn!(value = s, "unknown action in DB, defaulting to Buy");
             Action::Buy
+        }
+    }
+}
+
+fn parse_order_type(s: &str) -> OrderType {
+    match s {
+        "limit" => OrderType::Limit,
+        "market" => OrderType::Market,
+        _ => {
+            warn!(value = s, "unknown order_type in DB, defaulting to Limit");
+            OrderType::Limit
         }
     }
 }
@@ -3140,11 +3207,24 @@ pub async fn cancel_staged_group_siblings(
 /// finalizes the group. For OCO, delegates to `cancel_staged_group_siblings`.
 ///
 /// Returns the number of staged orders that were **activated** (needing a pump).
+/// Result of handle_group_on_fill — includes monitoring activations for PriceMonitor.
+pub struct GroupFillResult {
+    /// Number of orders activated for pump (TP legs)
+    pub activated_for_pump: u64,
+    /// Orders that entered Monitoring state (SL legs with trigger_price)
+    pub monitoring_orders: Vec<MonitoringActivation>,
+}
+
 pub async fn handle_group_on_fill(
     pool: &Pool,
     order_id: i64,
     session_id: i64,
-) -> Result<u64, String> {
+) -> Result<GroupFillResult, String> {
+    let empty = GroupFillResult {
+        activated_for_pump: 0,
+        monitoring_orders: Vec::new(),
+    };
+
     let client = pool
         .get()
         .await
@@ -3164,13 +3244,13 @@ pub async fn handle_group_on_fill(
 
     let row = match row {
         Some(r) => r,
-        None => return Ok(0),
+        None => return Ok(empty),
     };
 
     let group_id: Option<i64> = row.get("group_id");
     let group_id = match group_id {
         Some(gid) => gid,
-        None => return Ok(0), // Not part of a group
+        None => return Ok(empty), // Not part of a group
     };
 
     let leg_role: Option<String> = row.get("leg_role");
@@ -3179,41 +3259,61 @@ pub async fn handle_group_on_fill(
     match (group_type.as_deref(), leg_role.as_deref()) {
         // Bracket entry filled → activate staged TP/SL exit legs
         (Some("bracket"), Some("entry")) => {
-            let activated = activate_staged_siblings(pool, order_id, group_id, session_id).await?;
-            Ok(activated)
+            let result = activate_staged_siblings(pool, order_id, group_id, session_id).await?;
+            Ok(GroupFillResult {
+                activated_for_pump: result.activated_for_pump,
+                monitoring_orders: result.monitoring_orders,
+            })
         }
         // Bracket exit filled (TP or SL) → cancel the other exit leg(s)
         (Some("bracket"), Some("take_profit" | "stop_loss")) => {
             let _ = cancel_staged_group_siblings(pool, order_id, session_id).await?;
-            Ok(0)
+            Ok(empty)
         }
         // OCO: cancel other legs (they're open, not staged)
         (Some("oco"), _) => {
-            // OCO legs are both Pending/Acknowledged, not Staged.
-            // cancel_staged_group_siblings handles staged; for open legs,
-            // the evaluate_triggers path in groups.rs handles the cancel via EMS.
-            // Here we just cancel any staged siblings (should be none for OCO).
             let _ = cancel_staged_group_siblings(pool, order_id, session_id).await?;
-            Ok(0)
+            Ok(empty)
         }
         _ => {
-            // Unknown group_type or leg_role — log and no-op
             warn!(order_id, group_id, ?leg_role, ?group_type, "unrecognized group/role on fill");
-            Ok(0)
+            Ok(empty)
         }
     }
 }
 
+/// Result of activating staged siblings — tells caller what was activated.
+pub struct ActivationResult {
+    /// Orders moved to Pending + enqueued for pump (e.g., TP legs)
+    pub activated_for_pump: u64,
+    /// Orders moved to Monitoring (have trigger_price, PriceMonitor watches)
+    pub monitoring_orders: Vec<MonitoringActivation>,
+}
+
+/// Info about an order that entered Monitoring state.
+pub struct MonitoringActivation {
+    pub order_id: i64,
+    pub session_id: i64,
+    pub group_id: i64,
+    pub ticker: String,
+    pub side: Side,
+    pub action: Action,
+    pub leg_role: Option<LegRole>,
+    pub trigger_price: Decimal,
+    pub submit_price: Decimal,
+    pub quantity: Decimal,
+}
+
 /// Activate all staged siblings of an order in the same group.
 ///
-/// Transitions them from staged → pending and inserts queue items so they
-/// get pumped to the exchange. Returns the number of activated orders.
+/// Orders WITH trigger_price → Monitoring state (PriceMonitor watches).
+/// Orders WITHOUT trigger_price → Pending + enqueue (current TP behavior).
 async fn activate_staged_siblings(
     pool: &Pool,
     order_id: i64,
     group_id: i64,
     session_id: i64,
-) -> Result<u64, String> {
+) -> Result<ActivationResult, String> {
     let mut client = pool
         .get()
         .await
@@ -3224,60 +3324,110 @@ async fn activate_staged_siblings(
         .await
         .map_err(|e| format!("begin tx: {}", e))?;
 
-    // Find all staged siblings (same group, different order)
+    // Find all staged siblings with their trigger_price and order details
     let staged_rows = tx
         .query(
-            "SELECT id FROM prediction_orders \
+            "SELECT id, trigger_price, price_dollars, ticker, side, action, leg_role, quantity \
+             FROM prediction_orders \
              WHERE group_id = $1 AND session_id = $2 AND state = 'staged' AND id != $3",
             &[&group_id, &session_id, &order_id],
         )
         .await
         .map_err(|e| format!("find staged siblings: {}", e))?;
 
-    let mut activated = 0u64;
+    let mut activated_for_pump = 0u64;
+    let mut monitoring_orders = Vec::new();
+
     for row in &staged_rows {
         let sibling_id: i64 = row.get("id");
+        let trigger_price: Option<Decimal> = row.get("trigger_price");
 
-        // Validate Staged→Pending through state machine
-        let _ = validate_transition(OrderState::Staged, OrderState::Pending)
-            .map_err(|e| format!("cannot activate sibling {}: {}", sibling_id, e))?;
+        if let Some(tp) = trigger_price {
+            // Has trigger_price → transition to Monitoring (PriceMonitor will watch)
+            let _ = validate_transition(OrderState::Staged, OrderState::Monitoring)
+                .map_err(|e| format!("cannot monitor sibling {}: {}", sibling_id, e))?;
 
-        tx.execute(
-            "UPDATE prediction_orders SET state = 'pending' \
-             WHERE id = $1 AND session_id = $2 AND state = 'staged'",
-            &[&sibling_id, &session_id],
-        )
-        .await
-        .map_err(|e| format!("activate sibling {}: {}", sibling_id, e))?;
+            tx.execute(
+                "UPDATE prediction_orders SET state = 'monitoring' \
+                 WHERE id = $1 AND session_id = $2 AND state = 'staged'",
+                &[&sibling_id, &session_id],
+            )
+            .await
+            .map_err(|e| format!("activate to monitoring: {}", e))?;
 
-        tx.execute(
-            "INSERT INTO order_queue (order_id, action, actor) VALUES ($1, 'submit', 'trigger')",
-            &[&sibling_id],
-        )
-        .await
-        .map_err(|e| format!("queue sibling {}: {}", sibling_id, e))?;
+            tx.execute(
+                "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+                 VALUES ($1, 'staged', 'monitoring', 'monitor', 'ws_fill_trigger')",
+                &[&sibling_id],
+            )
+            .await
+            .map_err(|e| format!("audit monitoring: {}", e))?;
 
-        tx.execute(
-            "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
-             VALUES ($1, 'staged', 'pending', 'activate', 'ws_fill_trigger')",
-            &[&sibling_id],
-        )
-        .await
-        .map_err(|e| format!("audit sibling {}: {}", sibling_id, e))?;
+            monitoring_orders.push(MonitoringActivation {
+                order_id: sibling_id,
+                session_id,
+                group_id,
+                ticker: row.get("ticker"),
+                side: parse_side(row.get("side")),
+                action: parse_action(row.get("action")),
+                leg_role: row.get::<_, Option<String>>("leg_role").map(|s| parse_leg_role(&s)),
+                trigger_price: tp,
+                submit_price: row.get("price_dollars"),
+                quantity: row.get("quantity"),
+            });
 
-        activated += 1;
-        debug!(order_id = sibling_id, group_id, "activated staged sibling on entry fill");
+            info!(order_id = sibling_id, trigger_price = %tp, "staged order activated to monitoring");
+        } else {
+            // No trigger_price → transition to Pending + enqueue (current TP behavior)
+            let _ = validate_transition(OrderState::Staged, OrderState::Pending)
+                .map_err(|e| format!("cannot activate sibling {}: {}", sibling_id, e))?;
+
+            tx.execute(
+                "UPDATE prediction_orders SET state = 'pending' \
+                 WHERE id = $1 AND session_id = $2 AND state = 'staged'",
+                &[&sibling_id, &session_id],
+            )
+            .await
+            .map_err(|e| format!("activate sibling {}: {}", sibling_id, e))?;
+
+            tx.execute(
+                "INSERT INTO order_queue (order_id, action, actor) VALUES ($1, 'submit', 'trigger')",
+                &[&sibling_id],
+            )
+            .await
+            .map_err(|e| format!("queue sibling {}: {}", sibling_id, e))?;
+
+            tx.execute(
+                "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
+                 VALUES ($1, 'staged', 'pending', 'activate', 'ws_fill_trigger')",
+                &[&sibling_id],
+            )
+            .await
+            .map_err(|e| format!("audit sibling {}: {}", sibling_id, e))?;
+
+            activated_for_pump += 1;
+            debug!(order_id = sibling_id, group_id, "activated staged sibling on entry fill");
+        }
     }
 
     tx.commit()
         .await
         .map_err(|e| format!("commit: {}", e))?;
 
-    if activated > 0 {
-        info!(group_id, activated, "activated staged exit legs after entry fill");
+    let total = activated_for_pump + monitoring_orders.len() as u64;
+    if total > 0 {
+        info!(
+            group_id,
+            activated_for_pump,
+            monitoring = monitoring_orders.len(),
+            "activated staged exit legs after entry fill"
+        );
     }
 
-    Ok(activated)
+    Ok(ActivationResult {
+        activated_for_pump,
+        monitoring_orders,
+    })
 }
 
 #[cfg(test)]

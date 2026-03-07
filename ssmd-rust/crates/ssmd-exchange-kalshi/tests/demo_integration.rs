@@ -183,6 +183,8 @@ async fn test_demo_submit_and_cancel() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2), // $0.01
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -230,6 +232,8 @@ async fn test_demo_mass_cancel() {
             quantity: Decimal::from(1),
             price_dollars: Decimal::new(1, 2),
             time_in_force: TimeInForce::Gtc,
+            order_type: harman::types::OrderType::default(),
+            trigger_price: None,
         };
         let eid = client
             .submit_order(&order)
@@ -283,6 +287,8 @@ async fn test_demo_get_order_by_client_id() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -341,6 +347,8 @@ async fn test_demo_double_cancel() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -417,6 +425,8 @@ async fn test_demo_submit_invalid_ticker() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(50, 2), // $0.50
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let result = client.submit_order(&order).await;
@@ -458,6 +468,8 @@ async fn test_demo_submit_zero_quantity() {
         quantity: Decimal::from(0),
         price_dollars: Decimal::new(50, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let result = client.submit_order(&order).await;
@@ -493,6 +505,8 @@ async fn test_demo_submit_invalid_price() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(150, 2), // $1.50 — out of range
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let result = client.submit_order(&order).await;
@@ -530,6 +544,8 @@ async fn test_demo_submit_duplicate_client_order_id() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -547,6 +563,8 @@ async fn test_demo_submit_duplicate_client_order_id() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let result = client.submit_order(&order2).await;
@@ -594,6 +612,8 @@ async fn test_demo_amend_price() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2), // $0.01
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -653,6 +673,8 @@ async fn test_demo_amend_quantity() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -710,6 +732,8 @@ async fn test_demo_amend_price_and_quantity() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -768,6 +792,8 @@ async fn test_demo_decrease_order() {
         quantity: Decimal::from(3),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -829,6 +855,8 @@ async fn test_demo_amend_cancelled_order() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -920,6 +948,8 @@ async fn test_demo_amend_invalid_price() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -974,6 +1004,8 @@ async fn test_demo_amend_zero_quantity() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -1027,6 +1059,8 @@ async fn test_demo_decrease_more_than_remaining() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client
@@ -1073,6 +1107,8 @@ async fn test_demo_decrease_cancelled_order() {
         quantity: Decimal::from(1),
         price_dollars: Decimal::new(1, 2),
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     };
 
     let exchange_id = client

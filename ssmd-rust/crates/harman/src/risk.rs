@@ -73,7 +73,7 @@ impl RiskState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Action, Side, TimeInForce};
+    use crate::types::{Action, OrderType, Side, TimeInForce};
     use uuid::Uuid;
 
     fn make_order(quantity: Decimal, price_dollars: Decimal) -> OrderRequest {
@@ -94,6 +94,8 @@ mod tests {
             quantity,
             price_dollars,
             time_in_force: TimeInForce::Gtc,
+            order_type: OrderType::default(),
+            trigger_price: None,
         }
     }
 

@@ -11,8 +11,10 @@ use harman::exchange::EventStream;
 
 use crate::Oms;
 use crate::event_ingester::EventIngester;
+use crate::price_monitor::PriceMonitorHandle;
 
-/// Background task coordinator for auto-pump, auto-reconcile, and WS event ingestion.
+/// Background task coordinator for auto-pump, auto-reconcile, WS event ingestion,
+/// and price monitoring.
 pub struct OmsRunner {
     oms: Arc<Oms>,
     pump_trigger: PumpTrigger,
@@ -21,6 +23,8 @@ pub struct OmsRunner {
     shutdown: CancellationToken,
     /// Optional WS event stream for real-time events.
     event_stream: Option<Arc<dyn EventStream>>,
+    /// Handle for arming/disarming price triggers. Available when PriceMonitor is enabled.
+    price_monitor_handle: Option<PriceMonitorHandle>,
 }
 
 /// Cheap, cloneable handle for REST handlers to trigger auto-pump.
@@ -58,19 +62,43 @@ impl OmsRunner {
         reconcile_interval: Option<Duration>,
         startup_session_id: i64,
         event_stream: Option<Arc<dyn EventStream>>,
+        price_monitor_handle: Option<PriceMonitorHandle>,
+    ) -> Self {
+        Self::new_with_pump_trigger(
+            oms,
+            reconcile_interval,
+            startup_session_id,
+            event_stream,
+            price_monitor_handle,
+            PumpTrigger::new(),
+        )
+    }
+
+    pub fn new_with_pump_trigger(
+        oms: Arc<Oms>,
+        reconcile_interval: Option<Duration>,
+        startup_session_id: i64,
+        event_stream: Option<Arc<dyn EventStream>>,
+        price_monitor_handle: Option<PriceMonitorHandle>,
+        pump_trigger: PumpTrigger,
     ) -> Self {
         Self {
             oms,
-            pump_trigger: PumpTrigger::new(),
+            pump_trigger,
             reconcile_interval,
             startup_session_id,
             shutdown: CancellationToken::new(),
             event_stream,
+            price_monitor_handle,
         }
     }
 
     pub fn pump_trigger(&self) -> PumpTrigger {
         self.pump_trigger.clone()
+    }
+
+    pub fn price_monitor_handle(&self) -> Option<PriceMonitorHandle> {
+        self.price_monitor_handle.clone()
     }
 
     pub fn shutdown(&self) {
@@ -196,6 +224,7 @@ impl OmsRunner {
             self.oms.metrics.clone(),
             self.oms.audit.clone(),
             self.pump_trigger.clone(),
+            self.price_monitor_handle.clone(),
         );
 
         info!("WS event ingester started");

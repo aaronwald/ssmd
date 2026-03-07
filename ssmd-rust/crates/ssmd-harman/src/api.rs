@@ -18,7 +18,7 @@ use uuid::Uuid;
 use harman::db;
 use harman::error::EnqueueError;
 use harman::state::OrderState;
-use harman::types::{Action, GroupState, Order, OrderGroup, OrderRequest, Side, TimeInForce};
+use harman::types::{Action, GroupState, Order, OrderGroup, OrderRequest, OrderType, Side, TimeInForce};
 
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -623,6 +623,8 @@ async fn create_order(
         quantity: req.quantity,
         price_dollars: req.price_dollars,
         time_in_force: req.time_in_force,
+        order_type: OrderType::default(),
+        trigger_price: None,
     };
 
     match state.ems.enqueue(ctx.session_id, &order_req).await {
@@ -2433,5 +2435,7 @@ fn to_order_request(req: &CreateOrderRequest) -> OrderRequest {
         quantity: req.quantity,
         price_dollars: req.price_dollars,
         time_in_force: req.time_in_force,
+        order_type: OrderType::default(),
+        trigger_price: None,
     }
 }

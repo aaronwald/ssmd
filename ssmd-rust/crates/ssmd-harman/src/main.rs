@@ -10,6 +10,8 @@ use tracing::{error, info, warn};
 
 use ssmd_harman::{api, shutdown, AppState, MonitorMetrics};
 use ssmd_harman_ems::{Ems, EmsMetrics};
+use ssmd_harman_oms::price_feed::NatsPriceFeed;
+use ssmd_harman_oms::price_monitor::PriceMonitor;
 use ssmd_harman_oms::runner::OmsRunner;
 use ssmd_harman_oms::{Oms, OmsMetrics};
 
@@ -262,8 +264,51 @@ async fn main() {
     } else {
         None
     };
-    let runner = Arc::new(OmsRunner::new(oms.clone(), reconcile_interval, startup_session_id, event_stream));
-    let pump_trigger = runner.pump_trigger();
+    // Create shared PumpTrigger before runner and PriceMonitor
+    let pump_trigger = ssmd_harman_oms::runner::PumpTrigger::new();
+
+    // Optional NATS price feed for PriceMonitor (SL trigger monitoring)
+    let (price_monitor_handle, price_monitor_task) = match std::env::var("NATS_URL") {
+        Ok(nats_url) => {
+            let nats_subjects: Vec<String> = std::env::var("NATS_TICKER_SUBJECTS")
+                .unwrap_or_else(|_| "prod.kalshi.crypto.json.ticker.>".to_string())
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            info!(nats_url = %nats_url, subjects = ?nats_subjects, "connecting PriceMonitor to NATS");
+
+            match NatsPriceFeed::connect(&nats_url, &nats_subjects).await {
+                Ok(feed) => {
+                    let (monitor, handle) = PriceMonitor::new(
+                        pool.clone(),
+                        pump_trigger.clone(),
+                        oms.audit.clone(),
+                        Box::new(feed),
+                    );
+                    info!("PriceMonitor created, will start after recovery");
+                    (Some(handle), Some(monitor))
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to connect PriceMonitor to NATS — SL monitoring disabled");
+                    (None, None)
+                }
+            }
+        }
+        Err(_) => {
+            info!("NATS_URL not set, PriceMonitor disabled (no SL trigger monitoring)");
+            (None, None)
+        }
+    };
+
+    let runner = Arc::new(OmsRunner::new_with_pump_trigger(
+        oms.clone(),
+        reconcile_interval,
+        startup_session_id,
+        event_stream,
+        price_monitor_handle,
+        pump_trigger.clone(),
+    ));
     if args.auto_pump {
         info!("auto-pump enabled");
     }
@@ -341,6 +386,43 @@ async fn main() {
     tokio::spawn(async move {
         runner_state.runner.run(&runner_state.session_semaphores).await;
     });
+
+    // Spawn PriceMonitor if configured
+    if let Some(monitor) = price_monitor_task {
+        // Crash recovery: reload any orders in Monitoring state
+        if let Some(handle) = state.runner.price_monitor_handle() {
+            match harman::db::list_orders(&state.pool, startup_session_id, Some(harman::state::OrderState::Monitoring)).await {
+                Ok(orders) => {
+                    if !orders.is_empty() {
+                        info!(count = orders.len(), "reloading monitoring triggers from DB");
+                        for order in orders {
+                            if let (Some(trigger_price), Some(group_id)) = (order.trigger_price, order.group_id) {
+                                handle.arm(ssmd_harman_oms::price_monitor::Trigger {
+                                    order_id: order.id,
+                                    session_id: order.session_id,
+                                    group_id,
+                                    ticker: order.ticker.clone(),
+                                    side: order.side,
+                                    action: order.action,
+                                    trigger_price,
+                                    submit_price: order.price_dollars,
+                                    quantity: order.quantity,
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to reload monitoring triggers — SL orders may be unarmed");
+                }
+            }
+        }
+
+        tokio::spawn(async move {
+            monitor.run().await;
+        });
+        info!("PriceMonitor spawned");
+    }
 
     // Spawn shutdown handler
     let shutdown_state = state.clone();

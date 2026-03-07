@@ -178,6 +178,8 @@ async fn handle_submit(ems: &Ems, session_id: i64, item: &db::QueueItem) -> Subm
         quantity: item.order.quantity,
         price_dollars: item.order.price_dollars,
         time_in_force: item.order.time_in_force,
+        order_type: item.order.order_type,
+        trigger_price: item.order.trigger_price,
     };
     let start = std::time::Instant::now();
     match ems.exchange.submit_order(&request).await {

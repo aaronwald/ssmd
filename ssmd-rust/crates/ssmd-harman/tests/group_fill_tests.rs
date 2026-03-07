@@ -67,6 +67,8 @@ fn test_order_request(
         quantity: qty,
         price_dollars: price,
         time_in_force: TimeInForce::Gtc,
+        order_type: harman::types::OrderType::default(),
+        trigger_price: None,
     }
 }
 
@@ -113,12 +115,12 @@ async fn test_handle_group_on_fill_bracket_entry_activates_exits() {
     ).await.unwrap();
 
     // Call handle_group_on_fill — this is what the event ingester calls
-    let activated = db::handle_group_on_fill(&pool, entry_order.id, session_id)
+    let result = db::handle_group_on_fill(&pool, entry_order.id, session_id)
         .await
         .unwrap();
 
     // Should activate both TP and SL
-    assert_eq!(activated, 2, "should activate 2 exit legs (TP + SL)");
+    assert_eq!(result.activated_for_pump,2, "should activate 2 exit legs (TP + SL)");
 
     // TP and SL should now be Pending (not Cancelled!)
     assert_order_state(&pool, tp_order.id, OrderState::Pending).await.unwrap();
@@ -174,11 +176,11 @@ async fn test_handle_group_on_fill_bracket_tp_fill_cancels_sl() {
     ).await.unwrap();
 
     // Call handle_group_on_fill for TP fill — should cancel SL
-    let activated = db::handle_group_on_fill(&pool, tp_order.id, session_id)
+    let result = db::handle_group_on_fill(&pool, tp_order.id, session_id)
         .await
         .unwrap();
 
-    assert_eq!(activated, 0, "exit fill should not activate anything");
+    assert_eq!(result.activated_for_pump,0, "exit fill should not activate anything");
 
     // SL should be cancelled
     assert_order_state(&pool, sl_order.id, OrderState::Cancelled).await.unwrap();
@@ -230,11 +232,11 @@ async fn test_handle_group_on_fill_bracket_sl_fill_cancels_tp() {
         Some("exch-gf3-sl"), None, "test",
     ).await.unwrap();
 
-    let activated = db::handle_group_on_fill(&pool, sl_order.id, session_id)
+    let result = db::handle_group_on_fill(&pool, sl_order.id, session_id)
         .await
         .unwrap();
 
-    assert_eq!(activated, 0);
+    assert_eq!(result.activated_for_pump,0);
 
     // TP should be cancelled (it was still pending/staged)
     // After activate, TP went to Pending; SL fill should cancel it
@@ -329,16 +331,16 @@ async fn test_handle_group_on_fill_idempotent() {
     ).await.unwrap();
 
     // First call activates
-    let activated1 = db::handle_group_on_fill(&pool, entry_order.id, session_id)
+    let result1 = db::handle_group_on_fill(&pool, entry_order.id, session_id)
         .await
         .unwrap();
-    assert_eq!(activated1, 2);
+    assert_eq!(result1.activated_for_pump,2);
 
     // Second call — legs already pending, no more staged legs to activate
-    let activated2 = db::handle_group_on_fill(&pool, entry_order.id, session_id)
+    let result2 = db::handle_group_on_fill(&pool, entry_order.id, session_id)
         .await
         .unwrap();
-    assert_eq!(activated2, 0, "second call should activate 0 (already pending)");
+    assert_eq!(result2.activated_for_pump,0, "second call should activate 0 (already pending)");
 }
 
 // =============================================================================
@@ -355,11 +357,11 @@ async fn test_handle_group_on_fill_no_group_is_noop() {
         .await
         .unwrap();
 
-    let activated = db::handle_group_on_fill(&pool, order_id, session_id)
+    let result = db::handle_group_on_fill(&pool, order_id, session_id)
         .await
         .unwrap();
 
-    assert_eq!(activated, 0, "non-grouped order should be no-op");
+    assert_eq!(result.activated_for_pump,0, "non-grouped order should be no-op");
 }
 
 // =============================================================================
@@ -372,11 +374,11 @@ async fn test_handle_group_on_fill_unknown_order() {
     let (pool, session_id) = setup().await;
 
     // Non-existent order ID
-    let activated = db::handle_group_on_fill(&pool, 999999, session_id)
+    let result = db::handle_group_on_fill(&pool, 999999, session_id)
         .await
         .unwrap();
 
-    assert_eq!(activated, 0, "unknown order should return 0");
+    assert_eq!(result.activated_for_pump,0, "unknown order should return 0");
 }
 
 // =============================================================================
@@ -413,11 +415,11 @@ async fn test_handle_group_on_fill_oco() {
 
     // handle_group_on_fill for OCO — should not activate anything
     // (OCO legs are Pending, not Staged — the EMS cancel happens via evaluate_triggers)
-    let activated = db::handle_group_on_fill(&pool, first.id, session_id)
+    let result = db::handle_group_on_fill(&pool, first.id, session_id)
         .await
         .unwrap();
 
-    assert_eq!(activated, 0, "OCO should not activate any staged legs");
+    assert_eq!(result.activated_for_pump,0, "OCO should not activate any staged legs");
 }
 
 // =============================================================================
@@ -457,8 +459,8 @@ async fn test_full_bracket_lifecycle_via_handle_group_on_fill() {
         Some("exch-gf9-entry"), None, "test",
     ).await.unwrap();
 
-    let activated = db::handle_group_on_fill(&pool, entry_order.id, session_id).await.unwrap();
-    assert_eq!(activated, 2, "step 1: should activate TP + SL");
+    let result = db::handle_group_on_fill(&pool, entry_order.id, session_id).await.unwrap();
+    assert_eq!(result.activated_for_pump,2, "step 1: should activate TP + SL");
     assert_order_state(&pool, tp_order.id, OrderState::Pending).await.unwrap();
     assert_order_state(&pool, sl_order.id, OrderState::Pending).await.unwrap();
 
@@ -488,8 +490,8 @@ async fn test_full_bracket_lifecycle_via_handle_group_on_fill() {
         Some("exch-gf9-tp"), None, "test",
     ).await.unwrap();
 
-    let activated = db::handle_group_on_fill(&pool, tp_order.id, session_id).await.unwrap();
-    assert_eq!(activated, 0, "step 4: exit fill should not activate");
+    let result = db::handle_group_on_fill(&pool, tp_order.id, session_id).await.unwrap();
+    assert_eq!(result.activated_for_pump,0, "step 4: exit fill should not activate");
 
     // SL was Acknowledged (not Staged), so cancel_staged_group_siblings won't cancel it.
     // The evaluate_triggers path would need to enqueue a cancel via EMS.
@@ -557,11 +559,11 @@ async fn test_handle_group_on_fill_entry_fill_exits_already_cancelled() {
     ).await.unwrap();
 
     // Should activate 0 (no staged legs left)
-    let activated = db::handle_group_on_fill(&pool, entry_order.id, session_id)
+    let result = db::handle_group_on_fill(&pool, entry_order.id, session_id)
         .await
         .unwrap();
 
-    assert_eq!(activated, 0, "no staged legs to activate");
+    assert_eq!(result.activated_for_pump,0, "no staged legs to activate");
 
     // Exits should remain cancelled
     assert_order_state(&pool, tp_order.id, OrderState::Cancelled).await.unwrap();

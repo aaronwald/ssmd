@@ -68,6 +68,37 @@ impl TimeInForce {
     }
 }
 
+/// Type of order for exchange submission
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrderType {
+    /// Resting limit order (GTC)
+    #[default]
+    Limit,
+    /// Immediate-or-cancel (for triggered SL)
+    Market,
+}
+
+impl std::fmt::Display for OrderType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OrderType::Limit => write!(f, "limit"),
+            OrderType::Market => write!(f, "market"),
+        }
+    }
+}
+
+impl std::str::FromStr for OrderType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "limit" => Ok(OrderType::Limit),
+            "market" => Ok(OrderType::Market),
+            other => Err(format!("unknown order type: {}", other)),
+        }
+    }
+}
+
 /// Type of an order group
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -204,6 +235,10 @@ pub struct OrderRequest {
     #[serde(with = "rust_decimal::serde::str")]
     pub price_dollars: Decimal,
     pub time_in_force: TimeInForce,
+    #[serde(default)]
+    pub order_type: OrderType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_price: Option<Decimal>,
 }
 
 impl OrderRequest {
@@ -232,6 +267,9 @@ pub struct Order {
     pub time_in_force: TimeInForce,
     pub state: OrderState,
     pub cancel_reason: Option<CancelReason>,
+    pub order_type: OrderType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_price: Option<Decimal>,
     pub group_id: Option<i64>,
     pub leg_role: Option<LegRole>,
     pub created_at: DateTime<Utc>,
@@ -429,6 +467,8 @@ mod tests {
             quantity: Decimal::from(10),
             price_dollars: Decimal::new(50, 2),
             time_in_force: TimeInForce::Gtc,
+            order_type: OrderType::default(),
+            trigger_price: None,
         };
         // 10 contracts at $0.50 each = $5.00
         assert_eq!(req.notional(), Decimal::new(500, 2));
@@ -444,6 +484,8 @@ mod tests {
             quantity: Decimal::from(100),
             price_dollars: Decimal::new(99, 2),
             time_in_force: TimeInForce::Gtc,
+            order_type: OrderType::default(),
+            trigger_price: None,
         };
         // 100 contracts at $0.99 each = $99.00
         assert_eq!(req.notional(), Decimal::new(9900, 2));

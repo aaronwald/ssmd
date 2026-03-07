@@ -1,6 +1,8 @@
 pub mod event_ingester;
 pub mod groups;
 pub mod positions;
+pub mod price_feed;
+pub mod price_monitor;
 pub mod reconciliation;
 pub mod recovery;
 pub mod runner;

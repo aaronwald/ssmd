@@ -61,6 +61,8 @@ async fn test_ems_pump_submit_success() {
                 quantity: Decimal::from(1),
                 price_dollars: Decimal::new(50, 2), // $0.50
                 time_in_force: harman::types::TimeInForce::Gtc,
+                order_type: harman::types::OrderType::default(),
+                trigger_price: None,
             },
         )
         .await
@@ -103,6 +105,8 @@ async fn test_ems_pump_submit_rejected() {
                 quantity: Decimal::from(1),
                 price_dollars: Decimal::new(50, 2),
                 time_in_force: harman::types::TimeInForce::Gtc,
+                order_type: harman::types::OrderType::default(),
+                trigger_price: None,
             },
         )
         .await
@@ -144,6 +148,8 @@ async fn test_ems_pump_submit_rate_limited() {
                 quantity: Decimal::from(1),
                 price_dollars: Decimal::new(50, 2),
                 time_in_force: harman::types::TimeInForce::Gtc,
+                order_type: harman::types::OrderType::default(),
+                trigger_price: None,
             },
         )
         .await
@@ -180,6 +186,8 @@ async fn test_ems_pump_submit_timeout() {
                 quantity: Decimal::from(1),
                 price_dollars: Decimal::new(50, 2),
                 time_in_force: harman::types::TimeInForce::Gtc,
+                order_type: harman::types::OrderType::default(),
+                trigger_price: None,
             },
         )
         .await
@@ -218,6 +226,8 @@ async fn test_ems_pump_cancel_success() {
                 quantity: Decimal::from(1),
                 price_dollars: Decimal::new(50, 2),
                 time_in_force: harman::types::TimeInForce::Gtc,
+                order_type: harman::types::OrderType::default(),
+                trigger_price: None,
             },
         )
         .await
@@ -476,6 +486,8 @@ async fn test_ems_pump_respects_shutdown() {
                 quantity: Decimal::from(1),
                 price_dollars: Decimal::new(50, 2),
                 time_in_force: harman::types::TimeInForce::Gtc,
+                order_type: harman::types::OrderType::default(),
+                trigger_price: None,
             },
         )
         .await
@@ -512,6 +524,8 @@ async fn test_ems_shutdown_mass_cancels_and_drains() {
                 quantity: Decimal::from(1),
                 price_dollars: Decimal::new(50, 2),
                 time_in_force: harman::types::TimeInForce::Gtc,
+                order_type: harman::types::OrderType::default(),
+                trigger_price: None,
             },
         )
         .await
@@ -574,6 +588,8 @@ async fn test_ems_metrics_increment() {
                 quantity: Decimal::from(1),
                 price_dollars: Decimal::new(50, 2),
                 time_in_force: harman::types::TimeInForce::Gtc,
+                order_type: harman::types::OrderType::default(),
+                trigger_price: None,
             },
         )
         .await

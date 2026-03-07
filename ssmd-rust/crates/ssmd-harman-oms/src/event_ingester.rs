@@ -21,6 +21,7 @@ use harman::state::OrderState;
 use harman::types::{CancelReason, ExchangeFill};
 
 use crate::OmsMetrics;
+use crate::price_monitor::PriceMonitorHandle;
 use crate::runner::PumpTrigger;
 
 /// Ingests WS events and writes to DB via shared processors.
@@ -30,6 +31,7 @@ pub struct EventIngester {
     metrics: Arc<OmsMetrics>,
     audit: AuditSender,
     pump_trigger: PumpTrigger,
+    price_monitor: Option<PriceMonitorHandle>,
     /// Set to true when WS is connected, false on disconnect.
     pub ws_connected: Arc<AtomicBool>,
 }
@@ -49,6 +51,7 @@ impl EventIngester {
         metrics: Arc<OmsMetrics>,
         audit: AuditSender,
         pump_trigger: PumpTrigger,
+        price_monitor: Option<PriceMonitorHandle>,
     ) -> Self {
         Self {
             pool,
@@ -56,6 +59,7 @@ impl EventIngester {
             metrics,
             audit,
             pump_trigger,
+            price_monitor,
             ws_connected: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -302,15 +306,42 @@ impl EventIngester {
                                     match db::handle_group_on_fill(
                                         &self.pool, order.id, order.session_id,
                                     ).await {
-                                        Ok(activated) if activated > 0 => {
-                                            info!(
-                                                order_id = order.id,
-                                                activated,
-                                                "bracket entry filled — activated exit legs, triggering pump"
-                                            );
-                                            self.pump_trigger.notify(order.session_id);
+                                        Ok(result) => {
+                                            if result.activated_for_pump > 0 {
+                                                info!(
+                                                    order_id = order.id,
+                                                    activated = result.activated_for_pump,
+                                                    "bracket entry filled — activated exit legs, triggering pump"
+                                                );
+                                                self.pump_trigger.notify(order.session_id);
+                                            }
+                                            if let Some(ref pm) = self.price_monitor {
+                                                for m in &result.monitoring_orders {
+                                                    info!(
+                                                        order_id = m.order_id,
+                                                        ticker = %m.ticker,
+                                                        trigger_price = %m.trigger_price,
+                                                        "SL order entered monitoring — arming PriceMonitor"
+                                                    );
+                                                    pm.arm(crate::price_monitor::Trigger {
+                                                        order_id: m.order_id,
+                                                        session_id: m.session_id,
+                                                        group_id: m.group_id,
+                                                        ticker: m.ticker.clone(),
+                                                        side: m.side,
+                                                        action: m.action,
+                                                        trigger_price: m.trigger_price,
+                                                        submit_price: m.submit_price,
+                                                        quantity: m.quantity,
+                                                    });
+                                                }
+                                            } else if !result.monitoring_orders.is_empty() {
+                                                warn!(
+                                                    count = result.monitoring_orders.len(),
+                                                    "orders entered Monitoring but PriceMonitor is not enabled"
+                                                );
+                                            }
                                         }
-                                        Ok(_) => {}
                                         Err(e) => {
                                             error!(error = %e, "failed to handle group on fill");
                                         }
