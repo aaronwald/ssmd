@@ -12,7 +12,7 @@ import type { Order, OrderState, LocalPosition } from "@/lib/types";
 
 type SortKey = "id" | "ticker" | "quantity" | "price_dollars" | "state" | "created_at";
 
-const cancellableStates: OrderState[] = ["pending", "submitted", "acknowledged", "partially_filled", "staged"];
+const cancellableStates: OrderState[] = ["pending", "submitted", "acknowledged", "partially_filled", "staged", "monitoring"];
 type SortDir = "asc" | "desc";
 
 const stateFilters = [
@@ -194,8 +194,18 @@ function OrderRow({ order: o, netQty, pos, isOpen, isExpanded, onToggle }: {
         <td className="px-4 py-2 font-mono text-right">{Number(o.quantity).toFixed(0)}</td>
         <td className="px-4 py-2 font-mono text-right">{Number(o.filled_quantity).toFixed(0)}</td>
         <td className={`px-4 py-2 font-mono text-right ${netQty > 0 ? "text-green" : netQty < 0 ? "text-red" : "text-fg-subtle"}`}>{pos ? netQty.toFixed(0) : "—"}</td>
-        <td className="px-4 py-2 font-mono text-right">${Number(o.price_dollars).toFixed(2)}</td>
-        <td className="px-4 py-2 uppercase text-xs">{o.time_in_force}</td>
+        <td className="px-4 py-2 font-mono text-right">
+          ${Number(o.price_dollars).toFixed(2)}
+          {o.trigger_price && (
+            <span className="block text-[10px] text-cyan" title="Trigger price">
+              @{Number(o.trigger_price).toFixed(2)}
+            </span>
+          )}
+        </td>
+        <td className="px-4 py-2 uppercase text-xs">
+          {o.time_in_force}
+          {o.order_type === "market" && <span className="ml-1 text-[10px] text-cyan" title="Market (IOC on trigger)">MKT</span>}
+        </td>
         <td className="px-4 py-2">
           <StateBadge state={o.state} />
           {o.cancel_reason && <span className="ml-1.5 text-xs text-fg-muted">({o.cancel_reason.replace(/_/g, " ")})</span>}

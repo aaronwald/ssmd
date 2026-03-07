@@ -2,6 +2,8 @@ export type Side = "yes" | "no";
 export type Action = "buy" | "sell";
 export type TimeInForce = "gtc" | "ioc";
 
+export type OrderType = "limit" | "market";
+
 export type OrderState =
   | "pending"
   | "submitted"
@@ -9,6 +11,7 @@ export type OrderState =
   | "partially_filled"
   | "filled"
   | "staged"
+  | "monitoring"
   | "pending_cancel"
   | "pending_amend"
   | "pending_decrease"
@@ -33,6 +36,8 @@ export interface Order {
   time_in_force: TimeInForce;
   state: OrderState;
   cancel_reason: string | null;
+  order_type: OrderType;
+  trigger_price: string | null;
   group_id: number | null;
   leg_role: LegRole;
   created_at: string;
@@ -102,6 +107,8 @@ export interface CreateOrderRequest {
   quantity: string;
   price_dollars: string;
   time_in_force: TimeInForce;
+  order_type?: OrderType;
+  trigger_price?: string;
 }
 
 export interface CreateBracketRequest {

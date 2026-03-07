@@ -105,6 +105,7 @@ export function CreateBracketFormControlled({
   const [slAction, setSlAction] = useState<Action>("sell");
   const [slQty, setSlQty] = useState("");
   const [slPrice, setSlPrice] = useState("");
+  const [slTrigger, setSlTrigger] = useState("");
   const [slTif, setSlTif] = useState<TimeInForce>("gtc");
 
   // Sync entry leg when initial values change
@@ -156,6 +157,7 @@ export function CreateBracketFormControlled({
             quantity: slQty,
             price_dollars: slPrice,
             time_in_force: slTif,
+            ...(slTrigger ? { trigger_price: slTrigger, order_type: "market" as const } : {}),
           },
         },
         instanceId
@@ -223,6 +225,19 @@ export function CreateBracketFormControlled({
         tif={slTif}
         setTif={setSlTif}
       />
+      <div className="space-y-1">
+        <span className="text-xs font-medium text-fg-muted uppercase">SL Trigger Price</span>
+        <input
+          type="text"
+          value={slTrigger}
+          onChange={(e) => setSlTrigger(e.target.value)}
+          placeholder="Trigger (e.g. 0.40)"
+          className="w-full rounded border border-border bg-bg-surface px-2 py-1 text-xs font-mono text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"
+        />
+        <p className="text-[10px] text-fg-subtle">
+          When set, SL stays staged until market price hits trigger, then submits as IOC market order.
+        </p>
+      </div>
 
       {error && (
         <div className="rounded-md border border-red bg-red/10 px-3 py-2">

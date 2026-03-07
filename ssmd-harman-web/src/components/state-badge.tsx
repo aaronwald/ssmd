@@ -9,6 +9,7 @@ const orderStateColors: Record<OrderState, string> = {
   partially_filled: "bg-purple/15 text-purple",
   filled: "bg-emerald/15 text-emerald",
   staged: "bg-slate/15 text-slate",
+  monitoring: "bg-cyan/15 text-cyan",
   pending_cancel: "bg-orange/15 text-orange",
   pending_amend: "bg-orange/15 text-orange",
   pending_decrease: "bg-orange/15 text-orange",
