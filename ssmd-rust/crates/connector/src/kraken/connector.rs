@@ -145,7 +145,6 @@ impl Connector for KrakenConnector {
         // Create metrics
         let connector_metrics = ConnectorMetrics::new("kraken", "spot");
         connector_metrics.set_shards_total(1);
-        connector_metrics.set_markets_subscribed(0, self.symbols.len());
         // Pre-init MESSAGES_TOTAL so the feed label exists in Prometheus
         connector_metrics.for_shard(0).init(&["ticker", "trade"]);
 
@@ -154,20 +153,25 @@ impl Connector for KrakenConnector {
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
-        // Subscribe to ticker channel
-        info!(symbols = ?self.symbols, "Subscribing to Kraken ticker channel");
-        ws.subscribe("ticker", &self.symbols)
+        // Subscribe to ticker channel (Kraken sends one result per symbol)
+        info!(symbols = ?self.symbols, count = self.symbols.len(), "Subscribing to Kraken ticker channel");
+        let ticker_symbols = ws.subscribe("ticker", &self.symbols)
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(format!("ticker subscription: {}", e)))?;
 
         // Subscribe to trade channel
-        info!(symbols = ?self.symbols, "Subscribing to Kraken trade channel");
-        ws.subscribe("trade", &self.symbols)
+        info!(symbols = ?self.symbols, count = self.symbols.len(), "Subscribing to Kraken trade channel");
+        let trade_symbols = ws.subscribe("trade", &self.symbols)
             .await
             .map_err(|e| ConnectorError::ConnectionFailed(format!("trade subscription: {}", e)))?;
 
+        // Update metrics with actual subscribed count (use ticker as the canonical count)
+        connector_metrics.set_markets_subscribed(0, ticker_symbols.len());
+
         info!(
-            symbols = ?self.symbols,
+            ticker_subscribed = ticker_symbols.len(),
+            trade_subscribed = trade_symbols.len(),
+            requested = self.symbols.len(),
             "Kraken connector subscribed to ticker and trade channels"
         );
 

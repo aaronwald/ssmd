@@ -72,11 +72,16 @@ impl KrakenWebSocket {
     /// Subscribe to a channel for the given symbols
     ///
     /// Sends: `{"method":"subscribe","params":{"channel":"<channel>","symbol":["BTC/USD","ETH/USD"]}}`
+    ///
+    /// Kraken WS v2 sends one `SubscriptionResult` per symbol. This method
+    /// waits for all results, tolerates individual symbol failures (logged as
+    /// warnings), and returns the list of successfully subscribed symbols.
+    /// Fails only if *no* symbols subscribe successfully.
     pub async fn subscribe(
         &mut self,
         channel: &str,
         symbols: &[String],
-    ) -> Result<(), KrakenWebSocketError> {
+    ) -> Result<Vec<String>, KrakenWebSocketError> {
         let subscribe_msg = serde_json::json!({
             "method": "subscribe",
             "params": {
@@ -90,53 +95,104 @@ impl KrakenWebSocket {
 
         self.ws.send(Message::Text(msg)).await?;
 
-        // Wait for subscription confirmation
-        self.wait_for_subscription(channel).await
+        // Wait for per-symbol subscription confirmations
+        self.wait_for_subscriptions(channel, symbols.len()).await
     }
 
-    /// Wait for subscription confirmation from Kraken
-    async fn wait_for_subscription(
+    /// Wait for per-symbol subscription results from Kraken.
+    ///
+    /// Kraken sends one result per symbol. We collect all results up to
+    /// `expected_count`, tolerate individual failures, and return the
+    /// successfully subscribed symbols.
+    async fn wait_for_subscriptions(
         &mut self,
         channel: &str,
-    ) -> Result<(), KrakenWebSocketError> {
+        expected_count: usize,
+    ) -> Result<Vec<String>, KrakenWebSocketError> {
         let timeout = tokio::time::timeout(
             Duration::from_secs(Self::SUBSCRIPTION_TIMEOUT_SECS),
             async {
-                while let Some(msg) = self.ws.next().await {
+                let mut succeeded: Vec<String> = Vec::new();
+                let mut failed: Vec<String> = Vec::new();
+                let mut received = 0;
+
+                while received < expected_count {
+                    let Some(msg) = self.ws.next().await else {
+                        return Err(KrakenWebSocketError::ConnectionClosed);
+                    };
                     match msg? {
                         Message::Text(text) => {
                             match serde_json::from_str::<KrakenWsMessage>(&text) {
                                 Ok(KrakenWsMessage::SubscriptionResult {
-                                    success, ..
+                                    success, result, ..
                                 }) => {
+                                    received += 1;
+                                    let symbol = result
+                                        .as_ref()
+                                        .and_then(|r| r.get("symbol"))
+                                        .and_then(|s| s.as_str())
+                                        .unwrap_or("unknown")
+                                        .to_string();
+
                                     if success {
-                                        info!(channel = %channel, "Kraken subscription confirmed");
-                                        return Ok(());
+                                        debug!(channel = %channel, symbol = %symbol, "Subscription confirmed");
+                                        succeeded.push(symbol);
                                     } else {
-                                        return Err(KrakenWebSocketError::SubscriptionFailed(
-                                            format!("Subscription to {} failed", channel),
-                                        ));
+                                        let error = result
+                                            .as_ref()
+                                            .and_then(|r| r.get("error"))
+                                            .and_then(|e| e.as_str())
+                                            .unwrap_or("unknown error");
+                                        warn!(
+                                            channel = %channel,
+                                            symbol = %symbol,
+                                            error = %error,
+                                            progress = format!("{}/{}", received, expected_count),
+                                            "Symbol subscription failed, skipping"
+                                        );
+                                        failed.push(symbol);
                                     }
                                 }
                                 Ok(KrakenWsMessage::Heartbeat { .. }) => {
                                     trace!("Received heartbeat while waiting for subscription");
-                                    continue;
                                 }
                                 Ok(_) => {
                                     debug!(raw = %text, "Received non-subscription message while waiting");
-                                    continue;
                                 }
                                 Err(e) => {
                                     warn!(error = %e, raw = %text, "Failed to parse message while waiting for subscription");
-                                    continue;
                                 }
                             }
                         }
                         Message::Close(_) => return Err(KrakenWebSocketError::ConnectionClosed),
-                        _ => continue,
+                        _ => {}
                     }
                 }
-                Err(KrakenWebSocketError::ConnectionClosed)
+
+                if succeeded.is_empty() {
+                    return Err(KrakenWebSocketError::SubscriptionFailed(
+                        format!("All {} symbols failed for channel {}", expected_count, channel),
+                    ));
+                }
+
+                if !failed.is_empty() {
+                    warn!(
+                        channel = %channel,
+                        succeeded = succeeded.len(),
+                        failed_count = failed.len(),
+                        failed_symbols = ?failed,
+                        "Partial subscription — some symbols rejected by Kraken"
+                    );
+                }
+
+                info!(
+                    channel = %channel,
+                    subscribed = succeeded.len(),
+                    total = expected_count,
+                    "Kraken subscription complete"
+                );
+
+                Ok(succeeded)
             },
         );
 
