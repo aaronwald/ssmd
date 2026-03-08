@@ -35,6 +35,7 @@ interface ChartsResponse {
 
 interface NdjsonRow {
   symbol: string;
+  hols_ticker: string;
   source: string;
   date: string;
   date_close: string;
@@ -45,10 +46,10 @@ interface NdjsonRow {
   low: number;
   close: number;
   volume: number;
-  volume_from: null;
-  tradecount: null;
-  marketorder_volume: null;
-  marketorder_volume_from: null;
+  volume_from: number | null;
+  tradecount: number | null;
+  marketorder_volume: number | null;
+  marketorder_volume_from: number | null;
 }
 
 interface FetchResult {
@@ -144,9 +145,12 @@ export async function runHolsGenerate(
 
   console.log(`[hols] Wrote ${totalRows} rows to ${ndjsonPath}`);
 
-  // 4. Convert to Parquet via DuckDB
+  // 3. Download Kraken Spot trade parquet for enrichment (marketorder_volume, tradecount)
+  const spotTradesDir = await downloadSpotTrades(startDate, endDate);
+
+  // 4. Convert to Parquet via DuckDB (with Spot trade enrichment if available)
   const parquetPath = `/tmp/hols-ohlcv-${endDateStr}.parquet`;
-  await convertToParquet(ndjsonPath, parquetPath);
+  await convertToParquet(ndjsonPath, parquetPath, spotTradesDir);
   const parquetStat = await Deno.stat(parquetPath);
   const fileSizeKB = Math.round((parquetStat.size ?? 0) / 1024);
   console.log(`[hols] Parquet written: ${parquetPath} (${fileSizeKB} KB)`);
@@ -184,6 +188,7 @@ export async function runHolsGenerate(
   try {
     await Deno.remove(ndjsonPath);
     await Deno.remove(parquetPath);
+    if (spotTradesDir) await Deno.remove(spotTradesDir, { recursive: true });
   } catch {
     // Best-effort cleanup
   }
@@ -199,6 +204,19 @@ export async function runHolsGenerate(
     );
     Deno.exit(1);
   }
+}
+
+// --- Ticker mapping ---
+
+/** Known base symbol remaps (Kraken convention → common convention) */
+const BASE_REMAP: Record<string, string> = {
+  XBT: "BTC",
+};
+
+/** Derive hols_ticker (e.g. "BTCUSDT") from secmaster base (e.g. "XBT") */
+function toHolsTicker(base: string): string {
+  const mapped = BASE_REMAP[base.toUpperCase()] ?? base.toUpperCase();
+  return `${mapped}USDT`;
 }
 
 // --- Internal helpers ---
@@ -274,6 +292,7 @@ async function fetchWithRetry(
         const timeSec = Math.floor(c.time / 1000);
         await writeRow({
           symbol,
+          hols_ticker: toHolsTicker(base),
           source: "kraken_futures",
           date: new Date(c.time).toISOString(),
           date_close: new Date(c.time + 60_000).toISOString(),
@@ -330,31 +349,76 @@ async function fetchPage(url: string): Promise<OhlcvCandle[] | null> {
 async function convertToParquet(
   ndjsonPath: string,
   parquetPath: string,
+  spotTradesDir: string | null,
 ): Promise<void> {
   const instance = await DuckDBInstance.create();
   const conn = await instance.connect();
 
-  await conn.run(`
-    COPY (
-      SELECT
-        symbol::VARCHAR as symbol,
-        source::VARCHAR as source,
-        date::TIMESTAMP as date,
-        date_close::TIMESTAMP as date_close,
-        unix::BIGINT as unix,
-        close_unix::BIGINT as close_unix,
-        open::DOUBLE as open,
-        high::DOUBLE as high,
-        low::DOUBLE as low,
-        close::DOUBLE as close,
-        volume::DOUBLE as volume,
-        NULL::DOUBLE as volume_from,
-        NULL::BIGINT as tradecount,
-        NULL::DOUBLE as marketorder_volume,
-        NULL::DOUBLE as marketorder_volume_from
-      FROM read_json_auto('${ndjsonPath}')
-    ) TO '${parquetPath}' (FORMAT PARQUET, COMPRESSION ZSTD)
-  `);
+  if (spotTradesDir) {
+    // Enrich OHLCV with Spot trade aggregates via left join.
+    // Spot trade parquet columns: symbol, side, price, qty, ord_type, trade_id, timestamp
+    // Join key: hols_ticker (e.g. BTCUSDT) matched by stripping '/' from Spot symbol (BTC/USDT → BTCUSDT)
+    // and unix timestamp matched by truncating Spot timestamp to minute epoch.
+    const spotGlob = `${spotTradesDir}/*.parquet`;
+    await conn.run(`
+      COPY (
+        WITH spot AS (
+          SELECT
+            REPLACE(symbol, '/', '') as hols_ticker,
+            EPOCH(DATE_TRUNC('minute', timestamp))::BIGINT as minute_unix,
+            COUNT(*)::BIGINT as tradecount,
+            SUM(qty) as volume_from,
+            SUM(CASE WHEN ord_type = 'market' THEN qty * price ELSE 0 END) as marketorder_volume,
+            SUM(CASE WHEN ord_type = 'market' THEN qty ELSE 0 END) as marketorder_volume_from
+          FROM read_parquet('${spotGlob}')
+          GROUP BY 1, 2
+        )
+        SELECT
+          o.symbol::VARCHAR as symbol,
+          o.hols_ticker::VARCHAR as hols_ticker,
+          o.source::VARCHAR as source,
+          o.date::TIMESTAMP as date,
+          o.date_close::TIMESTAMP as date_close,
+          o.unix::BIGINT as unix,
+          o.close_unix::BIGINT as close_unix,
+          o.open::DOUBLE as open,
+          o.high::DOUBLE as high,
+          o.low::DOUBLE as low,
+          o.close::DOUBLE as close,
+          o.volume::DOUBLE as volume,
+          s.volume_from::DOUBLE as volume_from,
+          s.tradecount::BIGINT as tradecount,
+          s.marketorder_volume::DOUBLE as marketorder_volume,
+          s.marketorder_volume_from::DOUBLE as marketorder_volume_from
+        FROM read_json_auto('${ndjsonPath}') o
+        LEFT JOIN spot s ON o.hols_ticker = s.hols_ticker AND o.unix = s.minute_unix
+      ) TO '${parquetPath}' (FORMAT PARQUET, COMPRESSION ZSTD)
+    `);
+  } else {
+    // No Spot data available — write with null columns
+    await conn.run(`
+      COPY (
+        SELECT
+          symbol::VARCHAR as symbol,
+          hols_ticker::VARCHAR as hols_ticker,
+          source::VARCHAR as source,
+          date::TIMESTAMP as date,
+          date_close::TIMESTAMP as date_close,
+          unix::BIGINT as unix,
+          close_unix::BIGINT as close_unix,
+          open::DOUBLE as open,
+          high::DOUBLE as high,
+          low::DOUBLE as low,
+          close::DOUBLE as close,
+          volume::DOUBLE as volume,
+          volume_from::DOUBLE as volume_from,
+          tradecount::BIGINT as tradecount,
+          marketorder_volume::DOUBLE as marketorder_volume,
+          marketorder_volume_from::DOUBLE as marketorder_volume_from
+        FROM read_json_auto('${ndjsonPath}')
+      ) TO '${parquetPath}' (FORMAT PARQUET, COMPRESSION ZSTD)
+    `);
+  }
 }
 
 async function uploadToGCS(
@@ -473,4 +537,56 @@ function escapeHtml(str: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Download Kraken Spot trade parquet files from GCS for the given date range.
+ * Returns the local directory path, or null if no files found.
+ * GCS layout: kraken-spot/kraken-spot/spot/YYYY-MM-DD/HH/trade.parquet
+ */
+async function downloadSpotTrades(
+  startDate: Date,
+  endDate: Date,
+): Promise<string | null> {
+  const localDir = "/tmp/spot-trades";
+  try {
+    await Deno.mkdir(localDir, { recursive: true });
+  } catch {
+    // already exists
+  }
+
+  const storage = new Storage();
+  const bucket = storage.bucket(GCS_BUCKET);
+  let fileCount = 0;
+
+  // Iterate each date in range
+  const current = new Date(startDate);
+  const end = new Date(endDate);
+  end.setUTCDate(end.getUTCDate() + 1); // inclusive end
+
+  while (current < end) {
+    const dateStr = current.toISOString().slice(0, 10);
+    const prefix = `kraken-spot/kraken-spot/spot/${dateStr}/`;
+
+    try {
+      const [files] = await bucket.getFiles({ prefix, matchGlob: "*/trade.parquet" });
+      for (const file of files) {
+        const localPath = `${localDir}/${dateStr}-${file.name.split("/").slice(-2).join("-")}`;
+        await file.download({ destination: localPath });
+        fileCount++;
+      }
+    } catch (e) {
+      console.log(`[hols] Spot trade download for ${dateStr}: ${(e as Error).message}`);
+    }
+
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+
+  if (fileCount === 0) {
+    console.log("[hols] No Spot trade parquet files found — columns will remain null");
+    return null;
+  }
+
+  console.log(`[hols] Downloaded ${fileCount} Spot trade parquet files to ${localDir}`);
+  return localDir;
 }
