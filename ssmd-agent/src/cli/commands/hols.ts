@@ -139,7 +139,7 @@ export async function runHolsGenerate(
   console.log(`[hols:generate] Parquet written: ${parquetPath} (${fileSizeKB} KB)`);
 
   // 4. Upload to GCS
-  const gcsPath = `hols/crypto/daily/${endDateStr}/ohlcv.parquet`;
+  const gcsPath = `hols/crypto/daily/${endDateStr}/ohlcv-5m-kraken.parquet`;
   if (dryRun) {
     console.log(`[hols:generate] DRY RUN: would upload to gs://${GCS_BUCKET}/${gcsPath}`);
   } else {
@@ -345,7 +345,7 @@ export async function runHolsAggregate(
   }
 
   // 3. Upload to GCS (separate path from REST-sourced data)
-  const gcsPath = `hols/crypto/daily/${endDateStr}/ohlcv-trades.parquet`;
+  const gcsPath = `hols/crypto/daily/${endDateStr}/ohlcv-1m-ssmd.parquet`;
   if (dryRun) {
     console.log(`[hols:aggregate] DRY RUN: would upload to gs://${GCS_BUCKET}/${gcsPath}`);
   } else {
