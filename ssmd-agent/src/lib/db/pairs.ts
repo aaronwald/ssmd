@@ -335,6 +335,38 @@ export async function listActivePerpSymbols(
 }
 
 /**
+ * List active Kraken spot pairs for OHLCV generation.
+ * Returns the raw Kraken pair ID (for REST API), wsName, base, and quote.
+ * Filters to specified quote currency (default USDT).
+ */
+export async function listActiveSpotPairs(
+  db: Database,
+  options: { exchange?: string; quote?: string } = {},
+): Promise<{ krakenPair: string; wsName: string; base: string; quote: string }[]> {
+  const exchange = options.exchange ?? "kraken";
+  const quote = options.quote ?? "USDT";
+
+  const rows = await db
+    .select({
+      pairId: pairs.pairId,
+      wsName: pairs.wsName,
+      base: pairs.base,
+      quote: pairs.quote,
+    })
+    .from(pairs)
+    .where(
+      sql`${pairs.exchange} = ${exchange} AND ${pairs.marketType} = 'spot' AND ${pairs.status} = 'active' AND UPPER(${pairs.quote}) = UPPER(${quote}) AND ${pairs.deletedAt} IS NULL`,
+    );
+
+  return rows.map((r: { pairId: string; wsName: string | null; base: string; quote: string }) => ({
+    krakenPair: r.pairId.replace(`${exchange}:`, ""),
+    wsName: r.wsName ?? r.pairId,
+    base: r.base,
+    quote: r.quote,
+  }));
+}
+
+/**
  * Delete pair snapshots older than the retention period.
  * Called after each sync to keep the table bounded.
  */

@@ -301,7 +301,7 @@ function printHelp(): void {
   console.log("  billing           Billing aggregation and credit management");
   console.log("  smoke-test        Integration smoke test for API endpoints");
   console.log("  verify-hourly     Verify current hourly KXBTCD contract is in secmaster");
-  console.log("  hols              HOLS strategy — OHLCV data generation");
+  console.log("  hols              HOLS strategy — OHLCV from Kraken Spot REST or WS trade aggregation");
   console.log("  funding-rate-consumer  Consume Kraken Futures funding rates from NATS");
   console.log("  lifecycle-consumer  Consume Kalshi lifecycle events from NATS");
   console.log("  agent             Start interactive agent REPL");
