@@ -56,9 +56,9 @@ const FEEDS: &[FeedDef] = &[
         prefix: "kraken-futures",
     },
     FeedDef {
-        feed: "polymarket",
-        stream: "markets",
-        prefix: "polymarket",
+        feed: "kraken-spot",
+        stream: "spot",
+        prefix: "kraken-spot",
     },
 ];
 

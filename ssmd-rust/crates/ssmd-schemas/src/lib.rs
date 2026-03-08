@@ -51,7 +51,7 @@ impl SchemaRegistry {
                     Box::new(kalshi::KalshiLifecycleSchema),
                 );
             }
-            "kraken" => {
+            "kraken" | "kraken-spot" => {
                 schemas.insert(
                     "ticker".to_string(),
                     Box::new(kraken::KrakenTickerSchema),
