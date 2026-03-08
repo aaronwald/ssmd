@@ -20,6 +20,10 @@ const CONCURRENCY = 1;
 const RATE_LIMIT_MS = 1100;
 const MAX_RETRIES = 3;
 const DEFAULT_LOOKBACK_DAYS = 3;
+// Kraken OHLC returns max 720 candles. At 1-min interval that's only ~12h of history.
+// Default to 5-min (720*5 = 2.5 days). Use --interval flag to override.
+// Valid Kraken intervals: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600
+const DEFAULT_INTERVAL = 5;
 const CANDLES_PER_REQUEST = 720; // Kraken max per OHLC response
 const GCS_BUCKET = "ssmd-data";
 
@@ -227,7 +231,7 @@ async function fetchSpotOhlcWithPagination(
 
   // Kraken Spot OHLC: `since` param pages forward, returns max 720 candles
   let sinceSec = startSec;
-  const maxPages = Math.ceil((endSec - startSec) / (CANDLES_PER_REQUEST * 60)) + 1;
+  const maxPages = Math.ceil((endSec - startSec) / (CANDLES_PER_REQUEST * DEFAULT_INTERVAL * 60)) + 1;
   const holsTicker = `${pair.base}${pair.quote}`;
 
   for (let page = 0; page < maxPages; page++) {
@@ -248,9 +252,9 @@ async function fetchSpotOhlcWithPagination(
           hols_ticker: holsTicker,
           source: "kraken_spot",
           date: new Date(timeSec * 1000).toISOString(),
-          date_close: new Date((timeSec + 60) * 1000).toISOString(),
+          date_close: new Date((timeSec + DEFAULT_INTERVAL * 60) * 1000).toISOString(),
           unix: timeSec,
-          close_unix: timeSec + 60,
+          close_unix: timeSec + DEFAULT_INTERVAL * 60,
           open: parseFloat(c[1] as string),
           high: parseFloat(c[2] as string),
           low: parseFloat(c[3] as string),
@@ -283,7 +287,7 @@ async function fetchSpotOhlcPage(
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     if (attempt > 0) await sleep(1000 * Math.pow(2, attempt));
     try {
-      const url = `${KRAKEN_SPOT_OHLC_URL}?pair=${pair}&interval=1&since=${sinceSec}`;
+      const url = `${KRAKEN_SPOT_OHLC_URL}?pair=${pair}&interval=${DEFAULT_INTERVAL}&since=${sinceSec}`;
       const resp = await fetch(url, {
         signal: AbortSignal.timeout(API_TIMEOUT_MS),
         headers: { Accept: "application/json" },
