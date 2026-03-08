@@ -279,7 +279,7 @@ async fn discover_missing_fills(oms: &Oms, session_id: i64) -> Result<(), String
 async fn discover_settlements(oms: &Oms, session_id: i64) -> Result<(), String> {
     let settlements = oms
         .exchange
-        .get_settlements(None)
+        .get_settlements(None, None)
         .await
         .map_err(|e| format!("get settlements: {}", e))?;
 

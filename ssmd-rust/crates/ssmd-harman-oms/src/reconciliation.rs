@@ -145,7 +145,7 @@ pub async fn reconcile(oms: &Oms, session_id: i64) -> ReconcileResult {
 async fn discover_settlements(oms: &Oms, session_id: i64) -> Result<u64, String> {
     let settlements = oms
         .exchange
-        .get_settlements(None)
+        .get_settlements(None, None)
         .await
         .map_err(|e| format!("get settlements: {}", e))?;
 

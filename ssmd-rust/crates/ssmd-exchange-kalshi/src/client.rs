@@ -852,6 +852,7 @@ impl ExchangeAdapter for KalshiRestClient {
     async fn get_settlements(
         &self,
         min_ts: Option<chrono::DateTime<chrono::Utc>>,
+        ticker: Option<&str>,
     ) -> Result<Vec<ExchangeSettlement>, ExchangeError> {
         let mut all_settlements = Vec::new();
         let mut cursor: Option<String> = None;
@@ -861,6 +862,9 @@ impl ExchangeAdapter for KalshiRestClient {
             let mut url = format!("{}/portfolio/settlements?limit={}", self.path_prefix, limit);
             if let Some(ts) = min_ts {
                 url.push_str(&format!("&min_ts={}", ts.timestamp()));
+            }
+            if let Some(t) = ticker {
+                url.push_str(&format!("&ticker={}", t));
             }
             if let Some(ref c) = cursor {
                 url.push_str(&format!("&cursor={}", c));

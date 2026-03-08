@@ -427,7 +427,7 @@ impl EventIngester {
                 );
 
                 // Check if any session holds an unsettled position for this ticker.
-                // If so, fetch full settlement data from REST and record it.
+                // If so, fetch settlement data from REST (ticker-filtered) and record it.
                 match db::sessions_with_unsettled_position(&self.pool, ticker).await {
                     Ok(session_ids) if !session_ids.is_empty() => {
                         info!(
@@ -437,35 +437,66 @@ impl EventIngester {
                             "WS: market settled — fetching settlement from REST"
                         );
 
-                        match self.exchange.get_settlements(None).await {
-                            Ok(settlements) => {
-                                for session_id in &session_ids {
-                                    match settlement_recorder::record_settlements(
-                                        &self.pool,
-                                        *session_id,
-                                        &settlements,
-                                        "ws_settlement",
-                                    ).await {
-                                        Ok(count) => {
-                                            if count > 0 {
-                                                info!(
-                                                    session_id,
-                                                    count,
-                                                    ticker = %ticker,
-                                                    "recorded settlements from WS event"
-                                                );
+                        // Retry with backoff: the REST API may not have the settlement
+                        // immediately after the WS event fires (propagation delay).
+                        let delays = [
+                            std::time::Duration::from_secs(2),
+                            std::time::Duration::from_secs(5),
+                            std::time::Duration::from_secs(15),
+                        ];
+                        let mut recorded_target = false;
+
+                        for (attempt, delay) in delays.iter().enumerate() {
+                            tokio::time::sleep(*delay).await;
+
+                            match self.exchange.get_settlements(None, Some(ticker)).await {
+                                Ok(settlements) if !settlements.is_empty() => {
+                                    for session_id in &session_ids {
+                                        match settlement_recorder::record_settlements(
+                                            &self.pool,
+                                            *session_id,
+                                            &settlements,
+                                            "ws_settlement",
+                                        ).await {
+                                            Ok(count) => {
+                                                if count > 0 {
+                                                    info!(
+                                                        session_id,
+                                                        count,
+                                                        ticker = %ticker,
+                                                        attempt = attempt + 1,
+                                                        "recorded settlement from WS event"
+                                                    );
+                                                }
+                                                result.settlements_noted += count;
                                             }
-                                            result.settlements_noted += count;
-                                        }
-                                        Err(e) => {
-                                            error!(error = %e, ticker = %ticker, "failed to record settlements from WS event");
+                                            Err(e) => {
+                                                error!(error = %e, ticker = %ticker, "failed to record settlement from WS event");
+                                            }
                                         }
                                     }
+                                    recorded_target = true;
+                                    break;
+                                }
+                                Ok(_) => {
+                                    warn!(
+                                        ticker = %ticker,
+                                        attempt = attempt + 1,
+                                        max_attempts = delays.len(),
+                                        "settlement not yet in REST response, will retry"
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(error = %e, ticker = %ticker, attempt = attempt + 1, "failed to fetch settlement from REST");
                                 }
                             }
-                            Err(e) => {
-                                error!(error = %e, ticker = %ticker, "failed to fetch settlements from REST after WS event");
-                            }
+                        }
+
+                        if !recorded_target {
+                            error!(
+                                ticker = %ticker,
+                                "settlement not found in REST after all retries — will be caught by recovery on next restart"
+                            );
                         }
                     }
                     Ok(_) => {
