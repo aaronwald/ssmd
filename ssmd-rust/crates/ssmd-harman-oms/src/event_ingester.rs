@@ -427,46 +427,26 @@ impl EventIngester {
                 );
 
                 // Check if any session holds an unsettled position for this ticker.
-                // If so, fetch full settlement data from REST and record it.
+                // If so, spawn a background task to fetch + record the settlement.
+                // Spawned to avoid blocking the ingester loop during retry backoff.
                 match db::sessions_with_unsettled_position(&self.pool, ticker).await {
                     Ok(session_ids) if !session_ids.is_empty() => {
                         info!(
                             ticker = %ticker,
                             market_result = ?market_result,
                             sessions = ?session_ids,
-                            "WS: market settled — fetching settlement from REST"
+                            "WS: market settled — spawning settlement fetch task"
                         );
 
-                        match self.exchange.get_settlements(None).await {
-                            Ok(settlements) => {
-                                for session_id in &session_ids {
-                                    match settlement_recorder::record_settlements(
-                                        &self.pool,
-                                        *session_id,
-                                        &settlements,
-                                        "ws_settlement",
-                                    ).await {
-                                        Ok(count) => {
-                                            if count > 0 {
-                                                info!(
-                                                    session_id,
-                                                    count,
-                                                    ticker = %ticker,
-                                                    "recorded settlements from WS event"
-                                                );
-                                            }
-                                            result.settlements_noted += count;
-                                        }
-                                        Err(e) => {
-                                            error!(error = %e, ticker = %ticker, "failed to record settlements from WS event");
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!(error = %e, ticker = %ticker, "failed to fetch settlements from REST after WS event");
-                            }
-                        }
+                        let pool = self.pool.clone();
+                        let exchange = self.exchange.clone();
+                        let ticker = ticker.clone();
+
+                        tokio::spawn(async move {
+                            Self::fetch_settlement_with_retry(
+                                &pool, &exchange, &ticker, &session_ids,
+                            ).await;
+                        });
                     }
                     Ok(_) => {
                         debug!(ticker = %ticker, "WS: market settled (no local position)");
@@ -494,5 +474,89 @@ impl EventIngester {
                 std::process::exit(1);
             }
         }
+    }
+
+    /// Fetch a specific settlement from REST with retry + backoff.
+    ///
+    /// Spawned as a background task so the ingester loop is not blocked.
+    /// The Kalshi REST API has propagation delay — the settlement may not be
+    /// available immediately after the WS MarketSettled event fires.
+    async fn fetch_settlement_with_retry(
+        pool: &Pool,
+        exchange: &Arc<dyn ExchangeAdapter>,
+        ticker: &str,
+        session_ids: &[i64],
+    ) {
+        let delays = [
+            std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(15),
+        ];
+        let max_attempts = delays.len();
+
+        for (attempt, delay) in delays.iter().enumerate() {
+            tokio::time::sleep(*delay).await;
+            let attempt_number = attempt + 1;
+
+            match exchange.get_settlements(None, Some(ticker)).await {
+                Ok(settlements) if !settlements.is_empty() => {
+                    let mut any_recorded = false;
+                    for session_id in session_ids {
+                        match settlement_recorder::record_settlements(
+                            pool,
+                            *session_id,
+                            &settlements,
+                            "ws_settlement",
+                        ).await {
+                            Ok(count) => {
+                                if count > 0 {
+                                    info!(
+                                        session_id,
+                                        count,
+                                        ticker = %ticker,
+                                        attempt = attempt_number,
+                                        "recorded settlement from WS event"
+                                    );
+                                    any_recorded = true;
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, ticker = %ticker, "failed to record settlement from WS event");
+                            }
+                        }
+                    }
+                    if any_recorded {
+                        return;
+                    }
+                    // REST returned data but DB insert failed for all sessions — retry
+                    warn!(ticker = %ticker, attempt = attempt_number, "settlement fetched but DB write failed, will retry");
+                }
+                Ok(_) => {
+                    if attempt_number < max_attempts {
+                        warn!(
+                            ticker = %ticker,
+                            attempt = attempt_number,
+                            max_attempts,
+                            "settlement not yet in REST response, will retry"
+                        );
+                    } else {
+                        warn!(
+                            ticker = %ticker,
+                            attempt = attempt_number,
+                            max_attempts,
+                            "settlement not present in REST response on final attempt"
+                        );
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, ticker = %ticker, attempt = attempt_number, "failed to fetch settlement from REST");
+                }
+            }
+        }
+
+        error!(
+            ticker = %ticker,
+            "settlement not recorded after all retries — will be caught by recovery on next restart"
+        );
     }
 }

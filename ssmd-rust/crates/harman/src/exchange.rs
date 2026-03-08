@@ -85,13 +85,16 @@ pub trait ExchangeAdapter: Send + Sync {
     /// (e.g., single-order GET returns 404 on demo for settled markets).
     async fn is_market_active(&self, ticker: &str) -> Result<bool, ExchangeError>;
 
-    /// Get settlements (market close payouts), optionally filtered by minimum timestamp.
+    /// Get settlements (market close payouts), optionally filtered by minimum timestamp
+    /// and/or ticker.
     ///
     /// When `min_ts` is Some, only returns settlements at or after the given time.
+    /// When `ticker` is Some, only returns settlements for that specific ticker.
     /// Implementations must paginate internally to return all matching settlements.
     async fn get_settlements(
         &self,
         min_ts: Option<DateTime<Utc>>,
+        ticker: Option<&str>,
     ) -> Result<Vec<ExchangeSettlement>, ExchangeError>;
 }
 

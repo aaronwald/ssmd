@@ -309,9 +309,70 @@ impl ExchangeAdapter for MockExchange {
     async fn get_settlements(
         &self,
         _min_ts: Option<chrono::DateTime<chrono::Utc>>,
+        ticker: Option<&str>,
     ) -> Result<Vec<ExchangeSettlement>, ExchangeError> {
         let state = self.state.lock().await;
-        Ok(state.settlements.clone())
+        match ticker {
+            Some(t) => Ok(state.settlements.iter().filter(|s| s.ticker == t).cloned().collect()),
+            None => Ok(state.settlements.clone()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ExchangeSettlement, MarketResult};
+
+    fn make_settlement(ticker: &str) -> ExchangeSettlement {
+        ExchangeSettlement {
+            ticker: ticker.to_string(),
+            event_ticker: ticker.split('-').take(2).collect::<Vec<_>>().join("-"),
+            market_result: MarketResult::Yes,
+            yes_count: Decimal::from(10),
+            no_count: Decimal::ZERO,
+            revenue_cents: 1000,
+            settled_time: Utc::now(),
+            fee_cost_dollars: Decimal::ZERO,
+            value_cents: Some(1000),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_settlements_no_filter_returns_all() {
+        let mock = MockExchange::new();
+        {
+            let mut state = mock.state.lock().await;
+            state.settlements.push(make_settlement("TICKER-A"));
+            state.settlements.push(make_settlement("TICKER-B"));
+        }
+        let result = mock.get_settlements(None, None).await.unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_settlements_ticker_filter_returns_only_match() {
+        let mock = MockExchange::new();
+        {
+            let mut state = mock.state.lock().await;
+            state.settlements.push(make_settlement("TICKER-A"));
+            state.settlements.push(make_settlement("TICKER-B"));
+            state.settlements.push(make_settlement("TICKER-C"));
+        }
+        let result = mock.get_settlements(None, Some("TICKER-B")).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].ticker, "TICKER-B");
+    }
+
+    #[tokio::test]
+    async fn test_get_settlements_ticker_filter_no_match_returns_empty() {
+        let mock = MockExchange::new();
+        {
+            let mut state = mock.state.lock().await;
+            state.settlements.push(make_settlement("TICKER-A"));
+        }
+        let result = mock.get_settlements(None, Some("MISSING")).await.unwrap();
+        assert!(result.is_empty());
     }
 }
 
