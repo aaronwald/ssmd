@@ -895,21 +895,21 @@ async function scoreFundingRate(
   const snapshotCount = Number(countRow[0]?.value ?? 0);
   const productCount = Number(productsRow[0]?.value ?? 0);
 
-  // Snapshot recency score — funding rates update every ~8h so be lenient
+  // Snapshot recency score — kraken-sync CronJob runs every 6h (10 */6 * * *)
   let recencyScore = 0;
   if (maxSnapshot) {
     const ageMins = (Date.now() - maxSnapshot.getTime()) / 60000;
-    if (ageMins < 30) recencyScore = 100;
-    else if (ageMins < 60) recencyScore = 75;
-    else if (ageMins < 120) recencyScore = 50;
+    if (ageMins < 390) recencyScore = 100;       // < 6.5h (within one cycle + buffer)
+    else if (ageMins < 720) recencyScore = 75;    // < 12h (missed one cycle)
+    else if (ageMins < 1440) recencyScore = 50;   // < 24h
     else recencyScore = 0;
   }
 
-  // Daily snapshot count score (540 = 5min intervals * 24h * ~2 products with headroom)
+  // Daily snapshot count score — 4 syncs/day × 345 products = ~1380 rows expected
   let countScore = 0;
-  if (snapshotCount >= 540) countScore = 100;
-  else if (snapshotCount >= 200) countScore = 50;
-  else if (snapshotCount > 0) countScore = linearScale(snapshotCount, 200);
+  if (snapshotCount >= 1000) countScore = 100;
+  else if (snapshotCount >= 300) countScore = 50;
+  else if (snapshotCount > 0) countScore = linearScale(snapshotCount, 300);
 
   // Products score
   const productsScore = productCount >= 2 ? 100 : productCount === 1 ? 50 : 0;
@@ -1358,8 +1358,8 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     if (!kraken.details.streamHasData) issues.push("Kraken stream has no data");
     if (kalshi.score === 0) issues.push("Kalshi connector score is zero");
     if (kraken.score === 0) issues.push("Kraken connector score is zero");
-    if (funding.details.lastFlushAge != null && (funding.details.lastFlushAge as number) > 3600) {
-      issues.push("Funding rate snapshot older than 1h");
+    if (funding.details.lastFlushAge != null && (funding.details.lastFlushAge as number) > 25200) {
+      issues.push("Funding rate snapshot older than 7h (missed kraken-sync cycle)");
     }
     if (archive.score === 0) issues.push("No DQ scores found — GCS archive may not be syncing");
 

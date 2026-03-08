@@ -3,7 +3,7 @@
 //! Spawns a receiver task that:
 //! 1. Connects to wss://futures.kraken.com/ws/v1
 //! 2. Subscribes to "trade" and "ticker" feeds for configured product IDs
-//! 3. Sends pings every 60s
+//! 3. Sends pings every 30s
 //! 4. Forwards data messages to the MPSC channel
 //! 5. Tracks last activity time for health checks
 
