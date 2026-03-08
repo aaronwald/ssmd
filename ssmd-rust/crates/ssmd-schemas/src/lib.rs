@@ -116,7 +116,7 @@ pub fn detect_message_type(feed: &str, json: &serde_json::Value) -> Option<Strin
             // Kalshi uses "type" field: "ticker", "trade", "market_lifecycle_v2", etc.
             json.get("type")?.as_str().map(String::from)
         }
-        "kraken" => {
+        "kraken" | "kraken-spot" => {
             // Kraken Spot V2 uses "channel" field: "ticker", "trade", "heartbeat"
             // Messages without "data" are control messages (skip)
             json.get("data")?;
@@ -234,6 +234,27 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(r#"{"channel":"ticker","type":"update","data":[{}]}"#).unwrap();
         assert_eq!(detect_message_type("kraken", &json), Some("ticker".into()));
+    }
+
+    #[test]
+    fn test_detect_kraken_spot_trade() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USDT"}]}"#).unwrap();
+        assert_eq!(detect_message_type("kraken-spot", &json), Some("trade".into()));
+    }
+
+    #[test]
+    fn test_detect_kraken_spot_ticker() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"channel":"ticker","type":"update","data":[{"symbol":"BTC/USDT"}]}"#).unwrap();
+        assert_eq!(detect_message_type("kraken-spot", &json), Some("ticker".into()));
+    }
+
+    #[test]
+    fn test_registry_kraken_spot() {
+        let reg = SchemaRegistry::for_feed("kraken-spot");
+        assert!(reg.get("ticker").is_some());
+        assert!(reg.get("trade").is_some());
     }
 
     #[test]
