@@ -169,6 +169,7 @@ impl PolymarketConnector {
                     _ = ping_interval.tick() => {
                         let idle_secs = last_activity_instant.elapsed().as_secs();
                         shard_metrics.set_idle_seconds(idle_secs as f64);
+                        warn!(shard = shard_id, idle_secs, "Sending Polymarket ping keepalive");
                         if let Err(e) = ws.ping().await {
                             let uptime_secs = connected_at.elapsed().as_secs();
                             error!(

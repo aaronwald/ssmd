@@ -3,7 +3,7 @@
 //! Spawns a receiver task that:
 //! 1. Connects to wss://futures.kraken.com/ws/v1
 //! 2. Subscribes to "trade" and "ticker" feeds for configured product IDs
-//! 3. Sends pings every 30s
+//! 3. Sends pings every 15s
 //! 4. Forwards data messages to the MPSC channel
 //! 5. Tracks last activity time for health checks
 
@@ -82,7 +82,7 @@ impl KrakenFuturesConnector {
                     // Ping timer
                     _ = ping_interval.tick() => {
                         let idle_secs = last_activity_instant.elapsed().as_secs();
-                        trace!(idle_secs, "Sending Kraken Futures ping");
+                        warn!(idle_secs, "Sending Kraken Futures ping");
                         shard_metrics.set_idle_seconds(idle_secs as f64);
                         if let Err(e) = ws.ping().await {
                             let uptime_secs = connected_at.elapsed().as_secs();
@@ -124,7 +124,7 @@ impl KrakenFuturesConnector {
                                     }
                                     KrakenFuturesWsMessage::Heartbeat { .. } => {
                                         shard_metrics.inc_message("heartbeat");
-                                        trace!("Kraken Futures heartbeat received");
+                                        warn!("Kraken Futures heartbeat received");
                                     }
                                     KrakenFuturesWsMessage::Error { message, .. } => {
                                         shard_metrics.inc_message("error");
