@@ -183,8 +183,8 @@ impl EventIngester {
                     match db::list_orders(&self.pool, session_id, None).await {
                         Ok(orders) => orders,
                         Err(e) => {
-                            error!(error = %e, "failed to list orders for fill import");
-                            return;
+                            error!(error = %e, "FATAL: failed to list orders for fill import — crashing to trigger recovery");
+                            std::process::exit(1);
                         }
                     };
 
@@ -211,7 +211,8 @@ impl EventIngester {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, "fill import from WS failed");
+                        error!(error = %e, "FATAL: fill import from WS failed — crashing to trigger recovery");
+                        std::process::exit(1);
                     }
                 }
             }
