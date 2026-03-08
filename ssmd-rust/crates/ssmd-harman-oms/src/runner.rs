@@ -225,6 +225,7 @@ impl OmsRunner {
             self.oms.audit.clone(),
             self.pump_trigger.clone(),
             self.price_monitor_handle.clone(),
+            self.startup_session_id,
         );
 
         info!("WS event ingester started");

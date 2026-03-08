@@ -32,6 +32,8 @@ pub struct EventIngester {
     audit: AuditSender,
     pump_trigger: PumpTrigger,
     price_monitor: Option<PriceMonitorHandle>,
+    /// Fallback session for importing external fills (orders placed outside harman).
+    session_id: i64,
     /// Set to true when WS is connected, false on disconnect.
     pub ws_connected: Arc<AtomicBool>,
 }
@@ -52,6 +54,7 @@ impl EventIngester {
         audit: AuditSender,
         pump_trigger: PumpTrigger,
         price_monitor: Option<PriceMonitorHandle>,
+        session_id: i64,
     ) -> Self {
         Self {
             pool,
@@ -60,6 +63,7 @@ impl EventIngester {
             audit,
             pump_trigger,
             price_monitor,
+            session_id,
             ws_connected: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -148,11 +152,18 @@ impl EventIngester {
                     None,
                 );
 
-                // Fill import requires a concrete session_id.
-                // If the order is unknown (external fill), we can't import without a session.
-                let Some(session_id) = session_id_opt else {
-                    error!(exchange_order_id = %exchange_order_id, "fill for unknown order — no session to import into");
-                    return;
+                // Use order's session_id if known, otherwise fall back to the
+                // instance's session for external fills (orders placed outside harman).
+                let session_id = match session_id_opt {
+                    Some(id) => id,
+                    None => {
+                        info!(
+                            exchange_order_id = %exchange_order_id,
+                            session_id = self.session_id,
+                            "fill for external order — importing into active session"
+                        );
+                        self.session_id
+                    }
                 };
 
                 let fill = ExchangeFill {
