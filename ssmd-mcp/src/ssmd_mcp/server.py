@@ -50,15 +50,15 @@ TOOLS = [
             "Query trade data from ssmd parquet files. Groups by ticker/instrument, "
             "counts trades, sums volume, and returns price range (min/max/avg). "
             "Kalshi prices are converted from cents to dollars. "
-            "Feeds: kalshi, kraken-futures, polymarket."
+            "Feeds: kalshi, kraken-futures, kraken-spot, polymarket."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "feed": {
                     "type": "string",
-                    "description": "Feed name: kalshi, kraken-futures, or polymarket",
-                    "enum": ["kalshi", "kraken-futures", "polymarket"],
+                    "description": "Feed name: kalshi, kraken-futures, kraken-spot, or polymarket",
+                    "enum": ["kalshi", "kraken-futures", "kraken-spot", "polymarket"],
                 },
                 "date": {
                     "type": "string",
@@ -86,8 +86,8 @@ TOOLS = [
             "properties": {
                 "feed": {
                     "type": "string",
-                    "description": "Feed name: kalshi, kraken-futures, or polymarket",
-                    "enum": ["kalshi", "kraken-futures", "polymarket"],
+                    "description": "Feed name: kalshi, kraken-futures, kraken-spot, or polymarket",
+                    "enum": ["kalshi", "kraken-futures", "kraken-spot", "polymarket"],
                 },
                 "date": {
                     "type": "string",
@@ -115,8 +115,8 @@ TOOLS = [
             "properties": {
                 "feed": {
                     "type": "string",
-                    "description": "Feed name: kalshi, kraken-futures, or polymarket",
-                    "enum": ["kalshi", "kraken-futures", "polymarket"],
+                    "description": "Feed name: kalshi, kraken-futures, kraken-spot, or polymarket",
+                    "enum": ["kalshi", "kraken-futures", "kraken-spot", "polymarket"],
                 },
                 "tickers": {
                     "type": "string",
@@ -144,7 +144,7 @@ TOOLS = [
                 },
                 "feed": {
                     "type": "string",
-                    "description": "Optional feed filter: kalshi, kraken-futures, or polymarket.",
+                    "description": "Optional feed filter: kalshi, kraken-futures, kraken-spot, or polymarket.",
                 },
             },
             "required": ["ids"],
@@ -191,7 +191,7 @@ TOOLS = [
             "properties": {
                 "feed": {
                     "type": "string",
-                    "enum": ["kalshi", "kraken-futures", "polymarket"],
+                    "enum": ["kalshi", "kraken-futures", "kraken-spot", "polymarket"],
                     "description": "Feed name",
                 },
                 "date": {
@@ -483,7 +483,7 @@ TOOLS = [
                 },
                 "feed": {
                     "type": "string",
-                    "enum": ["kalshi", "kraken-futures", "polymarket"],
+                    "enum": ["kalshi", "kraken-futures", "kraken-spot", "polymarket"],
                     "description": "Optional: filter to a single exchange.",
                 },
                 "limit": {

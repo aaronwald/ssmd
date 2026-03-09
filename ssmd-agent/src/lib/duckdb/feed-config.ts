@@ -7,6 +7,7 @@
 export const FEED_PATHS: Record<string, string> = {
   "kalshi": "kalshi/kalshi/crypto",
   "kraken-futures": "kraken-futures/kraken-futures/futures",
+  "kraken-spot": "kraken-spot/kraken-spot/spot",
   "polymarket": "polymarket/polymarket/markets",
 };
 
@@ -36,6 +37,13 @@ export const TRADE_CONFIG: Record<string, TradeConfig> = {
     qtyCol: "qty",
     priceDivisor: 1,
   },
+  "kraken-spot": {
+    fileType: "trade",
+    tickerCol: "symbol",
+    priceCol: "price",
+    qtyCol: "qty",
+    priceDivisor: 1,
+  },
   "polymarket": {
     fileType: "last_trade_price",
     tickerCol: "asset_id",
@@ -49,6 +57,7 @@ export const TRADE_CONFIG: Record<string, TradeConfig> = {
 export const PRICE_CONFIG: Record<string, { fileType: string; orderCol: string }> = {
   "kalshi": { fileType: "ticker", orderCol: "ts" },
   "kraken-futures": { fileType: "ticker", orderCol: "_received_at" },
+  "kraken-spot": { fileType: "ticker", orderCol: "_received_at" },
   "polymarket": { fileType: "best_bid_ask", orderCol: "_received_at" },
 };
 
@@ -56,6 +65,7 @@ export const PRICE_CONFIG: Record<string, { fileType: string; orderCol: string }
 export const FEED_TYPES: Record<string, string[]> = {
   "kalshi": ["trade", "ticker"],
   "kraken-futures": ["trade", "ticker"],
+  "kraken-spot": ["trade", "ticker"],
   "polymarket": ["best_bid_ask", "last_trade_price", "price_change", "book"],
 };
 

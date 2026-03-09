@@ -34,6 +34,7 @@ interface GcsFeedConfig {
 const GCS_FEEDS: GcsFeedConfig[] = [
   { feed: "kalshi-crypto", prefix: "kalshi", stream: "crypto", natsStream: "PROD_KALSHI_CRYPTO" },
   { feed: "kraken-futures", prefix: "kraken-futures", stream: "futures", natsStream: "PROD_KRAKEN_FUTURES" },
+  { feed: "kraken-spot", prefix: "kraken-spot", stream: "spot", natsStream: "PROD_KRAKEN_SPOT" },
   { feed: "polymarket", prefix: "polymarket", stream: "markets", natsStream: "PROD_POLYMARKET" },
 ];
 

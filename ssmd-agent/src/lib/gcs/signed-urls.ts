@@ -8,6 +8,7 @@ import { Storage } from "@google-cloud/storage";
 export const FEED_CONFIG: Record<string, FeedInfo> = {
   "kalshi": { prefix: "kalshi", stream: "crypto", messageTypes: ["ticker", "trade", "market_lifecycle_v2"] },
   "kraken-futures": { prefix: "kraken-futures", stream: "futures", messageTypes: ["ticker", "trade"] },
+  "kraken-spot": { prefix: "kraken-spot", stream: "spot", messageTypes: ["ticker", "trade"] },
   "polymarket": { prefix: "polymarket", stream: "markets", messageTypes: ["book", "last_trade_price", "price_change", "best_bid_ask"] },
   "hols": { prefix: "hols", stream: "crypto/daily", messageTypes: ["ohlcv"] },
 };

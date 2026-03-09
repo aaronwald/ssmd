@@ -1129,9 +1129,9 @@ route("GET", "/v1/billing/report", async (req, ctx) => {
     ? `${parseInt(year) + 1}-01-01`
     : `${year}-${String(parseInt(mon) + 1).padStart(2, "0")}-01`;
 
-  // Get all billable keys
+  // Get all billable, non-revoked keys
   const allKeys = await listAllApiKeys(ctx.db, true);
-  const billableKeys = allKeys.filter((k) => k.billable);
+  const billableKeys = allKeys.filter((k) => k.billable && !k.revokedAt);
 
   // Compute from api_request_log + billing_rates (all keys)
   const computed = await computeBillingForPeriod(ctx.db, null, from, nextMonth);
