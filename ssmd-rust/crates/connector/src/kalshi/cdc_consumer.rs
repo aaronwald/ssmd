@@ -3,6 +3,7 @@
 //! Subscribes to SECMASTER_CDC stream and sends new market tickers
 //! for subscription when they match the configured categories.
 
+use crate::kalshi::shard_manager::ShardEvent;
 use crate::secmaster::SecmasterClient;
 use async_nats::jetstream::{self, consumer::pull::Stream, consumer::DeliverPolicy, Context};
 use chrono::Duration as ChronoDuration;
@@ -71,6 +72,12 @@ pub struct CdcSubscriptionConsumer {
     categories: HashSet<String>,
     /// Already subscribed markets (to prevent duplicates)
     subscribed_markets: HashSet<String>,
+}
+
+/// Check if a market status is terminal (market will no longer produce data).
+/// These statuses should trigger unsubscribe from the WebSocket.
+fn is_terminal_status(status: &str) -> bool {
+    matches!(status, "determined" | "settled" | "closed" | "finalized" | "deactivated")
 }
 
 /// Buffer time (seconds) to subtract from snapshot_time for CDC start position
@@ -233,7 +240,7 @@ impl CdcSubscriptionConsumer {
     ///
     /// This method runs indefinitely, processing CDC events and sending
     /// qualifying market tickers through the provided channel.
-    pub async fn run(mut self, new_market_tx: mpsc::Sender<String>) -> Result<(), CdcError> {
+    pub async fn run(mut self, event_tx: mpsc::Sender<ShardEvent>) -> Result<(), CdcError> {
         info!(
             snapshot_lsn = %self.snapshot_lsn,
             categories = ?self.categories,
@@ -249,6 +256,7 @@ impl CdcSubscriptionConsumer {
         let mut subscribed_update: u64 = 0;
         let mut skipped_delete: u64 = 0;
         let mut skipped_update_inactive: u64 = 0;
+        let mut unsubscribed: u64 = 0;
 
         let mut consecutive_errors = 0u32;
         const MAX_CONSECUTIVE_ERRORS: u32 = 5;
@@ -340,6 +348,31 @@ impl CdcSubscriptionConsumer {
                         );
                         subscribed_update += 1;
                     }
+                    Some(status) if is_terminal_status(status) => {
+                        // Market settled/closed -- trigger unsubscribe if we're subscribed
+                        if self.subscribed_markets.remove(&market_data.ticker) {
+                            info!(
+                                ticker = %market_data.ticker,
+                                status,
+                                "CDC: Market became terminal, sending unsubscribe"
+                            );
+                            if event_tx.send(ShardEvent::Unsubscribe(market_data.ticker.clone())).await.is_err() {
+                                error!("Event channel closed, stopping CDC consumer");
+                                break;
+                            }
+                            unsubscribed += 1;
+                        } else {
+                            debug!(
+                                ticker = %market_data.ticker,
+                                status,
+                                "CDC: Terminal status for untracked market, skipping"
+                            );
+                        }
+                        if let Err(e) = msg.ack().await {
+                            warn!(error = %e, "Failed to ack message");
+                        }
+                        continue;
+                    }
                     _ => {
                         skipped_update_inactive += 1;
                         if let Err(e) = msg.ack().await {
@@ -375,8 +408,8 @@ impl CdcSubscriptionConsumer {
                 "CDC: New market for subscription"
             );
 
-            if new_market_tx.send(market_data.ticker.clone()).await.is_err() {
-                error!("Channel closed, stopping CDC consumer");
+            if event_tx.send(ShardEvent::Subscribe(market_data.ticker.clone())).await.is_err() {
+                error!("Event channel closed, stopping CDC consumer");
                 break;
             }
 
@@ -389,7 +422,7 @@ impl CdcSubscriptionConsumer {
             }
 
             // Log progress periodically
-            if processed.is_multiple_of(100) {
+            if processed % 100 == 0 {
                 info!(
                     processed,
                     skipped_lsn,
@@ -399,6 +432,7 @@ impl CdcSubscriptionConsumer {
                     skipped_update_inactive,
                     subscribed,
                     subscribed_update,
+                    unsubscribed,
                     "CDC consumer progress"
                 );
             }
@@ -413,6 +447,7 @@ impl CdcSubscriptionConsumer {
             skipped_update_inactive,
             subscribed,
             subscribed_update,
+            unsubscribed,
             "CDC consumer stopped"
         );
 
@@ -476,6 +511,18 @@ mod tests {
         assert_eq!(market.ticker, "KXTEST-123");
         assert_eq!(market.event_ticker, "KXEVENT-1");
         assert_eq!(market.status, Some("active".to_string()));
+    }
+
+    #[test]
+    fn test_terminal_status_detection() {
+        assert!(is_terminal_status("determined"));
+        assert!(is_terminal_status("settled"));
+        assert!(is_terminal_status("closed"));
+        assert!(is_terminal_status("finalized"));
+        assert!(is_terminal_status("deactivated"));
+        assert!(!is_terminal_status("active"));
+        assert!(!is_terminal_status("inactive"));
+        assert!(!is_terminal_status(""));
     }
 
     #[test]

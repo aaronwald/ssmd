@@ -9,6 +9,15 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+/// Events from CDC consumer to shard manager
+#[derive(Debug)]
+pub enum ShardEvent {
+    /// New market to subscribe
+    Subscribe(String),
+    /// Market to unsubscribe (settled/closed)
+    Unsubscribe(String),
+}
+
 /// Manages shards and routes dynamic subscriptions from CDC
 pub struct ShardManager {
     /// Command senders for each shard, keyed by shard_id
@@ -17,6 +26,8 @@ pub struct ShardManager {
     shard_market_counts: HashMap<usize, usize>,
     /// All subscribed market tickers (prevents duplicates)
     subscribed_markets: HashSet<String>,
+    /// Mapping from ticker to shard_id for routing unsubscribe commands
+    ticker_to_shard: HashMap<String, usize>,
     /// Batch size for subscription commands (accumulate before sending)
     batch_size: usize,
     /// Pending tickers waiting to be batched
@@ -33,6 +44,7 @@ impl ShardManager {
             shard_commands: HashMap::new(),
             shard_market_counts: HashMap::new(),
             subscribed_markets: initial_markets.into_iter().collect(),
+            ticker_to_shard: HashMap::new(),
             batch_size: 10, // Send subscriptions in batches of 10
             pending_tickers: Vec::new(),
         }
@@ -69,6 +81,57 @@ impl ShardManager {
     /// Check if a market is already subscribed
     pub fn is_subscribed(&self, ticker: &str) -> bool {
         self.subscribed_markets.contains(ticker)
+    }
+
+    /// Record a ticker-to-shard mapping
+    pub fn record_ticker_shard(&mut self, ticker: &str, shard_id: usize) {
+        self.ticker_to_shard.insert(ticker.to_string(), shard_id);
+    }
+
+    /// Look up which shard a ticker is assigned to
+    pub fn shard_for_ticker(&self, ticker: &str) -> Option<usize> {
+        self.ticker_to_shard.get(ticker).copied()
+    }
+
+    /// Remove a market subscription and send unsubscribe command to the correct shard.
+    /// Returns true if the market was subscribed.
+    pub async fn remove_subscription(&mut self, ticker: &str) -> bool {
+        if !self.subscribed_markets.remove(ticker) {
+            debug!(ticker, "Not subscribed, nothing to remove");
+            return false;
+        }
+
+        let shard_id = self.ticker_to_shard.remove(ticker);
+
+        if let Some(shard_id) = shard_id {
+            // Decrement shard market count
+            if let Some(count) = self.shard_market_counts.get_mut(&shard_id) {
+                *count = count.saturating_sub(1);
+            }
+
+            // Send unsubscribe command to the shard
+            if let Some(cmd_tx) = self.shard_commands.get(&shard_id) {
+                let cmd = ShardCommand::Unsubscribe {
+                    tickers: vec![ticker.to_string()],
+                };
+                if let Err(e) = cmd_tx.send(cmd).await {
+                    warn!(
+                        shard_id,
+                        ticker,
+                        error = %e,
+                        "Failed to send unsubscribe command, shard may be disconnected"
+                    );
+                } else {
+                    info!(shard_id, ticker, "Sent unsubscribe command to shard");
+                }
+            } else {
+                warn!(shard_id, ticker, "Shard not found for unsubscribe");
+            }
+        } else {
+            warn!(ticker, "No shard mapping found for ticker");
+        }
+
+        true
     }
 
     /// Find a shard with available capacity
@@ -154,9 +217,12 @@ impl ShardManager {
                             count = batch.len(),
                             "Sent subscription batch to shard"
                         );
-                        // Update market count
+                        // Update market count and record ticker-to-shard mappings
                         if let Some(count) = self.shard_market_counts.get_mut(&shard_id) {
                             *count += batch.len();
+                        }
+                        for ticker in &batch {
+                            self.ticker_to_shard.insert(ticker.clone(), shard_id);
                         }
                     }
                     Err(e) => {
@@ -178,7 +244,7 @@ impl ShardManager {
     /// Run the shard manager dispatcher loop
     ///
     /// Receives market tickers from CDC and routes them to shards.
-    pub async fn run(mut self, mut new_market_rx: mpsc::Receiver<String>) {
+    pub async fn run(mut self, mut event_rx: mpsc::Receiver<ShardEvent>) {
         info!(
             shard_count = self.shard_count(),
             initial_markets = self.total_markets(),
@@ -191,15 +257,17 @@ impl ShardManager {
 
         loop {
             tokio::select! {
-                // Receive new market ticker from CDC
-                ticker = new_market_rx.recv() => {
-                    match ticker {
-                        Some(ticker) => {
+                event = event_rx.recv() => {
+                    match event {
+                        Some(ShardEvent::Subscribe(ticker)) => {
                             ticker_count += 1;
                             self.add_subscription(ticker).await;
                         }
+                        Some(ShardEvent::Unsubscribe(ticker)) => {
+                            self.remove_subscription(&ticker).await;
+                        }
                         None => {
-                            info!("CDC channel closed, flushing remaining subscriptions");
+                            info!("Event channel closed, flushing remaining subscriptions");
                             self.flush().await;
                             break;
                         }
@@ -272,5 +340,43 @@ mod tests {
 
         let shard = manager.find_shard_with_capacity();
         assert_eq!(shard, None);
+    }
+
+    #[tokio::test]
+    async fn test_remove_subscription() {
+        let mut manager = ShardManager::new(vec!["M-1".to_string(), "M-2".to_string()]);
+        let (tx, mut rx) = mpsc::channel::<ShardCommand>(10);
+
+        manager.register_shard(0, tx, 2);
+        manager.record_ticker_shard("M-1", 0);
+        manager.record_ticker_shard("M-2", 0);
+
+        let removed = manager.remove_subscription("M-1").await;
+        assert!(removed);
+        assert!(!manager.is_subscribed("M-1"));
+        assert!(manager.is_subscribed("M-2"));
+        assert_eq!(manager.total_markets(), 1);
+
+        // Verify command was sent to correct shard
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(cmd, ShardCommand::Unsubscribe { ref tickers } if tickers == &["M-1"]));
+    }
+
+    #[tokio::test]
+    async fn test_remove_nonexistent_subscription() {
+        let mut manager = ShardManager::new(vec![]);
+        let removed = manager.remove_subscription("NONEXISTENT").await;
+        assert!(!removed);
+    }
+
+    #[test]
+    fn test_ticker_to_shard_mapping() {
+        let mut manager = ShardManager::new(vec![]);
+        let (tx, _rx) = mpsc::channel::<ShardCommand>(10);
+        manager.register_shard(0, tx, 0);
+
+        manager.record_ticker_shard("M-1", 0);
+        assert_eq!(manager.shard_for_ticker("M-1"), Some(0));
+        assert_eq!(manager.shard_for_ticker("M-2"), None);
     }
 }

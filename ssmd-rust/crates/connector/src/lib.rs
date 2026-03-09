@@ -3,6 +3,10 @@
 //! This crate provides the core components for connecting to market data sources,
 //! processing messages, and writing to various destinations.
 
+// `is_multiple_of` requires unstable `unsigned_is_multiple_of` feature,
+// unavailable on older Rust toolchains used in CI Docker images.
+#![allow(clippy::manual_is_multiple_of)]
+
 pub mod error;
 pub mod flusher;
 pub mod kalshi;

@@ -5,6 +5,7 @@
 use crate::kalshi::auth::{AuthError, KalshiCredentials};
 use crate::kalshi::messages::{WsCommand, WsMessage, WsParams};
 use futures_util::{SinkExt, StreamExt};
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::net::TcpStream;
@@ -53,11 +54,82 @@ pub enum WebSocketError {
     SubscriptionFailed(String),
 }
 
+/// Tracks subscription IDs (sids) returned by Kalshi for each subscribe command.
+/// Maps sids to their (channel, tickers) and tickers back to their sids.
+#[derive(Debug, Default)]
+pub struct SidTracker {
+    /// sid -> (channel_name, Vec of tickers)
+    sid_to_batch: HashMap<u64, (String, Vec<String>)>,
+    /// ticker -> Vec of sids (one sid per channel the ticker is subscribed on)
+    ticker_to_sids: HashMap<String, Vec<u64>>,
+}
+
+impl SidTracker {
+    /// Create a new empty SidTracker
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a subscription: map sid to (channel, tickers) and each ticker back to this sid
+    pub fn record_subscription(&mut self, sid: u64, channel: &str, tickers: &[String]) {
+        self.sid_to_batch
+            .insert(sid, (channel.to_string(), tickers.to_vec()));
+        for ticker in tickers {
+            self.ticker_to_sids
+                .entry(ticker.clone())
+                .or_default()
+                .push(sid);
+        }
+    }
+
+    /// Get all sids that include the given ticker
+    pub fn sids_for_ticker(&self, ticker: &str) -> Vec<u64> {
+        self.ticker_to_sids
+            .get(ticker)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get channel and tickers for a given sid
+    pub fn tickers_for_sid(&self, sid: u64) -> Option<(&str, &[String])> {
+        self.sid_to_batch
+            .get(&sid)
+            .map(|(ch, tks)| (ch.as_str(), tks.as_slice()))
+    }
+
+    /// Remove a market from all batches. Returns affected (sid, channel, remaining_tickers).
+    ///
+    /// Removes the ticker from `ticker_to_sids` entirely. For each affected sid,
+    /// removes the ticker from that batch. If the batch becomes empty, removes the sid entry.
+    pub fn remove_market(&mut self, ticker: &str) -> Vec<(u64, String, Vec<String>)> {
+        let sids = match self.ticker_to_sids.remove(ticker) {
+            Some(sids) => sids,
+            None => return Vec::new(),
+        };
+
+        let mut result = Vec::new();
+        for sid in sids {
+            if let Some((channel, batch)) = self.sid_to_batch.get_mut(&sid) {
+                batch.retain(|t| t != ticker);
+                let channel_clone = channel.clone();
+                let remaining = batch.clone();
+                if batch.is_empty() {
+                    self.sid_to_batch.remove(&sid);
+                }
+                result.push((sid, channel_clone, remaining));
+            }
+        }
+        result
+    }
+
+}
+
 /// Kalshi WebSocket client
 pub struct KalshiWebSocket {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     command_id: u64,
-    subscribed_markets: Vec<String>,
+    subscribed_markets: HashSet<String>,
+    sid_tracker: SidTracker,
 }
 
 impl KalshiWebSocket {
@@ -108,7 +180,8 @@ impl KalshiWebSocket {
         Ok(Self {
             ws,
             command_id: 0,
-            subscribed_markets: Vec::new(),
+            subscribed_markets: HashSet::new(),
+            sid_tracker: SidTracker::new(),
         })
     }
 
@@ -152,7 +225,7 @@ impl KalshiWebSocket {
         debug!(cmd = %msg, market = %market_ticker, "Sending subscribe command");
 
         self.ws.send(Message::Text(msg)).await?;
-        self.subscribed_markets.push(market_ticker.to_string());
+        self.subscribed_markets.insert(market_ticker.to_string());
 
         self.wait_for_subscription(self.command_id).await
     }
@@ -230,7 +303,7 @@ impl KalshiWebSocket {
         &mut self,
         channel: &str,
         tickers: &[String],
-    ) -> Result<(), WebSocketError> {
+    ) -> Result<Option<u64>, WebSocketError> {
         if tickers.len() > MAX_MARKETS_PER_SUBSCRIPTION {
             return Err(WebSocketError::SubscriptionFailed(format!(
                 "Too many markets ({}) for single subscription, max is {}. Use sharding.",
@@ -259,17 +332,22 @@ impl KalshiWebSocket {
         );
 
         self.ws.send(Message::Text(msg)).await?;
-        self.wait_for_subscription(self.command_id).await?;
+        let sid = self.wait_for_subscription_with_sid(self.command_id).await?;
 
         self.subscribed_markets.extend(tickers.iter().cloned());
+
+        if let Some(sid_val) = sid {
+            self.sid_tracker.record_subscription(sid_val, channel, tickers);
+        }
 
         info!(
             channel = %channel,
             markets = tickers.len(),
+            ?sid,
             "Subscription confirmed"
         );
 
-        Ok(())
+        Ok(sid)
     }
 
     /// Timeout for subscription confirmation
@@ -330,7 +408,7 @@ impl KalshiWebSocket {
                             }
                             Ok(WsMessage::Ticker { .. } | WsMessage::Trade { .. }) => {
                                 // Expected during subscription - data is flowing
-                                if message_count == 1 || message_count.is_multiple_of(100) {
+                                if message_count == 1 || message_count % 100 == 0 {
                                     debug!(message_count, expected_id, "Receiving data while waiting for subscription confirmation");
                                 }
                             }
@@ -416,6 +494,120 @@ impl KalshiWebSocket {
         }
     }
 
+    /// Send an unsubscribe command for the given subscription IDs.
+    pub async fn unsubscribe_sids(&mut self, sids: &[u64]) -> Result<(), WebSocketError> {
+        if sids.is_empty() {
+            return Ok(());
+        }
+
+        self.command_id += 1;
+        let cmd = WsCommand {
+            id: self.command_id,
+            cmd: "unsubscribe".to_string(),
+            params: WsParams {
+                channels: vec![],
+                market_ticker: None,
+                market_tickers: None,
+                sids: Some(sids.to_vec()),
+            },
+        };
+
+        let msg = serde_json::to_string(&cmd)?;
+        info!(sids = ?sids, cmd_id = self.command_id, "Sending unsubscribe command");
+
+        self.ws.send(Message::Text(msg)).await?;
+        self.wait_for_unsubscribe(self.command_id).await
+    }
+
+    /// Wait for unsubscribe confirmation
+    async fn wait_for_unsubscribe(&mut self, expected_id: u64) -> Result<(), WebSocketError> {
+        let timeout = tokio::time::timeout(
+            Duration::from_secs(Self::SUBSCRIPTION_TIMEOUT_SECS),
+            async {
+                while let Some(msg) = self.ws.next().await {
+                    match msg? {
+                        Message::Text(text) => {
+                            match serde_json::from_str::<WsMessage>(&text) {
+                                Ok(WsMessage::Unsubscribed { id }) if id == expected_id => {
+                                    info!(id, "Unsubscribe confirmed");
+                                    return Ok(());
+                                }
+                                Ok(WsMessage::Error { id, msg }) if id == Some(expected_id) => {
+                                    let error_msg = msg.as_ref().map(|m| m.msg.as_str());
+                                    return Err(WebSocketError::SubscriptionFailed(
+                                        format!("Unsubscribe error: {}", error_msg.unwrap_or("unknown"))
+                                    ));
+                                }
+                                _ => continue,
+                            }
+                        }
+                        Message::Close(_) => return Err(WebSocketError::ConnectionClosed),
+                        _ => continue,
+                    }
+                }
+                Err(WebSocketError::ConnectionClosed)
+            },
+        );
+
+        timeout
+            .await
+            .map_err(|_| WebSocketError::SubscriptionFailed("Unsubscribe timeout".into()))?
+    }
+
+    /// Unsubscribe a single market from all its channels.
+    /// Handles batch semantics: unsubscribes the batch sid, then
+    /// resubscribes remaining markets in each affected batch.
+    /// Returns the number of sids unsubscribed.
+    pub async fn unsubscribe_market(&mut self, ticker: &str) -> Result<usize, WebSocketError> {
+        let affected = self.sid_tracker.remove_market(ticker);
+        if affected.is_empty() {
+            debug!(ticker, "Market not tracked in sid_tracker, nothing to unsubscribe");
+            return Ok(0);
+        }
+
+        let mut unsubscribed_count = 0;
+
+        for (old_sid, channel, remaining) in affected {
+            // Unsubscribe the old batch
+            self.unsubscribe_sids(&[old_sid]).await?;
+            unsubscribed_count += 1;
+
+            // Remove the settled market from our local set
+            self.subscribed_markets.remove(ticker);
+
+            // Resubscribe remaining markets in the batch (if any)
+            if !remaining.is_empty() {
+                match self.subscribe_markets(&channel, &remaining).await {
+                    Ok(new_sid) => {
+                        info!(
+                            old_sid,
+                            ?new_sid,
+                            channel = %channel,
+                            remaining = remaining.len(),
+                            ticker,
+                            "Resubscribed remaining markets after unsubscribe"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            old_sid,
+                            channel = %channel,
+                            remaining = remaining.len(),
+                            ticker,
+                            error = %e,
+                            "Failed to resubscribe remaining markets after unsubscribe"
+                        );
+                        return Err(e);
+                    }
+                }
+            } else {
+                info!(old_sid, channel = %channel, ticker, "Batch empty after unsubscribe");
+            }
+        }
+
+        Ok(unsubscribed_count)
+    }
+
     /// Send a ping to keep connection alive
     pub async fn ping(&mut self) -> Result<(), WebSocketError> {
         self.ws.send(Message::Ping(vec![])).await?;
@@ -428,8 +620,8 @@ impl KalshiWebSocket {
         Ok(())
     }
 
-    /// Get list of subscribed markets
-    pub fn subscribed_markets(&self) -> &[String] {
+    /// Get set of subscribed markets
+    pub fn subscribed_markets(&self) -> &HashSet<String> {
         &self.subscribed_markets
     }
 }
@@ -453,5 +645,77 @@ mod tests {
         assert!(KALSHI_WS_DEMO_URL.starts_with("wss://"));
         assert!(KALSHI_WS_URL.contains("kalshi.com"));
         assert!(KALSHI_WS_DEMO_URL.contains("kalshi.co"));
+    }
+
+    #[test]
+    fn test_sid_tracker_record_and_lookup() {
+        let mut tracker = SidTracker::new();
+        tracker.record_subscription(42, "ticker", &["MARKET-A".into(), "MARKET-B".into()]);
+        tracker.record_subscription(43, "trade", &["MARKET-A".into(), "MARKET-B".into()]);
+
+        let sids = tracker.sids_for_ticker("MARKET-A");
+        assert_eq!(sids.len(), 2);
+        assert!(sids.contains(&42));
+        assert!(sids.contains(&43));
+
+        let (channel, tickers) = tracker.tickers_for_sid(42).unwrap();
+        assert_eq!(channel, "ticker");
+        assert_eq!(tickers.len(), 2);
+        assert!(tickers.contains(&"MARKET-A".to_string()));
+    }
+
+    #[test]
+    fn test_sid_tracker_remove_market() {
+        let mut tracker = SidTracker::new();
+        tracker.record_subscription(42, "ticker", &["A".into(), "B".into(), "C".into()]);
+
+        let result = tracker.remove_market("B");
+        assert_eq!(result.len(), 1);
+        let (sid, channel, remaining) = &result[0];
+        assert_eq!(*sid, 42);
+        assert_eq!(channel, "ticker");
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining.contains(&"A".to_string()));
+        assert!(remaining.contains(&"C".to_string()));
+        assert!(!remaining.contains(&"B".to_string()));
+
+        assert!(tracker.sids_for_ticker("B").is_empty());
+    }
+
+    #[test]
+    fn test_sid_tracker_remove_last_in_batch() {
+        let mut tracker = SidTracker::new();
+        tracker.record_subscription(42, "ticker", &["ONLY".into()]);
+
+        let result = tracker.remove_market("ONLY");
+        assert_eq!(result.len(), 1);
+        let (_, _, remaining) = &result[0];
+        assert!(remaining.is_empty());
+        assert!(tracker.tickers_for_sid(42).is_none());
+    }
+
+    #[test]
+    fn test_sid_tracker_remove_nonexistent() {
+        let mut tracker = SidTracker::new();
+        let result = tracker.remove_market("DOESNT-EXIST");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_ws_unsubscribe_command_serialization() {
+        let cmd = WsCommand {
+            id: 10,
+            cmd: "unsubscribe".to_string(),
+            params: WsParams {
+                channels: vec![],
+                market_ticker: None,
+                market_tickers: None,
+                sids: Some(vec![42, 43]),
+            },
+        };
+
+        let json = serde_json::to_string(&cmd).expect("Failed to serialize");
+        assert!(json.contains(r#""cmd":"unsubscribe""#));
+        assert!(json.contains(r#""sids":[42,43]"#));
     }
 }

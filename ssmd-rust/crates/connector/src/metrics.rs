@@ -64,6 +64,16 @@ static MARKETS_SUBSCRIBED: Lazy<IntGaugeVec> = Lazy::new(|| {
     .expect("Failed to register markets_subscribed metric")
 });
 
+/// Total markets unsubscribed per shard (settled/closed lifecycle)
+static MARKETS_UNSUBSCRIBED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "ssmd_connector_markets_unsubscribed_total",
+        "Total markets unsubscribed (settled/closed) per shard",
+        &[LABEL_FEED, LABEL_CATEGORY, LABEL_SHARD]
+    )
+    .expect("Failed to register markets_unsubscribed_total metric")
+});
+
 /// Idle seconds since last message per shard
 static IDLE_SECONDS: Lazy<GaugeVec> = Lazy::new(|| {
     register_gauge_vec!(
@@ -265,6 +275,13 @@ impl ShardMetrics {
             .with_label_values(&[&self.feed, &self.category, &self.shard_label])
             .set(count as i64);
     }
+
+    /// Record a market unsubscription
+    pub fn inc_unsubscribed(&self) {
+        MARKETS_UNSUBSCRIBED_TOTAL
+            .with_label_values(&[&self.feed, &self.category, &self.shard_label])
+            .inc();
+    }
 }
 
 /// Encode all metrics to Prometheus text format
@@ -323,5 +340,15 @@ mod tests {
         observe_nats_publish_duration("test-feed", 0.002);
         let output = encode_metrics().unwrap();
         assert!(output.contains("ssmd_connector_nats_publish_duration_seconds"));
+    }
+
+    #[test]
+    fn test_unsubscribe_metrics() {
+        let connector_metrics = ConnectorMetrics::new("kalshi", "test_unsub");
+        let shard_metrics = connector_metrics.for_shard(0);
+        shard_metrics.inc_unsubscribed();
+
+        let output = encode_metrics().unwrap();
+        assert!(output.contains("ssmd_connector_markets_unsubscribed_total"));
     }
 }
