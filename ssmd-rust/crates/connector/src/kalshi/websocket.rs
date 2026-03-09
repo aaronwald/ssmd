@@ -5,7 +5,7 @@
 use crate::kalshi::auth::{AuthError, KalshiCredentials};
 use crate::kalshi::messages::{WsCommand, WsMessage, WsParams};
 use futures_util::{SinkExt, StreamExt};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::net::TcpStream;
@@ -122,32 +122,14 @@ impl SidTracker {
         result
     }
 
-    /// Replace an old sid mapping with a new one. Used after unsubscribe + resubscribe.
-    ///
-    /// Removes the old sid (and its ticker-to-sid back-references), then records the new sid.
-    pub fn replace_sid(&mut self, old_sid: u64, new_sid: u64, channel: &str, new_tickers: &[String]) {
-        // Remove old sid and its back-references
-        if let Some((_, old_tickers)) = self.sid_to_batch.remove(&old_sid) {
-            for ticker in &old_tickers {
-                if let Some(sids) = self.ticker_to_sids.get_mut(ticker) {
-                    sids.retain(|&s| s != old_sid);
-                    if sids.is_empty() {
-                        self.ticker_to_sids.remove(ticker);
-                    }
-                }
-            }
-        }
-        // Record the new subscription
-        self.record_subscription(new_sid, channel, new_tickers);
-    }
 }
 
 /// Kalshi WebSocket client
 pub struct KalshiWebSocket {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     command_id: u64,
-    subscribed_markets: Vec<String>,
-    pub sid_tracker: SidTracker,
+    subscribed_markets: HashSet<String>,
+    sid_tracker: SidTracker,
 }
 
 impl KalshiWebSocket {
@@ -198,7 +180,7 @@ impl KalshiWebSocket {
         Ok(Self {
             ws,
             command_id: 0,
-            subscribed_markets: Vec::new(),
+            subscribed_markets: HashSet::new(),
             sid_tracker: SidTracker::new(),
         })
     }
@@ -243,7 +225,7 @@ impl KalshiWebSocket {
         debug!(cmd = %msg, market = %market_ticker, "Sending subscribe command");
 
         self.ws.send(Message::Text(msg)).await?;
-        self.subscribed_markets.push(market_ticker.to_string());
+        self.subscribed_markets.insert(market_ticker.to_string());
 
         self.wait_for_subscription(self.command_id).await
     }
@@ -590,8 +572,8 @@ impl KalshiWebSocket {
             self.unsubscribe_sids(&[old_sid]).await?;
             unsubscribed_count += 1;
 
-            // Remove the settled market from our local list
-            self.subscribed_markets.retain(|t| t != ticker);
+            // Remove the settled market from our local set
+            self.subscribed_markets.remove(ticker);
 
             // Resubscribe remaining markets in the batch (if any)
             if !remaining.is_empty() {
@@ -638,8 +620,8 @@ impl KalshiWebSocket {
         Ok(())
     }
 
-    /// Get list of subscribed markets
-    pub fn subscribed_markets(&self) -> &[String] {
+    /// Get set of subscribed markets
+    pub fn subscribed_markets(&self) -> &HashSet<String> {
         &self.subscribed_markets
     }
 }
@@ -710,21 +692,6 @@ mod tests {
         let (_, _, remaining) = &result[0];
         assert!(remaining.is_empty());
         assert!(tracker.tickers_for_sid(42).is_none());
-    }
-
-    #[test]
-    fn test_sid_tracker_replace_sid() {
-        let mut tracker = SidTracker::new();
-        tracker.record_subscription(42, "ticker", &["A".into(), "B".into()]);
-
-        tracker.replace_sid(42, 99, "ticker", &["A".into()]);
-
-        assert!(tracker.tickers_for_sid(42).is_none());
-        let (channel, tickers) = tracker.tickers_for_sid(99).unwrap();
-        assert_eq!(channel, "ticker");
-        assert_eq!(tickers, &["A".to_string()]);
-        assert_eq!(tracker.sids_for_ticker("A"), vec![99]);
-        assert!(tracker.sids_for_ticker("B").is_empty());
     }
 
     #[test]
