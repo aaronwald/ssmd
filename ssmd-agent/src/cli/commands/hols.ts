@@ -495,7 +495,7 @@ async function uploadToGCS(localPath: string, gcsPath: string): Promise<void> {
 
 /**
  * Download Kraken Spot trade parquet files from GCS for the given date range.
- * GCS layout: kraken-spot/kraken-spot/spot/YYYY-MM-DD/HH/trade.parquet
+ * GCS layout: kraken-spot/kraken-spot/spot/YYYY-MM-DD/trade_HHMM.parquet
  */
 async function downloadSpotTrades(
   startDate: Date,
@@ -517,9 +517,10 @@ async function downloadSpotTrades(
     const prefix = `kraken-spot/kraken-spot/spot/${dateStr}/`;
 
     try {
-      const [files] = await bucket.getFiles({ prefix, matchGlob: "*/trade.parquet" });
+      const [files] = await bucket.getFiles({ prefix, matchGlob: "**/trade_*.parquet" });
       for (const file of files) {
-        const localPath = `${localDir}/${dateStr}-${file.name.split("/").slice(-2).join("-")}`;
+        const filename = file.name.split("/").pop()!;
+        const localPath = `${localDir}/${dateStr}-${filename}`;
         await file.download({ destination: localPath });
         fileCount++;
       }
