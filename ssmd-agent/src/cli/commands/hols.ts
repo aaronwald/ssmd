@@ -418,8 +418,7 @@ async function aggregateTradesToOhlcv(
     SELECT COUNT(*) as cnt, COUNT(DISTINCT symbol) as pairs
     FROM read_parquet('${parquetPath}')
   `);
-  const reader = result.getRows();
-  const rows = reader.toArray();
+  const rows = await result.getRows();
   const rowCount = rows.length > 0 ? Number(rows[0][0]) : 0;
   const pairCount = rows.length > 0 ? Number(rows[0][1]) : 0;
 
