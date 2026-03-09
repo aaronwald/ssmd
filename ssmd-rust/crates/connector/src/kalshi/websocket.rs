@@ -5,6 +5,7 @@
 use crate::kalshi::auth::{AuthError, KalshiCredentials};
 use crate::kalshi::messages::{WsCommand, WsMessage, WsParams};
 use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::net::TcpStream;
@@ -53,11 +54,100 @@ pub enum WebSocketError {
     SubscriptionFailed(String),
 }
 
+/// Tracks subscription IDs (sids) returned by Kalshi for each subscribe command.
+/// Maps sids to their (channel, tickers) and tickers back to their sids.
+#[derive(Debug, Default)]
+pub struct SidTracker {
+    /// sid -> (channel_name, Vec of tickers)
+    sid_to_batch: HashMap<u64, (String, Vec<String>)>,
+    /// ticker -> Vec of sids (one sid per channel the ticker is subscribed on)
+    ticker_to_sids: HashMap<String, Vec<u64>>,
+}
+
+impl SidTracker {
+    /// Create a new empty SidTracker
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a subscription: map sid to (channel, tickers) and each ticker back to this sid
+    pub fn record_subscription(&mut self, sid: u64, channel: &str, tickers: &[String]) {
+        self.sid_to_batch
+            .insert(sid, (channel.to_string(), tickers.to_vec()));
+        for ticker in tickers {
+            self.ticker_to_sids
+                .entry(ticker.clone())
+                .or_default()
+                .push(sid);
+        }
+    }
+
+    /// Get all sids that include the given ticker
+    pub fn sids_for_ticker(&self, ticker: &str) -> Vec<u64> {
+        self.ticker_to_sids
+            .get(ticker)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get channel and tickers for a given sid
+    pub fn tickers_for_sid(&self, sid: u64) -> Option<(&str, &[String])> {
+        self.sid_to_batch
+            .get(&sid)
+            .map(|(ch, tks)| (ch.as_str(), tks.as_slice()))
+    }
+
+    /// Remove a market from all batches. Returns affected (sid, channel, remaining_tickers).
+    ///
+    /// Removes the ticker from `ticker_to_sids` entirely. For each affected sid,
+    /// removes the ticker from that batch. If the batch becomes empty, removes the sid entry.
+    pub fn remove_market(&mut self, ticker: &str) -> Vec<(u64, String, Vec<String>)> {
+        let sids = match self.ticker_to_sids.remove(ticker) {
+            Some(sids) => sids,
+            None => return Vec::new(),
+        };
+
+        let mut result = Vec::new();
+        for sid in sids {
+            if let Some((channel, batch)) = self.sid_to_batch.get_mut(&sid) {
+                batch.retain(|t| t != ticker);
+                let channel_clone = channel.clone();
+                let remaining = batch.clone();
+                if batch.is_empty() {
+                    self.sid_to_batch.remove(&sid);
+                }
+                result.push((sid, channel_clone, remaining));
+            }
+        }
+        result
+    }
+
+    /// Replace an old sid mapping with a new one. Used after unsubscribe + resubscribe.
+    ///
+    /// Removes the old sid (and its ticker-to-sid back-references), then records the new sid.
+    pub fn replace_sid(&mut self, old_sid: u64, new_sid: u64, channel: &str, new_tickers: &[String]) {
+        // Remove old sid and its back-references
+        if let Some((_, old_tickers)) = self.sid_to_batch.remove(&old_sid) {
+            for ticker in &old_tickers {
+                if let Some(sids) = self.ticker_to_sids.get_mut(ticker) {
+                    sids.retain(|&s| s != old_sid);
+                    if sids.is_empty() {
+                        self.ticker_to_sids.remove(ticker);
+                    }
+                }
+            }
+        }
+        // Record the new subscription
+        self.record_subscription(new_sid, channel, new_tickers);
+    }
+}
+
 /// Kalshi WebSocket client
 pub struct KalshiWebSocket {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     command_id: u64,
     subscribed_markets: Vec<String>,
+    pub sid_tracker: SidTracker,
 }
 
 impl KalshiWebSocket {
@@ -109,6 +199,7 @@ impl KalshiWebSocket {
             ws,
             command_id: 0,
             subscribed_markets: Vec::new(),
+            sid_tracker: SidTracker::new(),
         })
     }
 
@@ -230,7 +321,7 @@ impl KalshiWebSocket {
         &mut self,
         channel: &str,
         tickers: &[String],
-    ) -> Result<(), WebSocketError> {
+    ) -> Result<Option<u64>, WebSocketError> {
         if tickers.len() > MAX_MARKETS_PER_SUBSCRIPTION {
             return Err(WebSocketError::SubscriptionFailed(format!(
                 "Too many markets ({}) for single subscription, max is {}. Use sharding.",
@@ -259,17 +350,22 @@ impl KalshiWebSocket {
         );
 
         self.ws.send(Message::Text(msg)).await?;
-        self.wait_for_subscription(self.command_id).await?;
+        let sid = self.wait_for_subscription_with_sid(self.command_id).await?;
 
         self.subscribed_markets.extend(tickers.iter().cloned());
+
+        if let Some(sid_val) = sid {
+            self.sid_tracker.record_subscription(sid_val, channel, tickers);
+        }
 
         info!(
             channel = %channel,
             markets = tickers.len(),
+            ?sid,
             "Subscription confirmed"
         );
 
-        Ok(())
+        Ok(sid)
     }
 
     /// Timeout for subscription confirmation
@@ -453,5 +549,74 @@ mod tests {
         assert!(KALSHI_WS_DEMO_URL.starts_with("wss://"));
         assert!(KALSHI_WS_URL.contains("kalshi.com"));
         assert!(KALSHI_WS_DEMO_URL.contains("kalshi.co"));
+    }
+
+    #[test]
+    fn test_sid_tracker_record_and_lookup() {
+        let mut tracker = SidTracker::new();
+        tracker.record_subscription(42, "ticker", &["MARKET-A".into(), "MARKET-B".into()]);
+        tracker.record_subscription(43, "trade", &["MARKET-A".into(), "MARKET-B".into()]);
+
+        let sids = tracker.sids_for_ticker("MARKET-A");
+        assert_eq!(sids.len(), 2);
+        assert!(sids.contains(&42));
+        assert!(sids.contains(&43));
+
+        let (channel, tickers) = tracker.tickers_for_sid(42).unwrap();
+        assert_eq!(channel, "ticker");
+        assert_eq!(tickers.len(), 2);
+        assert!(tickers.contains(&"MARKET-A".to_string()));
+    }
+
+    #[test]
+    fn test_sid_tracker_remove_market() {
+        let mut tracker = SidTracker::new();
+        tracker.record_subscription(42, "ticker", &["A".into(), "B".into(), "C".into()]);
+
+        let result = tracker.remove_market("B");
+        assert_eq!(result.len(), 1);
+        let (sid, channel, remaining) = &result[0];
+        assert_eq!(*sid, 42);
+        assert_eq!(channel, "ticker");
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining.contains(&"A".to_string()));
+        assert!(remaining.contains(&"C".to_string()));
+        assert!(!remaining.contains(&"B".to_string()));
+
+        assert!(tracker.sids_for_ticker("B").is_empty());
+    }
+
+    #[test]
+    fn test_sid_tracker_remove_last_in_batch() {
+        let mut tracker = SidTracker::new();
+        tracker.record_subscription(42, "ticker", &["ONLY".into()]);
+
+        let result = tracker.remove_market("ONLY");
+        assert_eq!(result.len(), 1);
+        let (_, _, remaining) = &result[0];
+        assert!(remaining.is_empty());
+        assert!(tracker.tickers_for_sid(42).is_none());
+    }
+
+    #[test]
+    fn test_sid_tracker_replace_sid() {
+        let mut tracker = SidTracker::new();
+        tracker.record_subscription(42, "ticker", &["A".into(), "B".into()]);
+
+        tracker.replace_sid(42, 99, "ticker", &["A".into()]);
+
+        assert!(tracker.tickers_for_sid(42).is_none());
+        let (channel, tickers) = tracker.tickers_for_sid(99).unwrap();
+        assert_eq!(channel, "ticker");
+        assert_eq!(tickers, &["A".to_string()]);
+        assert_eq!(tracker.sids_for_ticker("A"), vec![99]);
+        assert!(tracker.sids_for_ticker("B").is_empty());
+    }
+
+    #[test]
+    fn test_sid_tracker_remove_nonexistent() {
+        let mut tracker = SidTracker::new();
+        let result = tracker.remove_market("DOESNT-EXIST");
+        assert!(result.is_empty());
     }
 }

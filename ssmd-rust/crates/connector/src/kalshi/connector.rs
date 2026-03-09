@@ -266,11 +266,13 @@ impl KalshiConnector {
         // Subscribe to ticker channel for these markets
         ws.subscribe_markets("ticker", tickers)
             .await
+            .map(|_| ())
             .map_err(|e| ConnectorError::ConnectionFailed(format!("ticker subscription: {}", e)))?;
 
         // Subscribe to trade channel for these markets
         ws.subscribe_markets("trade", tickers)
             .await
+            .map(|_| ())
             .map_err(|e| ConnectorError::ConnectionFailed(format!("trade subscription: {}", e)))?;
 
         Ok(())
