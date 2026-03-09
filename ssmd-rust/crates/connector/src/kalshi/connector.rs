@@ -23,7 +23,7 @@
 use crate::error::ConnectorError;
 use crate::kalshi::auth::KalshiCredentials;
 use crate::kalshi::cdc_consumer::{CdcConfig as CdcConsumerConfig, CdcSubscriptionConsumer};
-use crate::kalshi::shard_manager::ShardManager;
+use crate::kalshi::shard_manager::{ShardEvent, ShardManager};
 use crate::kalshi::websocket::{KalshiWebSocket, WebSocketError, MAX_MARKETS_PER_SUBSCRIPTION};
 use crate::kalshi::messages::WsMessage;
 use crate::metrics::{ConnectorMetrics, ShardMetrics};
@@ -43,6 +43,11 @@ pub enum ShardCommand {
     /// Subscribe to additional markets on this shard
     Subscribe {
         /// Market tickers to subscribe to
+        tickers: Vec<String>,
+    },
+    /// Unsubscribe from markets on this shard
+    Unsubscribe {
+        /// Market tickers to unsubscribe from
         tickers: Vec<String>,
     },
 }
@@ -385,6 +390,38 @@ impl KalshiConnector {
                                     "CDC: Successfully subscribed to new markets"
                                 );
                             }
+                            Some(ShardCommand::Unsubscribe { tickers }) => {
+                                info!(
+                                    shard_id,
+                                    market_count = tickers.len(),
+                                    "CDC: Removing market subscriptions"
+                                );
+
+                                let mut removed = 0usize;
+                                for ticker in &tickers {
+                                    match ws.unsubscribe_market(ticker).await {
+                                        Ok(n) => {
+                                            removed += 1;
+                                            debug!(shard_id, ticker = %ticker, sids = n, "Unsubscribed market");
+                                        }
+                                        Err(e) => {
+                                            warn!(shard_id, ticker = %ticker, error = %e, "Failed to unsubscribe market");
+                                        }
+                                    }
+                                }
+
+                                // Update metrics
+                                let current_count = shard_metrics.get_markets_subscribed();
+                                shard_metrics.set_markets_subscribed(current_count.saturating_sub(removed));
+
+                                info!(
+                                    shard_id,
+                                    requested = tickers.len(),
+                                    removed,
+                                    total = current_count.saturating_sub(removed),
+                                    "CDC: Unsubscribe complete"
+                                );
+                            }
                             None => {
                                 // Command channel closed - CDC disabled or shutting down
                                 debug!(shard_id, "Command channel closed");
@@ -602,6 +639,10 @@ impl Connector for KalshiConnector {
                     let cmd_rx = if let Some(ref mut manager) = shard_manager {
                         let (cmd_tx, cmd_rx) = mpsc::channel::<ShardCommand>(100);
                         manager.register_shard(shard_id, cmd_tx, shard_tickers.len());
+                        // Record initial ticker-to-shard mappings
+                        for ticker in &shard_tickers {
+                            manager.record_ticker_shard(ticker, shard_id);
+                        }
                         Some(cmd_rx)
                     } else {
                         None
@@ -646,7 +687,7 @@ impl Connector for KalshiConnector {
                         let categories = secmaster.categories.clone();
 
                         // Create channel for CDC → ShardManager communication
-                        let (new_market_tx, new_market_rx) = mpsc::channel::<String>(1000);
+                        let (new_market_tx, new_market_rx) = mpsc::channel::<ShardEvent>(1000);
 
                         // Spawn CDC consumer task with snapshot data from initial fetch
                         let cdc_snapshot_lsn = snapshot_lsn.clone();

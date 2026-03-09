@@ -3,6 +3,7 @@
 //! Subscribes to SECMASTER_CDC stream and sends new market tickers
 //! for subscription when they match the configured categories.
 
+use crate::kalshi::shard_manager::ShardEvent;
 use crate::secmaster::SecmasterClient;
 use async_nats::jetstream::{self, consumer::pull::Stream, consumer::DeliverPolicy, Context};
 use chrono::Duration as ChronoDuration;
@@ -233,7 +234,7 @@ impl CdcSubscriptionConsumer {
     ///
     /// This method runs indefinitely, processing CDC events and sending
     /// qualifying market tickers through the provided channel.
-    pub async fn run(mut self, new_market_tx: mpsc::Sender<String>) -> Result<(), CdcError> {
+    pub async fn run(mut self, event_tx: mpsc::Sender<ShardEvent>) -> Result<(), CdcError> {
         info!(
             snapshot_lsn = %self.snapshot_lsn,
             categories = ?self.categories,
@@ -375,8 +376,8 @@ impl CdcSubscriptionConsumer {
                 "CDC: New market for subscription"
             );
 
-            if new_market_tx.send(market_data.ticker.clone()).await.is_err() {
-                error!("Channel closed, stopping CDC consumer");
+            if event_tx.send(ShardEvent::Subscribe(market_data.ticker.clone())).await.is_err() {
+                error!("Event channel closed, stopping CDC consumer");
                 break;
             }
 
