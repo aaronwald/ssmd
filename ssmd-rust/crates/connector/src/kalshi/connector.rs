@@ -403,6 +403,7 @@ impl KalshiConnector {
                                         Ok(n) => {
                                             removed += 1;
                                             debug!(shard_id, ticker = %ticker, sids = n, "Unsubscribed market");
+                                            shard_metrics.inc_unsubscribed();
                                         }
                                         Err(e) => {
                                             warn!(shard_id, ticker = %ticker, error = %e, "Failed to unsubscribe market");
