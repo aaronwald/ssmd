@@ -341,8 +341,11 @@ export const updatePipeline = (id: number, body: Record<string, unknown>) =>
 export const deletePipeline = (id: number) =>
   dataRequest<{ deleted: boolean }>(`/pipelines/${id}`, { method: "DELETE" });
 
-export const triggerPipeline = (id: number) =>
-  dataRequest<{ run_id: number; status: string }>(`/pipelines/${id}/run`, { method: "POST" });
+export const triggerPipeline = (id: number, payload?: Record<string, unknown>) =>
+  dataRequest<{ run_id: number; status: string }>(`/pipelines/${id}/run`, {
+    method: "POST",
+    ...(payload && Object.keys(payload).length > 0 ? { body: JSON.stringify(payload) } : {}),
+  });
 
 export const getPipelineRuns = (id: number) =>
   dataRequest<PipelineRun[]>(`/pipelines/${id}/runs`);

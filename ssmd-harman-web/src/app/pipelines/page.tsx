@@ -86,11 +86,13 @@ function PipelinesContent() {
 function PipelineRow({ pipeline: p }: { pipeline: Pipeline }) {
   const [running, setRunning] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [dateOverride, setDateOverride] = useState("");
 
   async function handleRun() {
     setRunning(true);
     try {
-      await triggerPipeline(p.id);
+      const payload = dateOverride ? { date: dateOverride } : undefined;
+      await triggerPipeline(p.id, payload);
       await mutate("data-pipelines");
     } catch {
       // error will show on next refresh
@@ -148,17 +150,26 @@ function PipelineRow({ pipeline: p }: { pipeline: Pipeline }) {
           : "-"}
       </td>
       <td className="px-4 py-2">
-        <button
-          onClick={handleRun}
-          disabled={running}
-          className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-            running
-              ? "border-border text-fg-subtle cursor-wait"
-              : "border-accent/50 text-accent hover:bg-accent/10"
-          }`}
-        >
-          {running ? "Running..." : "Run Now"}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <input
+            type="date"
+            value={dateOverride}
+            onChange={(e) => setDateOverride(e.target.value)}
+            className="px-1.5 py-1 text-xs rounded border border-border bg-bg text-fg font-mono w-[120px]"
+            title="Date override"
+          />
+          <button
+            onClick={handleRun}
+            disabled={running}
+            className={`px-2.5 py-1 text-xs rounded border transition-colors whitespace-nowrap ${
+              running
+                ? "border-border text-fg-subtle cursor-wait"
+                : "border-accent/50 text-accent hover:bg-accent/10"
+            }`}
+          >
+            {running ? "Running..." : "Run"}
+          </button>
+        </div>
       </td>
     </tr>
   );

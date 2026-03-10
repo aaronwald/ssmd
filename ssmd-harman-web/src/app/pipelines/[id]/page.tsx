@@ -68,6 +68,7 @@ function PipelineDetail() {
   const { data: runs } = usePipelineRuns(id);
   const [running, setRunning] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [dateOverride, setDateOverride] = useState("");
 
   if (error) return <p className="text-sm text-red">Error: {error.message}</p>;
   if (!pipeline) return <div className="py-10 text-center text-fg-muted">Loading...</div>;
@@ -76,7 +77,8 @@ function PipelineDetail() {
     if (!id) return;
     setRunning(true);
     try {
-      await triggerPipeline(id);
+      const payload = dateOverride ? { date: dateOverride } : undefined;
+      await triggerPipeline(id, payload);
       await mutate(`data-pipeline-runs-${id}`);
       await mutate(`data-pipeline-${id}`);
     } catch {
@@ -110,6 +112,13 @@ function PipelineDetail() {
           {pipeline.description && <p className="text-sm text-fg-muted mt-1">{pipeline.description}</p>}
         </div>
         <div className="flex items-center gap-2">
+          <input
+            type="date"
+            value={dateOverride}
+            onChange={(e) => setDateOverride(e.target.value)}
+            className="px-2 py-1 text-xs rounded border border-border bg-bg text-fg font-mono w-[130px]"
+            title="Date override (leave empty for today)"
+          />
           <button
             onClick={handleRun}
             disabled={running}
