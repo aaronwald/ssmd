@@ -2990,8 +2990,7 @@ route("GET", "/v1/pipelines", async (_req, ctx) => {
       WHERE pipeline_id = pd.id
       ORDER BY created_at DESC LIMIT 1
     ) pr ON true
-    WHERE pd.enabled = true
-    ORDER BY pd.name
+    ORDER BY pd.enabled DESC, pd.name
   `;
   return json(rows);
 }, true, "admin:read");
