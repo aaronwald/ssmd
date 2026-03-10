@@ -151,11 +151,14 @@ async function executeRun(
   }
 
   // Build template context that accumulates stage outputs
+  const triggerInfo = run.trigger_info ?? {};
   const templateCtx: TemplateContext = {
     input: "",
     stages: {},
-    triggerInfo: run.trigger_info ?? {},
-    date: new Date().toISOString().slice(0, 10),
+    triggerInfo,
+    date: typeof triggerInfo.date === "string"
+      ? triggerInfo.date
+      : new Date().toISOString().slice(0, 10),
   };
 
   let runFailed = false;

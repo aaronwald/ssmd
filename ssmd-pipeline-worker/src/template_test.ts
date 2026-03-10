@@ -130,3 +130,13 @@ Deno.test("resolveTemplate: {{stages.N.output.field}} returns empty for non-JSON
   });
   assertEquals(result, "Val: ");
 });
+
+Deno.test("resolveTemplate: {{date}} uses trigger_info.date override when present", () => {
+  const result = resolveTemplate("Report for {{date}}", {
+    input: "",
+    stages: {},
+    triggerInfo: { trigger: "manual", date: "2026-03-09" },
+    date: "2026-03-09",
+  });
+  assertEquals(result, "Report for 2026-03-09");
+});
