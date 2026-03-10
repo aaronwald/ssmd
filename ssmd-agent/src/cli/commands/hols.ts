@@ -516,7 +516,7 @@ async function downloadSpotTrades(
     const prefix = `kraken-spot/kraken-spot/spot/${dateStr}/`;
 
     try {
-      const [files] = await bucket.getFiles({ prefix, matchGlob: "**/trade_*.parquet" });
+      const [files] = await bucket.getFiles({ prefix, matchGlob: "trade_*.parquet" });
       for (const file of files) {
         const filename = file.name.split("/").pop()!;
         const localPath = `${localDir}/${dateStr}-${filename}`;
