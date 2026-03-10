@@ -3079,10 +3079,16 @@ route("PUT", "/v1/pipelines/:id", async (req, ctx) => {
     updates.webhookSecretHash = null;
   }
 
-  const [pipeline] = await ctx.db.update(pipelineDefinitions)
-    .set(updates)
-    .where(eq(pipelineDefinitions.id, id))
-    .returning();
+  let pipeline;
+  if (Object.keys(updates).length > 0) {
+    [pipeline] = await ctx.db.update(pipelineDefinitions)
+      .set(updates)
+      .where(eq(pipelineDefinitions.id, id))
+      .returning();
+  } else {
+    [pipeline] = await ctx.db.select().from(pipelineDefinitions)
+      .where(eq(pipelineDefinitions.id, id));
+  }
 
   if (!pipeline) return json({ error: "Not found" }, 404);
 
