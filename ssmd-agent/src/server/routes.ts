@@ -3138,16 +3138,33 @@ route("GET", "/v1/pipelines/runs/:runId", async (req, ctx) => {
   return json({ ...run, stage_results: results });
 }, true, "admin:read");
 
-// Manual trigger from UI
+// Manual trigger from UI (accepts optional JSON payload, merged into trigger_info)
 route("POST", "/v1/pipelines/:id/run", async (req, ctx) => {
   const id = parseInt((req as any).params.id);
   const [pipeline] = await ctx.db.select().from(pipelineDefinitions).where(eq(pipelineDefinitions.id, id));
   if (!pipeline || !pipeline.enabled) return json({ error: "Not found or disabled" }, 404);
 
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = await req.json();
+    // Validate payload size (16KB max)
+    if (JSON.stringify(payload).length > 16384) {
+      return json({ error: "Payload too large (max 16KB)" }, 400);
+    }
+    // Validate date format if provided
+    if (payload.date !== undefined) {
+      if (typeof payload.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(payload.date)) {
+        return json({ error: "date must be YYYY-MM-DD format" }, 400);
+      }
+    }
+  } catch {
+    // Empty body is OK for manual triggers
+  }
+
   const [run] = await ctx.db.insert(pipelineRuns).values({
     pipelineId: id,
     status: "pending",
-    triggerInfo: { trigger: "manual" },
+    triggerInfo: { trigger: "manual", ...payload },
   }).returning({ id: pipelineRuns.id });
 
   return json({ run_id: run.id, status: "pending" }, 202);
