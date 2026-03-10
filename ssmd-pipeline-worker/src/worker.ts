@@ -44,7 +44,7 @@ export async function startWorker(config: WorkerConfig): Promise<void> {
   registerHandler("http", executeHttp);
   registerHandler("gcs_check", executeGcsCheck);
   registerHandler("openrouter", executeOpenRouter);
-  registerHandler("email", (cfg, ctx, signal) => executeEmail(cfg, ctx, signal));
+  registerHandler("email", (cfg, ctx, signal) => executeEmail(cfg, ctx, signal, ctx.pipelineId?.toString()));
 
   // Create postgres connections
   const sql = postgres(config.databaseUrl, {
@@ -139,6 +139,9 @@ async function executeRun(
   ctx: ExecuteContext,
 ): Promise<void> {
   console.log(`[worker] executing run=${run.id} pipeline=${run.pipeline_id}`);
+
+  // Set pipelineId on context for per-pipeline rate limiting (e.g., email)
+  ctx.pipelineId = run.pipeline_id;
 
   const stages = await loadStages(sql, run.pipeline_id);
   if (stages.length === 0) {

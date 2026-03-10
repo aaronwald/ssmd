@@ -3,7 +3,27 @@ import { HTTP_URL_ALLOWLIST, MAX_OUTPUT_SIZE } from "../types.ts";
 import type { ExecuteContext } from "./mod.ts";
 
 export function validateUrl(url: string, allowlist: string[]): boolean {
-  return allowlist.some((prefix) => url.startsWith(prefix));
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  // Reject userinfo (anti-SSRF: http://evil@allowed-host/)
+  if (parsed.username || parsed.password) return false;
+
+  return allowlist.some((prefix) => {
+    try {
+      const allowed = new URL(prefix);
+      return (
+        parsed.protocol === allowed.protocol &&
+        parsed.hostname === allowed.hostname &&
+        parsed.port === allowed.port
+      );
+    } catch {
+      return false;
+    }
+  });
 }
 
 export async function executeHttp(

@@ -5,6 +5,7 @@ export interface ExecuteContext {
   readonlySql: unknown; // postgres connection, typed properly when wired
   dataTsUrl: string;
   adminApiKey: string;
+  pipelineId?: number;
 }
 
 type StageHandler = (config: StageConfig, ctx: ExecuteContext, signal: AbortSignal) => Promise<StageResult>;

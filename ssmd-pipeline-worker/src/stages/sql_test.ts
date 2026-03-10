@@ -41,6 +41,22 @@ Deno.test("validateSqlQuery: rejects semicolon-chained DDL", () => {
   assertEquals(validateSqlQuery("SELECT 1; DROP TABLE events"), false);
 });
 
+Deno.test("validateSqlQuery: rejects bare COPY", () => {
+  assertEquals(validateSqlQuery("COPY events TO '/tmp/out'"), false);
+});
+
+Deno.test("validateSqlQuery: rejects VACUUM", () => {
+  assertEquals(validateSqlQuery("VACUUM events"), false);
+});
+
+Deno.test("validateSqlQuery: rejects SET", () => {
+  assertEquals(validateSqlQuery("SET statement_timeout = 0"), false);
+});
+
+Deno.test("validateSqlQuery: rejects multi-statement via semicolon", () => {
+  assertEquals(validateSqlQuery("SELECT 1; SELECT 2"), false);
+});
+
 Deno.test("truncateRows: respects max_rows", () => {
   const rows = Array.from({ length: 200 }, (_, i) => ({ id: i }));
   const result = truncateRows(rows, 50);

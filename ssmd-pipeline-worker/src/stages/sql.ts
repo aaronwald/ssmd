@@ -2,12 +2,15 @@ import type { StageConfig, StageResult } from "../types.ts";
 import { DEFAULT_MAX_ROWS } from "../types.ts";
 import type { ExecuteContext } from "./mod.ts";
 
-const FORBIDDEN_PATTERNS = /^\s*(DELETE|DROP|UPDATE|INSERT|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|DO\s+\$)\b/i;
-const SEMICOLON_CHAIN = /;\s*(DELETE|DROP|UPDATE|INSERT|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|DO\s+\$)\b/i;
+const ALLOWED_START = /^\s*(SELECT|WITH)\b/i;
+const FORBIDDEN_ANYWHERE = /\b(DELETE|DROP|UPDATE|INSERT|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b/i;
+const DANGEROUS_COMMANDS = /\b(COPY|VACUUM|SET|LISTEN|NOTIFY|DO\s+\$)\b/i;
 
 export function validateSqlQuery(query: string): boolean {
-  if (FORBIDDEN_PATTERNS.test(query)) return false;
-  if (SEMICOLON_CHAIN.test(query)) return false;
+  if (!ALLOWED_START.test(query)) return false;
+  if (FORBIDDEN_ANYWHERE.test(query)) return false;
+  if (DANGEROUS_COMMANDS.test(query)) return false;
+  if (query.includes(";")) return false; // no multi-statement
   return true;
 }
 
@@ -38,10 +41,13 @@ export async function executeSql(
 
   const maxRows = config.max_rows ?? DEFAULT_MAX_ROWS;
 
+  // Wrap in a subquery with LIMIT to enforce row cap at DB level
+  const limitedQuery = `SELECT * FROM (${query}) AS _q LIMIT ${maxRows + 1}`;
+
   try {
     // deno-lint-ignore no-explicit-any
     const sql = ctx.readonlySql as any;
-    const rows = await sql.unsafe(query);
+    const rows = await sql.unsafe(limitedQuery);
     const result = truncateRows(rows as Record<string, unknown>[], maxRows);
 
     return {

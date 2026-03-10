@@ -385,7 +385,7 @@ export const pipelineRuns = pgTable("pipeline_runs", {
 export const pipelineStageResults = pgTable("pipeline_stage_results", {
   id: serial("id").primaryKey(),
   runId: integer("run_id").notNull().references(() => pipelineRuns.id, { onDelete: "cascade" }),
-  stageId: integer("stage_id").notNull().references(() => pipelineStages.id),
+  stageId: integer("stage_id").references(() => pipelineStages.id, { onDelete: "set null" }),
   status: text("status").notNull().default("pending"),
   input: jsonb("input"),
   output: jsonb("output"),

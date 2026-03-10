@@ -4,7 +4,7 @@
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pipeline_readonly') THEN
-    CREATE ROLE pipeline_readonly WITH LOGIN PASSWORD 'pipeline_readonly';
+    CREATE ROLE pipeline_readonly WITH LOGIN PASSWORD 'CHANGE_ME_AT_DEPLOY';
   END IF;
 END
 $$;
@@ -49,7 +49,7 @@ CREATE TABLE pipeline_runs (
 CREATE TABLE pipeline_stage_results (
   id              SERIAL PRIMARY KEY,
   run_id          INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
-  stage_id        INTEGER NOT NULL REFERENCES pipeline_stages(id),
+  stage_id        INTEGER REFERENCES pipeline_stages(id) ON DELETE SET NULL,
   status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed')),
   input           JSONB,
   output          JSONB,

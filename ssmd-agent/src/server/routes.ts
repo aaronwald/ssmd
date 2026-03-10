@@ -2980,7 +2980,8 @@ route("POST", "/v1/pipelines/:id/trigger", async (req, ctx) => {
 route("GET", "/v1/pipelines", async (_req, ctx) => {
   const rawSql = getRawSql();
   const rows = await rawSql`
-    SELECT pd.*,
+    SELECT pd.id, pd.name, pd.description, pd.trigger_type, pd.trigger_config,
+      pd.enabled, pd.last_triggered_at, pd.created_at, pd.updated_at,
       pr.status AS last_run_status,
       pr.created_at AS last_run_at
     FROM pipeline_definitions pd
@@ -3005,7 +3006,8 @@ route("GET", "/v1/pipelines/:id", async (req, ctx) => {
     .where(eq(pipelineStages.pipelineId, id))
     .orderBy(pipelineStages.position);
 
-  return json({ ...pipeline, stages });
+  const { webhookSecretHash: _wsh, ...safe } = pipeline;
+  return json({ ...safe, stages });
 }, true, "admin:read");
 
 // Create pipeline with stages
@@ -3063,6 +3065,20 @@ route("PUT", "/v1/pipelines/:id", async (req, ctx) => {
   if (body.trigger_config !== undefined) updates.triggerConfig = body.trigger_config;
   if (body.enabled !== undefined) updates.enabled = body.enabled;
 
+  // Handle webhook secret lifecycle on trigger_type change
+  if (body.trigger_type === "webhook") {
+    // Changing to webhook — generate new secret if none exists
+    const [existing] = await ctx.db.select({ hash: pipelineDefinitions.webhookSecretHash })
+      .from(pipelineDefinitions).where(eq(pipelineDefinitions.id, id));
+    if (!existing?.hash) {
+      const webhookSecret = crypto.randomUUID() + crypto.randomUUID();
+      updates.webhookSecretHash = createHash("sha256").update(webhookSecret).digest("hex");
+    }
+  } else if (body.trigger_type !== undefined) {
+    // Changing away from webhook — clear the secret hash
+    updates.webhookSecretHash = null;
+  }
+
   const [pipeline] = await ctx.db.update(pipelineDefinitions)
     .set(updates)
     .where(eq(pipelineDefinitions.id, id))
@@ -3083,7 +3099,8 @@ route("PUT", "/v1/pipelines/:id", async (req, ctx) => {
     }
   }
 
-  return json(pipeline);
+  const { webhookSecretHash: _wsh2, ...safePipeline } = pipeline;
+  return json(safePipeline);
 }, true, "admin:write");
 
 // Soft-delete pipeline

@@ -21,3 +21,15 @@ Deno.test("validateUrl: rejects metadata server", () => {
 Deno.test("validateUrl: rejects redis", () => {
   assertEquals(validateUrl("http://ssmd-redis:6379/", HTTP_URL_ALLOWLIST), false);
 });
+
+Deno.test("validateUrl: rejects userinfo bypass", () => {
+  assertEquals(validateUrl("http://evil@ssmd-data-ts-internal:8081/", HTTP_URL_ALLOWLIST), false);
+});
+
+Deno.test("validateUrl: rejects invalid URL", () => {
+  assertEquals(validateUrl("not-a-url", HTTP_URL_ALLOWLIST), false);
+});
+
+Deno.test("validateUrl: allows path under allowed host", () => {
+  assertEquals(validateUrl("http://ssmd-data-ts-internal:8081/v1/data/trades?feed=kalshi", HTTP_URL_ALLOWLIST), true);
+});
