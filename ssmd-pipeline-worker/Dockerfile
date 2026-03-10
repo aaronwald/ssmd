@@ -1,7 +1,7 @@
 # ssmd-pipeline-worker: Deno-compiled pipeline execution engine
 
 # Build stage
-FROM denoland/deno:2.1.4 AS builder
+FROM denoland/deno:2.6.5 AS builder
 
 WORKDIR /app
 
