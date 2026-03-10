@@ -3153,6 +3153,148 @@ route("POST", "/v1/pipelines/:id/run", async (req, ctx) => {
   return json({ run_id: run.id, status: "pending" }, 202);
 }, true, "admin:write");
 
+// GCS file check endpoint (used by pipeline worker gcs_check stage)
+route("GET", "/v1/gcs/check", async (req, _ctx) => {
+  const url = new URL(req.url);
+  const path = url.searchParams.get("path");
+  if (!path) return json({ error: "path query parameter is required" }, 400);
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
+
+  try {
+    const result = await duckdbQuery(`SELECT count(*) as row_count FROM read_parquet('s3://${bucket}/${path}')`);
+    const rowCount = result.rows[0]?.row_count ?? 0;
+    return json({ exists: true, path, row_count: rowCount });
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (msg.includes("No files found") || msg.includes("HTTP 404") || msg.includes("does not exist")) {
+      return json({ exists: false, path });
+    }
+    return json({ error: msg }, 500);
+  }
+}, true, "admin:read", "internal");
+
+// HOLS validation endpoint (used by pipeline worker)
+route("GET", "/v1/hols/validate", async (req, _ctx) => {
+  const url = new URL(req.url);
+  const date = url.searchParams.get("date") ?? new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(date)) {
+    return json({ error: "date must be YYYY-MM-DD format" }, 400);
+  }
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
+
+  const restPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-5m-kraken.parquet`;
+  const wsPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-1m-ssmd.parquet`;
+
+  const results: Record<string, unknown> = { date };
+
+  // REST 5-min bars validation
+  try {
+    const restResult = await duckdbQuery(`
+      SELECT
+        count(*) as total_rows,
+        count(DISTINCT symbol) as unique_symbols,
+        count(DISTINCT hols_ticker) as unique_tickers,
+        min(date) as min_date,
+        max(date) as max_date,
+        count(DISTINCT date) as unique_dates,
+        -- Bar interval check: expect 5-min bars (288 per day per ticker)
+        count(*) / NULLIF(count(DISTINCT hols_ticker), 0) as avg_bars_per_ticker,
+        -- Null checks
+        count(*) FILTER (WHERE open IS NULL) as null_open,
+        count(*) FILTER (WHERE close IS NULL) as null_close,
+        count(*) FILTER (WHERE volume IS NULL) as null_volume,
+        -- BTC spot check
+        min(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_min_close,
+        max(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_max_close,
+        avg(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_avg_close,
+        count(*) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_bar_count,
+        -- ETH spot check
+        min(close) FILTER (WHERE hols_ticker = 'ETHUSDT') as eth_min_close,
+        max(close) FILTER (WHERE hols_ticker = 'ETHUSDT') as eth_max_close,
+        -- Price sanity (any zero or negative prices)
+        count(*) FILTER (WHERE close <= 0) as zero_close_count,
+        count(*) FILTER (WHERE open <= 0) as zero_open_count
+      FROM read_parquet('${restPath}')
+    `);
+    results.rest = { exists: true, ...restResult.rows[0] };
+  } catch (err) {
+    results.rest = { exists: false, error: (err as Error).message };
+  }
+
+  // WS 1-min aggregation validation
+  try {
+    const wsResult = await duckdbQuery(`
+      SELECT
+        count(*) as total_rows,
+        count(DISTINCT symbol) as unique_symbols,
+        count(DISTINCT hols_ticker) as unique_tickers,
+        min(date) as min_date,
+        max(date) as max_date,
+        count(*) / NULLIF(count(DISTINCT hols_ticker), 0) as avg_bars_per_ticker,
+        -- Null checks
+        count(*) FILTER (WHERE open IS NULL) as null_open,
+        count(*) FILTER (WHERE close IS NULL) as null_close,
+        count(*) FILTER (WHERE volume IS NULL) as null_volume,
+        count(*) FILTER (WHERE tradecount IS NULL) as null_tradecount,
+        count(*) FILTER (WHERE volume_from IS NULL) as null_volume_from,
+        -- BTC spot check
+        min(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_min_close,
+        max(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_max_close,
+        avg(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_avg_close,
+        count(*) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_bar_count,
+        -- Trade count aggregates
+        sum(tradecount) as total_trades,
+        avg(tradecount) as avg_trades_per_bar,
+        -- Price sanity
+        count(*) FILTER (WHERE close <= 0) as zero_close_count
+      FROM read_parquet('${wsPath}')
+    `);
+    results.ws = { exists: true, ...wsResult.rows[0] };
+  } catch (err) {
+    results.ws = { exists: false, error: (err as Error).message };
+  }
+
+  // Cross-source comparison (if both exist)
+  if ((results.rest as Record<string, unknown>)?.exists && (results.ws as Record<string, unknown>)?.exists) {
+    try {
+      const crossResult = await duckdbQuery(`
+        WITH rest_tickers AS (
+          SELECT DISTINCT hols_ticker FROM read_parquet('${restPath}')
+        ),
+        ws_tickers AS (
+          SELECT DISTINCT hols_ticker FROM read_parquet('${wsPath}')
+        ),
+        btc_rest AS (
+          SELECT avg(close) as avg_close FROM read_parquet('${restPath}') WHERE hols_ticker = 'BTCUSDT'
+        ),
+        btc_ws AS (
+          SELECT avg(close) as avg_close FROM read_parquet('${wsPath}') WHERE hols_ticker = 'BTCUSDT'
+        )
+        SELECT
+          (SELECT count(*) FROM rest_tickers) as rest_ticker_count,
+          (SELECT count(*) FROM ws_tickers) as ws_ticker_count,
+          (SELECT count(*) FROM rest_tickers WHERE hols_ticker IN (SELECT hols_ticker FROM ws_tickers)) as shared_tickers,
+          (SELECT count(*) FROM rest_tickers WHERE hols_ticker NOT IN (SELECT hols_ticker FROM ws_tickers)) as rest_only_tickers,
+          (SELECT count(*) FROM ws_tickers WHERE hols_ticker NOT IN (SELECT hols_ticker FROM rest_tickers)) as ws_only_tickers,
+          (SELECT avg_close FROM btc_rest) as btc_rest_avg,
+          (SELECT avg_close FROM btc_ws) as btc_ws_avg,
+          abs((SELECT avg_close FROM btc_rest) - (SELECT avg_close FROM btc_ws)) /
+            NULLIF((SELECT avg_close FROM btc_rest), 0) * 100 as btc_price_diff_pct
+      `);
+      results.cross_check = crossResult.rows[0];
+    } catch (err) {
+      results.cross_check = { error: (err as Error).message };
+    }
+  }
+
+  return json(results);
+}, true, "admin:read", "internal");
+
 // Internal email endpoint (used by pipeline worker)
 route("POST", "/v1/internal/email", async (req, _ctx) => {
   const { to, subject, html } = await req.json();
