@@ -80,3 +80,53 @@ Deno.test("resolveTemplate: missing stage returns empty string", () => {
   });
   assertEquals(result, "Value: ");
 });
+
+Deno.test("resolveTemplate: {{stages.N.output.field}} extracts nested string field", () => {
+  const result = resolveTemplate("Analysis: {{stages.1.output.content}}", {
+    input: "",
+    stages: { 1: { output: JSON.stringify({ content: "STATUS: GREEN", model: "claude", usage: {} }) } },
+    triggerInfo: {},
+    date: "2026-03-09",
+  });
+  assertEquals(result, "Analysis: STATUS: GREEN");
+});
+
+Deno.test("resolveTemplate: {{stages.N.output.field}} extracts nested object as JSON", () => {
+  const result = resolveTemplate("Body: {{stages.0.output.body}}", {
+    input: "",
+    stages: { 0: { output: JSON.stringify({ status: 200, body: { rows: 5, tickers: 45 }, truncated: false }) } },
+    triggerInfo: {},
+    date: "2026-03-09",
+  });
+  assertEquals(result, 'Body: {"rows":5,"tickers":45}');
+});
+
+Deno.test("resolveTemplate: {{stages.N.output.deep.path}} extracts deeply nested field", () => {
+  const result = resolveTemplate("BTC: {{stages.0.output.body.rest.btc_avg_close}}", {
+    input: "",
+    stages: { 0: { output: JSON.stringify({ body: { rest: { btc_avg_close: 67586.05 } } }) } },
+    triggerInfo: {},
+    date: "2026-03-09",
+  });
+  assertEquals(result, "BTC: 67586.05");
+});
+
+Deno.test("resolveTemplate: {{stages.N.output.missing}} returns empty for missing field", () => {
+  const result = resolveTemplate("Val: {{stages.0.output.nonexistent}}", {
+    input: "",
+    stages: { 0: { output: JSON.stringify({ status: 200 }) } },
+    triggerInfo: {},
+    date: "2026-03-09",
+  });
+  assertEquals(result, "Val: ");
+});
+
+Deno.test("resolveTemplate: {{stages.N.output.field}} returns empty for non-JSON output", () => {
+  const result = resolveTemplate("Val: {{stages.0.output.field}}", {
+    input: "",
+    stages: { 0: { output: "plain text" } },
+    triggerInfo: {},
+    date: "2026-03-09",
+  });
+  assertEquals(result, "Val: ");
+});

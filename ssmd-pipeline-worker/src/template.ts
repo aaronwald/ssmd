@@ -47,10 +47,21 @@ function resolvePlaceholder(placeholder: string, ctx: TemplateContext): string |
     return typeof value === "string" ? value : JSON.stringify(value);
   }
 
-  const stageMatch = placeholder.match(/^stages\.(\d+)\.output$/);
+  const stageMatch = placeholder.match(/^stages\.(\d+)\.output(?:\.(.+))?$/);
   if (stageMatch) {
     const position = parseInt(stageMatch[1]);
-    return ctx.stages[position]?.output ?? "";
+    const raw = ctx.stages[position]?.output ?? "";
+    if (!stageMatch[2]) return raw;
+    // Nested field access: parse the output JSON and traverse the path
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null) return "";
+      const value = getNestedValue(parsed as Record<string, unknown>, stageMatch[2]);
+      if (value === undefined) return "";
+      return typeof value === "string" ? value : JSON.stringify(value);
+    } catch {
+      return "";
+    }
   }
 
   return undefined;
