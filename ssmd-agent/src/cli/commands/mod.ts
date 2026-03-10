@@ -23,6 +23,7 @@ import { handleStatus } from "./status.ts";
 import { handleEnv } from "./env.ts";
 import { handleHealth } from "./health.ts";
 import { handleKraken } from "./kraken-sync.ts";
+import { handleBinance } from "./binance-sync.ts";
 import { handlePolymarket } from "./polymarket-sync.ts";
 import { handleKeys } from "./keys.ts";
 import { handleShare } from "./share.ts";
@@ -147,6 +148,10 @@ export async function run(args: string[]): Promise<void> {
 
     case "kraken":
       await handleKraken(subcommand, flags);
+      break;
+
+    case "binance":
+      await handleBinance(subcommand, flags);
       break;
 
     case "polymarket":
@@ -291,6 +296,7 @@ function printHelp(): void {
   console.log("  schedule          List and describe Temporal schedules");
   console.log("  momentum          Paper trading momentum models on live data");
   console.log("  kraken            Kraken spot + perpetuals sync");
+  console.log("  binance           Binance spot pairs sync");
   console.log("  polymarket        Polymarket conditions sync");
   console.log("  health            Pipeline health checks (connector status, stream flow, archive sync)");
   console.log("  keys              Manage API keys (create, list, revoke)");

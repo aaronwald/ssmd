@@ -1,9 +1,10 @@
 /**
- * ssmd hols — OHLCV generation from Kraken Spot data.
+ * ssmd hols — OHLCV generation from exchange spot data.
  *
- * Two independent jobs (never combined):
- *   hols generate   — Fetch OHLCV from Kraken Spot REST OHLC API
- *   hols aggregate   — Generate OHLCV from archived real-time WS trade data
+ * Three independent jobs (never combined):
+ *   hols generate                    — Kraken Spot REST OHLC (default)
+ *   hols generate --source binance   — Binance Spot REST Klines (5m or 1m)
+ *   hols aggregate                   — Kraken WS trade aggregation to 1-min bars
  */
 import { getDb, closeDb } from "../../lib/db/mod.ts";
 import { listActiveSpotPairs } from "../../lib/db/pairs.ts";
@@ -26,6 +27,12 @@ const DEFAULT_LOOKBACK_DAYS = 3;
 const DEFAULT_INTERVAL = 5;
 const CANDLES_PER_REQUEST = 720; // Kraken max per OHLC response
 const GCS_BUCKET = "ssmd-data";
+
+// --- Binance Spot REST Klines ---
+const BINANCE_KLINES_URL = "https://data-api.binance.vision/api/v3/klines";
+const BINANCE_CONCURRENCY = 5;
+const BINANCE_RATE_LIMIT_MS = 100;
+const BINANCE_CANDLES_PER_REQUEST = 1000;
 
 interface NdjsonRow {
   symbol: string;
@@ -69,7 +76,7 @@ export async function handleHols(
     default:
       console.error(`Unknown hols subcommand: ${subcommand ?? "(none)"}`);
       console.log("Usage:");
-      console.log("  ssmd hols generate   [--date YYYY-MM-DD] [--days N] [--dry-run]  # Kraken Spot REST OHLC");
+      console.log("  ssmd hols generate   [--date YYYY-MM-DD] [--days N] [--source kraken|binance] [--interval 1|5] [--dry-run]");
       console.log("  ssmd hols aggregate  [--date YYYY-MM-DD] [--days N] [--dry-run]  # Aggregated WS trade data");
       Deno.exit(1);
   }
@@ -84,8 +91,19 @@ export async function runHolsGenerate(
 ): Promise<void> {
   const startTime = Date.now();
   const dryRun = !!flags["dry-run"];
+  const source = (flags.source as string) ?? "kraken";
 
   const { startDate, endDate, startDateStr, endDateStr, lookbackDays } = parseDateRange(flags);
+
+  if (source === "binance") {
+    const interval = flags.interval ? parseInt(flags.interval as string, 10) : DEFAULT_INTERVAL;
+    await runHolsGenerateBinance(flags, startTime, dryRun, interval, startDate, endDate, startDateStr, endDateStr, lookbackDays);
+    return;
+  }
+
+  if (flags.interval) {
+    console.warn("[hols:generate] WARNING: --interval is only supported with --source binance, ignoring");
+  }
 
   console.log(`[hols:generate] Kraken Spot REST OHLC for ${startDateStr} to ${endDateStr} (${lookbackDays} days) dry-run=${dryRun}`);
 
@@ -152,6 +170,7 @@ export async function runHolsGenerate(
   if (!dryRun) {
     await sendReport({
       job: "generate",
+      jobLabel: "Spot REST OHLC",
       dateStr: `${startDateStr} to ${endDateStr}`,
       symbolCount: spotPairs.length,
       successCount: successes.length,
@@ -174,6 +193,242 @@ export async function runHolsGenerate(
     console.error(`[hols:generate] FAIL: ${failures.length}/${spotPairs.length} pairs failed (${failPct.toFixed(1)}%)`);
     Deno.exit(1);
   }
+}
+
+// --- Binance Spot REST Klines ---
+
+async function runHolsGenerateBinance(
+  _flags: Record<string, unknown>,
+  startTime: number,
+  dryRun: boolean,
+  interval: number,
+  startDate: Date,
+  endDate: Date,
+  startDateStr: string,
+  endDateStr: string,
+  lookbackDays: number,
+): Promise<void> {
+  console.log(`[hols:generate] Binance Spot REST Klines (${interval}m) for ${startDateStr} to ${endDateStr} (${lookbackDays} days) dry-run=${dryRun}`);
+
+  // 1. Query secmaster for active Binance spot USDT pairs
+  const db = getDb();
+  let spotPairs: { krakenPair: string; wsName: string; base: string; quote: string }[];
+  try {
+    spotPairs = await listActiveSpotPairs(db, { exchange: "binance" });
+    console.log(`[hols:generate] Found ${spotPairs.length} active Binance spot USDT pairs`);
+  } finally {
+    await closeDb();
+  }
+
+  if (spotPairs.length === 0) {
+    console.error("[hols:generate] No active Binance spot USDT pairs found. Exiting.");
+    Deno.exit(1);
+  }
+
+  // 2. Fetch klines for each pair, streaming rows to NDJSON
+  // Use a write queue to serialize concurrent worker writes (avoid interleaved bytes)
+  const ndjsonPath = `/tmp/hols-binance-${endDateStr}.ndjson`;
+  const ndjsonFile = await Deno.open(ndjsonPath, { write: true, create: true, truncate: true });
+  const encoder = new TextEncoder();
+  let writePromise = Promise.resolve();
+  const writeRow = (row: NdjsonRow): Promise<void> => {
+    writePromise = writePromise.then(() =>
+      ndjsonFile.write(encoder.encode(JSON.stringify(row) + "\n")).then(() => {})
+    );
+    return writePromise;
+  };
+
+  console.log(`[hols:generate] Fetching with concurrency=${BINANCE_CONCURRENCY}, rate=${BINANCE_RATE_LIMIT_MS}ms, interval=${interval}m`);
+  let results: FetchResult[];
+  try {
+    results = await fetchAllBinanceKlines(spotPairs, startDate, endDate, interval, writeRow);
+  } finally {
+    ndjsonFile.close();
+  }
+
+  const successes = results.filter((r) => !r.error);
+  const failures = results.filter((r) => !!r.error);
+  const totalRows = successes.reduce((sum, r) => sum + r.rowCount, 0);
+
+  console.log(`[hols:generate] Fetch complete: ${successes.length} ok, ${failures.length} failed, ${totalRows} total rows`);
+
+  if (totalRows === 0) {
+    console.error("[hols:generate] No data fetched. Exiting.");
+    Deno.exit(1);
+  }
+
+  // 3. Convert to Parquet via DuckDB
+  const parquetPath = `/tmp/hols-binance-${endDateStr}.parquet`;
+  await convertNdjsonToParquet(ndjsonPath, parquetPath);
+  const parquetStat = await Deno.stat(parquetPath);
+  const fileSizeKB = Math.round((parquetStat.size ?? 0) / 1024);
+  console.log(`[hols:generate] Parquet written: ${parquetPath} (${fileSizeKB} KB)`);
+
+  // 4. Upload to GCS
+  const gcsPath = `hols/crypto/daily/${endDateStr}/ohlcv-${interval}m-binance.parquet`;
+  if (dryRun) {
+    console.log(`[hols:generate] DRY RUN: would upload to gs://${GCS_BUCKET}/${gcsPath}`);
+  } else {
+    await uploadToGCS(parquetPath, gcsPath);
+    console.log(`[hols:generate] Uploaded to gs://${GCS_BUCKET}/${gcsPath}`);
+  }
+
+  // 5. Send email report
+  const durationSec = Math.round((Date.now() - startTime) / 1000);
+  if (!dryRun) {
+    await sendReport({
+      job: "generate",
+      jobLabel: `Binance Spot REST Klines (${interval}m)`,
+      dateStr: `${startDateStr} to ${endDateStr}`,
+      symbolCount: spotPairs.length,
+      successCount: successes.length,
+      failCount: failures.length,
+      totalRows,
+      fileSizeKB,
+      durationSec,
+      failures: failures.map((f) => ({ symbol: f.pair, error: f.error! })),
+    });
+  }
+
+  // 6. Cleanup
+  try { await Deno.remove(ndjsonPath); } catch { /* best-effort */ }
+  try { await Deno.remove(parquetPath); } catch { /* best-effort */ }
+
+  console.log(`[hols:generate] Done in ${Math.round((Date.now() - startTime) / 1000)}s`);
+
+  const failPct = (failures.length / spotPairs.length) * 100;
+  if (failPct > 10) {
+    console.error(`[hols:generate] FAIL: ${failures.length}/${spotPairs.length} pairs failed (${failPct.toFixed(1)}%)`);
+    Deno.exit(1);
+  }
+}
+
+async function fetchAllBinanceKlines(
+  pairs: { krakenPair: string; wsName: string; base: string; quote: string }[],
+  startDate: Date,
+  endDate: Date,
+  interval: number,
+  writeRow: (row: NdjsonRow) => Promise<void>,
+): Promise<FetchResult[]> {
+  const results: FetchResult[] = new Array(pairs.length);
+  let completed = 0;
+  let queue = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const idx = queue++;
+      if (idx >= pairs.length) break;
+
+      const pair = pairs[idx];
+      const symbol = pair.krakenPair; // Already stripped of exchange prefix by listActiveSpotPairs
+      const result = await fetchBinanceKlinesWithPagination(
+        symbol, pair.base, pair.quote, startDate, endDate, interval, writeRow,
+      );
+      results[idx] = result;
+      completed++;
+
+      if (result.error) {
+        console.log(`[hols:generate] [${completed}/${pairs.length}] ${symbol} FAIL: ${result.error}`);
+      } else {
+        console.log(`[hols:generate] [${completed}/${pairs.length}] ${symbol} OK: ${result.rowCount} candles`);
+      }
+
+      await sleep(BINANCE_RATE_LIMIT_MS);
+    }
+  }
+
+  const workers = Array.from({ length: BINANCE_CONCURRENCY }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+async function fetchBinanceKlinesWithPagination(
+  symbol: string,
+  base: string,
+  quote: string,
+  startDate: Date,
+  endDate: Date,
+  interval: number,
+  writeRow: (row: NdjsonRow) => Promise<void>,
+): Promise<FetchResult> {
+  const startMs = startDate.getTime();
+  const endMs = endDate.getTime() + 86400000; // include full end date
+  const intervalMs = interval * 60 * 1000;
+  let startTime = startMs;
+  let rowCount = 0;
+  const holsTicker = `${base}${quote}`;
+
+  while (startTime < endMs) {
+    const candles = await fetchBinanceKlinesPage(symbol, interval, startTime, endMs);
+    if (candles === null) return { pair: symbol, base, rowCount: 0, error: `Failed for ${symbol} (possible geo-block or ${MAX_RETRIES} retries exhausted)` };
+    if (candles.length === 0) break;
+
+    for (const c of candles) {
+      const openTimeMs = c[0] as number;
+      const closeTimeMs = c[6] as number;
+      if (openTimeMs >= startMs && openTimeMs < endMs) {
+        await writeRow({
+          symbol: symbol,
+          hols_ticker: holsTicker,
+          source: "binance_spot",
+          date: new Date(openTimeMs).toISOString(),
+          date_close: new Date(closeTimeMs + 1).toISOString(),
+          unix: Math.floor(openTimeMs / 1000),
+          close_unix: Math.floor((closeTimeMs + 1) / 1000),
+          open: parseFloat(c[1] as string),
+          high: parseFloat(c[2] as string),
+          low: parseFloat(c[3] as string),
+          close: parseFloat(c[4] as string),
+          volume: parseFloat(c[5] as string),
+          volume_from: parseFloat(c[7] as string),
+          tradecount: c[8] as number,
+          marketorder_volume: parseFloat(c[10] as string),
+          marketorder_volume_from: parseFloat(c[9] as string),
+        });
+        rowCount++;
+      }
+    }
+
+    // Advance past the last candle
+    const lastOpenTime = candles[candles.length - 1][0] as number;
+    if (lastOpenTime <= startTime) break; // no progress
+    startTime = lastOpenTime + intervalMs;
+
+    if (candles.length < BINANCE_CANDLES_PER_REQUEST) break;
+    await sleep(BINANCE_RATE_LIMIT_MS);
+  }
+
+  return { pair: symbol, base, rowCount };
+}
+
+async function fetchBinanceKlinesPage(
+  symbol: string,
+  interval: number,
+  startTimeMs: number,
+  endTimeMs: number,
+): Promise<unknown[][] | null> {
+  const intervalStr = interval === 1 ? "1m" : `${interval}m`;
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (attempt > 0) await sleep(1000 * Math.pow(2, attempt));
+    try {
+      const url = `${BINANCE_KLINES_URL}?symbol=${symbol}&interval=${intervalStr}&startTime=${startTimeMs}&endTime=${endTimeMs}&limit=${BINANCE_CANDLES_PER_REQUEST}`;
+      const resp = await fetch(url, {
+        signal: AbortSignal.timeout(API_TIMEOUT_MS),
+        headers: { Accept: "application/json" },
+      });
+      if (!resp.ok) {
+        if (resp.status === 451) {
+          // Geo-blocked - fatal, don't retry
+          return null;
+        }
+        continue;
+      }
+      return await resp.json() as unknown[][];
+    } catch {
+      // retry
+    }
+  }
+  return null;
 }
 
 // --- Spot OHLC fetch ---
@@ -602,6 +857,7 @@ async function downloadSpotTrades(
 
 interface ReportData {
   job: string;
+  jobLabel?: string;
   dateStr: string;
   symbolCount: number;
   successCount: number;
@@ -624,7 +880,7 @@ async function sendReport(data: ReportData): Promise<void> {
     return;
   }
 
-  const jobLabel = data.job === "generate" ? "Spot REST OHLC" : "WS Trade Aggregate";
+  const jobLabel = data.jobLabel ?? (data.job === "generate" ? "Spot REST OHLC" : "WS Trade Aggregate");
   const statusColor = data.failCount === 0 ? "#1e7e34" : "#c5221f";
   const statusText = data.failCount === 0 ? "SUCCESS" : `${data.failCount} FAILURES`;
 
