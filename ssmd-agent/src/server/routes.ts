@@ -3244,13 +3244,13 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         288 as expected_bars_per_ticker,
         ROUND(min_bars_per_ticker * 100.0 / 288, 1) as min_coverage_pct
       FROM (
-        SELECT date::DATE as dt, count(DISTINCT hols_ticker) as tickers,
+        SELECT dt, count(DISTINCT hols_ticker) as tickers,
           min(ticker_bars) as min_bars_per_ticker, max(ticker_bars) as max_bars_per_ticker
         FROM (
-          SELECT date::DATE as dt2, hols_ticker, count(*) as ticker_bars
+          SELECT date::DATE as dt, hols_ticker, count(*) as ticker_bars
           FROM read_parquet('${restPath}')
           GROUP BY date::DATE, hols_ticker
-        ) GROUP BY dt2
+        ) GROUP BY dt
       ) ORDER BY dt
     `);
     results.rest = { exists: true, expected_bars_per_ticker_per_day: 288, ...restResult.rows[0], daily_breakdown: restDaily.rows };
