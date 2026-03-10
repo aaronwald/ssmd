@@ -8,11 +8,11 @@ ARG TARGETPLATFORM
 
 WORKDIR /app
 
-# Copy source files
-COPY deno.json ./
+# Copy source files + lockfile
+COPY deno.json deno.lock ./
 COPY src/ ./src/
 
-# Cache dependencies first
+# Cache dependencies using lockfile (pins transitive deps)
 RUN deno cache src/cli/main.ts
 
 # Cross-compile for target platform (avoids QEMU illegal instruction issues)
