@@ -169,8 +169,18 @@ async function executeRun(
 
     const stageStarted = new Date();
 
+    // Normalize config: handle double-encoded JSONB (string instead of object)
+    let stageConfig = stage.config;
+    if (typeof stageConfig === "string") {
+      try {
+        stageConfig = JSON.parse(stageConfig);
+      } catch {
+        // leave as-is, stage handler will report the error
+      }
+    }
+
     // Resolve templates in stage config
-    const resolvedConfig = resolveStageConfig(stage.config as StageConfig, templateCtx);
+    const resolvedConfig = resolveStageConfig(stageConfig as StageConfig, templateCtx);
 
     // Execute the stage
     const result = await executeStage(stage.stage_type, resolvedConfig, ctx);

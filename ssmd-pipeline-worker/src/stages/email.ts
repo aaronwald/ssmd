@@ -33,10 +33,10 @@ export async function executeEmail(
 ): Promise<StageResult> {
   const to = config.to;
   const subject = config.subject;
-  const html = config.template;
+  const html = config.html ?? config.template;
 
   if (!to || !subject || !html) {
-    return { status: "failed", error: "email stage requires 'to', 'subject', and 'template' in config" };
+    return { status: "failed", error: "email stage requires 'to', 'subject', and 'html' in config" };
   }
 
   const allowlistStr = Deno.env.get("EMAIL_RECIPIENT_ALLOWLIST") ?? "";

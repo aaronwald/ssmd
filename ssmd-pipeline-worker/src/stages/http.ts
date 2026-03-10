@@ -46,6 +46,11 @@ export async function executeHttp(
   const method = (config.method ?? "GET").toUpperCase();
   const headers: Record<string, string> = { ...config.headers };
 
+  // Auto-inject admin API key for internal URLs (never store keys in config)
+  if (!headers["Authorization"] && !headers["authorization"] && _ctx.adminApiKey) {
+    headers["Authorization"] = `Bearer ${_ctx.adminApiKey}`;
+  }
+
   try {
     const fetchOpts: RequestInit = {
       method,

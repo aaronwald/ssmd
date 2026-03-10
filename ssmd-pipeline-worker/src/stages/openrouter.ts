@@ -8,14 +8,18 @@ export async function executeOpenRouter(
   signal: AbortSignal,
 ): Promise<StageResult> {
   const model = config.model;
-  const prompt = config.prompt;
+  const systemPrompt = config.system_prompt ?? "You are an automated pipeline analysis agent. Analyze the provided data and respond concisely.";
+  const userPrompt = config.user_prompt ?? config.prompt;
 
   if (!model) {
     return { status: "failed", error: "openrouter stage requires 'model' in config" };
   }
-  if (!prompt) {
-    return { status: "failed", error: "openrouter stage requires 'prompt' in config" };
+  if (!userPrompt) {
+    return { status: "failed", error: "openrouter stage requires 'user_prompt' (or 'prompt') in config" };
   }
+
+  const maxTokens = config.max_tokens ?? 2000;
+  const temperature = config.temperature ?? 0.3;
 
   try {
     const resp = await fetch(`${ctx.dataTsUrl}/v1/chat/completions`, {
@@ -27,9 +31,11 @@ export async function executeOpenRouter(
       body: JSON.stringify({
         model,
         messages: [
-          { role: "system", content: "You are an automated pipeline analysis agent. Analyze the provided data and respond concisely." },
-          { role: "user", content: prompt },
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
         ],
+        max_tokens: maxTokens,
+        temperature,
         stream: false,
       }),
       signal,

@@ -11,9 +11,14 @@ export interface StageConfig {
   path?: string;
   model?: string;
   prompt?: string;
+  system_prompt?: string;
+  user_prompt?: string;
+  max_tokens?: number;
+  temperature?: number;
   to?: string;
   subject?: string;
   template?: string;
+  html?: string;
   timeout_ms?: number;
 }
 
