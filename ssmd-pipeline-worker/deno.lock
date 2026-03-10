@@ -1,0 +1,43 @@
+{
+  "version": "5",
+  "specifiers": {
+    "npm:cron-parser@^4.9.0": "4.9.0",
+    "npm:drizzle-orm@0.38": "0.38.4_postgres@3.4.8",
+    "npm:nodemailer@6": "6.10.1",
+    "npm:postgres@^3.4.4": "3.4.8"
+  },
+  "npm": {
+    "cron-parser@4.9.0": {
+      "integrity": "sha512-p0SaNjrHOnQeR8/VnfGbmg9te2kfyYSQ7Sc/j/6DtPL3JQvKxmjO9TSjNFpujqV3vEYYBvNNvXSxzyksBWAx1Q==",
+      "dependencies": [
+        "luxon"
+      ]
+    },
+    "drizzle-orm@0.38.4_postgres@3.4.8": {
+      "integrity": "sha512-s7/5BpLKO+WJRHspvpqTydxFob8i1vo2rEx4pY6TGY7QSMuUfWUuzaY0DIpXCkgHOo37BaFC+SJQb99dDUXT3Q==",
+      "dependencies": [
+        "postgres"
+      ],
+      "optionalPeers": [
+        "postgres"
+      ]
+    },
+    "luxon@3.7.2": {
+      "integrity": "sha512-vtEhXh/gNjI9Yg1u4jX/0YVPMvxzHuGgCm6tC5kZyb08yjGWGnqAjGJvcXbqQR2P3MyMEFnRbpcdFS6PBcLqew=="
+    },
+    "nodemailer@6.10.1": {
+      "integrity": "sha512-Z+iLaBGVaSjbIzQ4pX6XV41HrooLsQ10ZWPUehGmuantvzWoDVBnmsdUcOIDM1t+yPor5pDhVlDESgOMEGxhHA=="
+    },
+    "postgres@3.4.8": {
+      "integrity": "sha512-d+JFcLM17njZaOLkv6SCev7uoLaBtfK86vMUXhW1Z4glPWh4jozno9APvW/XKFJ3CCxVoC7OL38BqRydtu5nGg=="
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:cron-parser@^4.9.0",
+      "npm:drizzle-orm@0.38",
+      "npm:nodemailer@6",
+      "npm:postgres@^3.4.4"
+    ]
+  }
+}
