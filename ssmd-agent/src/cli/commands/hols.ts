@@ -334,7 +334,7 @@ export async function runHolsAggregate(
 
   // 2. Aggregate trades into OHLCV bars via DuckDB
   const parquetPath = `/tmp/hols-aggregate-${endDateStr}.parquet`;
-  const { rowCount, pairCount } = await aggregateTradesToOhlcv(spotTradesDir, parquetPath);
+  const { rowCount, pairCount } = await aggregateTradesToOhlcv(spotTradesDir, parquetPath, startDate, endDate);
   const parquetStat = await Deno.stat(parquetPath);
   const fileSizeKB = Math.round((parquetStat.size ?? 0) / 1024);
   console.log(`[hols:aggregate] Parquet written: ${parquetPath} (${fileSizeKB} KB, ${rowCount} rows, ${pairCount} pairs)`);
@@ -379,37 +379,97 @@ export async function runHolsAggregate(
 async function aggregateTradesToOhlcv(
   spotTradesDir: string,
   parquetPath: string,
+  startDate: Date,
+  endDate: Date,
 ): Promise<{ rowCount: number; pairCount: number }> {
   const instance = await DuckDBInstance.create();
   const conn = await instance.connect();
 
   const spotGlob = `${spotTradesDir}/*.parquet`;
+  const startStr = startDate.toISOString().slice(0, 10);
+  const endStr = endDate.toISOString().slice(0, 10);
 
-  // Aggregate trades into 1-minute OHLCV bars.
-  // Spot trade parquet columns: symbol, side, price, qty, ord_type, trade_id, timestamp
-  // open = first trade price in the minute, close = last trade price
+  // Aggregate trades into 1-minute OHLCV bars with zero-fill.
+  // Generates a complete time spine (all 1440 minutes/day × all tickers),
+  // then LEFT JOINs trade aggregation. Minutes without trades get:
+  //   OHLC = forward-filled from last trade's close (or back-filled from first trade's open)
+  //   volume/tradecount = 0
   await conn.run(`
     COPY (
+      WITH trade_agg AS (
+        SELECT
+          symbol::VARCHAR as symbol,
+          DATE_TRUNC('minute', timestamp) as minute,
+          arg_min(price, timestamp)::DOUBLE as open,
+          MAX(price)::DOUBLE as high,
+          MIN(price)::DOUBLE as low,
+          arg_max(price, timestamp)::DOUBLE as close,
+          SUM(qty * price)::DOUBLE as volume,
+          SUM(qty)::DOUBLE as volume_from,
+          COUNT(*)::BIGINT as tradecount,
+          SUM(CASE WHEN ord_type = 'market' THEN qty * price ELSE 0 END)::DOUBLE as marketorder_volume,
+          SUM(CASE WHEN ord_type = 'market' THEN qty ELSE 0 END)::DOUBLE as marketorder_volume_from
+        FROM read_parquet('${spotGlob}')
+        GROUP BY symbol, DATE_TRUNC('minute', timestamp)
+      ),
+      symbols AS (
+        SELECT DISTINCT symbol::VARCHAR as symbol,
+          REPLACE(symbol, '/', '')::VARCHAR as hols_ticker
+        FROM read_parquet('${spotGlob}')
+      ),
+      minutes AS (
+        SELECT generate_series::TIMESTAMP as minute
+        FROM generate_series(
+          TIMESTAMP '${startStr}',
+          TIMESTAMP '${endStr}' + INTERVAL '1 day' - INTERVAL '1 minute',
+          INTERVAL '1 minute'
+        )
+      ),
+      spine AS (
+        SELECT s.symbol, s.hols_ticker, m.minute
+        FROM symbols s CROSS JOIN minutes m
+      ),
+      with_fill AS (
+        SELECT
+          sp.symbol,
+          sp.hols_ticker,
+          sp.minute,
+          ta.open, ta.high, ta.low, ta.close,
+          COALESCE(ta.volume, 0)::DOUBLE as volume,
+          COALESCE(ta.volume_from, 0)::DOUBLE as volume_from,
+          COALESCE(ta.tradecount, 0)::BIGINT as tradecount,
+          COALESCE(ta.marketorder_volume, 0)::DOUBLE as marketorder_volume,
+          COALESCE(ta.marketorder_volume_from, 0)::DOUBLE as marketorder_volume_from,
+          LAST_VALUE(ta.close IGNORE NULLS) OVER (
+            PARTITION BY sp.symbol ORDER BY sp.minute
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          ) as ffill_close,
+          FIRST_VALUE(ta.open IGNORE NULLS) OVER (
+            PARTITION BY sp.symbol ORDER BY sp.minute
+            ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
+          ) as bfill_open
+        FROM spine sp
+        LEFT JOIN trade_agg ta ON sp.symbol = ta.symbol AND sp.minute = ta.minute
+      )
       SELECT
         symbol::VARCHAR as symbol,
-        REPLACE(symbol, '/', '')::VARCHAR as hols_ticker,
+        hols_ticker::VARCHAR as hols_ticker,
         'kraken_spot_trades'::VARCHAR as source,
-        DATE_TRUNC('minute', timestamp)::TIMESTAMP as date,
-        (DATE_TRUNC('minute', timestamp) + INTERVAL '1 minute')::TIMESTAMP as date_close,
-        EPOCH(DATE_TRUNC('minute', timestamp))::BIGINT as unix,
-        EPOCH(DATE_TRUNC('minute', timestamp) + INTERVAL '1 minute')::BIGINT as close_unix,
-        arg_min(price, timestamp)::DOUBLE as open,
-        MAX(price)::DOUBLE as high,
-        MIN(price)::DOUBLE as low,
-        arg_max(price, timestamp)::DOUBLE as close,
-        SUM(qty * price)::DOUBLE as volume,
-        SUM(qty)::DOUBLE as volume_from,
-        COUNT(*)::BIGINT as tradecount,
-        SUM(CASE WHEN ord_type = 'market' THEN qty * price ELSE 0 END)::DOUBLE as marketorder_volume,
-        SUM(CASE WHEN ord_type = 'market' THEN qty ELSE 0 END)::DOUBLE as marketorder_volume_from
-      FROM read_parquet('${spotGlob}')
-      GROUP BY symbol, DATE_TRUNC('minute', timestamp)
-      ORDER BY symbol, date
+        minute::TIMESTAMP as date,
+        (minute + INTERVAL '1 minute')::TIMESTAMP as date_close,
+        EPOCH(minute)::BIGINT as unix,
+        EPOCH(minute + INTERVAL '1 minute')::BIGINT as close_unix,
+        COALESCE(open, ffill_close, bfill_open)::DOUBLE as open,
+        COALESCE(high, ffill_close, bfill_open)::DOUBLE as high,
+        COALESCE(low, ffill_close, bfill_open)::DOUBLE as low,
+        COALESCE(close, ffill_close, bfill_open)::DOUBLE as close,
+        volume,
+        volume_from,
+        tradecount,
+        marketorder_volume,
+        marketorder_volume_from
+      FROM with_fill
+      ORDER BY symbol, minute
     ) TO '${parquetPath}' (FORMAT PARQUET, COMPRESSION ZSTD)
   `);
 

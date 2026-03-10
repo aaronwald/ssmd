@@ -3218,9 +3218,7 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         count(DISTINCT hols_ticker) as unique_tickers,
         min(date) as min_date,
         max(date) as max_date,
-        count(DISTINCT date) as unique_dates,
-        -- Bar interval check: expect 5-min bars (288 per day per ticker)
-        count(*) / NULLIF(count(DISTINCT hols_ticker), 0) as avg_bars_per_ticker,
+        count(DISTINCT date::DATE) as unique_dates,
         -- Null checks
         count(*) FILTER (WHERE open IS NULL) as null_open,
         count(*) FILTER (WHERE close IS NULL) as null_close,
@@ -3228,7 +3226,6 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         -- BTC spot check
         min(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_min_close,
         max(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_max_close,
-        avg(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_avg_close,
         count(*) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_bar_count,
         -- ETH spot check
         min(close) FILTER (WHERE hols_ticker = 'ETHUSDT') as eth_min_close,
@@ -3238,7 +3235,25 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         count(*) FILTER (WHERE open <= 0) as zero_open_count
       FROM read_parquet('${restPath}')
     `);
-    results.rest = { exists: true, ...restResult.rows[0] };
+    const restDaily = await duckdbQuery(`
+      SELECT
+        dt::VARCHAR as day,
+        tickers,
+        min_bars_per_ticker,
+        max_bars_per_ticker,
+        288 as expected_bars_per_ticker,
+        ROUND(min_bars_per_ticker * 100.0 / 288, 1) as min_coverage_pct
+      FROM (
+        SELECT date::DATE as dt, count(DISTINCT hols_ticker) as tickers,
+          min(ticker_bars) as min_bars_per_ticker, max(ticker_bars) as max_bars_per_ticker
+        FROM (
+          SELECT date::DATE as dt2, hols_ticker, count(*) as ticker_bars
+          FROM read_parquet('${restPath}')
+          GROUP BY date::DATE, hols_ticker
+        ) GROUP BY dt2
+      ) ORDER BY dt
+    `);
+    results.rest = { exists: true, expected_bars_per_ticker_per_day: 288, ...restResult.rows[0], daily_breakdown: restDaily.rows };
   } catch (err) {
     results.rest = { exists: false, error: (err as Error).message };
   }
@@ -3252,7 +3267,7 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         count(DISTINCT hols_ticker) as unique_tickers,
         min(date) as min_date,
         max(date) as max_date,
-        count(*) / NULLIF(count(DISTINCT hols_ticker), 0) as avg_bars_per_ticker,
+        count(DISTINCT date::DATE) as unique_dates,
         -- Null checks
         count(*) FILTER (WHERE open IS NULL) as null_open,
         count(*) FILTER (WHERE close IS NULL) as null_close,
@@ -3262,16 +3277,32 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         -- BTC spot check
         min(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_min_close,
         max(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_max_close,
-        avg(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_avg_close,
         count(*) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_bar_count,
-        -- Trade count aggregates
+        -- Trade count totals
         sum(tradecount) as total_trades,
-        avg(tradecount) as avg_trades_per_bar,
         -- Price sanity
         count(*) FILTER (WHERE close <= 0) as zero_close_count
       FROM read_parquet('${wsPath}')
     `);
-    results.ws = { exists: true, ...wsResult.rows[0] };
+    const wsDaily = await duckdbQuery(`
+      SELECT
+        dt::VARCHAR as day,
+        tickers,
+        min_bars_per_ticker,
+        max_bars_per_ticker,
+        1440 as expected_bars_per_ticker,
+        ROUND(min_bars_per_ticker * 100.0 / 1440, 1) as min_coverage_pct
+      FROM (
+        SELECT dt, count(DISTINCT hols_ticker) as tickers,
+          min(ticker_bars) as min_bars_per_ticker, max(ticker_bars) as max_bars_per_ticker
+        FROM (
+          SELECT date::DATE as dt, hols_ticker, count(*) as ticker_bars
+          FROM read_parquet('${wsPath}')
+          GROUP BY date::DATE, hols_ticker
+        ) GROUP BY dt
+      ) ORDER BY dt
+    `);
+    results.ws = { exists: true, expected_bars_per_ticker_per_day: 1440, ...wsResult.rows[0], daily_breakdown: wsDaily.rows };
   } catch (err) {
     results.ws = { exists: false, error: (err as Error).message };
   }
@@ -3287,10 +3318,12 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
           SELECT DISTINCT hols_ticker FROM read_parquet('${wsPath}')
         ),
         btc_rest AS (
-          SELECT avg(close) as avg_close FROM read_parquet('${restPath}') WHERE hols_ticker = 'BTCUSDT'
+          SELECT min(close) as min_close, max(close) as max_close, count(*) as bars
+          FROM read_parquet('${restPath}') WHERE hols_ticker = 'BTCUSDT'
         ),
         btc_ws AS (
-          SELECT avg(close) as avg_close FROM read_parquet('${wsPath}') WHERE hols_ticker = 'BTCUSDT'
+          SELECT min(close) as min_close, max(close) as max_close, count(*) as bars
+          FROM read_parquet('${wsPath}') WHERE hols_ticker = 'BTCUSDT'
         )
         SELECT
           (SELECT count(*) FROM rest_tickers) as rest_ticker_count,
@@ -3298,10 +3331,12 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
           (SELECT count(*) FROM rest_tickers WHERE hols_ticker IN (SELECT hols_ticker FROM ws_tickers)) as shared_tickers,
           (SELECT count(*) FROM rest_tickers WHERE hols_ticker NOT IN (SELECT hols_ticker FROM ws_tickers)) as rest_only_tickers,
           (SELECT count(*) FROM ws_tickers WHERE hols_ticker NOT IN (SELECT hols_ticker FROM rest_tickers)) as ws_only_tickers,
-          (SELECT avg_close FROM btc_rest) as btc_rest_avg,
-          (SELECT avg_close FROM btc_ws) as btc_ws_avg,
-          abs((SELECT avg_close FROM btc_rest) - (SELECT avg_close FROM btc_ws)) /
-            NULLIF((SELECT avg_close FROM btc_rest), 0) * 100 as btc_price_diff_pct
+          (SELECT min_close FROM btc_rest) as btc_rest_min,
+          (SELECT max_close FROM btc_rest) as btc_rest_max,
+          (SELECT bars FROM btc_rest) as btc_rest_bars,
+          (SELECT min_close FROM btc_ws) as btc_ws_min,
+          (SELECT max_close FROM btc_ws) as btc_ws_max,
+          (SELECT bars FROM btc_ws) as btc_ws_bars
       `);
       results.cross_check = crossResult.rows[0];
     } catch (err) {
