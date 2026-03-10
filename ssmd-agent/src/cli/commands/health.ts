@@ -780,12 +780,6 @@ function getNatsUrl(): string {
   return Deno.env.get("NATS_URL") ?? "nats://nats.nats.svc:4222";
 }
 
-function linearScale(value: number, max: number): number {
-  if (value <= 0) return 0;
-  if (value >= max) return 100;
-  return Math.round((value / max) * 100);
-}
-
 async function scoreConnectorFeed(
   feed: string,
   streamName: string,
@@ -840,63 +834,6 @@ async function scoreConnectorFeed(
       consumerCount,
       lastTs,
       freshnessScore,
-    },
-  };
-}
-
-async function scoreFundingRate(
-  sql: ReturnType<typeof getRawSql>,
-): Promise<{ score: number; details: Record<string, unknown> }> {
-  // PostgreSQL queries
-  type Row = { value: string | number | null };
-  const [maxSnapshotRow, countRow, productsRow] = await Promise.all([
-    sql`SELECT MAX(snapshot_at) as value FROM pair_snapshots` as Promise<Row[]>,
-    sql`SELECT COUNT(*)::int as value FROM pair_snapshots WHERE snapshot_at > NOW() - INTERVAL '24 hours'` as Promise<Row[]>,
-    sql`SELECT COUNT(DISTINCT pair_id)::int as value FROM pair_snapshots WHERE snapshot_at > NOW() - INTERVAL '1 hour'` as Promise<Row[]>,
-  ]);
-
-  const maxSnapshot = maxSnapshotRow[0]?.value
-    ? new Date(String(maxSnapshotRow[0].value))
-    : null;
-  const snapshotCount = Number(countRow[0]?.value ?? 0);
-  const productCount = Number(productsRow[0]?.value ?? 0);
-
-  // Snapshot recency score — kraken-sync CronJob runs every 6h (10 */6 * * *)
-  let recencyScore = 0;
-  if (maxSnapshot) {
-    const ageMins = (Date.now() - maxSnapshot.getTime()) / 60000;
-    if (ageMins < 390) recencyScore = 100;       // < 6.5h (within one cycle + buffer)
-    else if (ageMins < 720) recencyScore = 75;    // < 12h (missed one cycle)
-    else if (ageMins < 1440) recencyScore = 50;   // < 24h
-    else recencyScore = 0;
-  }
-
-  // Daily snapshot count score — 4 syncs/day × 345 products = ~1380 rows expected
-  let countScore = 0;
-  if (snapshotCount >= 1000) countScore = 100;
-  else if (snapshotCount >= 300) countScore = 50;
-  else if (snapshotCount > 0) countScore = linearScale(snapshotCount, 300);
-
-  // Products score
-  const productsScore = productCount >= 2 ? 100 : productCount === 1 ? 50 : 0;
-
-  const checks = [
-    { name: "snapshot_recency", weight: 0.40, value: recencyScore },
-    { name: "daily_snapshot_count", weight: 0.35, value: countScore },
-    { name: "both_products", weight: 0.25, value: productsScore },
-  ];
-
-  const score = Math.round(checks.reduce((s, c) => s + c.value * c.weight, 0));
-  const lastFlushAge = maxSnapshot
-    ? Math.round((Date.now() - maxSnapshot.getTime()) / 1000)
-    : null;
-
-  return {
-    score,
-    details: {
-      snapshots: snapshotCount,
-      products: productCount,
-      lastFlushAge,
     },
   };
 }
@@ -1237,16 +1174,15 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     Deno.exit(1);
   }
 
-  // Get raw SQL for funding rate queries
+  // Get raw SQL for archive/completeness/parquet queries
   const sql = getRawSql();
 
   try {
     // Phase 1: Score connector feeds in parallel
-    const [kalshi, kalshiSports, kraken, funding, archive] = await Promise.all([
+    const [kalshi, kalshiSports, kraken, archive] = await Promise.all([
       scoreConnectorFeed("kalshi-crypto", "PROD_KALSHI_CRYPTO", nc),
       scoreConnectorFeed("kalshi-sports", "PROD_KALSHI_SPORTS", nc),
       scoreConnectorFeed("kraken-futures", "PROD_KRAKEN_FUTURES", nc),
-      scoreFundingRate(sql),
       scoreArchiveSync(sql),
     ]);
 
@@ -1298,11 +1234,10 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     let composite: number;
     if (hasPhase2) {
       composite = Math.round(
-        kalshi.score * 0.20 +
+        kalshi.score * 0.25 +
         kalshiSports.score * 0.10 +
-        kraken.score * 0.15 +
-        funding.score * 0.15 +
-        archive.score * 0.05 +
+        kraken.score * 0.20 +
+        archive.score * 0.10 +
         completenessAvg * 0.15 +
         parquetAvg * 0.10 +
         slaAvg * 0.10
@@ -1310,11 +1245,10 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     } else {
       // Fallback to Phase 1 weights when gcloud not available
       composite = Math.round(
-        kalshi.score * 0.30 +
+        kalshi.score * 0.35 +
         kalshiSports.score * 0.15 +
-        kraken.score * 0.25 +
-        funding.score * 0.20 +
-        archive.score * 0.10
+        kraken.score * 0.30 +
+        archive.score * 0.20
       );
     }
 
@@ -1324,9 +1258,6 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     if (!kraken.details.streamHasData) issues.push("Kraken stream has no data");
     if (kalshi.score === 0) issues.push("Kalshi connector score is zero");
     if (kraken.score === 0) issues.push("Kraken connector score is zero");
-    if (funding.details.lastFlushAge != null && (funding.details.lastFlushAge as number) > 25200) {
-      issues.push("Funding rate snapshot older than 7h (missed kraken-sync cycle)");
-    }
     if (archive.score === 0) issues.push("No DQ scores found — GCS archive may not be syncing");
 
     // Phase 2 RED overrides
@@ -1351,7 +1282,6 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
         "kalshi-crypto": { score: kalshi.score, ...kalshi.details },
         "kraken-futures": { score: kraken.score, ...kraken.details },
         "kalshi-sports": { score: kalshiSports.score, ...kalshiSports.details },
-        "funding-rate": { score: funding.score, ...funding.details },
         "archive-sync": { score: archive.score, ...archive.details },
         ...(hasPhase2 ? {
           "completeness": { score: completenessAvg, ...Object.fromEntries(
@@ -1386,7 +1316,6 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
         { feed: "kalshi-crypto", score: kalshi.score, details: kalshi.details },
         { feed: "kraken-futures", score: kraken.score, details: kraken.details },
         { feed: "kalshi-sports", score: kalshiSports.score, details: kalshiSports.details },
-        { feed: "funding-rate", score: funding.score, details: funding.details },
         { feed: "archive-sync", score: archive.score, details: archive.details },
       ];
 
@@ -1459,11 +1388,9 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       const k = kalshi.details;
       const kr = kraken.details;
       const ks = kalshiSports.details;
-      const f = funding.details;
       console.log(`    Kalshi Crypto:    ${String(kalshi.score).padStart(3)}/100 (${fmtNum(k.messageCount as number)} msgs, fresh: ${k.freshnessScore ?? 0})`);
       console.log(`    Kalshi Sports:    ${String(kalshiSports.score).padStart(3)}/100 (${fmtNum(ks.messageCount as number)} msgs, fresh: ${ks.freshnessScore ?? 0})`);
       console.log(`    Kraken Futures:   ${String(kraken.score).padStart(3)}/100 (${fmtNum(kr.messageCount as number)} msgs, fresh: ${kr.freshnessScore ?? 0})`);
-      console.log(`    Funding Rate:     ${String(funding.score).padStart(3)}/100 (${f.snapshots ?? 0} snaps, ${f.products ?? 0} products, ${fmtAge(f.lastFlushAge as number | null)})`);
       const archDetails = archive.details as Record<string, { score: number; lastScoreAge: number | null }>;
       const archParts = Object.entries(archDetails)
         .map(([n, d]) => `${n}: ${d.lastScoreAge != null ? d.lastScoreAge + "h" : "never"}`)
