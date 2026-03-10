@@ -17,6 +17,7 @@ import {
   numeric,
   jsonb,
   date,
+  unique,
 } from "drizzle-orm/pg-core";
 
 // Fee type enum matching PostgreSQL
@@ -345,6 +346,54 @@ export const billingLedger = pgTable("billing_ledger", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// --- Pipeline Engine ---
+
+export const pipelineDefinitions = pgTable("pipeline_definitions", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  description: text("description"),
+  triggerType: text("trigger_type").notNull(),
+  triggerConfig: jsonb("trigger_config").notNull().default({}),
+  webhookSecretHash: text("webhook_secret_hash"),
+  enabled: boolean("enabled").notNull().default(true),
+  lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const pipelineStages = pgTable("pipeline_stages", {
+  id: serial("id").primaryKey(),
+  pipelineId: integer("pipeline_id").notNull().references(() => pipelineDefinitions.id, { onDelete: "cascade" }),
+  position: integer("position").notNull(),
+  name: text("name").notNull(),
+  stageType: text("stage_type").notNull(),
+  config: jsonb("config").notNull().default({}),
+}, (table) => ({
+  uniquePipelinePosition: unique().on(table.pipelineId, table.position),
+}));
+
+export const pipelineRuns = pgTable("pipeline_runs", {
+  id: serial("id").primaryKey(),
+  pipelineId: integer("pipeline_id").notNull().references(() => pipelineDefinitions.id),
+  status: text("status").notNull().default("pending"),
+  triggerInfo: jsonb("trigger_info"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const pipelineStageResults = pgTable("pipeline_stage_results", {
+  id: serial("id").primaryKey(),
+  runId: integer("run_id").notNull().references(() => pipelineRuns.id, { onDelete: "cascade" }),
+  stageId: integer("stage_id").notNull().references(() => pipelineStages.id),
+  status: text("status").notNull().default("pending"),
+  input: jsonb("input"),
+  output: jsonb("output"),
+  error: text("error"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+});
+
 // Inferred types for select/insert
 export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
@@ -384,3 +433,11 @@ export type BillingRate = typeof billingRates.$inferSelect;
 export type NewBillingRate = typeof billingRates.$inferInsert;
 export type BillingLedgerEntry = typeof billingLedger.$inferSelect;
 export type NewBillingLedgerEntry = typeof billingLedger.$inferInsert;
+export type PipelineDefinition = typeof pipelineDefinitions.$inferSelect;
+export type NewPipelineDefinition = typeof pipelineDefinitions.$inferInsert;
+export type PipelineStage = typeof pipelineStages.$inferSelect;
+export type NewPipelineStage = typeof pipelineStages.$inferInsert;
+export type PipelineRun = typeof pipelineRuns.$inferSelect;
+export type NewPipelineRun = typeof pipelineRuns.$inferInsert;
+export type PipelineStageResult = typeof pipelineStageResults.$inferSelect;
+export type NewPipelineStageResult = typeof pipelineStageResults.$inferInsert;
