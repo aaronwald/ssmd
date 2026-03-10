@@ -41,4 +41,5 @@ export const DEFAULT_MAX_ROWS = 100;
 
 export const HTTP_URL_ALLOWLIST = [
   "http://ssmd-data-ts-internal:8081/",
+  "http://ssmd-data-ts-internal.ssmd.svc.cluster.local:8081/",
 ];
