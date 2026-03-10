@@ -2952,8 +2952,10 @@ route("POST", "/v1/pipelines/:id/trigger", async (req, ctx) => {
   }
 
   const secretHash = createHash("sha256").update(secret).digest("hex");
-  const expected = Buffer.from(pipeline.webhookSecretHash, "utf8");
-  const actual = Buffer.from(secretHash, "utf8");
+  // Constant-time comparison of hex strings
+  const encoder = new TextEncoder();
+  const expected = encoder.encode(pipeline.webhookSecretHash);
+  const actual = encoder.encode(secretHash);
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
     return json({ error: "Unauthorized" }, 401);
   }
