@@ -27,6 +27,10 @@ import {
   getSecmasterMarkets,
   getSecmasterPairs,
   getSecmasterConditions,
+  listPipelines,
+  getPipeline,
+  getPipelineRuns,
+  getPipelineRunDetail,
 } from "./api";
 const REFRESH_INTERVAL = 2500;
 const METADATA_REFRESH = 60000; // 60s for metadata (categories, series, events)
@@ -237,3 +241,35 @@ export function useSecmasterConditions(filters: {
   });
 }
 
+// Pipeline hooks (via data-ts — not instance-scoped)
+const PIPELINE_REFRESH = 10000;
+
+export function usePipelines() {
+  return useSWR("data-pipelines", listPipelines, {
+    refreshInterval: PIPELINE_REFRESH,
+  });
+}
+
+export function usePipeline(id: number | null) {
+  return useSWR(
+    id ? `data-pipeline-${id}` : null,
+    () => getPipeline(id!),
+    { refreshInterval: PIPELINE_REFRESH }
+  );
+}
+
+export function usePipelineRuns(id: number | null) {
+  return useSWR(
+    id ? `data-pipeline-runs-${id}` : null,
+    () => getPipelineRuns(id!),
+    { refreshInterval: PIPELINE_REFRESH }
+  );
+}
+
+export function usePipelineRunDetail(runId: number | null) {
+  return useSWR(
+    runId ? `data-pipeline-run-${runId}` : null,
+    () => getPipelineRunDetail(runId!),
+    { refreshInterval: PIPELINE_REFRESH }
+  );
+}

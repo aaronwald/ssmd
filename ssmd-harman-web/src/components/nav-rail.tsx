@@ -265,6 +265,14 @@ function DatabaseIcon() {
   );
 }
 
+function PipelineIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 6h16M4 12h16M4 18h16" /><circle cx="8" cy="6" r="1.5" fill="currentColor" /><circle cx="16" cy="12" r="1.5" fill="currentColor" /><circle cx="12" cy="18" r="1.5" fill="currentColor" />
+    </svg>
+  );
+}
+
 function AdminSection({ collapsed, pathname }: { collapsed: boolean; pathname: string }) {
   const { data: me } = useMe();
   if (!me) return null;
@@ -284,6 +292,7 @@ function AdminSection({ collapsed, pathname }: { collapsed: boolean; pathname: s
       <NavItem href="/admin/keys" label="Keys" icon={KeyIcon} active={pathname === "/admin/keys"} collapsed={collapsed} />
       <NavItem href="/admin/audit" label="Audit" icon={ClipboardIcon} active={pathname === "/admin/audit"} collapsed={collapsed} />
       <NavItem href="/secmaster" label="Secmaster" icon={DatabaseIcon} active={pathname === "/secmaster"} collapsed={collapsed} />
+      <NavItem href="/pipelines" label="Pipelines" icon={PipelineIcon} active={pathname === "/pipelines" || pathname.startsWith("/pipelines/")} collapsed={collapsed} />
     </>
   );
 }

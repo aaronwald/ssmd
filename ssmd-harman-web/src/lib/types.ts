@@ -402,3 +402,56 @@ export interface SecmasterCondition {
   endDate: string | null;
   tokenCount: number;
 }
+
+// Pipeline Engine types
+export type PipelineTriggerType = "webhook" | "cron";
+export type PipelineRunStatus = "pending" | "running" | "completed" | "failed";
+export type PipelineStageType = "sql" | "http" | "gcs_check" | "openrouter" | "email";
+
+export interface Pipeline {
+  id: number;
+  name: string;
+  description: string | null;
+  trigger_type: PipelineTriggerType;
+  trigger_config: Record<string, unknown>;
+  enabled: boolean;
+  last_triggered_at: string | null;
+  created_at: string;
+  updated_at: string;
+  last_run_status?: PipelineRunStatus | null;
+  last_run_at?: string | null;
+  stages?: PipelineStage[];
+  webhook_secret?: string;
+}
+
+export interface PipelineStage {
+  id: number;
+  pipeline_id: number;
+  position: number;
+  name: string;
+  stage_type: PipelineStageType;
+  config: Record<string, unknown>;
+}
+
+export interface PipelineRun {
+  id: number;
+  pipeline_id: number;
+  status: PipelineRunStatus;
+  trigger_info: Record<string, unknown> | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  stage_results?: PipelineStageResult[];
+}
+
+export interface PipelineStageResult {
+  id: number;
+  run_id: number;
+  stage_id: number | null;
+  status: PipelineRunStatus;
+  input: unknown;
+  output: unknown;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}

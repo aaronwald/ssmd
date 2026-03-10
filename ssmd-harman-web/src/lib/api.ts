@@ -26,6 +26,8 @@ import type {
   SecmasterMarket,
   SecmasterPair,
   SecmasterCondition,
+  Pipeline,
+  PipelineRun,
 } from "./types";
 
 // Dynamic instance routing — set via InstanceProvider
@@ -317,3 +319,33 @@ export const getSecmasterConditions = async (params: {
   return res.conditions;
 };
 
+// Pipeline endpoints (via data-ts)
+export const listPipelines = () =>
+  dataRequest<Pipeline[]>("/pipelines");
+
+export const getPipeline = (id: number) =>
+  dataRequest<Pipeline>(`/pipelines/${id}`);
+
+export const createPipeline = (body: {
+  name: string;
+  description?: string;
+  trigger_type: string;
+  trigger_config?: Record<string, unknown>;
+  stages?: Array<{ name: string; stage_type: string; config: Record<string, unknown> }>;
+}) =>
+  dataRequest<Pipeline>("/pipelines", { method: "POST", body: JSON.stringify(body) });
+
+export const updatePipeline = (id: number, body: Record<string, unknown>) =>
+  dataRequest<Pipeline>(`/pipelines/${id}`, { method: "PUT", body: JSON.stringify(body) });
+
+export const deletePipeline = (id: number) =>
+  dataRequest<{ deleted: boolean }>(`/pipelines/${id}`, { method: "DELETE" });
+
+export const triggerPipeline = (id: number) =>
+  dataRequest<{ run_id: number; status: string }>(`/pipelines/${id}/run`, { method: "POST" });
+
+export const getPipelineRuns = (id: number) =>
+  dataRequest<PipelineRun[]>(`/pipelines/${id}/runs`);
+
+export const getPipelineRunDetail = (runId: number) =>
+  dataRequest<PipelineRun>(`/pipelines/runs/${runId}`);
