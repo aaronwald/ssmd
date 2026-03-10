@@ -3224,9 +3224,9 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         count(*) FILTER (WHERE close IS NULL) as null_close,
         count(*) FILTER (WHERE volume IS NULL) as null_volume,
         -- BTC spot check
-        min(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_min_close,
-        max(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_max_close,
-        count(*) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_bar_count,
+        min(close) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_min_close,
+        max(close) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_max_close,
+        count(*) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_bar_count,
         -- ETH spot check
         min(close) FILTER (WHERE hols_ticker = 'ETHUSDT') as eth_min_close,
         max(close) FILTER (WHERE hols_ticker = 'ETHUSDT') as eth_max_close,
@@ -3275,9 +3275,9 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         count(*) FILTER (WHERE tradecount IS NULL) as null_tradecount,
         count(*) FILTER (WHERE volume_from IS NULL) as null_volume_from,
         -- BTC spot check
-        min(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_min_close,
-        max(close) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_max_close,
-        count(*) FILTER (WHERE hols_ticker = 'BTCUSDT') as btc_bar_count,
+        min(close) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_min_close,
+        max(close) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_max_close,
+        count(*) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_bar_count,
         -- Trade count totals
         sum(tradecount) as total_trades,
         -- Price sanity
@@ -3319,11 +3319,11 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         ),
         btc_rest AS (
           SELECT min(close) as min_close, max(close) as max_close, count(*) as bars
-          FROM read_parquet('${restPath}') WHERE hols_ticker = 'BTCUSDT'
+          FROM read_parquet('${restPath}') WHERE hols_ticker = 'XBTUSDT'
         ),
         btc_ws AS (
           SELECT min(close) as min_close, max(close) as max_close, count(*) as bars
-          FROM read_parquet('${wsPath}') WHERE hols_ticker = 'BTCUSDT'
+          FROM read_parquet('${wsPath}') WHERE hols_ticker = 'XBTUSDT'
         )
         SELECT
           (SELECT count(*) FROM rest_tickers) as rest_ticker_count,

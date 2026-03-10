@@ -84,7 +84,7 @@ interface KrakenFuturesTicker {
 // --- Normalization ---
 
 /**
- * Extract base/quote from Kraken's wsname field (e.g., "XBT/USD" → ["BTC", "USD"]).
+ * Extract base/quote from Kraken's wsname field (e.g., "XBT/USD" → ["XBT", "USD"]).
  * Returns null if wsname is missing or unparseable, caller falls back to raw fields.
  */
 function parseWsName(wsname: string | undefined): { base: string; quote: string } | null {
@@ -92,8 +92,8 @@ function parseWsName(wsname: string | undefined): { base: string; quote: string 
   const [rawBase, rawQuote] = wsname.split("/");
   if (!rawBase || !rawQuote) return null;
   return {
-    base: rawBase === "XBT" ? "BTC" : rawBase,
-    quote: rawQuote === "XBT" ? "BTC" : rawQuote,
+    base: rawBase,
+    quote: rawQuote,
   };
 }
 
@@ -108,7 +108,6 @@ function normalizeBase(raw: string): string {
   if (base.length >= 4 && base.startsWith("X")) {
     base = base.slice(1);
   }
-  if (base === "XBT") return "BTC";
   return base;
 }
 
@@ -137,9 +136,7 @@ function parsePerpBase(symbol: string): string {
   // Try to extract base: known quote currencies
   for (const q of ["USD", "EUR", "GBP"]) {
     if (pair.endsWith(q)) {
-      const base = pair.slice(0, pair.length - q.length);
-      if (base === "XBT") return "BTC";
-      return base;
+      return pair.slice(0, pair.length - q.length);
     }
   }
   return pair;
