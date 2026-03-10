@@ -3206,6 +3206,8 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
 
   const restPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-5m-kraken.parquet`;
   const wsPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-1m-ssmd.parquet`;
+  const binance5mPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-5m-binance.parquet`;
+  const binance1mPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-1m-binance.parquet`;
 
   const results: Record<string, unknown> = { date };
 
@@ -3307,9 +3309,120 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
     results.ws = { exists: false, error: (err as Error).message };
   }
 
+  // Binance 5-min bars validation
+  try {
+    const binance5mResult = await duckdbQuery(`
+      SELECT
+        count(*) as total_rows,
+        count(DISTINCT symbol) as unique_symbols,
+        count(DISTINCT hols_ticker) as unique_tickers,
+        min(date) as min_date,
+        max(date) as max_date,
+        count(DISTINCT date::DATE) as unique_dates,
+        -- Null checks
+        count(*) FILTER (WHERE open IS NULL) as null_open,
+        count(*) FILTER (WHERE close IS NULL) as null_close,
+        count(*) FILTER (WHERE volume IS NULL) as null_volume,
+        count(*) FILTER (WHERE marketorder_volume IS NULL) as null_marketorder_volume,
+        count(*) FILTER (WHERE marketorder_volume_from IS NULL) as null_marketorder_volume_from,
+        -- AAVE spot check
+        min(close) FILTER (WHERE hols_ticker = 'AAVEUSDT') as aave_min_close,
+        max(close) FILTER (WHERE hols_ticker = 'AAVEUSDT') as aave_max_close,
+        count(*) FILTER (WHERE hols_ticker = 'AAVEUSDT') as aave_bar_count,
+        -- Price sanity (any zero or negative prices)
+        count(*) FILTER (WHERE close <= 0) as zero_close_count,
+        count(*) FILTER (WHERE open <= 0) as zero_open_count
+      FROM read_parquet('${binance5mPath}')
+    `);
+    const binance5mDaily = await duckdbQuery(`
+      SELECT
+        dt::VARCHAR as day,
+        tickers,
+        min_bars_per_ticker,
+        max_bars_per_ticker,
+        288 as expected_bars_per_ticker,
+        ROUND(min_bars_per_ticker * 100.0 / 288, 1) as min_coverage_pct
+      FROM (
+        SELECT dt, count(DISTINCT hols_ticker) as tickers,
+          min(ticker_bars) as min_bars_per_ticker, max(ticker_bars) as max_bars_per_ticker
+        FROM (
+          SELECT date::DATE as dt, hols_ticker, count(*) as ticker_bars
+          FROM read_parquet('${binance5mPath}')
+          GROUP BY date::DATE, hols_ticker
+        ) GROUP BY dt
+      ) ORDER BY dt
+    `);
+    results.binance_5m = { exists: true, expected_bars_per_ticker_per_day: 288, ...binance5mResult.rows[0], daily_breakdown: binance5mDaily.rows };
+  } catch (err) {
+    results.binance_5m = { exists: false, error: (err as Error).message };
+  }
+
+  // Binance 1-min bars validation
+  try {
+    const binance1mResult = await duckdbQuery(`
+      SELECT
+        count(*) as total_rows,
+        count(DISTINCT symbol) as unique_symbols,
+        count(DISTINCT hols_ticker) as unique_tickers,
+        min(date) as min_date,
+        max(date) as max_date,
+        count(DISTINCT date::DATE) as unique_dates,
+        -- Null checks
+        count(*) FILTER (WHERE open IS NULL) as null_open,
+        count(*) FILTER (WHERE close IS NULL) as null_close,
+        count(*) FILTER (WHERE volume IS NULL) as null_volume,
+        count(*) FILTER (WHERE marketorder_volume IS NULL) as null_marketorder_volume,
+        count(*) FILTER (WHERE marketorder_volume_from IS NULL) as null_marketorder_volume_from,
+        -- AAVE spot check
+        min(close) FILTER (WHERE hols_ticker = 'AAVEUSDT') as aave_min_close,
+        max(close) FILTER (WHERE hols_ticker = 'AAVEUSDT') as aave_max_close,
+        count(*) FILTER (WHERE hols_ticker = 'AAVEUSDT') as aave_bar_count,
+        -- Trade count totals
+        sum(tradecount) as total_trades,
+        -- Price sanity
+        count(*) FILTER (WHERE close <= 0) as zero_close_count
+      FROM read_parquet('${binance1mPath}')
+    `);
+    const binance1mDaily = await duckdbQuery(`
+      SELECT
+        dt::VARCHAR as day,
+        tickers,
+        min_bars_per_ticker,
+        max_bars_per_ticker,
+        1440 as expected_bars_per_ticker,
+        ROUND(min_bars_per_ticker * 100.0 / 1440, 1) as min_coverage_pct
+      FROM (
+        SELECT dt, count(DISTINCT hols_ticker) as tickers,
+          min(ticker_bars) as min_bars_per_ticker, max(ticker_bars) as max_bars_per_ticker
+        FROM (
+          SELECT date::DATE as dt, hols_ticker, count(*) as ticker_bars
+          FROM read_parquet('${binance1mPath}')
+          GROUP BY date::DATE, hols_ticker
+        ) GROUP BY dt
+      ) ORDER BY dt
+    `);
+    results.binance_1m = { exists: true, expected_bars_per_ticker_per_day: 1440, ...binance1mResult.rows[0], daily_breakdown: binance1mDaily.rows };
+  } catch (err) {
+    results.binance_1m = { exists: false, error: (err as Error).message };
+  }
+
   // Cross-source comparison (if both exist)
   if ((results.rest as Record<string, unknown>)?.exists && (results.ws as Record<string, unknown>)?.exists) {
     try {
+      const binance5mExists = (results.binance_5m as Record<string, unknown>)?.exists;
+      const binance1mExists = (results.binance_1m as Record<string, unknown>)?.exists;
+      const binanceCTEs = [
+        binance5mExists ? `binance_5m_tickers AS (SELECT DISTINCT hols_ticker FROM read_parquet('${binance5mPath}'))` : null,
+        binance1mExists ? `binance_1m_tickers AS (SELECT DISTINCT hols_ticker FROM read_parquet('${binance1mPath}'))` : null,
+      ].filter(Boolean);
+      const binanceSelects = [
+        binance5mExists ? `(SELECT count(*) FROM binance_5m_tickers) as binance_5m_ticker_count` : null,
+        binance1mExists ? `(SELECT count(*) FROM binance_1m_tickers) as binance_1m_ticker_count` : null,
+        binance5mExists && binance1mExists ? `(SELECT count(*) FROM binance_5m_tickers WHERE hols_ticker IN (SELECT hols_ticker FROM binance_1m_tickers)) as binance_5m_1m_shared_tickers` : null,
+        binance5mExists ? `(SELECT count(*) FROM rest_tickers WHERE hols_ticker IN (SELECT hols_ticker FROM binance_5m_tickers)) as kraken_binance_overlap` : null,
+      ].filter(Boolean);
+      const extraCTEs = binanceCTEs.length > 0 ? `,\n        ${binanceCTEs.join(',\n        ')}` : '';
+      const extraSelects = binanceSelects.length > 0 ? `,\n          ${binanceSelects.join(',\n          ')}` : '';
       const crossResult = await duckdbQuery(`
         WITH rest_tickers AS (
           SELECT DISTINCT hols_ticker FROM read_parquet('${restPath}')
@@ -3324,7 +3437,7 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         btc_ws AS (
           SELECT min(close) as min_close, max(close) as max_close, count(*) as bars
           FROM read_parquet('${wsPath}') WHERE hols_ticker IN ('BTCUSDT', 'XBTUSDT')
-        )
+        )${extraCTEs}
         SELECT
           (SELECT count(*) FROM rest_tickers) as rest_ticker_count,
           (SELECT count(*) FROM ws_tickers) as ws_ticker_count,
@@ -3336,7 +3449,7 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
           (SELECT bars FROM btc_rest) as btc_rest_bars,
           (SELECT min_close FROM btc_ws) as btc_ws_min,
           (SELECT max_close FROM btc_ws) as btc_ws_max,
-          (SELECT bars FROM btc_ws) as btc_ws_bars
+          (SELECT bars FROM btc_ws) as btc_ws_bars${extraSelects}
       `);
       results.cross_check = crossResult.rows[0];
     } catch (err) {
