@@ -96,7 +96,7 @@ impl KrakenWebSocket {
         self.ws.send(Message::Text(msg)).await?;
 
         // Wait for per-symbol subscription confirmations
-        self.wait_for_subscriptions(channel, symbols.len()).await
+        self.wait_for_subscriptions(channel, symbols).await
     }
 
     /// Wait for per-symbol subscription results from Kraken.
@@ -104,11 +104,15 @@ impl KrakenWebSocket {
     /// Kraken sends one result per symbol. We collect all results up to
     /// `expected_count`, tolerate individual failures, and return the
     /// successfully subscribed symbols.
+    ///
+    /// `requested_symbols` is passed so we can log the likely symbol when
+    /// Kraken returns `result: null` on failure (no symbol in response).
     async fn wait_for_subscriptions(
         &mut self,
         channel: &str,
-        expected_count: usize,
+        requested_symbols: &[String],
     ) -> Result<Vec<String>, KrakenWebSocketError> {
+        let expected_count = requested_symbols.len();
         let timeout = tokio::time::timeout(
             Duration::from_secs(Self::SUBSCRIPTION_TIMEOUT_SECS),
             async {
@@ -127,12 +131,19 @@ impl KrakenWebSocket {
                                     success, result, ..
                                 }) => {
                                     received += 1;
-                                    let symbol = result
+                                    // Kraken returns symbol in result on success,
+                                    // but result is often null on failure. Fall
+                                    // back to the requested symbol by index.
+                                    let resp_symbol = result
                                         .as_ref()
                                         .and_then(|r| r.get("symbol"))
                                         .and_then(|s| s.as_str())
-                                        .unwrap_or("unknown")
-                                        .to_string();
+                                        .map(|s| s.to_string());
+                                    let fallback = requested_symbols
+                                        .get(received - 1)
+                                        .cloned()
+                                        .unwrap_or_else(|| "unknown".to_string());
+                                    let symbol = resp_symbol.unwrap_or(fallback);
 
                                     if success {
                                         debug!(channel = %channel, symbol = %symbol, "Subscription confirmed");
@@ -147,6 +158,7 @@ impl KrakenWebSocket {
                                             channel = %channel,
                                             symbol = %symbol,
                                             error = %error,
+                                            raw_result = ?result,
                                             progress = format!("{}/{}", received, expected_count),
                                             "Symbol subscription failed, skipping"
                                         );

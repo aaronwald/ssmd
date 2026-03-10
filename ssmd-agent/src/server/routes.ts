@@ -3223,10 +3223,10 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         count(*) FILTER (WHERE open IS NULL) as null_open,
         count(*) FILTER (WHERE close IS NULL) as null_close,
         count(*) FILTER (WHERE volume IS NULL) as null_volume,
-        -- BTC spot check
-        min(close) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_min_close,
-        max(close) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_max_close,
-        count(*) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_bar_count,
+        -- BTC spot check (REST uses XBTUSDT from Kraken REST API)
+        min(close) FILTER (WHERE hols_ticker IN ('XBTUSDT', 'BTCUSDT')) as btc_min_close,
+        max(close) FILTER (WHERE hols_ticker IN ('XBTUSDT', 'BTCUSDT')) as btc_max_close,
+        count(*) FILTER (WHERE hols_ticker IN ('XBTUSDT', 'BTCUSDT')) as btc_bar_count,
         -- ETH spot check
         min(close) FILTER (WHERE hols_ticker = 'ETHUSDT') as eth_min_close,
         max(close) FILTER (WHERE hols_ticker = 'ETHUSDT') as eth_max_close,
@@ -3274,10 +3274,10 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         count(*) FILTER (WHERE volume IS NULL) as null_volume,
         count(*) FILTER (WHERE tradecount IS NULL) as null_tradecount,
         count(*) FILTER (WHERE volume_from IS NULL) as null_volume_from,
-        -- BTC spot check
-        min(close) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_min_close,
-        max(close) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_max_close,
-        count(*) FILTER (WHERE hols_ticker = 'XBTUSDT') as btc_bar_count,
+        -- BTC spot check (WS uses BTCUSDT from Kraken WS v2 API)
+        min(close) FILTER (WHERE hols_ticker IN ('BTCUSDT', 'XBTUSDT')) as btc_min_close,
+        max(close) FILTER (WHERE hols_ticker IN ('BTCUSDT', 'XBTUSDT')) as btc_max_close,
+        count(*) FILTER (WHERE hols_ticker IN ('BTCUSDT', 'XBTUSDT')) as btc_bar_count,
         -- Trade count totals
         sum(tradecount) as total_trades,
         -- Price sanity
@@ -3319,11 +3319,11 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         ),
         btc_rest AS (
           SELECT min(close) as min_close, max(close) as max_close, count(*) as bars
-          FROM read_parquet('${restPath}') WHERE hols_ticker = 'XBTUSDT'
+          FROM read_parquet('${restPath}') WHERE hols_ticker IN ('XBTUSDT', 'BTCUSDT')
         ),
         btc_ws AS (
           SELECT min(close) as min_close, max(close) as max_close, count(*) as bars
-          FROM read_parquet('${wsPath}') WHERE hols_ticker = 'XBTUSDT'
+          FROM read_parquet('${wsPath}') WHERE hols_ticker IN ('BTCUSDT', 'XBTUSDT')
         )
         SELECT
           (SELECT count(*) FROM rest_tickers) as rest_ticker_count,
