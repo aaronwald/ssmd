@@ -8,7 +8,7 @@ export const FEED_PATHS: Record<string, string> = {
   "kalshi": "kalshi/kalshi/crypto",
   "kraken-futures": "kraken-futures/kraken-futures/futures",
   "kraken-spot": "kraken-spot/kraken-spot/spot",
-  "polymarket": "polymarket/polymarket/markets",
+  "kalshi-sports": "kalshi/kalshi/sports",
 };
 
 export const VALID_DATA_FEEDS = Object.keys(FEED_PATHS);
@@ -44,12 +44,12 @@ export const TRADE_CONFIG: Record<string, TradeConfig> = {
     qtyCol: "qty",
     priceDivisor: 1,
   },
-  "polymarket": {
-    fileType: "last_trade_price",
-    tickerCol: "asset_id",
+  "kalshi-sports": {
+    fileType: "trade",
+    tickerCol: "market_ticker",
     priceCol: "price",
-    qtyCol: "size",
-    priceDivisor: 1,
+    qtyCol: "count",
+    priceDivisor: 100,
   },
 };
 
@@ -58,7 +58,7 @@ export const PRICE_CONFIG: Record<string, { fileType: string; orderCol: string }
   "kalshi": { fileType: "ticker", orderCol: "ts" },
   "kraken-futures": { fileType: "ticker", orderCol: "_received_at" },
   "kraken-spot": { fileType: "ticker", orderCol: "_received_at" },
-  "polymarket": { fileType: "best_bid_ask", orderCol: "_received_at" },
+  "kalshi-sports": { fileType: "ticker", orderCol: "ts" },
 };
 
 /** Parquet types available per feed */
@@ -66,7 +66,7 @@ export const FEED_TYPES: Record<string, string[]> = {
   "kalshi": ["trade", "ticker"],
   "kraken-futures": ["trade", "ticker"],
   "kraken-spot": ["trade", "ticker"],
-  "polymarket": ["best_bid_ask", "last_trade_price", "price_change", "book"],
+  "kalshi-sports": ["trade", "ticker"],
 };
 
 /**

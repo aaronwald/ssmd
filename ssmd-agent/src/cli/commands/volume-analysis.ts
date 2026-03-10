@@ -19,18 +19,14 @@ const VOLUME_MODEL = "anthropic/claude-sonnet-4.6";
 // clusters/gke-prod/apps/ssmd/cronjobs/volume-daily.yaml
 
 const VOLUME_SYSTEM_PROMPT = `You are an ssmd market data volume analyst. Given daily trade volume data \
-across Kalshi, Kraken Futures, and Polymarket feeds, produce a volume analysis.
+across Kalshi (crypto + sports) and Kraken (futures + spot) feeds, produce a volume analysis.
 
 You receive:
 - volume: Cross-feed volume summary (trade counts, total volume, active tickers per feed)
 - trades: Per-feed top tickers by trade count (top 20 each)
-- events: Event-level aggregation (Kalshi events, Polymarket conditions, Kraken instruments)
-- ticker_names: Map of Polymarket token IDs to human-readable market names. \
-When referencing Polymarket tickers in feed_summaries and market_highlights, \
-use the market name from ticker_names as the ticker value instead of the raw token ID. \
-Kalshi tickers are already human-readable.
+- events: Event-level aggregation (Kalshi events, Kraken instruments)
 
-Volume units differ by feed: contracts (Kalshi), USD (Polymarket), base currency (Kraken). \
+Volume units differ by feed: contracts (Kalshi), base currency (Kraken). \
 Do NOT sum across feeds. Compare within each feed only.
 
 Output JSON with:
@@ -106,28 +102,22 @@ async function runVolumeAnalysis(flags: VolumeFlags): Promise<void> {
   const volume = await apiGet(`${apiUrl}/v1/data/volume?date=${today}`, apiKey);
 
   if (!jsonOutput) console.log("Fetching per-feed trade details...");
-  const [kalshiTrades, krakenTrades, polyTrades] = await Promise.all([
+  const [kalshiTrades, kalshiSportsTrades, krakenTrades, krakenSpotTrades] = await Promise.all([
     apiGet(`${apiUrl}/v1/data/trades?feed=kalshi&date=${today}&limit=20`, apiKey),
+    apiGet(`${apiUrl}/v1/data/trades?feed=kalshi-sports&date=${today}&limit=20`, apiKey),
     apiGet(`${apiUrl}/v1/data/trades?feed=kraken-futures&date=${today}&limit=20`, apiKey),
-    apiGet(`${apiUrl}/v1/data/trades?feed=polymarket&date=${today}&limit=20`, apiKey),
+    apiGet(`${apiUrl}/v1/data/trades?feed=kraken-spot&date=${today}&limit=20`, apiKey),
   ]);
 
   if (!jsonOutput) console.log("Fetching event-level aggregation...");
-  const [kalshiEvents, polyEvents] = await Promise.all([
-    apiGet(`${apiUrl}/v1/data/events?feed=kalshi&date=${today}&limit=10`, apiKey),
-    apiGet(`${apiUrl}/v1/data/events?feed=polymarket&date=${today}&limit=10`, apiKey),
-  ]);
-
-  // 1b. Resolve Polymarket token IDs to market names via secmaster lookup
-  const tickerNames = await resolvePolymarketNames(apiUrl, apiKey, polyTrades);
+  const kalshiEvents = await apiGet(`${apiUrl}/v1/data/events?feed=kalshi&date=${today}&limit=10`, apiKey);
 
   // 2. Call Claude via data-ts proxy
   if (!jsonOutput) console.log("Requesting AI volume analysis...");
   const analysis = await callClaude(apiUrl, apiKey, VOLUME_SYSTEM_PROMPT, {
     volume,
-    trades: { kalshi: kalshiTrades, kraken: krakenTrades, polymarket: polyTrades },
-    events: { kalshi: kalshiEvents, polymarket: polyEvents },
-    ticker_names: tickerNames,
+    trades: { kalshi_crypto: kalshiTrades, kalshi_sports: kalshiSportsTrades, kraken_futures: krakenTrades, kraken_spot: krakenSpotTrades },
+    events: { kalshi: kalshiEvents },
   });
 
   // 3. Output or send email
@@ -162,41 +152,6 @@ async function apiGet(url: string, apiKey: string): Promise<unknown> {
     console.error(`API GET ${url} error: ${err}`);
     return null;
   }
-}
-
-async function resolvePolymarketNames(
-  apiUrl: string,
-  apiKey: string,
-  polyTrades: unknown,
-): Promise<Record<string, string>> {
-  const names: Record<string, string> = {};
-  try {
-    // deno-lint-ignore no-explicit-any
-    const trades = (polyTrades as any)?.trades;
-    if (!Array.isArray(trades) || trades.length === 0) return names;
-
-    const ids = trades
-      .map((t: Record<string, unknown>) => t.ticker ?? t.instrument)
-      .filter((id: unknown): id is string => typeof id === "string")
-      .slice(0, 20);
-
-    if (ids.length === 0) return names;
-
-    const lookup = await apiGet(
-      `${apiUrl}/v1/markets/lookup?ids=${ids.join(",")}&feed=polymarket`,
-      apiKey,
-    );
-    // deno-lint-ignore no-explicit-any
-    const markets = (lookup as any)?.markets;
-    if (Array.isArray(markets)) {
-      for (const m of markets) {
-        if (m.id && m.name) names[m.id] = m.name;
-      }
-    }
-  } catch {
-    // Non-fatal — Claude will use raw IDs if lookup fails
-  }
-  return names;
 }
 
 /**

@@ -1,5 +1,5 @@
 // health.ts - Pipeline health checks: connector status, stream flow, archive sync
-// Supports Kalshi, Kraken, and Polymarket exchanges
+// Supports Kalshi and Kraken exchanges
 // Also includes `daily` subcommand for composite Phase 1+2 scoring
 
 import { createKalshiClient, type KalshiTrade } from "../../lib/api/kalshi.ts";
@@ -35,7 +35,7 @@ const GCS_FEEDS: GcsFeedConfig[] = [
   { feed: "kalshi-crypto", prefix: "kalshi", stream: "crypto", natsStream: "PROD_KALSHI_CRYPTO" },
   { feed: "kraken-futures", prefix: "kraken-futures", stream: "futures", natsStream: "PROD_KRAKEN_FUTURES" },
   { feed: "kraken-spot", prefix: "kraken-spot", stream: "spot", natsStream: "PROD_KRAKEN_SPOT" },
-  { feed: "polymarket", prefix: "polymarket", stream: "markets", natsStream: "PROD_POLYMARKET" },
+  { feed: "kalshi-sports", prefix: "kalshi", stream: "sports", natsStream: "PROD_KALSHI_SPORTS" },
 ];
 
 // --- GCS Utility Functions ---
@@ -179,7 +179,7 @@ interface HealthFlags {
   ticker?: string;
   window?: string; // e.g., "5m", "10m", "1h"
   env?: string;
-  exchange?: string; // "kalshi" | "kraken" | "polymarket"
+  exchange?: string; // "kalshi" | "kraken"
   detailed?: boolean;
   json?: boolean;
 }
@@ -332,39 +332,6 @@ class KrakenAdapter implements ExchangeAdapter {
   }
 }
 
-// --- Polymarket adapter ---
-
-class PolymarketAdapter implements ExchangeAdapter {
-  name = "polymarket";
-
-  buildNatsFilter(ticker: string): { stream: string; subject: string } {
-    return {
-      stream: "PROD_POLYMARKET",
-      subject: `prod.polymarket.json.last_trade_price.${ticker}`,
-    };
-  }
-
-  parseNatsTrade(msg: Record<string, unknown>): NatsTrade | null {
-    // Polymarket trade messages have asset_id, price, side, size, timestamp
-    const assetId = msg.asset_id as string | undefined;
-    if (!assetId) return null;
-
-    const price = Number(msg.price);
-    const ts = Number(msg.timestamp);
-
-    return {
-      tradeId: `${assetId}-${price}-${ts}`,
-      ticker: String(msg.market ?? assetId),
-      price,
-      size: Number(msg.size ?? 1),
-      side: String(msg.side ?? "unknown"),
-      timestamp: ts,
-    };
-  }
-
-  // No public trade API for v1 — NATS-only checks
-}
-
 // --- Adapter factory ---
 
 function getAdapter(exchange: string): ExchangeAdapter {
@@ -373,10 +340,8 @@ function getAdapter(exchange: string): ExchangeAdapter {
       return new KalshiAdapter();
     case "kraken":
       return new KrakenAdapter();
-    case "polymarket":
-      return new PolymarketAdapter();
     default:
-      throw new Error(`Unsupported exchange: ${exchange}. Valid: kalshi, kraken, polymarket`);
+      throw new Error(`Unsupported exchange: ${exchange}. Valid: kalshi, kraken`);
   }
 }
 
@@ -936,7 +901,7 @@ async function scoreFundingRate(
   };
 }
 
-const ARCHIVE_FEEDS = ["kalshi-crypto", "kraken-futures", "polymarket"];
+const ARCHIVE_FEEDS = ["kalshi-crypto", "kalshi-sports", "kraken-futures", "kraken-spot"];
 
 async function scoreArchiveSync(
   sql: ReturnType<typeof getRawSql>,
@@ -1132,7 +1097,7 @@ async function scoreParquetQuality(
 
   // Score components
   // Files present: are all expected msg_types represented?
-  // We expect at least ticker and trade for kalshi/kraken, book and last_trade_price for polymarket
+  // We expect at least ticker and trade for kalshi/kraken feeds
   const expectedMsgTypes = getExpectedMsgTypes(feedConfig.feed);
   const missingTypes = expectedMsgTypes.filter((t) => !msgTypes.has(t));
   const typeScore = expectedMsgTypes.length > 0
@@ -1178,11 +1143,11 @@ async function scoreParquetQuality(
 function getExpectedMsgTypes(feed: string): string[] {
   switch (feed) {
     case "kalshi-crypto":
+    case "kalshi-sports":
       return ["ticker", "trade"];
     case "kraken-futures":
+    case "kraken-spot":
       return ["ticker", "trade"];
-    case "polymarket":
-      return ["book", "last_trade_price"];
     default:
       return [];
   }
@@ -1277,10 +1242,10 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
 
   try {
     // Phase 1: Score connector feeds in parallel
-    const [kalshi, kraken, polymarket, funding, archive] = await Promise.all([
+    const [kalshi, kalshiSports, kraken, funding, archive] = await Promise.all([
       scoreConnectorFeed("kalshi-crypto", "PROD_KALSHI_CRYPTO", nc),
+      scoreConnectorFeed("kalshi-sports", "PROD_KALSHI_SPORTS", nc),
       scoreConnectorFeed("kraken-futures", "PROD_KRAKEN_FUTURES", nc),
-      scoreConnectorFeed("polymarket", "PROD_POLYMARKET", nc),
       scoreFundingRate(sql),
       scoreArchiveSync(sql),
     ]);
@@ -1334,8 +1299,8 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     if (hasPhase2) {
       composite = Math.round(
         kalshi.score * 0.20 +
+        kalshiSports.score * 0.10 +
         kraken.score * 0.15 +
-        polymarket.score * 0.10 +
         funding.score * 0.15 +
         archive.score * 0.05 +
         completenessAvg * 0.15 +
@@ -1346,8 +1311,8 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       // Fallback to Phase 1 weights when gcloud not available
       composite = Math.round(
         kalshi.score * 0.30 +
+        kalshiSports.score * 0.15 +
         kraken.score * 0.25 +
-        polymarket.score * 0.15 +
         funding.score * 0.20 +
         archive.score * 0.10
       );
@@ -1385,7 +1350,7 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       feeds: {
         "kalshi-crypto": { score: kalshi.score, ...kalshi.details },
         "kraken-futures": { score: kraken.score, ...kraken.details },
-        "polymarket": { score: polymarket.score, ...polymarket.details },
+        "kalshi-sports": { score: kalshiSports.score, ...kalshiSports.details },
         "funding-rate": { score: funding.score, ...funding.details },
         "archive-sync": { score: archive.score, ...archive.details },
         ...(hasPhase2 ? {
@@ -1420,7 +1385,7 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       }[] = [
         { feed: "kalshi-crypto", score: kalshi.score, details: kalshi.details },
         { feed: "kraken-futures", score: kraken.score, details: kraken.details },
-        { feed: "polymarket", score: polymarket.score, details: polymarket.details },
+        { feed: "kalshi-sports", score: kalshiSports.score, details: kalshiSports.details },
         { feed: "funding-rate", score: funding.score, details: funding.details },
         { feed: "archive-sync", score: archive.score, details: archive.details },
       ];
@@ -1493,11 +1458,11 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       console.log("  Connector Health:");
       const k = kalshi.details;
       const kr = kraken.details;
-      const p = polymarket.details;
+      const ks = kalshiSports.details;
       const f = funding.details;
       console.log(`    Kalshi Crypto:    ${String(kalshi.score).padStart(3)}/100 (${fmtNum(k.messageCount as number)} msgs, fresh: ${k.freshnessScore ?? 0})`);
+      console.log(`    Kalshi Sports:    ${String(kalshiSports.score).padStart(3)}/100 (${fmtNum(ks.messageCount as number)} msgs, fresh: ${ks.freshnessScore ?? 0})`);
       console.log(`    Kraken Futures:   ${String(kraken.score).padStart(3)}/100 (${fmtNum(kr.messageCount as number)} msgs, fresh: ${kr.freshnessScore ?? 0})`);
-      console.log(`    Polymarket:       ${String(polymarket.score).padStart(3)}/100 (${fmtNum(p.messageCount as number)} msgs, fresh: ${p.freshnessScore ?? 0})`);
       console.log(`    Funding Rate:     ${String(funding.score).padStart(3)}/100 (${f.snapshots ?? 0} snaps, ${f.products ?? 0} products, ${fmtAge(f.lastFlushAge as number | null)})`);
       const archDetails = archive.details as Record<string, { score: number; lastScoreAge: number | null }>;
       const archParts = Object.entries(archDetails)
@@ -1763,7 +1728,7 @@ export function printHealthHelp(): void {
   console.log();
   console.log("OPTIONS (trades):");
   console.log("  --ticker TICKER     Market ticker (required)");
-  console.log("  --exchange EXCHANGE Exchange: kalshi (default), kraken, polymarket");
+  console.log("  --exchange EXCHANGE Exchange: kalshi (default), kraken");
   console.log("  --window WINDOW     Time window (default: 5m). Format: 5m, 10m, 1h");
   console.log("  --detailed          Show individual trade differences");
   console.log("  --env ENV           Override environment");
@@ -1783,7 +1748,6 @@ export function printHealthHelp(): void {
   console.log("  ssmd health trades --ticker KXBTCD-26FEB0317-T76999.99");
   console.log("  ssmd health trades --ticker KXBTCD-26FEB0317-T76999.99 --window 10m --detailed");
   console.log("  ssmd health trades --ticker XBT/USD --exchange kraken --window 5m");
-  console.log('  ssmd health trades --ticker "0x1234..." --exchange polymarket');
   console.log("  ssmd health secmaster");
   console.log("  ssmd health secmaster --env dev");
 }
