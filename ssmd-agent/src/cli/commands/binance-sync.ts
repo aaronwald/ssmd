@@ -75,32 +75,32 @@ export async function runBinanceSync(
   );
   result.usdtPairs = usdtSymbols.length;
 
-  // Build pair rows — only upsert TRADING pairs
-  const tradingPairs: NewPair[] = [];
+  // Build pair rows — upsert TRADING as active, BREAK as halted
+  const pairsToUpsert: NewPair[] = [];
   const allPairIds: string[] = [];
 
   for (const symbol of usdtSymbols) {
     const pairId = `binance:${symbol.symbol}`;
     allPairIds.push(pairId);
 
-    if (symbol.status === "TRADING") {
-      tradingPairs.push({
-        pairId,
-        exchange: "binance",
-        base: symbol.baseAsset,
-        quote: symbol.quoteAsset,
-        wsName: symbol.symbol.toLowerCase(),
-        status: "active",
-        marketType: "spot",
-        pairDecimals: symbol.quotePrecision ?? null,
-        lotDecimals: symbol.baseAssetPrecision ?? null,
-        altname: symbol.symbol,
-      });
-    }
+    pairsToUpsert.push({
+      pairId,
+      exchange: "binance",
+      base: symbol.baseAsset,
+      quote: symbol.quoteAsset,
+      wsName: symbol.symbol.toLowerCase(),
+      status: symbol.status === "TRADING" ? "active" : "halted",
+      marketType: "spot",
+      pairDecimals: symbol.quotePrecision ?? null,
+      lotDecimals: symbol.baseAssetPrecision ?? null,
+      altname: symbol.symbol,
+    });
   }
 
+  const tradingCount = usdtSymbols.filter((s) => s.status === "TRADING").length;
+  const breakCount = usdtSymbols.filter((s) => s.status === "BREAK").length;
   console.log(
-    `[Binance Spot] Fetched ${result.fetched} symbols, ${result.usdtPairs} USDT pairs (${tradingPairs.length} TRADING)`,
+    `[Binance Spot] Fetched ${result.fetched} symbols, ${result.usdtPairs} USDT pairs (${tradingCount} TRADING, ${breakCount} BREAK)`,
   );
 
   if (dryRun) {
@@ -110,7 +110,7 @@ export async function runBinanceSync(
 
   const db = getDb();
   try {
-    result.upserted = await upsertSpotPairs(db, tradingPairs);
+    result.upserted = await upsertSpotPairs(db, pairsToUpsert);
     console.log(`[Binance Spot] Upserted ${result.upserted} spot pairs`);
 
     if (!noDelete) {

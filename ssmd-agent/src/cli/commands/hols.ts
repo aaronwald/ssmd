@@ -92,13 +92,17 @@ export async function runHolsGenerate(
   const startTime = Date.now();
   const dryRun = !!flags["dry-run"];
   const source = (flags.source as string) ?? "kraken";
-  const interval = flags.interval ? parseInt(flags.interval as string, 10) : DEFAULT_INTERVAL;
 
   const { startDate, endDate, startDateStr, endDateStr, lookbackDays } = parseDateRange(flags);
 
   if (source === "binance") {
-    await runHolsGenerateBinance(flags, startTime, dryRun, interval, startDate, endDate, startDateStr, endDateStr, lookbackDays); // flags reserved for future use
+    const interval = flags.interval ? parseInt(flags.interval as string, 10) : DEFAULT_INTERVAL;
+    await runHolsGenerateBinance(flags, startTime, dryRun, interval, startDate, endDate, startDateStr, endDateStr, lookbackDays);
     return;
+  }
+
+  if (flags.interval) {
+    console.warn("[hols:generate] WARNING: --interval is only supported with --source binance, ignoring");
   }
 
   console.log(`[hols:generate] Kraken Spot REST OHLC for ${startDateStr} to ${endDateStr} (${lookbackDays} days) dry-run=${dryRun}`);
@@ -222,11 +226,16 @@ async function runHolsGenerateBinance(
   }
 
   // 2. Fetch klines for each pair, streaming rows to NDJSON
+  // Use a write queue to serialize concurrent worker writes (avoid interleaved bytes)
   const ndjsonPath = `/tmp/hols-binance-${endDateStr}.ndjson`;
   const ndjsonFile = await Deno.open(ndjsonPath, { write: true, create: true, truncate: true });
   const encoder = new TextEncoder();
-  const writeRow = async (row: NdjsonRow): Promise<void> => {
-    await ndjsonFile.write(encoder.encode(JSON.stringify(row) + "\n"));
+  let writePromise = Promise.resolve();
+  const writeRow = (row: NdjsonRow): Promise<void> => {
+    writePromise = writePromise.then(() =>
+      ndjsonFile.write(encoder.encode(JSON.stringify(row) + "\n")).then(() => {})
+    );
+    return writePromise;
   };
 
   console.log(`[hols:generate] Fetching with concurrency=${BINANCE_CONCURRENCY}, rate=${BINANCE_RATE_LIMIT_MS}ms, interval=${interval}m`);
@@ -351,7 +360,7 @@ async function fetchBinanceKlinesWithPagination(
 
   while (startTime < endMs) {
     const candles = await fetchBinanceKlinesPage(symbol, interval, startTime, endMs);
-    if (candles === null) return { pair: symbol, base, rowCount: 0, error: `Failed after ${MAX_RETRIES} retries` };
+    if (candles === null) return { pair: symbol, base, rowCount: 0, error: `Failed for ${symbol} (possible geo-block or ${MAX_RETRIES} retries exhausted)` };
     if (candles.length === 0) break;
 
     for (const c of candles) {
