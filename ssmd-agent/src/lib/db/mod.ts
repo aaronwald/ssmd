@@ -198,3 +198,11 @@ export {
   VALID_FEEDS,
   type LookupResult,
 } from "./lookup.ts";
+
+// Pipeline engine
+export {
+  pipelineDefinitions,
+  pipelineStages,
+  pipelineRuns,
+  pipelineStageResults,
+} from "./schema.ts";

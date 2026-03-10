@@ -1,4 +1,5 @@
 // HTTP server routes
+import { createHash, timingSafeEqual } from "node:crypto";
 import { globalRegistry, apiRequestsTotal } from "./metrics.ts";
 import { normalizePath } from "./middleware.ts";
 import { validateApiKey, hasScope } from "./auth.ts";
@@ -54,6 +55,10 @@ import {
   dataAccessLog,
   apiRequestLog,
   marketLifecycleEvents,
+  pipelineDefinitions,
+  pipelineStages,
+  pipelineRuns,
+  pipelineStageResults,
   getRawSql,
   type Database,
 } from "../lib/db/mod.ts";
@@ -2926,6 +2931,234 @@ route("GET", "/v1/harman/orders/:id/timeline", async (req, ctx) => {
     settlement: settlements[0] ?? null,
   });
 }, true, "admin:read", "public");
+
+// --- Pipeline Engine Routes ---
+
+// Webhook trigger (public surface, custom auth via per-pipeline secret)
+route("POST", "/v1/pipelines/:id/trigger", async (req, ctx) => {
+  const pipelineId = parseInt((req as any).params.id);
+  if (isNaN(pipelineId)) return json({ error: "Invalid pipeline ID" }, 400);
+
+  const [pipeline] = await ctx.db.select().from(pipelineDefinitions).where(eq(pipelineDefinitions.id, pipelineId)).limit(1);
+  if (!pipeline || !pipeline.enabled) {
+    return json({ error: "Pipeline not found or disabled" }, 404);
+  }
+
+  // Validate webhook secret (constant-time comparison)
+  const authHeader = req.headers.get("authorization");
+  const secret = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!secret || !pipeline.webhookSecretHash) {
+    return json({ error: "Unauthorized" }, 401);
+  }
+
+  const secretHash = createHash("sha256").update(secret).digest("hex");
+  const expected = Buffer.from(pipeline.webhookSecretHash, "utf8");
+  const actual = Buffer.from(secretHash, "utf8");
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    return json({ error: "Unauthorized" }, 401);
+  }
+
+  let triggerInfo = {};
+  try {
+    triggerInfo = await req.json();
+  } catch {
+    // Empty body is OK for webhooks
+  }
+
+  const [run] = await ctx.db.insert(pipelineRuns).values({
+    pipelineId,
+    status: "pending",
+    triggerInfo,
+  }).returning({ id: pipelineRuns.id });
+
+  return json({ run_id: run.id, status: "pending" }, 202);
+}, false, undefined, "public");
+
+// List pipelines with last run status
+route("GET", "/v1/pipelines", async (_req, ctx) => {
+  const rawSql = getRawSql();
+  const rows = await rawSql`
+    SELECT pd.*,
+      pr.status AS last_run_status,
+      pr.created_at AS last_run_at
+    FROM pipeline_definitions pd
+    LEFT JOIN LATERAL (
+      SELECT status, created_at FROM pipeline_runs
+      WHERE pipeline_id = pd.id
+      ORDER BY created_at DESC LIMIT 1
+    ) pr ON true
+    WHERE pd.enabled = true
+    ORDER BY pd.name
+  `;
+  return json(rows);
+}, true, "admin:read");
+
+// Get pipeline with stages
+route("GET", "/v1/pipelines/:id", async (req, ctx) => {
+  const id = parseInt((req as any).params.id);
+  const [pipeline] = await ctx.db.select().from(pipelineDefinitions).where(eq(pipelineDefinitions.id, id));
+  if (!pipeline) return json({ error: "Not found" }, 404);
+
+  const stages = await ctx.db.select().from(pipelineStages)
+    .where(eq(pipelineStages.pipelineId, id))
+    .orderBy(pipelineStages.position);
+
+  return json({ ...pipeline, stages });
+}, true, "admin:read");
+
+// Create pipeline with stages
+route("POST", "/v1/pipelines", async (req, ctx) => {
+  const body = await req.json();
+  const { name, description, trigger_type, trigger_config, stages } = body;
+
+  if (!name || !trigger_type) {
+    return json({ error: "name and trigger_type required" }, 400);
+  }
+
+  let webhookSecret: string | null = null;
+  let webhookSecretHash: string | null = null;
+  if (trigger_type === "webhook") {
+    webhookSecret = crypto.randomUUID() + crypto.randomUUID();
+    webhookSecretHash = createHash("sha256").update(webhookSecret).digest("hex");
+  }
+
+  const [pipeline] = await ctx.db.insert(pipelineDefinitions).values({
+    name,
+    description: description ?? null,
+    triggerType: trigger_type,
+    triggerConfig: trigger_config ?? {},
+    webhookSecretHash,
+  }).returning();
+
+  if (stages && Array.isArray(stages)) {
+    for (let i = 0; i < stages.length; i++) {
+      await ctx.db.insert(pipelineStages).values({
+        pipelineId: pipeline.id,
+        position: i,
+        name: stages[i].name ?? `Stage ${i}`,
+        stageType: stages[i].stage_type,
+        config: stages[i].config ?? {},
+      });
+    }
+  }
+
+  return json({
+    ...pipeline,
+    webhook_secret: webhookSecret,
+  }, 201);
+}, true, "admin:write");
+
+// Update pipeline
+route("PUT", "/v1/pipelines/:id", async (req, ctx) => {
+  const id = parseInt((req as any).params.id);
+  const body = await req.json();
+
+  // deno-lint-ignore no-explicit-any
+  const updates: any = {};
+  if (body.name !== undefined) updates.name = body.name;
+  if (body.description !== undefined) updates.description = body.description;
+  if (body.trigger_type !== undefined) updates.triggerType = body.trigger_type;
+  if (body.trigger_config !== undefined) updates.triggerConfig = body.trigger_config;
+  if (body.enabled !== undefined) updates.enabled = body.enabled;
+
+  const [pipeline] = await ctx.db.update(pipelineDefinitions)
+    .set(updates)
+    .where(eq(pipelineDefinitions.id, id))
+    .returning();
+
+  if (!pipeline) return json({ error: "Not found" }, 404);
+
+  if (body.stages && Array.isArray(body.stages)) {
+    await ctx.db.delete(pipelineStages).where(eq(pipelineStages.pipelineId, id));
+    for (let i = 0; i < body.stages.length; i++) {
+      await ctx.db.insert(pipelineStages).values({
+        pipelineId: id,
+        position: i,
+        name: body.stages[i].name ?? `Stage ${i}`,
+        stageType: body.stages[i].stage_type,
+        config: body.stages[i].config ?? {},
+      });
+    }
+  }
+
+  return json(pipeline);
+}, true, "admin:write");
+
+// Soft-delete pipeline
+route("DELETE", "/v1/pipelines/:id", async (req, ctx) => {
+  const id = parseInt((req as any).params.id);
+  const [pipeline] = await ctx.db.update(pipelineDefinitions)
+    .set({ enabled: false })
+    .where(eq(pipelineDefinitions.id, id))
+    .returning();
+
+  if (!pipeline) return json({ error: "Not found" }, 404);
+  return json({ deleted: true, id });
+}, true, "admin:write");
+
+// Run history for a pipeline
+route("GET", "/v1/pipelines/:id/runs", async (req, ctx) => {
+  const id = parseInt((req as any).params.id);
+  const runs = await ctx.db.select().from(pipelineRuns)
+    .where(eq(pipelineRuns.pipelineId, id))
+    .orderBy(desc(pipelineRuns.createdAt))
+    .limit(50);
+  return json(runs);
+}, true, "admin:read");
+
+// Run detail with stage results
+route("GET", "/v1/pipelines/runs/:runId", async (req, ctx) => {
+  const runId = parseInt((req as any).params.runId);
+  const [run] = await ctx.db.select().from(pipelineRuns).where(eq(pipelineRuns.id, runId));
+  if (!run) return json({ error: "Not found" }, 404);
+
+  const results = await ctx.db.select().from(pipelineStageResults)
+    .where(eq(pipelineStageResults.runId, runId))
+    .orderBy(pipelineStageResults.startedAt);
+
+  return json({ ...run, stage_results: results });
+}, true, "admin:read");
+
+// Manual trigger from UI
+route("POST", "/v1/pipelines/:id/run", async (req, ctx) => {
+  const id = parseInt((req as any).params.id);
+  const [pipeline] = await ctx.db.select().from(pipelineDefinitions).where(eq(pipelineDefinitions.id, id));
+  if (!pipeline || !pipeline.enabled) return json({ error: "Not found or disabled" }, 404);
+
+  const [run] = await ctx.db.insert(pipelineRuns).values({
+    pipelineId: id,
+    status: "pending",
+    triggerInfo: { trigger: "manual" },
+  }).returning({ id: pipelineRuns.id });
+
+  return json({ run_id: run.id, status: "pending" }, 202);
+}, true, "admin:write");
+
+// Internal email endpoint (used by pipeline worker)
+route("POST", "/v1/internal/email", async (req, _ctx) => {
+  const { to, subject, html } = await req.json();
+  if (!to || !subject || !html) {
+    return json({ error: "to, subject, and html required" }, 400);
+  }
+
+  const host = Deno.env.get("SMTP_HOST");
+  const port = parseInt(Deno.env.get("SMTP_PORT") ?? "587");
+  const user = Deno.env.get("SMTP_USER");
+  const pass = Deno.env.get("SMTP_PASS");
+
+  if (!host || !user || !pass) {
+    return json({ error: "SMTP not configured" }, 500);
+  }
+
+  const nodemailer = (await import("nodemailer")).default;
+  const transporter = nodemailer.createTransport({
+    host, port, secure: false,
+    auth: { user, pass },
+  });
+
+  await transporter.sendMail({ from: user, to, subject, html });
+  return json({ sent: true });
+}, true, "admin:write");
 
 // Helper to create JSON response
 function json(data: unknown, status = 200): Response {
