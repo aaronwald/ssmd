@@ -29,10 +29,12 @@ async fn build_test_ems(mock: MockExchange, pool: deadpool_postgres::Pool) -> Em
 }
 
 /// Setup helper: create pool, run migrations, create a unique test session.
+/// Each test gets a unique (exchange, environment) pair to avoid cross-test pollution
+/// since session identity is now (exchange, environment) per migration 018.
 async fn setup() -> (deadpool_postgres::Pool, i64) {
     let pool = setup_test_db().await.expect("DATABASE_URL required");
-    let unique_prefix = format!("ems-test-{}", Uuid::new_v4());
-    let session_id = db::get_or_create_session(&pool, "test", "demo", Some(&unique_prefix))
+    let unique_env = format!("ems-{}", Uuid::new_v4());
+    let session_id = db::get_or_create_session(&pool, "test", &unique_env, None)
         .await
         .expect("create session");
     (pool, session_id)
