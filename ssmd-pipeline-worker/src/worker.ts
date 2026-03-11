@@ -22,7 +22,7 @@ import {
   insertRun,
 } from "./db.ts";
 import type { PipelineRun, PipelineStage } from "./db.ts";
-import { isCronDue } from "./cron.ts";
+import { computeCronDate, isCronDue } from "./cron.ts";
 
 // ── Configuration ───────────────────────────────────────────────
 
@@ -122,10 +122,17 @@ async function evaluateCronSchedules(sql: Sql): Promise<void> {
     const claimed = await markCronTriggered(sql, pipeline.id, now);
     if (!claimed) continue;
 
+    const triggerConfig = pipeline.trigger_config as {
+      schedule?: string;
+      date_offset_days?: number;
+    };
+    const date = computeCronDate(triggerConfig, now);
+
     const runId = await insertRun(sql, pipeline.id, {
       trigger: "cron",
-      schedule: (pipeline.trigger_config as { schedule?: string }).schedule,
+      schedule: triggerConfig.schedule,
       triggered_at: now.toISOString(),
+      date,
     });
     console.log(`[worker] cron triggered pipeline=${pipeline.name} run=${runId}`);
   }

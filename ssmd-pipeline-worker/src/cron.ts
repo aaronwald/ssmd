@@ -12,6 +12,20 @@ import type { CronPipeline } from "./db.ts";
  *
  * Returns true when the pipeline should be triggered.
  */
+/**
+ * Compute the default date for a cron-triggered pipeline run.
+ * Uses `date_offset_days` from trigger_config (default: -1, i.e. yesterday).
+ */
+export function computeCronDate(
+  triggerConfig: { date_offset_days?: number },
+  now: Date,
+): string {
+  const offsetDays = triggerConfig.date_offset_days ?? -1;
+  return new Date(now.getTime() + offsetDays * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
 export function isCronDue(pipeline: CronPipeline, now: Date): boolean {
   const schedule = (pipeline.trigger_config as { schedule?: string }).schedule;
   if (!schedule) return false;

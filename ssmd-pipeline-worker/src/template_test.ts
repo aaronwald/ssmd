@@ -1,5 +1,6 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { resolveTemplate } from "./template.ts";
+import { computeCronDate } from "./cron.ts";
 
 Deno.test("resolveTemplate: replaces {{input}} with previous output", () => {
   const result = resolveTemplate("Analyze: {{input}}", {
@@ -139,4 +140,26 @@ Deno.test("resolveTemplate: {{date}} uses trigger_info.date override when presen
     date: "2026-03-09",
   });
   assertEquals(result, "Report for 2026-03-09");
+});
+
+// ── computeCronDate tests ───────────────────────────────────────
+
+Deno.test("computeCronDate: defaults to T-1 when no date_offset_days", () => {
+  const now = new Date("2026-03-11T01:30:00Z");
+  assertEquals(computeCronDate({}, now), "2026-03-10");
+});
+
+Deno.test("computeCronDate: respects explicit date_offset_days = -1", () => {
+  const now = new Date("2026-03-11T01:30:00Z");
+  assertEquals(computeCronDate({ date_offset_days: -1 }, now), "2026-03-10");
+});
+
+Deno.test("computeCronDate: date_offset_days = 0 gives today", () => {
+  const now = new Date("2026-03-11T01:30:00Z");
+  assertEquals(computeCronDate({ date_offset_days: 0 }, now), "2026-03-11");
+});
+
+Deno.test("computeCronDate: date_offset_days = -2 gives day before yesterday", () => {
+  const now = new Date("2026-03-11T01:30:00Z");
+  assertEquals(computeCronDate({ date_offset_days: -2 }, now), "2026-03-09");
 });
