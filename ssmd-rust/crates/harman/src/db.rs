@@ -64,7 +64,13 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
     client
         .batch_execute(migration_001)
         .await
-        .map_err(|e| format!("migration 001 failed: {}", e))?;
+        .map_err(|e| {
+            if let Some(db_err) = e.as_db_error() {
+                format!("migration 001 failed: {} — {}", db_err.severity(), db_err.message())
+            } else {
+                format!("migration 001 failed: {}", e)
+            }
+        })?;
 
     // Create schema_migrations table (idempotent)
     client

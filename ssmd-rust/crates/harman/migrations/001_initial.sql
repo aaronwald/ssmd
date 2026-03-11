@@ -11,8 +11,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     closed_at TIMESTAMPTZ
 );
 
--- Insert the default MVP session (idempotent)
-INSERT INTO sessions (id, exchange) VALUES (1, 'kalshi') ON CONFLICT (id) DO NOTHING;
+-- Insert the default MVP session (idempotent — skip if any session already exists)
+INSERT INTO sessions (id, exchange)
+SELECT 1, 'kalshi'
+WHERE NOT EXISTS (SELECT 1 FROM sessions LIMIT 1)
+ON CONFLICT (id) DO NOTHING;
 
 -- Sync the sequence past any explicitly-inserted IDs to prevent duplicate key errors
 SELECT setval('sessions_id_seq', GREATEST((SELECT MAX(id) FROM sessions), 1));
