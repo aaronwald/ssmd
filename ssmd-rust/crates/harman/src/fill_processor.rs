@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use deadpool_postgres::Pool;
 use rust_decimal::Decimal;
@@ -48,6 +48,18 @@ pub async fn import_fills(
     let mut orders_with_new_fills: HashSet<i64> = HashSet::new();
 
     for fill in fills {
+        // Skip fills with zero or negative quantity (exchange data anomaly).
+        // These have no economic impact and cannot be stored (fills_quantity_check).
+        if fill.quantity <= Decimal::ZERO {
+            warn!(
+                trade_id = %fill.trade_id,
+                exchange_order_id = %fill.order_id,
+                quantity = %fill.quantity,
+                "skipping fill with non-positive quantity from exchange"
+            );
+            continue;
+        }
+
         if let Some(order) = order_by_eid.get(fill.order_id.as_str()) {
             let inserted = db::record_fill(
                 pool,
