@@ -8,7 +8,7 @@
 //! - OCO fill → no staged legs to activate (both start Pending)
 //!
 //! Requires a PostgreSQL database. Set DATABASE_URL to run.
-//! Run with: cargo test -p ssmd-harman --test group_fill_tests -- --ignored
+//! Run with: DATABASE_URL=<url> cargo test -p ssmd-harman --test group_fill_tests -- --ignored --test-threads=1
 
 use std::sync::Arc;
 
@@ -23,13 +23,11 @@ use uuid::Uuid;
 use ssmd_harman_ems::{Ems, EmsMetrics};
 use ssmd_harman_oms::{Oms, OmsMetrics};
 
-/// Setup helper: create pool, run migrations, create a unique test session.
+/// Setup helper: create pool, run migrations, get/create a test session, and
+/// clean all data from it. Must run with --test-threads=1 for isolation.
 async fn setup() -> (deadpool_postgres::Pool, i64) {
     let pool = setup_test_db().await.expect("setup_test_db failed");
-    let unique_prefix = format!("group-fill-test-{}", Uuid::new_v4());
-    let session_id = db::get_or_create_session(&pool, "test", "demo", Some(&unique_prefix))
-        .await
-        .unwrap_or_else(|e| panic!("create session '{}' failed: {}", unique_prefix, e));
+    let session_id = setup_clean_session(&pool).await.expect("setup_clean_session failed");
     (pool, session_id)
 }
 
@@ -107,11 +105,17 @@ async fn test_handle_group_on_fill_bracket_entry_activates_exits() {
     assert_order_state(&pool, tp_order.id, OrderState::Staged).await.unwrap();
     assert_order_state(&pool, sl_order.id, OrderState::Staged).await.unwrap();
 
-    // Drain entry queue item and simulate entry being filled
+    // Drain entry queue item (transitions Pending → Submitted)
     let _ = db::dequeue_order(&pool, session_id).await;
+
+    // Walk entry through valid state machine: Submitted → Acknowledged → Filled
+    db::update_order_state(
+        &pool, entry_order.id, session_id, OrderState::Acknowledged,
+        Some("exch-gf1-entry"), None, "test",
+    ).await.unwrap();
     db::update_order_state(
         &pool, entry_order.id, session_id, OrderState::Filled,
-        Some("exch-gf1-entry"), None, "test",
+        None, None, "test",
     ).await.unwrap();
 
     // Call handle_group_on_fill — this is what the event ingester calls
@@ -120,7 +124,7 @@ async fn test_handle_group_on_fill_bracket_entry_activates_exits() {
         .unwrap();
 
     // Should activate both TP and SL
-    assert_eq!(result.activated_for_pump,2, "should activate 2 exit legs (TP + SL)");
+    assert_eq!(result.activated_for_pump, 2, "should activate 2 exit legs (TP + SL)");
 
     // TP and SL should now be Pending (not Cancelled!)
     assert_order_state(&pool, tp_order.id, OrderState::Pending).await.unwrap();
@@ -159,33 +163,35 @@ async fn test_handle_group_on_fill_bracket_tp_fill_cancels_sl() {
     let tp_order = orders.iter().find(|o| o.leg_role == Some(LegRole::TakeProfit)).unwrap();
     let sl_order = orders.iter().find(|o| o.leg_role == Some(LegRole::StopLoss)).unwrap();
 
-    // Simulate full lifecycle: entry filled, then TP activated and filled
+    // Walk entry through lifecycle: Pending → Submitted → Acknowledged → Filled
     let _ = db::dequeue_order(&pool, session_id).await;
     db::update_order_state(
-        &pool, entry_order.id, session_id, OrderState::Filled,
+        &pool, entry_order.id, session_id, OrderState::Acknowledged,
         Some("exch-gf2-entry"), None, "test",
     ).await.unwrap();
-
-    // Activate exits (entry fill)
-    db::handle_group_on_fill(&pool, entry_order.id, session_id).await.unwrap();
-
-    // Now simulate TP being filled
     db::update_order_state(
-        &pool, tp_order.id, session_id, OrderState::Filled,
-        Some("exch-gf2-tp"), None, "test",
+        &pool, entry_order.id, session_id, OrderState::Filled,
+        None, None, "test",
     ).await.unwrap();
 
-    // Call handle_group_on_fill for TP fill — should cancel SL
+    // Activate exits (entry fill) — TP and SL move from Staged → Pending
+    db::handle_group_on_fill(&pool, entry_order.id, session_id).await.unwrap();
+
+    // Walk TP through lifecycle: Pending → Submitted → Acknowledged → Filled
+    walk_to_state(&pool, tp_order.id, session_id, OrderState::Filled).await;
+
+    // Call handle_group_on_fill for TP fill
     let result = db::handle_group_on_fill(&pool, tp_order.id, session_id)
         .await
         .unwrap();
 
-    assert_eq!(result.activated_for_pump,0, "exit fill should not activate anything");
+    assert_eq!(result.activated_for_pump, 0, "exit fill should not activate anything");
 
-    // SL should be cancelled
+    // SL was activated to Pending by entry fill. cancel_staged_group_siblings
+    // now handles all non-terminal siblings (not just staged).
     assert_order_state(&pool, sl_order.id, OrderState::Cancelled).await.unwrap();
 
-    // Group should be completed or finalized
+    // Group should be completed
     let group_now = db::get_group(&pool, group.id, session_id).await.unwrap().unwrap();
     assert_eq!(group_now.state, harman::types::GroupState::Completed);
 }
@@ -218,19 +224,20 @@ async fn test_handle_group_on_fill_bracket_sl_fill_cancels_tp() {
     let tp_order = orders.iter().find(|o| o.leg_role == Some(LegRole::TakeProfit)).unwrap();
     let sl_order = orders.iter().find(|o| o.leg_role == Some(LegRole::StopLoss)).unwrap();
 
-    // Entry filled
+    // Walk entry through lifecycle: Pending → Submitted → Acknowledged → Filled
     let _ = db::dequeue_order(&pool, session_id).await;
     db::update_order_state(
-        &pool, entry_order.id, session_id, OrderState::Filled,
+        &pool, entry_order.id, session_id, OrderState::Acknowledged,
         Some("exch-gf3-entry"), None, "test",
+    ).await.unwrap();
+    db::update_order_state(
+        &pool, entry_order.id, session_id, OrderState::Filled,
+        None, None, "test",
     ).await.unwrap();
     db::handle_group_on_fill(&pool, entry_order.id, session_id).await.unwrap();
 
-    // SL filled (instead of TP this time)
-    db::update_order_state(
-        &pool, sl_order.id, session_id, OrderState::Filled,
-        Some("exch-gf3-sl"), None, "test",
-    ).await.unwrap();
+    // Walk SL through full lifecycle to Filled
+    walk_to_state(&pool, sl_order.id, session_id, OrderState::Filled).await;
 
     let result = db::handle_group_on_fill(&pool, sl_order.id, session_id)
         .await

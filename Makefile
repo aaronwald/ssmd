@@ -2,6 +2,7 @@
 .PHONY: agent-check agent-test agent-run cli-check
 .PHONY: all test lint clean generate-k8s setup
 .PHONY: worker-check
+.PHONY: harman-integration-test
 
 CARGO := . $$HOME/.cargo/env && cargo
 RUST_DIR := ssmd-rust
@@ -71,6 +72,11 @@ test: rust-test agent-test
 lint: rust-clippy agent-check worker-check
 
 clean: rust-clean
+
+# Harman integration tests (requires kubectl access to ssmd cluster)
+# Creates a harman_test DB via port-forward and runs crash + group tests.
+harman-integration-test:
+	@./scripts/harman-integration-test.sh
 
 # Kubernetes manifest generation
 generate-k8s: ## Generate Kubernetes manifests from feeds

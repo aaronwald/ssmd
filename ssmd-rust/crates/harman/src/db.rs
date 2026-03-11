@@ -371,6 +371,24 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 017_price_monitor applied");
     }
 
+    // Check if 018 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '018_session_identity'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 018: {}", e))?;
+
+    if row.is_none() {
+        let migration_018 = include_str!("../migrations/018_session_identity.sql");
+        client
+            .batch_execute(migration_018)
+            .await
+            .map_err(|e| format!("migration 018 failed: {}", e))?;
+        info!("migration 018_session_identity applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
@@ -3061,37 +3079,72 @@ pub async fn cancel_staged_group_siblings(
         None => return Ok(0), // Not part of a group
     };
 
-    // Validate Staged→Cancelled through state machine
-    let _ = validate_transition(OrderState::Staged, OrderState::Cancelled)
-        .map_err(|e| format!("cannot cancel staged siblings: {}", e))?;
-
-    // Cancel all staged siblings, returning their IDs for audit
-    let cancelled_rows = tx
+    // Capture all non-terminal siblings (excluding the filled order) with their current state.
+    let siblings = tx
         .query(
-            "UPDATE prediction_orders SET state = 'cancelled', cancel_reason = 'exchange_cancel' \
-             WHERE group_id = $1 AND session_id = $2 AND state = 'staged' \
-             RETURNING id",
-            &[&group_id, &session_id],
+            "SELECT id, state FROM prediction_orders \
+             WHERE group_id = $1 AND session_id = $2 AND id != $3 \
+             AND state NOT IN ('filled', 'cancelled', 'rejected', 'expired') \
+             FOR UPDATE",
+            &[&group_id, &session_id, &order_id],
         )
         .await
-        .map_err(|e| format!("cancel staged siblings: {}", e))?;
+        .map_err(|e| format!("lock group siblings: {}", e))?;
 
-    let cancelled = cancelled_rows.len() as u64;
+    let mut cancelled: u64 = 0;
 
-    // Insert audit log entries for each cancelled order (using exact IDs from RETURNING)
-    for row in &cancelled_rows {
-        let cancelled_id: i64 = row.get("id");
+    for row in &siblings {
+        let sibling_id: i64 = row.get("id");
+        let from_state_str: String = row.get("state");
+        let from_state = parse_state(&from_state_str);
+
+        // Pre-exchange states go straight to Cancelled
+        let (target, target_str) = if matches!(
+            from_state,
+            OrderState::Staged | OrderState::Pending | OrderState::Monitoring
+        ) {
+            (OrderState::Cancelled, "cancelled")
+        } else {
+            // On-exchange: PendingCancel + enqueue cancel for pump
+            (OrderState::PendingCancel, "pending_cancel")
+        };
+
+        // Validate transition
+        if validate_transition(from_state, target).is_err() {
+            warn!(sibling_id, %from_state, %target, "skip sibling cancel: invalid transition");
+            continue;
+        }
+
+        tx.execute(
+            "UPDATE prediction_orders SET state = $1, cancel_reason = 'exchange_cancel' WHERE id = $2",
+            &[&target_str, &sibling_id],
+        )
+        .await
+        .map_err(|e| format!("cancel sibling {}: {}", sibling_id, e))?;
+
         tx.execute(
             "INSERT INTO audit_log (order_id, from_state, to_state, event, actor) \
-             VALUES ($1, 'staged', 'cancelled', 'cancel_request', 'ws_event')",
-            &[&cancelled_id],
+             VALUES ($1, $2, $3, 'cancel_request', 'ws_event')",
+            &[&sibling_id, &from_state_str, &target_str],
         )
         .await
-        .map_err(|e| format!("audit staged cancel {}: {}", cancelled_id, e))?;
+        .map_err(|e| format!("audit sibling cancel {}: {}", sibling_id, e))?;
+
+        // Enqueue cancel for on-exchange orders so pump sends it
+        if target == OrderState::PendingCancel {
+            tx.execute(
+                "INSERT INTO order_queue (order_id, action) VALUES ($1, 'cancel')",
+                &[&sibling_id],
+            )
+            .await
+            .map_err(|e| format!("enqueue sibling cancel {}: {}", sibling_id, e))?;
+        }
+
+        cancelled += 1;
     }
 
     if cancelled > 0 {
-        info!(group_id, cancelled, "cancelled staged group siblings");
+        info!(group_id, cancelled, "cancelled group siblings");
     }
 
     // Finalize group if all legs are terminal

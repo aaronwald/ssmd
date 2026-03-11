@@ -543,7 +543,7 @@ pub async fn queue_count(pool: &Pool, session_id: i64) -> Result<i64, String> {
         .query_one(
             "SELECT COUNT(*) as cnt FROM order_queue q \
              JOIN prediction_orders o ON o.id = q.order_id \
-             WHERE o.session_id = $1",
+             WHERE o.session_id = $1 AND NOT q.processing",
             &[&session_id],
         )
         .await
@@ -605,6 +605,38 @@ pub async fn setup_test_db() -> Result<Pool, String> {
 pub async fn create_test_session(pool: &Pool) -> Result<i64, String> {
     db::get_or_create_session(pool, "test", "test", None)
         .await
+}
+
+/// Delete all data for a session in FK-safe order.
+/// Used between integration tests to ensure isolation.
+pub async fn clean_session_data(pool: &Pool, session_id: i64) -> Result<(), String> {
+    let client = pool.get().await.map_err(|e| format!("pool: {}", e))?;
+
+    // Delete in FK-safe order: children before parents
+    let order_subquery = "SELECT id FROM prediction_orders WHERE session_id = $1";
+    for stmt in &[
+        format!("DELETE FROM fills WHERE order_id IN ({order_subquery})"),
+        format!("DELETE FROM audit_log WHERE order_id IN ({order_subquery})"),
+        format!("DELETE FROM order_queue WHERE order_id IN ({order_subquery})"),
+        "DELETE FROM settlements WHERE session_id = $1".to_string(),
+        "DELETE FROM exchange_audit_log WHERE session_id = $1".to_string(),
+        "DELETE FROM prediction_orders WHERE session_id = $1".to_string(),
+        "DELETE FROM order_groups WHERE session_id = $1".to_string(),
+    ] {
+        client.execute(stmt.as_str(), &[&session_id]).await
+            .map_err(|e| format!("clean {}: {}", stmt.split_whitespace().nth(2).unwrap_or("?"), e))?;
+    }
+    Ok(())
+}
+
+/// Create a test pool, run migrations, get-or-create a test session, and clean all
+/// data from that session. Returns an isolated (pool, session_id) pair.
+///
+/// Must be run with `--test-threads=1` to avoid concurrent test interference.
+pub async fn setup_clean_session(pool: &Pool) -> Result<i64, String> {
+    let session_id = db::get_or_create_session(pool, "test", "test", None).await?;
+    clean_session_data(pool, session_id).await?;
+    Ok(session_id)
 }
 
 /// Helper to build an ExchangeOrderStatus for mock configuration.

@@ -9,7 +9,7 @@
 //! - Double recovery is idempotent
 //!
 //! Requires a PostgreSQL database. Set DATABASE_URL to run.
-//! Run with: cargo test -p ssmd-harman --test crash_tests -- --ignored
+//! Run with: DATABASE_URL=<url> cargo test -p ssmd-harman --test crash_tests -- --ignored --test-threads=1
 
 use std::num::NonZeroUsize;
 use std::sync::atomic::Ordering;
@@ -83,14 +83,11 @@ async fn build_test_state(
     })
 }
 
-/// Setup helper: create pool, run migrations, create a unique test session.
-/// Each test gets its own session to avoid cross-test data contamination.
+/// Setup helper: create pool, run migrations, get/create a test session, and
+/// clean all data from it. Must run with --test-threads=1 for isolation.
 async fn setup() -> (deadpool_postgres::Pool, i64) {
     let pool = setup_test_db().await.expect("setup_test_db failed");
-    let unique_prefix = format!("test-{}", Uuid::new_v4());
-    let session_id = db::get_or_create_session(&pool, "test", "demo", Some(&unique_prefix))
-        .await
-        .unwrap_or_else(|e| panic!("create session '{}' failed: {}", unique_prefix, e));
+    let session_id = setup_clean_session(&pool).await.expect("setup_clean_session failed");
     (pool, session_id)
 }
 
@@ -1614,24 +1611,31 @@ async fn test_staged_legs_excluded_from_risk() {
 async fn test_stable_session_idempotent_upsert() {
     let pool = setup_test_db().await.expect("setup_test_db failed");
 
-    let prefix = format!("stable-{}", Uuid::new_v4());
+    let prefix_a = format!("stable-a-{}", Uuid::new_v4());
+    let prefix_b = format!("stable-b-{}", Uuid::new_v4());
 
     // First call creates the session
-    let id1 = db::get_or_create_session(&pool, "test", "demo", Some(&prefix))
+    let id1 = db::get_or_create_session(&pool, "test", "test", Some(&prefix_a))
         .await.unwrap();
 
-    // Second call with same inputs returns the same session ID
-    let id2 = db::get_or_create_session(&pool, "test", "demo", Some(&prefix))
+    // Second call with same (exchange, environment) returns the same session ID
+    let id2 = db::get_or_create_session(&pool, "test", "test", Some(&prefix_a))
         .await.unwrap();
 
     assert_eq!(id1, id2, "stable session should return same ID on re-creation");
 
-    // Null prefix also stable
-    let id_null_1 = db::get_or_create_session(&pool, "test", "demo", None)
+    // Different prefix but same (exchange, environment) → same session (key rotation)
+    let id3 = db::get_or_create_session(&pool, "test", "test", Some(&prefix_b))
         .await.unwrap();
-    let id_null_2 = db::get_or_create_session(&pool, "test", "demo", None)
-        .await.unwrap();
+    assert_eq!(id1, id3, "key rotation should reuse existing session");
 
-    assert_eq!(id_null_1, id_null_2, "null-prefix session should be stable");
-    assert_ne!(id1, id_null_1, "different prefixes should get different sessions");
+    // Null prefix also returns the same session
+    let id_null = db::get_or_create_session(&pool, "test", "test", None)
+        .await.unwrap();
+    assert_eq!(id1, id_null, "null prefix should return same session");
+
+    // Different environment → different session
+    let id_demo = db::get_or_create_session(&pool, "test", "demo", None)
+        .await.unwrap();
+    assert_ne!(id1, id_demo, "different environment should get different session");
 }
