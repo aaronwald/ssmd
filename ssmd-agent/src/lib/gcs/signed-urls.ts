@@ -74,10 +74,11 @@ export async function listParquetFiles(
     const [gcsFiles] = await storage.bucket(bucket).getFiles({ prefix: gcsPrefix });
 
     for (const gcsFile of gcsFiles) {
-      if (!gcsFile.name.endsWith(".parquet")) continue;
+      if (!gcsFile.name.endsWith(".parquet") && !gcsFile.name.endsWith(".csv")) continue;
 
       const fileName = gcsFile.name.split("/").pop() ?? "";
-      const baseName = fileName.replace(".parquet", "");
+      const ext = fileName.endsWith(".csv") ? ".csv" : ".parquet";
+      const baseName = fileName.replace(ext, "");
 
       let fileType: string;
       let hour: string;
