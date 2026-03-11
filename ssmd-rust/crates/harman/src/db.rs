@@ -1052,16 +1052,18 @@ pub async fn record_fill(
             &[&order_id, &trade_id, &price_dollars, &quantity, &is_taker, &filled_at, &session_id],
         )
         .await
-        .map_err(|e| format!("insert fill: {}", e))?;
+        .map_err(|e| {
+            if let Some(db_err) = e.as_db_error() {
+                format!("insert fill: {} — {}", db_err.severity(), db_err.message())
+            } else {
+                format!("insert fill: {}", e)
+            }
+        })?;
 
     Ok(result > 0)
 }
 
-/// Get or create a session for the given exchange and optional API key prefix.
-///
-/// Returns the ID of an open (not closed) session, or creates a new one.
-/// Find the best existing session for (exchange, environment) at startup.
-/// Prefers authenticated sessions (non-NULL key_prefix) over placeholders.
+/// Find the session for (exchange, environment) at startup.
 /// Returns None if no session exists (first boot).
 pub async fn find_startup_session(
     pool: &Pool,
@@ -1073,82 +1075,28 @@ pub async fn find_startup_session(
         .await
         .map_err(|e| format!("pool error: {}", e))?;
 
-    let rows = client
-        .query(
-            "SELECT id, api_key_prefix FROM sessions \
-             WHERE exchange = $1 AND environment = $2 \
-             ORDER BY (api_key_prefix IS NOT NULL) DESC, created_at DESC \
-             LIMIT 1",
+    let row = client
+        .query_opt(
+            "SELECT id FROM sessions WHERE exchange = $1 AND environment = $2",
             &[&exchange, &environment],
         )
         .await
         .map_err(|e| format!("find startup session: {:?}", e))?;
 
-    match rows.first() {
+    match row {
         Some(row) => {
             let id: i64 = row.get("id");
-            let prefix: Option<String> = row.get("api_key_prefix");
-            info!(session_id = id, key_prefix = ?prefix, exchange, environment, "found existing session for startup");
+            info!(session_id = id, exchange, environment, "found existing session for startup");
             Ok(Some(id))
         }
         None => Ok(None),
     }
 }
 
-/// Clean up orphaned NULL-key sessions by moving their orders to the target session
-/// and deleting the orphan. Called at startup when an authenticated session exists.
-pub async fn absorb_null_key_sessions(
-    pool: &Pool,
-    exchange: &str,
-    environment: &str,
-    target_session_id: i64,
-) -> Result<u64, String> {
-    let client = pool
-        .get()
-        .await
-        .map_err(|e| format!("pool error: {}", e))?;
-
-    let orphans: Vec<i64> = client
-        .query(
-            "SELECT id FROM sessions \
-             WHERE exchange = $1 AND environment = $2 AND api_key_prefix IS NULL AND id != $3",
-            &[&exchange, &environment, &target_session_id],
-        )
-        .await
-        .map_err(|e| format!("find orphans: {:?}", e))?
-        .iter()
-        .map(|r| r.get("id"))
-        .collect();
-
-    if orphans.is_empty() {
-        return Ok(0);
-    }
-
-    let mut total_moved = 0u64;
-    for orphan_id in &orphans {
-        let moved = client
-            .execute(
-                "UPDATE prediction_orders SET session_id = $1 WHERE session_id = $2",
-                &[&target_session_id, orphan_id],
-            )
-            .await
-            .map_err(|e| format!("move orders: {:?}", e))?;
-        total_moved += moved;
-
-        client
-            .execute("DELETE FROM sessions WHERE id = $1", &[orphan_id])
-            .await
-            .map_err(|e| format!("delete orphan: {:?}", e))?;
-
-        info!(orphan_session_id = orphan_id, target_session_id, moved_orders = moved, "absorbed orphan NULL-key session");
-    }
-
-    Ok(total_moved)
-}
-
-/// Stable sessions: uses INSERT ON CONFLICT DO NOTHING + SELECT on the natural key
-/// (exchange, environment, COALESCE(api_key_prefix, '__none__')). Same inputs always
-/// return the same session ID. No advisory locks needed.
+/// Get or create the single session for (exchange, environment).
+///
+/// If the session exists, updates api_key_prefix if a new one is provided.
+/// Returns the session ID. Idempotent — safe to call on every startup and API request.
 pub async fn get_or_create_session(
     pool: &Pool,
     exchange: &str,
@@ -1160,40 +1108,18 @@ pub async fn get_or_create_session(
         .await
         .map_err(|e| format!("pool error: {}", e))?;
 
-    // Upsert: create if not exists, no-op on conflict
-    client
-        .execute(
+    let row = client
+        .query_one(
             "INSERT INTO sessions (exchange, environment, api_key_prefix) \
              VALUES ($1, $2, $3) \
-             ON CONFLICT (exchange, environment, COALESCE(api_key_prefix, '__none__')) \
-             DO NOTHING",
+             ON CONFLICT (exchange, environment) \
+             DO UPDATE SET api_key_prefix = COALESCE(EXCLUDED.api_key_prefix, sessions.api_key_prefix), \
+                           updated_at = NOW() \
+             RETURNING id",
             &[&exchange, &environment, &key_prefix],
         )
         .await
         .map_err(|e| format!("upsert session: {:?}", e))?;
-
-    // Select the stable session
-    let row = match key_prefix {
-        Some(prefix) => {
-            client
-                .query_one(
-                    "SELECT id FROM sessions \
-                     WHERE exchange = $1 AND environment = $2 AND api_key_prefix = $3",
-                    &[&exchange, &environment, &prefix],
-                )
-                .await
-        }
-        None => {
-            client
-                .query_one(
-                    "SELECT id FROM sessions \
-                     WHERE exchange = $1 AND environment = $2 AND api_key_prefix IS NULL",
-                    &[&exchange, &environment],
-                )
-                .await
-        }
-    }
-    .map_err(|e| format!("select session: {:?}", e))?;
 
     let id: i64 = row.get("id");
     info!(session_id = id, exchange, environment, key_prefix, "stable session ready");

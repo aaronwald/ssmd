@@ -109,7 +109,9 @@ struct LookupResponse {
     scopes: Option<Vec<String>>,
 }
 
-/// Resolve key_prefix → session_id (DashMap cache → DB)
+/// Resolve key_prefix → session_id.
+/// All API keys for the same exchange+env resolve to the same session.
+/// The key_prefix is stored as metadata on the session for audit trail.
 async fn resolve_session(state: &AppState, key_prefix: &str) -> Result<i64, String> {
     if let Some(id) = state.key_sessions.get(key_prefix) {
         return Ok(*id);

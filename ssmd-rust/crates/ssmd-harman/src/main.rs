@@ -213,13 +213,6 @@ async fn main() {
     };
     info!(startup_session_id, "startup session resolved");
 
-    // Clean up orphaned NULL-key sessions from previous boots
-    match harman::db::absorb_null_key_sessions(&pool, &exchange_type, &environment, startup_session_id).await {
-        Ok(0) => {}
-        Ok(n) => info!(moved_orders = n, "cleaned up orphaned NULL-key sessions"),
-        Err(e) => warn!(error = %e, "failed to clean up orphaned sessions"),
-    }
-
     // Create audit channel for exchange audit logging
     let (audit_sender, audit_writer) = harman::audit::create_audit_channel(pool.clone());
 
