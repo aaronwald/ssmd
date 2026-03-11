@@ -176,6 +176,10 @@ export const pairs = pgTable("pairs", {
   openingDate: timestamp("opening_date", { withTimezone: true }),
   feeScheduleUid: varchar("fee_schedule_uid", { length: 64 }),
   tags: text("tags").array(),
+  // US regional tradability (migration 0032)
+  usTradeable: boolean("us_tradeable"),
+  usSource: varchar("us_source", { length: 32 }),
+  usCheckedAt: timestamp("us_checked_at", { withTimezone: true }),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

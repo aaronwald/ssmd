@@ -2,11 +2,13 @@
  * Binance secmaster sync command - sync spot pairs to PostgreSQL
  */
 import { getDb, closeDb } from "../../lib/db/client.ts";
-import { upsertSpotPairs, softDeleteMissingPairs } from "../../lib/db/pairs.ts";
+import { upsertSpotPairs, softDeleteMissingPairs, updateBinanceUsTradeable, markKrakenUsTradeable } from "../../lib/db/pairs.ts";
 import type { NewPair } from "../../lib/db/schema.ts";
 
 // Use data-api.binance.vision — api.binance.com returns 451 from US IPs in GKE
 const BINANCE_EXCHANGE_INFO_URL = "https://data-api.binance.vision/api/v3/exchangeInfo";
+// Binance.US has a separate API with only US-tradeable symbols listed
+const BINANCE_US_EXCHANGE_INFO_URL = "https://api.binance.us/api/v3/exchangeInfo";
 const API_TIMEOUT_MS = 30000;
 
 // --- Binance API response types ---
@@ -130,6 +132,45 @@ export async function runBinanceSync(
 }
 
 /**
+ * Sync US tradability by fetching Binance.US exchangeInfo and diffing against global pairs.
+ * Also marks all active Kraken spot pairs as US-tradeable (GKE IP already filters).
+ */
+async function runSyncUs(dryRun: boolean): Promise<void> {
+  console.log("\n[Binance.US] Fetching exchangeInfo...");
+  const res = await fetch(BINANCE_US_EXCHANGE_INFO_URL, {
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`Binance.US API error: ${res.status} ${await res.text()}`);
+  }
+  const data: BinanceExchangeInfo = await res.json();
+
+  const usSymbols = new Set<string>();
+  for (const s of data.symbols) {
+    if (s.quoteAsset === "USDT" && s.status === "TRADING") {
+      usSymbols.add(s.symbol);
+    }
+  }
+
+  console.log(`[Binance.US] Found ${usSymbols.size} US-tradeable USDT pairs`);
+
+  if (dryRun) {
+    console.log("[Binance.US] Dry run — not updating database");
+    console.log("US-tradeable symbols:", [...usSymbols].sort().join(", "));
+    return;
+  }
+
+  const { marked, restricted } = await updateBinanceUsTradeable(usSymbols);
+  const krakenCount = await markKrakenUsTradeable();
+
+  console.log(`\n=== US Tradability Summary ===`);
+  console.log(`Binance: ${marked} US-tradeable, ${restricted} US-restricted`);
+  console.log(`Kraken: ${krakenCount} marked US-tradeable (GKE IP-filtered)`);
+
+  await closeDb();
+}
+
+/**
  * Handle `ssmd binance` subcommands
  */
 export async function handleBinance(
@@ -152,14 +193,25 @@ export async function handleBinance(
       break;
     }
 
+    case "sync-us": {
+      try {
+        await runSyncUs(Boolean(flags["dry-run"]));
+      } catch (e) {
+        console.error(`Binance US sync failed: ${(e as Error).message}`);
+        Deno.exit(1);
+      }
+      break;
+    }
+
     default:
       console.log("Usage: ssmd binance <command>");
       console.log();
       console.log("Commands:");
       console.log("  sync         Sync Binance spot pairs (USDT quote)");
+      console.log("  sync-us      Sync US tradability from Binance.US API");
       console.log();
-      console.log("Options for sync:");
-      console.log("  --no-delete  Skip soft-deleting missing pairs");
+      console.log("Options:");
+      console.log("  --no-delete  Skip soft-deleting missing pairs (sync only)");
       console.log("  --dry-run    Fetch but don't write to database");
       Deno.exit(1);
   }

@@ -1,7 +1,7 @@
 /**
  * Pairs database operations for Kraken spot + perpetual upserts (Drizzle ORM)
  */
-import { eq, isNull, desc, sql, count } from "drizzle-orm";
+import { eq, and, isNull, desc, sql, count } from "drizzle-orm";
 import { type Database, getRawSql } from "./client.ts";
 import { pairs, pairSnapshots, type NewPair, type NewPairSnapshot, type Pair, type PairSnapshot } from "./schema.ts";
 
@@ -380,4 +380,96 @@ export async function cleanupOldSnapshots(
     RETURNING id
   `;
   return result.length;
+}
+
+/**
+ * Mark Binance pairs as US-tradeable or restricted based on Binance.US symbol set.
+ * Pairs in usSymbols get us_tradeable=true, all other active Binance pairs get false.
+ */
+export async function updateBinanceUsTradeable(
+  usSymbols: Set<string>,
+): Promise<{ marked: number; restricted: number }> {
+  const rawSql = getRawSql();
+  const usArray = [...usSymbols];
+
+  const markedResult = await rawSql`
+    UPDATE pairs
+    SET us_tradeable = true, us_source = 'binance_us_api', us_checked_at = NOW()
+    WHERE exchange = 'binance'
+      AND status = 'active'
+      AND deleted_at IS NULL
+      AND altname = ANY(${usArray})
+    RETURNING pair_id
+  `;
+
+  const restrictedResult = await rawSql`
+    UPDATE pairs
+    SET us_tradeable = false, us_source = 'binance_us_api', us_checked_at = NOW()
+    WHERE exchange = 'binance'
+      AND status = 'active'
+      AND deleted_at IS NULL
+      AND (altname IS NULL OR NOT (altname = ANY(${usArray})))
+    RETURNING pair_id
+  `;
+
+  return {
+    marked: markedResult.length,
+    restricted: restrictedResult.length,
+  };
+}
+
+/**
+ * Mark all active Kraken spot pairs as US-tradeable.
+ * GKE us-east1 IP filtering means AssetPairs already returns only US-available pairs.
+ */
+export async function markKrakenUsTradeable(): Promise<number> {
+  const rawSql = getRawSql();
+  const result = await rawSql`
+    UPDATE pairs
+    SET us_tradeable = true, us_source = 'kraken_us_ip', us_checked_at = NOW()
+    WHERE exchange = 'kraken'
+      AND status = 'active'
+      AND deleted_at IS NULL
+    RETURNING pair_id
+  `;
+  return result.length;
+}
+
+/**
+ * List all active spot USDT pairs with US tradability for HOLS reference CSV.
+ */
+export async function listHolsReference(
+  db: Database,
+): Promise<{
+  holsTicker: string;
+  base: string;
+  quote: string;
+  exchange: string;
+  usTradeable: boolean | null;
+}[]> {
+  const rows = await db
+    .select({
+      base: pairs.base,
+      quote: pairs.quote,
+      exchange: pairs.exchange,
+      usTradeable: pairs.usTradeable,
+    })
+    .from(pairs)
+    .where(
+      and(
+        eq(pairs.marketType, "spot"),
+        eq(pairs.status, "active"),
+        sql`UPPER(${pairs.quote}) = 'USDT'`,
+        isNull(pairs.deletedAt),
+      ),
+    )
+    .orderBy(pairs.exchange, pairs.base);
+
+  return rows.map((r) => ({
+    holsTicker: `${r.base}${r.quote}`,
+    base: r.base,
+    quote: r.quote,
+    exchange: r.exchange,
+    usTradeable: r.usTradeable,
+  }));
 }

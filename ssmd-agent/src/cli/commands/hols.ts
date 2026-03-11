@@ -7,7 +7,7 @@
  *   hols aggregate                   — Kraken WS trade aggregation to 1-min bars
  */
 import { getDb, closeDb } from "../../lib/db/mod.ts";
-import { listActiveSpotPairs } from "../../lib/db/pairs.ts";
+import { listActiveSpotPairs, listHolsReference } from "../../lib/db/pairs.ts";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { Storage } from "@google-cloud/storage";
 import nodemailer from "nodemailer";
@@ -73,11 +73,15 @@ export async function handleHols(
     case "aggregate":
       await runHolsAggregate(flags);
       break;
+    case "reference":
+      await runHolsReference(flags);
+      break;
     default:
       console.error(`Unknown hols subcommand: ${subcommand ?? "(none)"}`);
       console.log("Usage:");
       console.log("  ssmd hols generate   [--date YYYY-MM-DD] [--days N] [--source kraken|binance] [--interval 1|5] [--dry-run]");
       console.log("  ssmd hols aggregate  [--date YYYY-MM-DD] [--days N] [--dry-run]  # Aggregated WS trade data");
+      console.log("  ssmd hols reference  [--date YYYY-MM-DD] [--dry-run]             # Tickers reference CSV");
       Deno.exit(1);
   }
 }
@@ -957,4 +961,54 @@ function escapeHtml(str: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ============================================================
+// Job 4: Tickers Reference CSV
+// ============================================================
+
+async function runHolsReference(
+  flags: Record<string, unknown>,
+): Promise<void> {
+  const dryRun = !!flags["dry-run"];
+  const dateStr = (flags.date as string) ?? new Date().toISOString().slice(0, 10);
+
+  const db = getDb();
+  try {
+    const rows = await listHolsReference(db);
+
+    const csvLines = ["hols_ticker,base,quote,exchange,us_tradeable"];
+    for (const row of rows) {
+      const usTradeable = row.usTradeable === null ? "" : String(row.usTradeable);
+      csvLines.push(`${row.holsTicker},${row.base},${row.quote},${row.exchange},${usTradeable}`);
+    }
+    const csvContent = csvLines.join("\n") + "\n";
+
+    const localPath = `/tmp/hols-reference-${dateStr}.csv`;
+    await Deno.writeTextFile(localPath, csvContent);
+    console.log(`Wrote ${rows.length} rows to ${localPath}`);
+
+    if (dryRun) {
+      console.log("Dry run — not uploading to GCS");
+      console.log(csvContent.slice(0, 1000));
+      return;
+    }
+
+    const gcsPath = `hols/crypto/daily/${dateStr}/tickers-reference.csv`;
+    const storage = new Storage();
+    await storage.bucket(GCS_BUCKET).upload(localPath, {
+      destination: gcsPath,
+      metadata: { contentType: "text/csv" },
+    });
+    console.log(`Uploaded to gs://${GCS_BUCKET}/${gcsPath}`);
+
+    const usYes = rows.filter((r) => r.usTradeable === true).length;
+    const usNo = rows.filter((r) => r.usTradeable === false).length;
+    const usUnknown = rows.filter((r) => r.usTradeable === null).length;
+    console.log(`\n=== Reference CSV Summary ===`);
+    console.log(`Total: ${rows.length} tickers`);
+    console.log(`US tradeable: ${usYes}, restricted: ${usNo}, unknown: ${usUnknown}`);
+  } finally {
+    await closeDb();
+  }
 }
