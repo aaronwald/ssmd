@@ -158,7 +158,7 @@ async function executeRun(
     triggerInfo,
     date: typeof triggerInfo.date === "string"
       ? triggerInfo.date
-      : new Date().toISOString().slice(0, 10),
+      : new Date(Date.now() - 86_400_000).toISOString().slice(0, 10),
   };
 
   let runFailed = false;
