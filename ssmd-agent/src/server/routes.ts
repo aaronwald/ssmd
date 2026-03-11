@@ -2945,8 +2945,10 @@ route("POST", "/v1/pipelines/:id/trigger", async (req, ctx) => {
   }
 
   // Validate webhook secret (constant-time comparison)
+  // Supports: Authorization: Bearer <secret> OR ?auth_token=<secret> (GCP Cloud Monitoring)
   const authHeader = req.headers.get("authorization");
-  const secret = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const url = new URL(req.url, "http://localhost");
+  const secret = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : url.searchParams.get("auth_token");
   if (!secret || !pipeline.webhookSecretHash) {
     return json({ error: "Unauthorized" }, 401);
   }
