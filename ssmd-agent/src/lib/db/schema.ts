@@ -398,6 +398,26 @@ export const pipelineStageResults = pgTable("pipeline_stage_results", {
   finishedAt: timestamp("finished_at", { withTimezone: true }),
 });
 
+// --- EDC (Exchange Driven Change) ---
+
+export const edcChangelogSnapshots = pgTable("edc_changelog_snapshots", {
+  id: serial("id").primaryKey(),
+  exchange: text("exchange").notNull(),
+  contentHash: text("content_hash").notNull(),
+  rawText: text("raw_text").notNull(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const edcMemories = pgTable("edc_memories", {
+  id: serial("id").primaryKey(),
+  exchange: text("exchange").notNull(),
+  changelogSummary: text("changelog_summary").notNull(),
+  impact: text("impact").notNull(),
+  affectedComponents: text("affected_components").notNull(),
+  fixDescription: text("fix_description").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Inferred types for select/insert
 export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
@@ -445,3 +465,7 @@ export type PipelineRun = typeof pipelineRuns.$inferSelect;
 export type NewPipelineRun = typeof pipelineRuns.$inferInsert;
 export type PipelineStageResult = typeof pipelineStageResults.$inferSelect;
 export type NewPipelineStageResult = typeof pipelineStageResults.$inferInsert;
+export type EdcChangelogSnapshot = typeof edcChangelogSnapshots.$inferSelect;
+export type NewEdcChangelogSnapshot = typeof edcChangelogSnapshots.$inferInsert;
+export type EdcMemory = typeof edcMemories.$inferSelect;
+export type NewEdcMemory = typeof edcMemories.$inferInsert;
