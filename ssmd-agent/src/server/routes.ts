@@ -2004,7 +2004,7 @@ route("GET", "/v1/data/freshness", async (req) => {
 // NATS JetStream health — proxies NATS server monitoring API
 // /jsz response nests streams under account_details[].stream_detail[]
 route("GET", "/v1/data/nats-health", async () => {
-  const natsHost = Deno.env.get("NATS_MONITOR_URL") ?? "http://nats.nats.svc.cluster.local:8222";
+  const natsHost = Deno.env.get("NATS_MONITOR_URL") ?? "http://nats-headless.nats.svc.cluster.local:8222";
 
   try {
     const resp = await fetch(`${natsHost}/jsz?streams=true`, {
