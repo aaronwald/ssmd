@@ -24,6 +24,7 @@ Market data capture, archival, signal development, and order management platform
 - **Signals**: Signal Runner → NATS (SIGNAL_FIRES) → Notifier → ntfy.sh
 - **Archives**: Archiver → local PVC → GCS sync (Temporal scheduled)
 - **Diagnosis**: PostgreSQL (scores) + data-ts (freshness/volume) → Claude → Email
+- **Pipelines**: Webhook/cron trigger → data-ts → Pipeline Worker → stages (sql, http, openrouter, email)
 - **Order management**: harman-web → Harman OMS → Exchange REST API (order submit/cancel/amend)
 - **Reconciliation**: Harman polls exchange positions/fills, compares to local DB, imports unsolicited orders
 
@@ -63,6 +64,7 @@ Market data capture, archival, signal development, and order management platform
 | Notifier | `src/cli/commands/notifier.ts` | Signal fire → ntfy.sh notification routing (standalone deploy as ssmd-notifier) |
 | Momentum | `src/momentum/` | Paper trading momentum engine + backtesting |
 | Agent | `src/agent/` | LangGraph REPL with market data tools |
+| Pipeline Worker | `src/cli/commands/pipeline-worker.ts` | Poll pipeline_runs, execute typed stages (sql, http, openrouter, email) |
 | Funding Rate Consumer | `src/cli/commands/funding-rate-consumer.ts` | NATS → pair_snapshots (Kraken Futures) |
 | State Builders | `src/state/` | Orderbook, price history, volume profile |
 | Shared Lib | `src/lib/` | DB (Drizzle), API clients, types (Zod), pricing, auth |

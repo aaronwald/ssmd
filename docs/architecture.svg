@@ -48,7 +48,7 @@
   <g filter="url(#shadow)">
     <rect x="30" y="182" width="130" height="44" rx="8" fill="#1e3a5f" stroke="#3b82f6" stroke-width="1.2"/>
     <text x="95" y="200" text-anchor="middle" fill="#93c5fd" font-size="10" font-weight="500">EXCHANGE</text>
-    <text x="95" y="215" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Polymarket</text>
+    <text x="95" y="215" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Kraken Spot</text>
   </g>
 
   <!-- Connectors -->
@@ -265,12 +265,12 @@
     <text x="735" y="690" text-anchor="middle" fill="#94a3b8" font-size="10">Data quality checks</text>
   </g>
 
-  <!-- Temporal Worker -->
+  <!-- Pipeline Worker -->
   <g filter="url(#shadow)">
-    <rect x="870" y="630" width="150" height="70" rx="8" fill="#1c2127" stroke="#94a3b8" stroke-width="1.2"/>
-    <text x="945" y="654" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="500">NODE.JS</text>
-    <text x="945" y="672" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">Temporal Worker</text>
-    <text x="945" y="690" text-anchor="middle" fill="#94a3b8" font-size="10">GCS sync, schedules</text>
+    <rect x="870" y="630" width="150" height="70" rx="8" fill="#1a2744" stroke="#38bdf8" stroke-width="1.2"/>
+    <text x="945" y="654" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="500">DENO</text>
+    <text x="945" y="672" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">Pipeline Worker</text>
+    <text x="945" y="690" text-anchor="middle" fill="#94a3b8" font-size="10">Webhook + cron pipelines</text>
   </g>
 
   <!-- Email -->
@@ -304,6 +304,12 @@
   <line x1="340" y1="700" x2="360" y2="748" stroke="#f472b6" stroke-width="1.2" marker-end="url(#arrow-pink)"/>
   <!-- Health → Email -->
   <path d="M 520 700 L 520 730 L 420 730 L 420 748" stroke="#f472b6" stroke-width="1.2" fill="none" marker-end="url(#arrow-pink)" stroke-dasharray="4,3"/>
+  <!-- Pipeline Worker → data-ts (stage execution: HTTP, OpenRouter, email) -->
+  <path d="M 870 655 L 182 655" stroke="#38bdf8" stroke-width="1.2" fill="none" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+  <!-- Pipeline Worker → PostgreSQL (poll pipeline_runs) -->
+  <path d="M 920 630 L 920 570 L 45 570 L 45 382" stroke="#f59e0b" stroke-width="1.2" fill="none" marker-end="url(#arrow-amber)" stroke-dasharray="4,3"/>
+  <!-- data-ts → Pipeline Worker (webhook trigger creates run) -->
+  <path d="M 180 690 L 868 690" stroke="#38bdf8" stroke-width="1.2" fill="none" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
 
   <!-- ═══════════ LEGEND ═══════════ -->
   <g transform="translate(830, 310)">
