@@ -205,6 +205,9 @@ impl ShardMetrics {
                     msg_type,
                 ]);
         }
+        // Pre-initialize parse errors counter so GMP discovers the metric name
+        PARSE_ERRORS_TOTAL
+            .with_label_values(&[&self.feed, &self.category, &self.shard_label]);
     }
 
     /// Increment message counter for a specific message type

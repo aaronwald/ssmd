@@ -72,6 +72,9 @@ async fn main() -> anyhow::Result<()> {
         axum::serve(listener, app).await.expect("Health server failed");
     });
 
+    // Pre-initialize publish error metric so GMP discovers the metric name
+    metrics::CDC_PUBLISH_ERRORS.with_label_values(&["_init"]);
+
     // Connect to NATS and ensure stream exists
     let publisher = Publisher::new(&config.nats_url, &args.stream_name).await?;
     publisher.ensure_stream().await?;
