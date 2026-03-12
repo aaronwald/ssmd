@@ -3589,6 +3589,95 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
   return json(results);
 }, true, "admin:read", "internal");
 
+// EDC: Changelog fetch endpoint (used by EDC pipeline)
+const EDC_CHANGELOG_URLS: Record<string, string> = {
+  kalshi: "https://docs.kalshi.com/changelog",
+  kraken: "https://docs.kraken.com/api/changelog/",
+  binance: "https://binance-docs.github.io/apidocs/spot/en/#change-log",
+};
+
+route("GET", "/v1/internal/changelog-fetch", async (req, _ctx) => {
+  const url = new URL(req.url);
+  const exchange = url.searchParams.get("exchange");
+  if (!exchange || !EDC_CHANGELOG_URLS[exchange]) {
+    return json({
+      error: `exchange must be one of: ${Object.keys(EDC_CHANGELOG_URLS).join(", ")}`,
+    }, 400);
+  }
+
+  const changelogUrl = EDC_CHANGELOG_URLS[exchange];
+
+  // Fetch the changelog page
+  let html: string;
+  try {
+    const resp = await fetch(changelogUrl, {
+      signal: AbortSignal.timeout(30_000),
+      headers: { "User-Agent": "ssmd-edc/1.0" },
+    });
+    if (!resp.ok) {
+      return json({ error: `Fetch failed: ${resp.status} ${resp.statusText}` }, 502);
+    }
+    html = await resp.text();
+  } catch (e) {
+    return json({ error: `Fetch error: ${e instanceof Error ? e.message : String(e)}` }, 502);
+  }
+
+  // Strip HTML to text
+  const rawText = html
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // SHA256 hash
+  const hashBuffer = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(rawText),
+  );
+  const contentHash = [...new Uint8Array(hashBuffer)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  // Compare against latest snapshot
+  const rawSql = getRawSql();
+  const latest = await rawSql`
+    SELECT content_hash, raw_text FROM edc_changelog_snapshots
+    WHERE exchange = ${exchange} ORDER BY fetched_at DESC LIMIT 1
+  `;
+
+  const prevRow = latest[0] as { content_hash: string; raw_text: string } | undefined;
+  const changed = !prevRow || prevRow.content_hash !== contentHash;
+
+  if (changed) {
+    await rawSql`
+      INSERT INTO edc_changelog_snapshots (exchange, content_hash, raw_text)
+      VALUES (${exchange}, ${contentHash}, ${rawText})
+    `;
+  }
+
+  // Truncate text to avoid blowing up pipeline output (keep first 50KB)
+  const maxText = 50_000;
+  const truncatedNew = rawText.length > maxText ? rawText.slice(0, maxText) : rawText;
+  const truncatedOld = prevRow?.raw_text
+    ? (prevRow.raw_text.length > maxText ? prevRow.raw_text.slice(0, maxText) : String(prevRow.raw_text))
+    : null;
+
+  return json({
+    exchange,
+    url: changelogUrl,
+    content_hash: contentHash,
+    changed,
+    ...(changed && { old_text: truncatedOld, new_text: truncatedNew }),
+  });
+}, true, "admin:read");
+
 // Internal email endpoint (used by pipeline worker)
 route("POST", "/v1/internal/email", async (req, _ctx) => {
   const { to, subject, html } = await req.json();
