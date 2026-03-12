@@ -74,3 +74,5 @@ wiremock = "0.6"
 tower-http = { version = "0.6", features = ["cors"] }
 jsonwebtoken = "9"
 base64 = "0.22"
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }

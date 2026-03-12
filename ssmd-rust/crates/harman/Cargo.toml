@@ -3,6 +3,9 @@ name = "harman"
 version.workspace = true
 edition.workspace = true
 
+[features]
+testcontainers = ["dep:testcontainers", "dep:testcontainers-modules"]
+
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true }
@@ -16,6 +19,8 @@ rust_decimal = { workspace = true }
 deadpool-postgres = { workspace = true }
 tokio-postgres = { workspace = true }
 postgres-types = { workspace = true }
+testcontainers = { workspace = true, optional = true }
+testcontainers-modules = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

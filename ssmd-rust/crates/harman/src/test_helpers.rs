@@ -592,13 +592,67 @@ pub async fn make_order_stale(pool: &Pool, order_id: i64, seconds_ago: i64) -> R
     Ok(())
 }
 
-/// Create a test pool and run migrations. Requires DATABASE_URL env var.
+/// Create a test pool and run migrations.
+///
+/// Uses `DATABASE_URL` if set, otherwise auto-provisions a PostgreSQL
+/// container via testcontainers (requires Docker and the `testcontainers` feature).
 pub async fn setup_test_db() -> Result<Pool, String> {
-    let url = std::env::var("DATABASE_URL")
-        .map_err(|_| "DATABASE_URL not set".to_string())?;
+    let url = match std::env::var("DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => {
+            #[cfg(feature = "testcontainers")]
+            {
+                get_or_start_test_container().await?
+            }
+            #[cfg(not(feature = "testcontainers"))]
+            {
+                return Err("DATABASE_URL not set (enable 'testcontainers' feature for auto-provisioning)".to_string());
+            }
+        }
+    };
     let pool = db::create_pool(&url)?;
     db::run_migrations(&pool).await?;
     Ok(pool)
+}
+
+/// Shared testcontainer: started once per process, reused across all tests.
+#[cfg(feature = "testcontainers")]
+static TEST_DB_URL: tokio::sync::OnceCell<Result<String, String>> =
+    tokio::sync::OnceCell::const_new();
+
+#[cfg(feature = "testcontainers")]
+async fn get_or_start_test_container() -> Result<String, String> {
+    TEST_DB_URL
+        .get_or_init(|| async {
+            use testcontainers::runners::AsyncRunner;
+            use testcontainers_modules::postgres::Postgres;
+
+            let container = match Postgres::default().start().await {
+                Ok(c) => c,
+                Err(e) => {
+                    return Err(format!(
+                        "failed to start PostgreSQL container (is Docker running?): {}",
+                        e
+                    ));
+                }
+            };
+
+            let host = container.get_host().await.map_err(|e| e.to_string())?;
+            let port = container
+                .get_host_port_ipv4(5432)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            // Leak the container so it lives for the process lifetime.
+            // Docker cleans up when the process exits.
+            Box::leak(Box::new(container));
+
+            Ok(format!(
+                "host={host} port={port} user=postgres password=postgres dbname=postgres"
+            ))
+        })
+        .await
+        .clone()
 }
 
 /// Create a test session, returning its ID.

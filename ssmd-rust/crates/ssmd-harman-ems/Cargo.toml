@@ -19,3 +19,4 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+harman = { path = "../harman", features = ["testcontainers"] }
