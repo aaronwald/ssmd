@@ -2051,6 +2051,60 @@ route("GET", "/v1/data/nats-health", async () => {
   }
 }, true, "datasets:read", "internal");
 
+// NATS stream utilization — per-stream capacity and freshness
+route("GET", "/v1/data/nats-streams", async () => {
+  const natsHost = Deno.env.get("NATS_MONITOR_URL") ?? "http://nats-headless.nats.svc.cluster.local:8222";
+
+  try {
+    const resp = await fetch(`${natsHost}/jsz?streams=true`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!resp.ok) {
+      return json({ error: `NATS monitoring returned ${resp.status}` }, 502);
+    }
+    // deno-lint-ignore no-explicit-any
+    const jsz: any = await resp.json();
+
+    const now = Date.now();
+    // deno-lint-ignore no-explicit-any
+    const streams: Record<string, any>[] = [];
+    for (const acct of jsz.account_details ?? []) {
+      for (const s of acct.stream_detail ?? []) {
+        const state = s.state ?? {};
+        const config = s.config ?? {};
+        const bytes = state.bytes ?? 0;
+        const maxBytes = config.max_bytes ?? 0;
+        const lastTs = state.last_ts ? new Date(state.last_ts).getTime() : null;
+        streams.push({
+          name: s.name,
+          bytes,
+          max_bytes: maxBytes,
+          utilization_pct: maxBytes > 0 ? Math.round((bytes / maxBytes) * 1000) / 10 : 0,
+          messages: state.messages ?? 0,
+          consumer_count: state.consumer_count ?? 0,
+          last_ts: state.last_ts ?? null,
+          last_message_age_secs: lastTs ? Math.round((now - lastTs) / 1000) : null,
+          num_subjects: state.num_subjects ?? 0,
+        });
+      }
+    }
+
+    // Sort by utilization descending
+    streams.sort((a, b) => (b.utilization_pct as number) - (a.utilization_pct as number));
+
+    return json({
+      checked_at: new Date().toISOString(),
+      streams,
+    });
+  } catch (err) {
+    return json({
+      error: err instanceof Error ? err.message : String(err),
+      checked_at: new Date().toISOString(),
+      streams: [],
+    }, 502);
+  }
+}, true, "datasets:read", "internal");
+
 // Live price snapshots from Redis (populated by ssmd-snap)
 route("GET", "/v1/data/snap", async (req) => {
   const auth = (req as Request & { auth: AuthInfo }).auth;
