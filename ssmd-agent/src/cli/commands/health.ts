@@ -1179,10 +1179,11 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
 
   try {
     // Phase 1: Score connector feeds in parallel
-    const [kalshi, kalshiSports, kraken, archive] = await Promise.all([
+    const [kalshi, kalshiSports, kraken, krakenSpot, archive] = await Promise.all([
       scoreConnectorFeed("kalshi-crypto", "PROD_KALSHI_CRYPTO", nc),
       scoreConnectorFeed("kalshi-sports", "PROD_KALSHI_SPORTS", nc),
       scoreConnectorFeed("kraken-futures", "PROD_KRAKEN_FUTURES", nc),
+      scoreConnectorFeed("kraken-spot", "PROD_KRAKEN_SPOT", nc),
       scoreArchiveSync(sql),
     ]);
 
@@ -1234,10 +1235,11 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     let composite: number;
     if (hasPhase2) {
       composite = Math.round(
-        kalshi.score * 0.25 +
+        kalshi.score * 0.20 +
         kalshiSports.score * 0.10 +
-        kraken.score * 0.20 +
-        archive.score * 0.10 +
+        kraken.score * 0.15 +
+        krakenSpot.score * 0.15 +
+        archive.score * 0.05 +
         completenessAvg * 0.15 +
         parquetAvg * 0.10 +
         slaAvg * 0.10
@@ -1245,9 +1247,10 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     } else {
       // Fallback to Phase 1 weights when gcloud not available
       composite = Math.round(
-        kalshi.score * 0.35 +
-        kalshiSports.score * 0.15 +
-        kraken.score * 0.30 +
+        kalshi.score * 0.30 +
+        kalshiSports.score * 0.10 +
+        kraken.score * 0.20 +
+        krakenSpot.score * 0.20 +
         archive.score * 0.20
       );
     }
@@ -1255,9 +1258,11 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     // Check hard RED overrides
     const issues: string[] = [];
     if (!kalshi.details.streamHasData) issues.push("Kalshi stream has no data");
-    if (!kraken.details.streamHasData) issues.push("Kraken stream has no data");
+    if (!kraken.details.streamHasData) issues.push("Kraken Futures stream has no data");
+    if (!krakenSpot.details.streamHasData) issues.push("Kraken Spot stream has no data");
     if (kalshi.score === 0) issues.push("Kalshi connector score is zero");
-    if (kraken.score === 0) issues.push("Kraken connector score is zero");
+    if (kraken.score === 0) issues.push("Kraken Futures connector score is zero");
+    if (krakenSpot.score === 0) issues.push("Kraken Spot connector score is zero");
     if (archive.score === 0) issues.push("No DQ scores found — GCS archive may not be syncing");
 
     // Phase 2 RED overrides
@@ -1281,6 +1286,7 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       feeds: {
         "kalshi-crypto": { score: kalshi.score, ...kalshi.details },
         "kraken-futures": { score: kraken.score, ...kraken.details },
+        "kraken-spot": { score: krakenSpot.score, ...krakenSpot.details },
         "kalshi-sports": { score: kalshiSports.score, ...kalshiSports.details },
         "archive-sync": { score: archive.score, ...archive.details },
         ...(hasPhase2 ? {
@@ -1315,6 +1321,7 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       }[] = [
         { feed: "kalshi-crypto", score: kalshi.score, details: kalshi.details },
         { feed: "kraken-futures", score: kraken.score, details: kraken.details },
+        { feed: "kraken-spot", score: krakenSpot.score, details: krakenSpot.details },
         { feed: "kalshi-sports", score: kalshiSports.score, details: kalshiSports.details },
         { feed: "archive-sync", score: archive.score, details: archive.details },
       ];
