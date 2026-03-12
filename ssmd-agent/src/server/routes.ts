@@ -2323,15 +2323,26 @@ route("GET", "/v1/monitor/markets", async (req) => {
             if (typeof snap.last === "number") market.last = snap.last;
             if (snap.funding_rate != null) market.funding_rate = snap.funding_rate;
           } else {
-            // Kalshi: snap data is nested in msg object, convert cents to dollars
+            // Kalshi: snap data is nested in msg object
+            // Old format: yes_bid/yes_ask/price (integer cents)
+            // New format: yes_bid_dollars/yes_ask_dollars/price_dollars (string dollars)
             const snapData = snap.msg ?? snap;
-            for (const field of ["yes_bid", "yes_ask", "price"]) {
-              if (typeof snapData[field] === "number") {
-                market[field === "price" ? "last" : field] = snapData[field] / 100;
+            const fieldMap: [string, string, string][] = [
+              ["yes_bid", "yes_bid_dollars", "yes_bid"],
+              ["yes_ask", "yes_ask_dollars", "yes_ask"],
+              ["price", "price_dollars", "last"],
+            ];
+            for (const [oldField, newField, outField] of fieldMap) {
+              if (typeof snapData[oldField] === "number") {
+                market[outField] = snapData[oldField] / 100;
+              } else if (snapData[newField] != null) {
+                market[outField] = Number(snapData[newField]);
               }
             }
-            if (typeof snapData.volume === "number") market.volume = snapData.volume;
-            if (typeof snapData.open_interest === "number") market.open_interest = snapData.open_interest;
+            const vol = snapData.volume ?? snapData.volume_fp;
+            if (vol != null) market.volume = Number(vol);
+            const oi = snapData.open_interest ?? snapData.open_interest_fp;
+            if (oi != null) market.open_interest = Number(oi);
           }
         } catch {
           // skip unparseable snap
@@ -2540,14 +2551,20 @@ route("POST", "/v1/monitor/watchlist", async (req) => {
             if (snap.price != null) entry.last = Number(snap.price);
             if (snap._snap_at) entry.snap_at = snap._snap_at;
           } else {
-            // Kalshi: snap data nested in msg, convert cents to dollars
+            // Kalshi: snap data nested in msg
+            // Old format: yes_bid/yes_ask/price (integer cents)
+            // New format: yes_bid_dollars/yes_ask_dollars/price_dollars (string dollars)
             const msg = snap.msg ?? snap;
             if (typeof msg.yes_bid === "number") entry.yes_bid = msg.yes_bid / 100;
+            else if (msg.yes_bid_dollars != null) entry.yes_bid = Number(msg.yes_bid_dollars);
             if (typeof msg.yes_ask === "number") entry.yes_ask = msg.yes_ask / 100;
+            else if (msg.yes_ask_dollars != null) entry.yes_ask = Number(msg.yes_ask_dollars);
             if (typeof msg.price === "number") entry.last = msg.price / 100;
             else if (msg.price_dollars != null) entry.last = Number(msg.price_dollars);
-            if (typeof msg.volume === "number") entry.volume = msg.volume;
-            if (typeof msg.open_interest === "number") entry.open_interest = msg.open_interest;
+            const vol = msg.volume ?? msg.volume_fp;
+            if (vol != null) entry.volume = Number(vol);
+            const oi = msg.open_interest ?? msg.open_interest_fp;
+            if (oi != null) entry.open_interest = Number(oi);
             entry.snap_at = msg._snap_at ?? snap._snap_at ?? null;
           }
         } catch { /* skip unparseable snap */ }

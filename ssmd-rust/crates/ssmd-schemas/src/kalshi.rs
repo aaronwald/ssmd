@@ -20,6 +20,47 @@ fn append_optional_i64(builder: &mut Int64Builder, value: Option<&serde_json::Va
     }
 }
 
+/// Helper to append an optional i64 from either an integer field or a dollar-string field.
+/// Kalshi changed their WS format: old = integer cents, new = dollar string like "0.9700".
+fn append_cents_or_dollars(
+    builder: &mut Int64Builder,
+    msg: &serde_json::Value,
+    cents_field: &str,
+    dollars_field: &str,
+) {
+    if let Some(v) = msg.get(cents_field).and_then(|v| v.as_i64()) {
+        builder.append_value(v);
+    } else if let Some(d) = msg
+        .get(dollars_field)
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+    {
+        builder.append_value((d * 100.0).round() as i64);
+    } else {
+        builder.append_null();
+    }
+}
+
+/// Helper to append an optional i64 from either an integer field or an fp-string field.
+fn append_int_or_fp(
+    builder: &mut Int64Builder,
+    msg: &serde_json::Value,
+    int_field: &str,
+    fp_field: &str,
+) {
+    if let Some(v) = msg.get(int_field).and_then(|v| v.as_i64()) {
+        builder.append_value(v);
+    } else if let Some(d) = msg
+        .get(fp_field)
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+    {
+        builder.append_value(d as i64);
+    } else {
+        builder.append_null();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // KalshiTickerSchema
 // ---------------------------------------------------------------------------
@@ -109,13 +150,13 @@ impl MessageSchema for KalshiTickerSchema {
             };
 
             market_ticker.append_value(ticker);
-            append_optional_i64(&mut yes_bid, msg.get("yes_bid"));
-            append_optional_i64(&mut yes_ask, msg.get("yes_ask"));
-            append_optional_i64(&mut no_bid, msg.get("no_bid"));
-            append_optional_i64(&mut no_ask, msg.get("no_ask"));
-            append_optional_i64(&mut last_price, msg.get("price"));
-            append_optional_i64(&mut volume, msg.get("volume"));
-            append_optional_i64(&mut open_interest, msg.get("open_interest"));
+            append_cents_or_dollars(&mut yes_bid, msg, "yes_bid", "yes_bid_dollars");
+            append_cents_or_dollars(&mut yes_ask, msg, "yes_ask", "yes_ask_dollars");
+            append_cents_or_dollars(&mut no_bid, msg, "no_bid", "no_bid_dollars");
+            append_cents_or_dollars(&mut no_ask, msg, "no_ask", "no_ask_dollars");
+            append_cents_or_dollars(&mut last_price, msg, "price", "price_dollars");
+            append_int_or_fp(&mut volume, msg, "volume", "volume_fp");
+            append_int_or_fp(&mut open_interest, msg, "open_interest", "open_interest_fp");
             ts.append_value(ts_secs * 1_000_000);
             append_optional_i64(&mut exchange_clock, msg.get("Clock"));
             append_optional_i64(&mut sid, json.get("sid"));
@@ -561,6 +602,42 @@ mod tests {
             .downcast_ref::<Int64Array>()
             .unwrap();
         assert!(col.is_null(0));
+    }
+
+    #[test]
+    fn test_parse_kalshi_ticker_dollar_strings() {
+        let schema = KalshiTickerSchema;
+        // New Kalshi format: dollar strings instead of integer cents
+        let json = br#"{"type":"ticker","sid":1,"msg":{"market_ticker":"KXBTCD-26MAR1317-T65499.99","yes_bid_dollars":"0.9700","yes_ask_dollars":"0.9900","no_bid_dollars":"0.0100","no_ask_dollars":"0.0300","price_dollars":"0.9700","volume_fp":"27816.00","open_interest_fp":"13018.00","ts":1773336904,"Clock":18264349316},"_shard_id":1}"#;
+        let batch = schema
+            .parse_batch(&[(json.to_vec(), 42, 1773336904_000_000)])
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+
+        // yes_bid: "0.9700" → 97 cents
+        let col = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(col.value(0), 97);
+
+        // yes_ask: "0.9900" → 99 cents
+        let col = batch.column(2).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(col.value(0), 99);
+
+        // no_bid: "0.0100" → 1 cent
+        let col = batch.column(3).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(col.value(0), 1);
+
+        // last_price: "0.9700" → 97 cents
+        let col = batch.column(5).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(col.value(0), 97);
+
+        // volume: "27816.00" → 27816
+        let col = batch.column(6).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(col.value(0), 27816);
+
+        // open_interest: "13018.00" → 13018
+        let col = batch.column(7).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(col.value(0), 13018);
     }
 
     #[test]
