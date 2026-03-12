@@ -116,12 +116,30 @@ pub struct TickerData {
 }
 
 /// Trade execution data
+///
+/// Supports both old format (price/count as integers) and new format
+/// (yes_price_dollars/count_fp as strings). The connector forwards raw JSON
+/// to NATS — this struct is only used for routing and metrics.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TradeData {
     pub market_ticker: String,
-    #[serde(alias = "yes_price")]
-    pub price: i64,
-    pub count: i64,
+    #[serde(default)]
+    pub trade_id: Option<String>,
+    /// Old format: integer cents (alias yes_price)
+    #[serde(default, alias = "yes_price")]
+    pub price: Option<i64>,
+    /// New format: dollar string (e.g. "0.8900")
+    #[serde(default)]
+    pub yes_price_dollars: Option<String>,
+    /// New format: no-side dollar string (e.g. "0.1100")
+    #[serde(default)]
+    pub no_price_dollars: Option<String>,
+    /// Old format: integer count
+    #[serde(default)]
+    pub count: Option<i64>,
+    /// New format: string count (e.g. "3.00")
+    #[serde(default)]
+    pub count_fp: Option<String>,
     #[serde(alias = "taker_side")]
     pub side: String,
     #[serde(deserialize_with = "deserialize_unix_timestamp")]
@@ -198,8 +216,11 @@ mod tests {
     /// Ticker with zero/empty price fields
     const TICKER_ZERO_PRICE: &str = r#"{"type":"ticker","sid":1,"msg":{"market_id":"5f2c3445-bdee-42d8-a8ae-648dd1fedb22","market_ticker":"KXBRASILEIROGAME-25NOV29CEACRU-CRU","price":0,"yes_bid":37,"yes_ask":43,"price_dollars":"","yes_bid_dollars":"0.3700","yes_ask_dollars":"0.4300","volume":0,"open_interest":0,"dollar_volume":0,"dollar_open_interest":0,"ts":1732579880,"Clock":6598272643}}"#;
 
-    /// Trade message
+    /// Trade message (old format — integer cents)
     const TRADE_MESSAGE: &str = r#"{"type":"trade","sid":1,"msg":{"market_ticker":"KXTEST-123","price":50,"count":10,"side":"yes","ts":1732579880}}"#;
+
+    /// Trade message (new format — dollar strings, count_fp, trade_id)
+    const TRADE_MESSAGE_NEW: &str = r#"{"type":"trade","sid":2,"seq":2573,"msg":{"trade_id":"5d937db7-0c71-43cb-0b60-b56a4387af64","market_ticker":"KXBTCD-26MAR1213-T69499.99","yes_price_dollars":"0.8900","no_price_dollars":"0.1100","count_fp":"3.00","taker_side":"yes","ts":1773331880}}"#;
 
     /// Subscribed confirmation message (without msg - older format)
     const SUBSCRIBED_MESSAGE: &str = r#"{"type":"subscribed","id":1}"#;
@@ -253,10 +274,36 @@ mod tests {
         match msg {
             WsMessage::Trade { msg } => {
                 assert_eq!(msg.market_ticker, "KXTEST-123");
-                assert_eq!(msg.price, 50);
-                assert_eq!(msg.count, 10);
+                assert_eq!(msg.price, Some(50));
+                assert_eq!(msg.count, Some(10));
                 assert_eq!(msg.side, "yes");
                 assert_eq!(msg.ts.timestamp(), 1732579880);
+                assert!(msg.trade_id.is_none());
+                assert!(msg.yes_price_dollars.is_none());
+            }
+            _ => panic!("Expected Trade variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_trade_message_new_format() {
+        let msg: WsMessage =
+            serde_json::from_str(TRADE_MESSAGE_NEW).expect("Failed to parse new trade format");
+
+        match msg {
+            WsMessage::Trade { msg } => {
+                assert_eq!(msg.market_ticker, "KXBTCD-26MAR1213-T69499.99");
+                assert_eq!(
+                    msg.trade_id.as_deref(),
+                    Some("5d937db7-0c71-43cb-0b60-b56a4387af64")
+                );
+                assert!(msg.price.is_none()); // not sent in new format
+                assert_eq!(msg.yes_price_dollars.as_deref(), Some("0.8900"));
+                assert_eq!(msg.no_price_dollars.as_deref(), Some("0.1100"));
+                assert!(msg.count.is_none()); // not sent in new format
+                assert_eq!(msg.count_fp.as_deref(), Some("3.00"));
+                assert_eq!(msg.side, "yes");
+                assert_eq!(msg.ts.timestamp(), 1773331880);
             }
             _ => panic!("Expected Trade variant"),
         }

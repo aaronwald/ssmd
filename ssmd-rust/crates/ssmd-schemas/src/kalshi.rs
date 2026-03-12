@@ -229,7 +229,7 @@ impl MessageSchema for KalshiTradeSchema {
                     continue;
                 }
             };
-            // Kalshi WS sends "yes_price", connector aliases to "price"
+            // Kalshi WS sends "yes_price" (int cents) or "yes_price_dollars" (string)
             let p = match msg
                 .get("yes_price")
                 .or_else(|| msg.get("price"))
@@ -237,22 +237,42 @@ impl MessageSchema for KalshiTradeSchema {
             {
                 Some(v) => v,
                 None => {
-                    error!(
-                        ticker = ticker,
-                        "Kalshi trade missing 'yes_price'/'price', skipping"
-                    );
-                    continue;
+                    // New format: yes_price_dollars is a dollar string like "0.8900"
+                    match msg
+                        .get("yes_price_dollars")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .map(|d| (d * 100.0).round() as i64)
+                    {
+                        Some(v) => v,
+                        None => {
+                            error!(
+                                ticker = ticker,
+                                "Kalshi trade missing price field, skipping"
+                            );
+                            continue;
+                        }
+                    }
                 }
             };
+            // Kalshi WS sends "count" (int) or "count_fp" (string like "3.00")
             let c = match msg.get("count").and_then(|v| v.as_i64()) {
                 Some(v) => v,
-                None => {
-                    error!(
-                        ticker = ticker,
-                        "Kalshi trade missing 'count', skipping"
-                    );
-                    continue;
-                }
+                None => match msg
+                    .get("count_fp")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(|d| d as i64)
+                {
+                    Some(v) => v,
+                    None => {
+                        error!(
+                            ticker = ticker,
+                            "Kalshi trade missing count field, skipping"
+                        );
+                        continue;
+                    }
+                },
             };
             // Kalshi WS sends "taker_side", connector aliases to "side"
             let s = match msg

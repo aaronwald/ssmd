@@ -174,11 +174,17 @@ fn check_kalshi(msg_type: &str, json: &serde_json::Value) -> Vec<&'static str> {
                 .or_else(|| msg.get("price"))
                 .and_then(|v| v.as_i64())
                 .is_none()
+                && msg
+                    .get("yes_price_dollars")
+                    .and_then(|v| v.as_str())
+                    .is_none()
             {
-                missing.push("msg.yes_price|price");
+                missing.push("msg.yes_price|price|yes_price_dollars");
             }
-            if msg.get("count").and_then(|v| v.as_i64()).is_none() {
-                missing.push("msg.count");
+            if msg.get("count").and_then(|v| v.as_i64()).is_none()
+                && msg.get("count_fp").and_then(|v| v.as_str()).is_none()
+            {
+                missing.push("msg.count|count_fp");
             }
             if msg
                 .get("taker_side")
@@ -394,8 +400,8 @@ mod tests {
         let result = v.validate(&json);
         assert!(!result.is_valid());
         assert!(result.missing_fields.contains(&"msg.trade_id"));
-        assert!(result.missing_fields.contains(&"msg.yes_price|price"));
-        assert!(result.missing_fields.contains(&"msg.count"));
+        assert!(result.missing_fields.contains(&"msg.yes_price|price|yes_price_dollars"));
+        assert!(result.missing_fields.contains(&"msg.count|count_fp"));
         assert!(result.missing_fields.contains(&"msg.taker_side|side"));
         assert!(result.missing_fields.contains(&"msg.ts"));
     }
