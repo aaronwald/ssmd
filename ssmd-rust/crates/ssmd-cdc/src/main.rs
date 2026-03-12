@@ -126,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
 
                     if let Err(e) = publisher.publish(&event).await {
                         tracing::error!(error = ?e, table = %event.table, "Failed to publish event");
+                        metrics::CDC_PUBLISH_ERRORS.with_label_values(&[&event.table]).inc();
                     } else {
                         events_published += 1;
                         metrics::CDC_EVENTS_PUBLISHED.with_label_values(&[&event.table]).inc();

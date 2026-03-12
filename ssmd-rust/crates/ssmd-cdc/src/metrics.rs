@@ -45,6 +45,15 @@ pub static CDC_POLLS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     .expect("Failed to register cdc_polls_total metric")
 });
 
+pub static CDC_PUBLISH_ERRORS: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "ssmd_cdc_publish_errors_total",
+        "Total CDC events that failed to publish to NATS",
+        &["table"]
+    )
+    .expect("Failed to register cdc_publish_errors_total metric")
+});
+
 pub fn encode_metrics() -> Result<String, prometheus::Error> {
     let encoder = TextEncoder::new();
     let metric_families = prometheus::gather();
