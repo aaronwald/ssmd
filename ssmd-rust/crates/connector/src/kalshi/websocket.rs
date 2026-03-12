@@ -52,6 +52,13 @@ pub enum WebSocketError {
 
     #[error("Subscription failed: {0}")]
     SubscriptionFailed(String),
+
+    /// Message received but failed to parse — raw JSON preserved
+    #[error("Parse error: {error}")]
+    ParseFailed {
+        error: String,
+        raw_json: String,
+    },
 }
 
 /// Tracks subscription IDs (sids) returned by Kalshi for each subscribe command.
@@ -475,7 +482,10 @@ impl KalshiWebSocket {
                         }
                         Err(e) => {
                             warn!(error = %e, text = %text, "Failed to parse message");
-                            continue;
+                            return Err(WebSocketError::ParseFailed {
+                                error: e.to_string(),
+                                raw_json: text,
+                            });
                         }
                     }
                 }

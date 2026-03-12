@@ -501,6 +501,22 @@ impl KalshiConnector {
                                     break;
                                 }
                             }
+                            Err(WebSocketError::ParseFailed { error, raw_json }) => {
+                                shard_metrics.inc_parse_error();
+                                warn!(shard_id, error = %error, "Parse failed, forwarding raw JSON to NATS");
+                                // Still forward the raw JSON to NATS — don't lose data
+                                let mut forwarded = raw_json.into_bytes();
+                                if forwarded.last() == Some(&b'}') {
+                                    forwarded.pop();
+                                    forwarded.extend_from_slice(&shard_suffix);
+                                }
+                                if tx.send((now_tsc(), forwarded)).await.is_err() {
+                                    info!(shard_id, "Channel closed, stopping receiver");
+                                    shard_metrics.set_disconnected();
+                                    break;
+                                }
+                                continue;
+                            }
                             Err(e) => {
                                 let uptime_secs = connected_at.elapsed().as_secs();
                                 let reason = match &e {
