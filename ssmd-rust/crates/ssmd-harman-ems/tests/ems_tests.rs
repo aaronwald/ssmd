@@ -44,8 +44,8 @@ async fn setup() -> Option<(deadpool_postgres::Pool, i64)> {
             return None;
         }
     };
-    let unique_exchange = format!("ems-{}", Uuid::new_v4());
-    let session_id = db::get_or_create_session(&pool, &unique_exchange, "test", None)
+    let unique_env = format!("ems-{}", Uuid::new_v4());
+    let session_id = db::get_or_create_session(&pool, "test", &unique_env, None)
         .await
         .expect("create session");
     Some((pool, session_id))
