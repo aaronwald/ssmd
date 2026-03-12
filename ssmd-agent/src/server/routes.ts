@@ -2001,6 +2001,56 @@ route("GET", "/v1/data/freshness", async (req) => {
   });
 }, true, "datasets:read", "public");
 
+// NATS JetStream health — proxies NATS server monitoring API
+// /jsz response nests streams under account_details[].stream_detail[]
+route("GET", "/v1/data/nats-health", async () => {
+  const natsHost = Deno.env.get("NATS_MONITOR_URL") ?? "http://nats.nats.svc.cluster.local:8222";
+
+  try {
+    const resp = await fetch(`${natsHost}/jsz?streams=true`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!resp.ok) {
+      return json({ error: `NATS monitoring returned ${resp.status}` }, 502);
+    }
+    // deno-lint-ignore no-explicit-any
+    const jsz: any = await resp.json();
+
+    // Extract streams from account_details[].stream_detail[]
+    const streams: Record<string, unknown>[] = [];
+    for (const acct of jsz.account_details ?? []) {
+      for (const s of acct.stream_detail ?? []) {
+        const state = s.state ?? {};
+        streams.push({
+          name: s.name,
+          messages: state.messages ?? 0,
+          bytes: state.bytes ?? 0,
+          consumer_count: state.consumer_count ?? 0,
+          last_seq: state.last_seq ?? 0,
+          first_seq: state.first_seq ?? 0,
+          last_ts: state.last_ts ?? null,
+          num_subjects: state.num_subjects ?? 0,
+        });
+      }
+    }
+
+    return json({
+      checked_at: new Date().toISOString(),
+      server: jsz.server_id ?? null,
+      total_streams: jsz.total_streams ?? 0,
+      total_consumers: jsz.total_consumers ?? 0,
+      total_messages: jsz.total_messages ?? 0,
+      streams,
+    });
+  } catch (err) {
+    return json({
+      error: err instanceof Error ? err.message : String(err),
+      checked_at: new Date().toISOString(),
+      streams: [],
+    }, 502);
+  }
+}, true, "datasets:read", "internal");
+
 // Live price snapshots from Redis (populated by ssmd-snap)
 route("GET", "/v1/data/snap", async (req) => {
   const auth = (req as Request & { auth: AuthInfo }).auth;
