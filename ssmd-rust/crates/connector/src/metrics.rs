@@ -74,6 +74,16 @@ static MARKETS_UNSUBSCRIBED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("Failed to register markets_unsubscribed_total metric")
 });
 
+/// Total messages that failed to parse per shard
+static PARSE_ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "ssmd_connector_parse_errors_total",
+        "Total messages that failed to deserialize",
+        &[LABEL_FEED, LABEL_CATEGORY, LABEL_SHARD]
+    )
+    .expect("Failed to register parse_errors_total metric")
+});
+
 /// Idle seconds since last message per shard
 static IDLE_SECONDS: Lazy<GaugeVec> = Lazy::new(|| {
     register_gauge_vec!(
@@ -282,6 +292,13 @@ impl ShardMetrics {
             .with_label_values(&[&self.feed, &self.category, &self.shard_label])
             .inc();
     }
+
+    /// Record a message parse failure
+    pub fn inc_parse_error(&self) {
+        PARSE_ERRORS_TOTAL
+            .with_label_values(&[&self.feed, &self.category, &self.shard_label])
+            .inc();
+    }
 }
 
 /// Encode all metrics to Prometheus text format
@@ -350,5 +367,15 @@ mod tests {
 
         let output = encode_metrics().unwrap();
         assert!(output.contains("ssmd_connector_markets_unsubscribed_total"));
+    }
+
+    #[test]
+    fn test_parse_error_metrics() {
+        let connector_metrics = ConnectorMetrics::new("kalshi", "test_parse");
+        let shard_metrics = connector_metrics.for_shard(0);
+        shard_metrics.inc_parse_error();
+
+        let output = encode_metrics().unwrap();
+        assert!(output.contains("ssmd_connector_parse_errors_total"));
     }
 }
