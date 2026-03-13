@@ -132,6 +132,18 @@ function resolvePrice(dollars: string | undefined, cents: number | undefined): n
 }
 
 /**
+ * Map Kalshi API market status to our status enum.
+ * Kalshi uses various statuses for pre-open markets; we default unknown to "active".
+ */
+function mapMarketStatus(status: string | undefined): "active" | "closed" | "settled" {
+  if (!status) return "active";
+  if (status === "open" || status === "active") return "active";
+  if (status === "closed") return "closed";
+  if (status === "settled") return "settled";
+  return "active";
+}
+
+/**
  * Convert Kalshi API market to our Market type.
  * Prefers _dollars fields (new API), falls back to cents / 100 (legacy).
  */
@@ -140,7 +152,7 @@ export function fromKalshiMarket(km: KalshiMarket): Market {
     ticker: km.ticker,
     event_ticker: km.event_ticker,
     title: km.title ?? km.subtitle ?? km.ticker,
-    status: km.status === "active" ? "active" : km.status === "closed" ? "closed" : "settled",
+    status: mapMarketStatus(km.status),
     close_time: km.close_time ?? null,
     yes_bid: resolvePrice(km.yes_bid_dollars, km.yes_bid),
     yes_ask: resolvePrice(km.yes_ask_dollars, km.yes_ask),
