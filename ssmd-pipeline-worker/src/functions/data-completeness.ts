@@ -10,13 +10,11 @@ import type { CodeInput, CodeOutput } from "./mod.ts";
  * Params:
  *   freshnessStageIndex (number, default 0)
  *   validateStageIndex (number, default 1)
- *   minFilesPerFeed (number, default 1) — minimum JSONL files expected
  *   minRecords (number, default 1000) — minimum total records per source
  */
 export function dataCompleteness(input: CodeInput): CodeOutput {
   const freshIdx = (input.params?.freshnessStageIndex as number) ?? 0;
   const valIdx = (input.params?.validateStageIndex as number) ?? 1;
-  const minFiles = (input.params?.minFilesPerFeed as number) ?? 1;
   const minRecords = (input.params?.minRecords as number) ?? 1000;
 
   const issues: string[] = [];
@@ -30,7 +28,9 @@ export function dataCompleteness(input: CodeInput): CodeOutput {
         feed: string; status: string; newest_date: string; age_hours: number; stale: boolean;
       }> | undefined;
 
-      if (feeds) {
+      if (!feeds || !Array.isArray(feeds)) {
+        issues.push("Freshness response missing feeds array");
+      } else {
         for (const f of feeds) {
           if (f.stale) {
             issues.push(`${f.feed}: stale (${f.age_hours.toFixed(1)}h old)`);

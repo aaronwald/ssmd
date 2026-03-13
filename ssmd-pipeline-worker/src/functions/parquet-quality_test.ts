@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { parquetQuality } from "./parquet-quality.ts";
 import type { CodeInput } from "./mod.ts";
 

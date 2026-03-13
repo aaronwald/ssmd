@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { archiveFreshness } from "./archive-freshness.ts";
 import type { CodeInput } from "./mod.ts";
 

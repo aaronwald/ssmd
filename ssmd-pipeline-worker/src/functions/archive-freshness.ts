@@ -4,7 +4,7 @@ import type { CodeInput, CodeOutput } from "./mod.ts";
  * archive-freshness: validates all feeds are fresh in GCS.
  *
  * Expects a previous HTTP stage that called /v1/data/check-freshness.
- * Response shape: { feeds: [{ feed, status, age_hours, stale }] }
+ * HTTP stage output shape: { status, body: { feeds: [{ feed, status, age_hours, stale }] }, truncated }
  *
  * Params:
  *   freshnessStageIndex (number, default 0) — position of the HTTP stage
@@ -33,7 +33,7 @@ export function archiveFreshness(input: CodeInput): CodeOutput {
     return { result: { error: "No feeds array in freshness response" }, skip: false };
   }
 
-  const staleFeeds = feeds.filter((f) => f.stale || f.age_hours > maxAge);
+  const staleFeeds = feeds.filter((f) => f.age_hours > maxAge);
   const allFresh = staleFeeds.length === 0;
 
   return {

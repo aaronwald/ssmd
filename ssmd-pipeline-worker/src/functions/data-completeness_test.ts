@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { dataCompleteness } from "./data-completeness.ts";
 import type { CodeInput } from "./mod.ts";
 
@@ -73,6 +73,13 @@ Deno.test("data-completeness: validation zero tickers → issue", () => {
   assertEquals(result.skip, false);
   const issues = (result.result as Record<string, unknown>).issues as string[];
   assertEquals(issues.some((i: string) => i.includes("zero tickers")), true);
+});
+
+Deno.test("data-completeness: missing feeds array → issue", () => {
+  const result = dataCompleteness(makeInput({ noFeeds: true }));
+  assertEquals(result.skip, false);
+  const issues = (result.result as Record<string, unknown>).issues as string[];
+  assertEquals(issues.some((i: string) => i.includes("missing feeds array")), true);
 });
 
 Deno.test("data-completeness: no freshness output → issue", () => {
