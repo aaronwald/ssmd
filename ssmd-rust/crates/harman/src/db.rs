@@ -389,6 +389,24 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), String> {
         info!("migration 018_session_identity applied");
     }
 
+    // Check if 019 is applied
+    let row = client
+        .query_opt(
+            "SELECT version FROM schema_migrations WHERE version = '019_drop_exchange_check'",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("check migration 019: {}", e))?;
+
+    if row.is_none() {
+        let migration_019 = include_str!("../migrations/019_drop_exchange_check.sql");
+        client
+            .batch_execute(migration_019)
+            .await
+            .map_err(|e| format!("migration 019 failed: {}", e))?;
+        info!("migration 019_drop_exchange_check applied");
+    }
+
     info!("database migrations applied successfully");
     Ok(())
 }
