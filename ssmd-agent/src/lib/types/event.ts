@@ -56,26 +56,25 @@ export interface KalshiEvent {
 
 /**
  * Map Kalshi API event status to our status enum.
- * All known Kalshi statuses mapped explicitly — no catch-all.
+ * Kalshi events have 3 statuses (open, closed, settled) used as query filters.
+ * The API response does NOT include a status field — status is undefined when
+ * parsed from the response, meaning the event was returned by Kalshi and is alive.
  */
 function mapEventStatus(status: string | undefined): "active" | "closed" | "settled" {
   switch (status) {
     case "open":
     case "active":
+    case undefined:
       return "active";
     case "closed":
-    case "initialized":
-    case "inactive":
-    case "disputed":
-    case "amended":
       return "closed";
-    case "determined":
     case "settled":
+    case "determined":
     case "finalized":
       return "settled";
     default:
-      if (status) console.warn(`Unknown Kalshi event status: ${status}, defaulting to closed`);
-      return "closed";
+      console.warn(`Unknown Kalshi event status: ${status}, defaulting to active`);
+      return "active";
   }
 }
 

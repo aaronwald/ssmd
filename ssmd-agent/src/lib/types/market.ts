@@ -133,15 +133,16 @@ function resolvePrice(dollars: string | undefined, cents: number | undefined): n
 
 /**
  * Map Kalshi API market status to our status enum.
- * All 8 Kalshi statuses mapped explicitly — no catch-all.
+ * Markets have 8 statuses. `initialized` = pre-open (visible for monitoring).
+ * Only genuinely terminal statuses map to settled.
  */
 function mapMarketStatus(status: string | undefined): "active" | "closed" | "settled" {
   switch (status) {
     case "open":
     case "active":
+    case "initialized":
       return "active";
     case "closed":
-    case "initialized":
     case "inactive":
     case "disputed":
     case "amended":

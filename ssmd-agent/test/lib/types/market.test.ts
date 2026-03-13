@@ -166,7 +166,7 @@ Deno.test("fromKalshiMarket maps status correctly", () => {
     event_ticker: "E",
     status: "initialized",
   });
-  assertEquals(initializedMarket.status, "closed");
+  assertEquals(initializedMarket.status, "active");
 
   const unknownMarket = fromKalshiMarket({
     ticker: "G",
