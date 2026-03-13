@@ -49,14 +49,14 @@ Deno.test("data-completeness: validation low records → no skip", () => {
       ],
     },
     {
-      kraken_rest: { total_records: 500, ticker_count: 17 },
-      binance_5m: { total_records: 50000, ticker_count: 154 },
+      rest: { total_rows: 500, unique_tickers: 17 },
+      binance_5m: { total_rows: 50000, unique_tickers: 154 },
     },
     { minRecords: 1000 },
   ));
   assertEquals(result.skip, false);
   const issues = (result.result as Record<string, unknown>).issues as string[];
-  assertEquals(issues.some((i: string) => i.includes("kraken_rest")), true);
+  assertEquals(issues.some((i: string) => i.includes("rest")), true);
 });
 
 Deno.test("data-completeness: validation zero tickers → issue", () => {
@@ -67,7 +67,7 @@ Deno.test("data-completeness: validation zero tickers → issue", () => {
       ],
     },
     {
-      kraken_rest: { total_records: 5000, ticker_count: 0 },
+      rest: { total_rows: 5000, unique_tickers: 0 },
     },
   ));
   assertEquals(result.skip, false);

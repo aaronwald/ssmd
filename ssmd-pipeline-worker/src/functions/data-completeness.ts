@@ -54,17 +54,17 @@ export function dataCompleteness(input: CodeInput): CodeOutput {
       const parsed = JSON.parse(valStage.output);
       const body = parsed?.body;
 
-      // Check each source section
-      for (const source of ["kraken_rest", "kraken_ws", "binance_5m", "binance_1m"]) {
+      // Check each source section (HOLS validate returns rest, ws, binance_5m, binance_1m)
+      for (const source of ["rest", "ws", "binance_5m", "binance_1m"]) {
         const section = body?.[source];
         if (!section) continue;
 
-        const totalRecords = section.total_records ?? section.total_bars ?? 0;
+        const totalRecords = section.total_rows ?? section.total_records ?? section.total_bars ?? 0;
         if (totalRecords < minRecords) {
           issues.push(`${source}: only ${totalRecords} records (min ${minRecords})`);
         }
 
-        const tickers = section.ticker_count ?? section.tickers ?? 0;
+        const tickers = section.unique_tickers ?? section.ticker_count ?? section.tickers ?? 0;
         if (tickers === 0) {
           issues.push(`${source}: zero tickers`);
         }
