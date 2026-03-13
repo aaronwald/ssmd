@@ -62,6 +62,12 @@ Changed: {{stages.0.output.body.changed}}
 == SYSTEM CONTEXT ==
 {{stages.2.output.rows}}
 
+== CURRENT SCHEMA VERSIONS ==
+{{stages.3.output.body}}
+
+When you detect changes that could alter field semantics (type changes, field renames, unit changes), flag them with:
+- SCHEMA_VERSION_IMPACT: Which schemas are affected and why a version bump may be needed
+
 If changed is false, respond with exactly: "NO_CHANGE: Changelog unchanged, no action needed."
 Otherwise, analyze the differences between the previous and current changelog. Identify what changed and assess impact on our system.`;
 
@@ -96,6 +102,14 @@ Otherwise, analyze the differences between the previous and current changelog. I
         },
       },
       {
+        name: "Fetch schema versions",
+        stage_type: "http",
+        config: {
+          url: "http://ssmd-data-ts-internal:8081/v1/data/schema-versions",
+          method: "GET",
+        },
+      },
+      {
         name: "LLM analysis",
         stage_type: "openrouter",
         config: {
@@ -120,7 +134,7 @@ Otherwise, analyze the differences between the previous and current changelog. I
         config: {
           to: "aaronwald@gmail.com",
           subject: `EDC Report: ${exchange} — {{date}}`,
-          html: `<h1>EDC Report: ${exchange}</h1><p><strong>Date:</strong> {{date}}</p><p><strong>Changelog Changed:</strong> {{stages.0.output.body.changed}}</p><h2>LLM Analysis</h2><pre style="white-space: pre-wrap;">{{stages.3.output.content}}</pre><h2>Verification: Data Freshness</h2><pre style="white-space: pre-wrap;">{{stages.4.output.body}}</pre>`,
+          html: `<h1>EDC Report: ${exchange}</h1><p><strong>Date:</strong> {{date}}</p><p><strong>Changelog Changed:</strong> {{stages.0.output.body.changed}}</p><h2>LLM Analysis</h2><pre style="white-space: pre-wrap;">{{stages.4.output.content}}</pre><h2>Verification: Data Freshness</h2><pre style="white-space: pre-wrap;">{{stages.5.output.body}}</pre>`,
         },
       },
     ],

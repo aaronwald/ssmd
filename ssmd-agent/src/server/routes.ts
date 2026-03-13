@@ -1569,6 +1569,12 @@ route("GET", "/v1/data/catalog", async (req) => {
   });
 }, true, "datasets:read", "public");
 
+// Schema versions endpoint — static JSON mirroring Rust MessageSchema::schema_version()
+route("GET", "/v1/data/schema-versions", async () => {
+  const { default: schemaVersions } = await import("./schema-versions.json", { with: { type: "json" } });
+  return json(schemaVersions);
+}, true, "datasets:read", "public");
+
 // Data schemas endpoint — discover parquet column schemas
 route("GET", "/v1/data/schemas", async (req) => {
   const auth = (req as Request & { auth: AuthInfo }).auth;
