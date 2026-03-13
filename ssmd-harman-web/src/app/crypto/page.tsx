@@ -32,6 +32,14 @@ export default function CryptoPage() {
 
 // --- Helpers ---
 
+/** Best available time for an event: strike_date > expected_expiration_time > null */
+function eventTime(e: MonitorEvent): number | null {
+  const s = e.strike_date ?? e.expected_expiration_time ?? null;
+  if (!s) return null;
+  const t = new Date(s).getTime();
+  return isNaN(t) ? null : t;
+}
+
 function extractStrike(ticker: string): number {
   const match = ticker.match(/-T([\d.]+)$/);
   return match ? parseFloat(match[1]) : 0;
@@ -144,8 +152,12 @@ function CryptoContent() {
     if (!events) return [];
     const now = Date.now();
     return events
-      .filter((e) => e.status === "active" && e.strike_date && new Date(e.strike_date).getTime() > now)
-      .sort((a, b) => new Date(a.strike_date!).getTime() - new Date(b.strike_date!).getTime());
+      .filter((e) => {
+        if (e.status !== "active") return false;
+        const t = eventTime(e);
+        return t !== null && t > now;
+      })
+      .sort((a, b) => (eventTime(a) ?? 0) - (eventTime(b) ?? 0));
   }, [events]);
 
   // 4. Auto-select event: URL param > soonest closing
@@ -301,8 +313,9 @@ function EventCard({
   isSelected: boolean;
   onSelect: () => void;
 }) {
-  const countdown = useCountdown(event.strike_date ?? null);
-  const cdColor = countdownColor(event.strike_date ?? null);
+  const countdownTarget = event.strike_date ?? event.expected_expiration_time ?? null;
+  const countdown = useCountdown(countdownTarget);
+  const cdColor = countdownColor(countdownTarget);
 
   return (
     <button
@@ -314,7 +327,7 @@ function EventCard({
       }`}
     >
       <div className="text-sm font-medium text-fg">
-        {event.strike_date ? fmtEventTime(event.strike_date) : event.ticker}
+        {(event.strike_date ?? event.expected_expiration_time) ? fmtEventTime((event.strike_date ?? event.expected_expiration_time)!) : event.ticker}
       </div>
       <div className={`text-xs font-mono mt-1 ${cdColor}`}>
         {countdown}
