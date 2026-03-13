@@ -43,10 +43,10 @@ impl CacheWarmer {
     pub async fn warm_monitor_indexes(&self, cache: &RedisCache) -> Result<u64> {
         let start = std::time::Instant::now();
 
-        // DEL monitor hash keys before repopulating — clean slate every refresh.
-        // Hash keys need this because HSET doesn't remove stale fields (closed markets, etc.).
-        let deleted = cache.del_pattern("monitor:*").await?;
-        tracing::info!(deleted, "Cleared stale monitor hash keys");
+        // Write all data to :_tmp suffix keys, then atomically RENAME to final keys.
+        // This avoids the race where DEL-before-rebuild leaves empty results for readers.
+        let mut tmp_keys: Vec<String> = Vec::new();
+        let mut final_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         // 1. Categories: only categories that have events with live markets
         let cat_rows = self.client
@@ -71,6 +71,7 @@ impl CacheWarmer {
             .await?;
 
         let mut total_keys: u64 = 0;
+        let tmp_cat_key = "monitor:categories:_tmp".to_string();
         for row in &cat_rows {
             let category: String = row.get(0);
             let event_count: i64 = row.get(1);
@@ -79,10 +80,12 @@ impl CacheWarmer {
                 "event_count": event_count,
                 "series_count": series_count,
             });
-            cache.hset("monitor:categories", &category, &val.to_string()).await?;
+            cache.hset(&tmp_cat_key, &category, &val.to_string()).await?;
         }
+        tmp_keys.push(tmp_cat_key);
+        final_keys.insert("monitor:categories".to_string());
         total_keys += cat_rows.len() as u64;
-        tracing::info!(categories = cat_rows.len(), "Warmed monitor:categories (Kalshi)");
+        tracing::info!(categories = cat_rows.len(), "Warmed monitor:categories:_tmp (Kalshi)");
 
         // 2. Series per category: only series with live events/markets
         let series_rows = self.client
@@ -119,11 +122,15 @@ impl CacheWarmer {
                 "active_events": active_events,
                 "active_markets": active_markets,
             });
-            let hash_key = format!("monitor:series:{}", category);
-            cache.hset(&hash_key, &ticker, &val.to_string()).await?;
+            let tmp_key = format!("monitor:series:{}:_tmp", category);
+            let final_key = format!("monitor:series:{}", category);
+            cache.hset(&tmp_key, &ticker, &val.to_string()).await?;
+            if final_keys.insert(final_key) {
+                tmp_keys.push(tmp_key);
+            }
         }
         total_keys += series_rows.len() as u64;
-        tracing::info!(series_entries = series_rows.len(), "Warmed monitor:series:*");
+        tracing::info!(series_entries = series_rows.len(), "Warmed monitor:series:*:_tmp");
 
         // 3. Events per series: only events with live markets, with accurate market_count
         let event_rows = self.client
@@ -158,11 +165,15 @@ impl CacheWarmer {
                 "market_count": market_count,
                 "expected_expiration_time": expected_expiration_time,
             });
-            let hash_key = format!("monitor:events:{}", series_ticker);
-            cache.hset(&hash_key, &event_ticker, &val.to_string()).await?;
+            let tmp_key = format!("monitor:events:{}:_tmp", series_ticker);
+            let final_key = format!("monitor:events:{}", series_ticker);
+            cache.hset(&tmp_key, &event_ticker, &val.to_string()).await?;
+            if final_keys.insert(final_key) {
+                tmp_keys.push(tmp_key);
+            }
         }
         total_keys += event_rows.len() as u64;
-        tracing::info!(event_entries = event_rows.len(), "Warmed monitor:events:*");
+        tracing::info!(event_entries = event_rows.len(), "Warmed monitor:events:*:_tmp");
 
         // 4. Markets per event: only live markets (close_time in future)
         let market_rows = self.client
@@ -191,11 +202,15 @@ impl CacheWarmer {
                 "close_time": close_time,
                 "expected_expiration_time": expected_expiration_time,
             });
-            let hash_key = format!("monitor:markets:{}", event_ticker);
-            cache.hset(&hash_key, &market_ticker, &val.to_string()).await?;
+            let tmp_key = format!("monitor:markets:{}:_tmp", event_ticker);
+            let final_key = format!("monitor:markets:{}", event_ticker);
+            cache.hset(&tmp_key, &market_ticker, &val.to_string()).await?;
+            if final_keys.insert(final_key) {
+                tmp_keys.push(tmp_key);
+            }
         }
         total_keys += market_rows.len() as u64;
-        tracing::info!(market_entries = market_rows.len(), "Warmed monitor:markets:*");
+        tracing::info!(market_entries = market_rows.len(), "Warmed monitor:markets:*:_tmp");
 
         // 4b. Warm lifecycle events into existing market hashes
         let lifecycle_rows = self.client
@@ -237,15 +252,15 @@ impl CacheWarmer {
         let mut lifecycle_count = 0u64;
         for (market_ticker, events) in &lifecycle_by_market {
             let event_ticker = extract_event_ticker(market_ticker);
-            let hash_key = format!("monitor:markets:{}", event_ticker);
+            let tmp_key = format!("monitor:markets:{}:_tmp", event_ticker);
 
-            let existing: Option<String> = cache.hget(&hash_key, market_ticker).await.unwrap_or(None);
+            let existing: Option<String> = cache.hget(&tmp_key, market_ticker).await.unwrap_or(None);
             if let Some(existing_str) = existing {
                 if let Ok(mut market_json) = serde_json::from_str::<serde_json::Value>(&existing_str) {
                     if let Some(obj) = market_json.as_object_mut() {
                         obj.insert("lifecycle_events".to_string(), serde_json::json!(events));
                     }
-                    cache.hset(&hash_key, market_ticker, &market_json.to_string()).await?;
+                    cache.hset(&tmp_key, market_ticker, &market_json.to_string()).await?;
                     lifecycle_count += 1;
                 }
             }
@@ -257,10 +272,40 @@ impl CacheWarmer {
         );
 
         // 5. Kraken Futures pairs → merged into monitor hierarchy
-        total_keys += self.warm_pairs_monitor(cache).await?;
+        total_keys += self.warm_pairs_monitor(cache, &mut tmp_keys, &mut final_keys).await?;
 
         // 6. Polymarket conditions/tokens → merged into monitor hierarchy
-        total_keys += self.warm_polymarket_monitor(cache).await?;
+        total_keys += self.warm_polymarket_monitor(cache, &mut tmp_keys, &mut final_keys).await?;
+
+        // Atomic swap: RENAME each :_tmp key to its final name.
+        // Readers see either old complete data or new complete data, never empty.
+        let mut renamed = 0u64;
+        let mut empty_deleted = 0u64;
+        for tmp_key in &tmp_keys {
+            let final_key = tmp_key.trim_end_matches(":_tmp");
+            let len = cache.hlen(tmp_key).await?;
+            if len == 0 {
+                // No data written — clean up both tmp and final
+                let _ = cache.del_key(tmp_key).await;
+                let _ = cache.del_key(final_key).await;
+                empty_deleted += 1;
+            } else {
+                cache.rename_key(tmp_key, final_key).await?;
+                renamed += 1;
+            }
+        }
+        tracing::info!(renamed, empty_deleted, "Atomic RENAME :_tmp → final");
+
+        // Clean up stale monitor keys that weren't rebuilt
+        let existing_keys = cache.keys("monitor:*").await?;
+        let stale_keys: Vec<String> = existing_keys
+            .into_iter()
+            .filter(|k| !k.ends_with(":_tmp") && !final_keys.contains(k))
+            .collect();
+        if !stale_keys.is_empty() {
+            let stale_count = cache.del_keys(&stale_keys).await?;
+            tracing::info!(stale_count, "Deleted stale monitor keys");
+        }
 
         let elapsed = start.elapsed();
         tracing::info!(
@@ -279,7 +324,7 @@ impl CacheWarmer {
     ///   Series:   base currency group (BTC, ETH, etc.)
     ///   Event:    "{base}-perps" synthetic event for perpetuals
     ///   Market:   "kraken:{pair_id}" (e.g., "kraken:PF_XBTUSD")
-    async fn warm_pairs_monitor(&self, cache: &RedisCache) -> Result<u64> {
+    async fn warm_pairs_monitor(&self, cache: &RedisCache, tmp_keys: &mut Vec<String>, final_keys: &mut std::collections::HashSet<String>) -> Result<u64> {
         let rows = self.client
             .query(
                 r#"
@@ -315,7 +360,8 @@ impl CacheWarmer {
             "instrument_count": rows.len(),
             "base_count": base_groups.len(),
         });
-        cache.hset("monitor:categories", "Kraken Futures", &cat_val.to_string()).await?;
+        cache.hset("monitor:categories:_tmp", "Kraken Futures", &cat_val.to_string()).await?;
+        // monitor:categories:_tmp already tracked from Kalshi step
         total_keys += 1;
 
         // Series + Events + Markets per base currency
@@ -326,7 +372,12 @@ impl CacheWarmer {
                 "title": format!("{} Perpetuals", base),
                 "active_pairs": active_pairs,
             });
-            cache.hset("monitor:series:Kraken Futures", base, &series_val.to_string()).await?;
+            let tmp_series = "monitor:series:Kraken Futures:_tmp".to_string();
+            let final_series = "monitor:series:Kraken Futures".to_string();
+            cache.hset(&tmp_series, base, &series_val.to_string()).await?;
+            if final_keys.insert(final_series) {
+                tmp_keys.push(tmp_series);
+            }
             total_keys += 1;
 
             // Event: synthetic "{base}-perps"
@@ -335,12 +386,17 @@ impl CacheWarmer {
                 "title": format!("Active {} Perps", base),
                 "pair_count": active_pairs,
             });
-            let events_hash = format!("monitor:events:{}", base);
-            cache.hset(&events_hash, &event_key, &event_val.to_string()).await?;
+            let tmp_events = format!("monitor:events:{}:_tmp", base);
+            let final_events = format!("monitor:events:{}", base);
+            cache.hset(&tmp_events, &event_key, &event_val.to_string()).await?;
+            if final_keys.insert(final_events) {
+                tmp_keys.push(tmp_events);
+            }
             total_keys += 1;
 
             // Markets: each pair under the synthetic event
-            let markets_hash = format!("monitor:markets:{}", event_key);
+            let tmp_markets = format!("monitor:markets:{}:_tmp", event_key);
+            let final_markets = format!("monitor:markets:{}", event_key);
             for row in group {
                 let pair_id: String = row.get(0);
                 let market_type: String = row.get(3);
@@ -366,8 +422,11 @@ impl CacheWarmer {
                     "exchange": "kraken-futures",
                     "price_type": "asset_price",
                 });
-                cache.hset(&markets_hash, &market_key, &market_val.to_string()).await?;
+                cache.hset(&tmp_markets, &market_key, &market_val.to_string()).await?;
                 total_keys += 1;
+            }
+            if final_keys.insert(final_markets) {
+                tmp_keys.push(format!("monitor:markets:{}:_tmp", event_key));
             }
         }
 
@@ -387,7 +446,7 @@ impl CacheWarmer {
     ///   Series:   "PM:{category}" synthetic series
     ///   Event:    condition_id
     ///   Market:   token_id
-    async fn warm_polymarket_monitor(&self, cache: &RedisCache) -> Result<u64> {
+    async fn warm_polymarket_monitor(&self, cache: &RedisCache, tmp_keys: &mut Vec<String>, final_keys: &mut std::collections::HashSet<String>) -> Result<u64> {
         // Query active conditions with their tokens
         let condition_rows = self.client
             .query(
@@ -422,15 +481,16 @@ impl CacheWarmer {
 
         let mut total_keys: u64 = 0;
 
-        // Categories: merge PM condition counts into monitor:categories
+        // Categories: merge PM condition counts into monitor:categories:_tmp
         // Read-merge-write to preserve existing Kalshi fields (event_count, series_count)
         for (category, group) in &cat_groups {
-            let existing = cache.hget("monitor:categories", category).await?;
+            let existing = cache.hget("monitor:categories:_tmp", category).await?;
             let mut val: serde_json::Value = existing
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_else(|| serde_json::json!({}));
             val["pm_condition_count"] = serde_json::json!(group.len());
-            cache.hset("monitor:categories", category, &val.to_string()).await?;
+            cache.hset("monitor:categories:_tmp", category, &val.to_string()).await?;
+            // monitor:categories:_tmp already tracked from Kalshi step
             total_keys += 1;
 
             // Series: "PM:{category}" under each category
@@ -439,12 +499,17 @@ impl CacheWarmer {
                 "title": format!("Polymarket {}", category),
                 "active_conditions": group.len(),
             });
-            let series_hash = format!("monitor:series:{}", category);
-            cache.hset(&series_hash, &series_key, &series_val.to_string()).await?;
+            let tmp_series = format!("monitor:series:{}:_tmp", category);
+            let final_series_key = format!("monitor:series:{}", category);
+            cache.hset(&tmp_series, &series_key, &series_val.to_string()).await?;
+            if final_keys.insert(final_series_key) {
+                tmp_keys.push(tmp_series);
+            }
             total_keys += 1;
 
             // Events: each condition is an event under the PM series
-            let events_hash = format!("monitor:events:{}", series_key);
+            let tmp_events = format!("monitor:events:{}:_tmp", series_key);
+            let final_events = format!("monitor:events:{}", series_key);
             for row in group {
                 let condition_id: String = row.get(0);
                 let question: String = row.get(1);
@@ -464,8 +529,11 @@ impl CacheWarmer {
                     "exchange": "polymarket",
                     "price_type": "probability",
                 });
-                cache.hset(&events_hash, &condition_id, &event_val.to_string()).await?;
+                cache.hset(&tmp_events, &condition_id, &event_val.to_string()).await?;
                 total_keys += 1;
+            }
+            if final_keys.insert(final_events) {
+                tmp_keys.push(format!("monitor:events:{}:_tmp", series_key));
             }
         }
 
@@ -498,8 +566,12 @@ impl CacheWarmer {
                 "exchange": "polymarket",
                 "price_type": "probability",
             });
-            let markets_hash = format!("monitor:markets:{}", condition_id);
-            cache.hset(&markets_hash, &token_id, &market_val.to_string()).await?;
+            let tmp_markets = format!("monitor:markets:{}:_tmp", condition_id);
+            let final_markets = format!("monitor:markets:{}", condition_id);
+            cache.hset(&tmp_markets, &token_id, &market_val.to_string()).await?;
+            if final_keys.insert(final_markets) {
+                tmp_keys.push(tmp_markets);
+            }
             total_keys += 1;
         }
 

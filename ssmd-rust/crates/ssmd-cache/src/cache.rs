@@ -67,6 +67,45 @@ impl RedisCache {
         Ok(())
     }
 
+    /// RENAME a key atomically. Returns error if `from` does not exist.
+    pub async fn rename_key(&self, from: &str, to: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        redis::cmd("RENAME").arg(from).arg(to).query_async::<()>(&mut conn).await?;
+        Ok(())
+    }
+
+    /// Get all keys matching a pattern.
+    /// Uses KEYS command — safe for small keyspaces (monitor:* has ~200 keys).
+    pub async fn keys(&self, pattern: &str) -> Result<Vec<String>> {
+        let mut conn = self.conn.clone();
+        let keys: Vec<String> = redis::cmd("KEYS")
+            .arg(pattern)
+            .query_async(&mut conn)
+            .await?;
+        Ok(keys)
+    }
+
+    /// HLEN — return number of fields in a hash
+    pub async fn hlen(&self, hash_key: &str) -> Result<u64> {
+        let mut conn = self.conn.clone();
+        let len: u64 = conn.hlen(hash_key).await?;
+        Ok(len)
+    }
+
+    /// DEL multiple keys at once
+    pub async fn del_keys(&self, keys: &[String]) -> Result<u64> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn.clone();
+        let mut pipe = redis::pipe();
+        for key in keys {
+            pipe.del(key);
+        }
+        pipe.query_async::<()>(&mut conn).await?;
+        Ok(keys.len() as u64)
+    }
+
     /// DEL all keys matching a pattern.
     /// Uses KEYS command — safe for small keyspaces (monitor:* has ~200 keys).
     pub async fn del_pattern(&self, pattern: &str) -> Result<u64> {
