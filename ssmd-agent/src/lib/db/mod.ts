@@ -205,4 +205,5 @@ export {
   pipelineStages,
   pipelineRuns,
   pipelineStageResults,
+  edcMemories,
 } from "./schema.ts";

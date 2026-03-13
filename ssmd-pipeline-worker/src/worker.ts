@@ -8,6 +8,7 @@ import { executeHttp } from "./stages/http.ts";
 import { executeGcsCheck } from "./stages/gcs_check.ts";
 import { executeOpenRouter } from "./stages/openrouter.ts";
 import { executeEmail } from "./stages/email.ts";
+import { executeCode } from "./stages/code.ts";
 import { resolveTemplate } from "./template.ts";
 import type { TemplateContext } from "./template.ts";
 import type { StageConfig } from "./types.ts";
@@ -45,6 +46,7 @@ export async function startWorker(config: WorkerConfig): Promise<void> {
   registerHandler("gcs_check", executeGcsCheck);
   registerHandler("openrouter", executeOpenRouter);
   registerHandler("email", (cfg, ctx, signal) => executeEmail(cfg, ctx, signal, ctx.pipelineId?.toString()));
+  registerHandler("code", executeCode);
 
   // Create postgres connections
   const sql = postgres(config.databaseUrl, {
@@ -192,6 +194,11 @@ async function executeRun(
     // Resolve templates in stage config
     const resolvedConfig = resolveStageConfig(stageConfig as StageConfig, templateCtx);
 
+    // Inject template context for code stages so functions can access previous stage outputs
+    if (stage.stage_type === "code") {
+      resolvedConfig._context = templateCtx;
+    }
+
     // Execute the stage
     const result = await executeStage(stage.stage_type, resolvedConfig, ctx);
 
@@ -219,6 +226,33 @@ async function executeRun(
         `[worker] run=${run.id} stage=${stage.position}/${stage.name} failed: ${result.error}`,
       );
       runFailed = true;
+      break;
+    }
+
+    // Check if code stage signaled skip — mark remaining stages as skipped
+    const shouldSkip = result.output != null &&
+      typeof result.output === "object" &&
+      (result.output as Record<string, unknown>).skip === true;
+
+    if (shouldSkip) {
+      console.log(
+        `[worker] run=${run.id} stage=${stage.position}/${stage.name} signaled skip`,
+      );
+      const currentIdx = stages.indexOf(stage);
+      for (const remaining of stages.slice(currentIdx + 1)) {
+        const skipTime = new Date();
+        await insertStageResult(
+          sql,
+          run.id,
+          remaining.id,
+          "skipped",
+          remaining.config as StageConfig,
+          null,
+          null,
+          skipTime,
+          skipTime,
+        );
+      }
       break;
     }
 

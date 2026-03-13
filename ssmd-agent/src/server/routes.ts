@@ -59,6 +59,7 @@ import {
   pipelineStages,
   pipelineRuns,
   pipelineStageResults,
+  edcMemories,
   getRawSql,
   type Database,
 } from "../lib/db/mod.ts";
@@ -3708,6 +3709,78 @@ route("POST", "/v1/internal/email", async (req, _ctx) => {
 
   await transporter.sendMail({ from: user, to, subject, html });
   return json({ sent: true });
+}, true, "admin:write");
+
+// Record a fix after an EDC-detected issue
+route("POST", "/v1/internal/edc-memory", async (req, ctx) => {
+  const body = await req.json();
+  const { exchange, changelog_summary, impact, affected_components, fix_description } = body;
+
+  if (!exchange || !changelog_summary || !impact || !affected_components || !fix_description) {
+    return json({ error: "All fields required: exchange, changelog_summary, impact, affected_components, fix_description" }, 400);
+  }
+
+  const [memory] = await ctx.db.insert(edcMemories).values({
+    exchange,
+    changelogSummary: changelog_summary,
+    impact,
+    affectedComponents: affected_components,
+    fixDescription: fix_description,
+  }).returning();
+
+  return json(memory, 201);
+}, true, "admin:write");
+
+// List EDC memories
+route("GET", "/v1/internal/edc-memories", async (req) => {
+  const url = new URL(req.url);
+  const exchange = url.searchParams.get("exchange");
+  const limit = parseInt(url.searchParams.get("limit") ?? "20");
+
+  const rawSql = getRawSql();
+  let rows;
+  if (exchange) {
+    rows = await rawSql`SELECT * FROM edc_memories WHERE exchange = ${exchange} ORDER BY created_at DESC LIMIT ${limit}`;
+  } else {
+    rows = await rawSql`SELECT * FROM edc_memories ORDER BY created_at DESC LIMIT ${limit}`;
+  }
+
+  return json({ memories: rows });
+}, true, "admin:read");
+
+// Create a GitHub issue for EDC-detected breaking changes
+route("POST", "/v1/internal/edc-issue", async (req) => {
+  const { exchange, title, body: issueBody, labels } = await req.json();
+
+  if (!exchange || !title || !issueBody) {
+    return json({ error: "Required: exchange, title, body" }, 400);
+  }
+
+  const token = Deno.env.get("GITHUB_TOKEN");
+  if (!token) {
+    return json({ error: "GITHUB_TOKEN not configured" }, 503);
+  }
+
+  const resp = await fetch("https://api.github.com/repos/aaronwald/ssmd/issues", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "User-Agent": "ssmd-data-ts",
+    },
+    body: JSON.stringify({
+      title: `[EDC] ${exchange}: ${title}`,
+      body: issueBody,
+      labels: labels ?? ["edc", "breaking-change"],
+    }),
+  });
+
+  const issue = await resp.json();
+  if (!resp.ok) {
+    return json({ error: "GitHub API error", details: issue }, resp.status);
+  }
+
+  return json({ url: issue.html_url, number: issue.number }, 201);
 }, true, "admin:write");
 
 // Helper to create JSON response

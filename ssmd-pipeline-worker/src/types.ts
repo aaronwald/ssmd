@@ -1,4 +1,4 @@
-export type StageType = "sql" | "http" | "gcs_check" | "openrouter" | "email";
+export type StageType = "sql" | "http" | "gcs_check" | "openrouter" | "email" | "code";
 export type RunStatus = "pending" | "running" | "completed" | "failed";
 
 export interface StageConfig {
@@ -20,10 +20,13 @@ export interface StageConfig {
   template?: string;
   html?: string;
   timeout_ms?: number;
+  function?: string;
+  params?: Record<string, unknown>;
+  _context?: unknown;
 }
 
 export interface StageResult {
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "skipped";
   output?: unknown;
   error?: string;
 }
@@ -34,6 +37,7 @@ export const DEFAULT_TIMEOUTS: Record<StageType, number> = {
   gcs_check: 15_000,
   openrouter: 120_000,
   email: 15_000,
+  code: 30_000,
 };
 
 export const MAX_OUTPUT_SIZE = 65_536;
