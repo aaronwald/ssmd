@@ -21,7 +21,7 @@ use ssmd_middleware::now_tsc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Polymarket PING interval: 10 seconds (required by Polymarket, vs 30s for Kraken)
 const PING_INTERVAL_SECS: u64 = 10;
@@ -169,7 +169,7 @@ impl PolymarketConnector {
                     _ = ping_interval.tick() => {
                         let idle_secs = last_activity_instant.elapsed().as_secs();
                         shard_metrics.set_idle_seconds(idle_secs as f64);
-                        warn!(shard = shard_id, idle_secs, "Sending Polymarket ping keepalive");
+                        debug!(shard = shard_id, idle_secs, "Sending Polymarket ping keepalive");
                         if let Err(e) = ws.ping().await {
                             let uptime_secs = connected_at.elapsed().as_secs();
                             error!(

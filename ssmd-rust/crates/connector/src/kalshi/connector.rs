@@ -333,7 +333,7 @@ impl KalshiConnector {
                     // Ping timer fired - send keepalive
                     _ = ping_interval.tick() => {
                         let idle_secs = last_activity.elapsed().as_secs();
-                        warn!(shard_id, idle_secs, "Sending WebSocket ping keepalive");
+                        debug!(shard_id, idle_secs, "Sending WebSocket ping keepalive");
                         // Update idle seconds metric before ping
                         shard_metrics.set_idle_seconds(idle_secs as f64);
                         if let Err(e) = ws.ping().await {
