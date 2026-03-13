@@ -133,14 +133,27 @@ function resolvePrice(dollars: string | undefined, cents: number | undefined): n
 
 /**
  * Map Kalshi API market status to our status enum.
- * Kalshi uses various statuses for pre-open markets; we default unknown to "active".
+ * All 8 Kalshi statuses mapped explicitly — no catch-all.
  */
 function mapMarketStatus(status: string | undefined): "active" | "closed" | "settled" {
-  if (!status) return "active";
-  if (status === "open" || status === "active") return "active";
-  if (status === "closed") return "closed";
-  if (status === "settled") return "settled";
-  return "active";
+  switch (status) {
+    case "open":
+    case "active":
+      return "active";
+    case "closed":
+    case "initialized":
+    case "inactive":
+    case "disputed":
+    case "amended":
+      return "closed";
+    case "determined":
+    case "settled":
+    case "finalized":
+      return "settled";
+    default:
+      if (status) console.warn(`Unknown Kalshi market status: ${status}, defaulting to closed`);
+      return "closed";
+  }
 }
 
 /**

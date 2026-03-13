@@ -153,4 +153,25 @@ Deno.test("fromKalshiMarket maps status correctly", () => {
     status: "finalized",
   });
   assertEquals(settledMarket.status, "settled");
+
+  const determinedMarket = fromKalshiMarket({
+    ticker: "D",
+    event_ticker: "E",
+    status: "determined",
+  });
+  assertEquals(determinedMarket.status, "settled");
+
+  const initializedMarket = fromKalshiMarket({
+    ticker: "F",
+    event_ticker: "E",
+    status: "initialized",
+  });
+  assertEquals(initializedMarket.status, "closed");
+
+  const unknownMarket = fromKalshiMarket({
+    ticker: "G",
+    event_ticker: "E",
+    status: "some_future_status",
+  });
+  assertEquals(unknownMarket.status, "closed");
 });
