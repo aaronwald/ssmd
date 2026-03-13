@@ -19,6 +19,10 @@ struct Args {
     #[arg(long, env = "NATS_STREAM", default_value = "SECMASTER_CDC")]
     stream_name: String,
 
+    /// Maximum events to peek per poll cycle (bounds memory usage)
+    #[arg(long, env = "PEEK_BATCH_LIMIT", default_value = "1000")]
+    peek_batch_limit: i64,
+
     /// Health/metrics server address
     #[arg(long, env = "HEALTH_ADDR", default_value = "0.0.0.0:8080")]
     health_addr: SocketAddr,
@@ -115,9 +119,10 @@ async fn main() -> anyhow::Result<()> {
             );
         }
 
-        match replication.peek_changes().await {
+        match replication.peek_changes(args.peek_batch_limit).await {
             Ok(events) => {
                 consecutive_failures = 0; // Reset on success
+                let batch_len = events.len();
 
                 if events.is_empty() {
                     tokio::time::sleep(poll_interval).await;
@@ -163,6 +168,9 @@ async fn main() -> anyhow::Result<()> {
                 if batch_failed {
                     // Back off before retrying — NATS dedup prevents duplicates on re-peek
                     tokio::time::sleep(Duration::from_secs(2)).await;
+                } else if batch_len as i64 >= args.peek_batch_limit {
+                    // Full batch — more events waiting, poll again immediately
+                    continue;
                 }
             }
             Err(e) => {

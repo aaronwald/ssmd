@@ -65,13 +65,13 @@ impl ReplicationSlot {
         Ok(row.get(0))
     }
 
-    /// Peek at changes without consuming them from the replication slot.
+    /// Peek at up to `limit` changes without consuming them from the replication slot.
     /// Use `advance_slot()` after successful processing to consume.
-    pub async fn peek_changes(&self) -> Result<Vec<CdcEvent>> {
+    pub async fn peek_changes(&self, limit: i64) -> Result<Vec<CdcEvent>> {
         let rows = self.client
             .query(
-                "SELECT lsn::text, data FROM pg_logical_slot_peek_changes($1, NULL, NULL)",
-                &[&self.slot_name],
+                "SELECT lsn::text, data FROM pg_logical_slot_peek_changes($1, NULL, NULL) LIMIT $2",
+                &[&self.slot_name, &limit],
             )
             .await?;
 
