@@ -1,9 +1,6 @@
-import { changelogDiff } from "./changelog-diff.ts";
-import { schemaVersionCheck } from "./schema-version-check.ts";
-import { archiveFreshness } from "./archive-freshness.ts";
-import { dataCompleteness } from "./data-completeness.ts";
-import { parquetQuality } from "./parquet-quality.ts";
-import { kxbtcdCanary } from "./kxbtcd-canary.ts";
+// Pipeline code function types.
+// Implementations live in 899bushwick/pipeline-functions/ (private).
+// At Docker build time, that directory is overlaid onto this one.
 
 export interface CodeInput {
   stages: Record<number, unknown>;
@@ -19,11 +16,5 @@ export interface CodeOutput {
 
 export type CodeFunction = (input: CodeInput) => CodeOutput;
 
-export const codeFunctions: Record<string, CodeFunction> = {
-  "changelog-diff": changelogDiff,
-  "schema-version-check": schemaVersionCheck,
-  "archive-freshness": archiveFreshness,
-  "data-completeness": dataCompleteness,
-  "parquet-quality": parquetQuality,
-  "kxbtcd-canary": kxbtcdCanary,
-};
+// Populated by overlay at build time. Empty in the public repo.
+export const codeFunctions: Record<string, CodeFunction> = {};
