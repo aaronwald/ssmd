@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { useSeries, useEvents, useMarkets, usePositions } from "@/lib/hooks";
 import type { MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
@@ -241,19 +241,16 @@ function SeriesPillBar({
   selected: string | null;
   onSelect: (ticker: string) => void;
 }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-
   return (
-    <div className="relative">
+    <div>
       <div
-        ref={scrollRef}
-        className="flex gap-2 overflow-x-auto pb-1 scrollbar-none"
+        className="flex flex-wrap gap-2"
       >
         {series.map((s) => (
           <button
             key={s.ticker}
             onClick={() => onSelect(s.ticker)}
-            className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
               selected === s.ticker
                 ? "bg-accent text-bg"
                 : "bg-bg-raised border border-border text-fg-muted hover:text-fg hover:border-fg-subtle"
@@ -282,7 +279,7 @@ function EventSelector({
   onSelect: (ticker: string) => void;
 }) {
   return (
-    <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+    <div className="flex flex-wrap gap-2">
       {events.map((e) => (
         <EventCard
           key={e.ticker}

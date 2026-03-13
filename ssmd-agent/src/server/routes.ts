@@ -3876,7 +3876,13 @@ function buildHandler(
       const params = match.pathname.groups;
       Object.defineProperty(req, "params", { value: params });
 
-      const response = await r.handler(req, ctx);
+      let response: Response;
+      try {
+        response = await r.handler(req, ctx);
+      } catch (err) {
+        console.error(`[routes] handler error: ${req.method} ${url.pathname}:`, err);
+        response = json({ error: "Internal server error" }, 500);
+      }
 
       // Track per-key API usage in Prometheus (GMP scrapes this)
       if (r.requiresAuth && (req as Request & { auth?: AuthInfo }).auth) {
