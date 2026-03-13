@@ -115,29 +115,54 @@ async fn main() -> anyhow::Result<()> {
             );
         }
 
-        match replication.poll_changes().await {
+        match replication.peek_changes().await {
             Ok(events) => {
                 consecutive_failures = 0; // Reset on success
 
-                for event in events {
-                    // Skip tables we don't need CDC for
+                if events.is_empty() {
+                    tokio::time::sleep(poll_interval).await;
+                    continue;
+                }
+
+                // Track the last LSN we successfully publish — we advance to this.
+                let mut last_published_lsn: Option<String> = None;
+                let mut batch_failed = false;
+
+                for event in &events {
+                    // Skip tables we don't need CDC for — but still track LSN
                     if !publish_tables.contains(event.table.as_str()) {
                         events_skipped += 1;
                         metrics::CDC_EVENTS_SKIPPED.inc();
+                        last_published_lsn = Some(event.lsn.clone());
                         continue;
                     }
 
-                    if let Err(e) = publisher.publish(&event).await {
-                        tracing::error!(error = ?e, table = %event.table, "Failed to publish event");
+                    if let Err(e) = publisher.publish(event).await {
+                        tracing::error!(error = ?e, table = %event.table, lsn = %event.lsn, "Failed to publish event — aborting batch");
                         metrics::CDC_PUBLISH_ERRORS.with_label_values(&[&event.table]).inc();
+                        batch_failed = true;
+                        break;
                     } else {
                         events_published += 1;
                         metrics::CDC_EVENTS_PUBLISHED.with_label_values(&[&event.table]).inc();
                         metrics::CDC_LAST_PUBLISH_TIMESTAMP.set(chrono::Utc::now().timestamp() as f64);
+                        last_published_lsn = Some(event.lsn.clone());
                         if events_published % 100 == 0 {
                             tracing::info!(total = events_published, skipped = events_skipped, "Events published");
                         }
                     }
+                }
+
+                // Advance slot only up to the last successfully published LSN
+                if let Some(ref lsn) = last_published_lsn {
+                    if let Err(e) = replication.advance_slot(lsn).await {
+                        tracing::error!(error = ?e, lsn = %lsn, "Failed to advance slot — will re-peek on next poll");
+                    }
+                }
+
+                if batch_failed {
+                    // Back off before retrying — NATS dedup prevents duplicates on re-peek
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
             Err(e) => {
@@ -146,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::error!(
                     error = ?e,
                     consecutive_failures = consecutive_failures,
-                    "Failed to poll changes"
+                    "Failed to peek changes"
                 );
 
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {

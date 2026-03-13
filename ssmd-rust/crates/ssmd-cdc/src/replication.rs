@@ -65,11 +65,12 @@ impl ReplicationSlot {
         Ok(row.get(0))
     }
 
-    /// Poll for changes from the replication slot
-    pub async fn poll_changes(&self) -> Result<Vec<CdcEvent>> {
+    /// Peek at changes without consuming them from the replication slot.
+    /// Use `advance_slot()` after successful processing to consume.
+    pub async fn peek_changes(&self) -> Result<Vec<CdcEvent>> {
         let rows = self.client
             .query(
-                "SELECT lsn::text, data FROM pg_logical_slot_get_changes($1, NULL, NULL)",
+                "SELECT lsn::text, data FROM pg_logical_slot_peek_changes($1, NULL, NULL)",
                 &[&self.slot_name],
             )
             .await?;
@@ -165,5 +166,18 @@ impl ReplicationSlot {
         }
 
         Ok(events)
+    }
+
+    /// Advance the replication slot past the given LSN, consuming all changes up to it.
+    /// Call this only after all events have been successfully published.
+    pub async fn advance_slot(&self, upto_lsn: &str) -> Result<()> {
+        self.client
+            .execute(
+                "SELECT pg_replication_slot_advance($1, $2::pg_lsn)",
+                &[&self.slot_name, &upto_lsn],
+            )
+            .await?;
+        tracing::debug!(slot = %self.slot_name, lsn = %upto_lsn, "Advanced replication slot");
+        Ok(())
     }
 }
