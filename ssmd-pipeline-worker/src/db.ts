@@ -72,7 +72,7 @@ export async function insertStageResult(
   sql: Sql,
   runId: number,
   stageId: number,
-  status: "completed" | "failed",
+  status: "completed" | "failed" | "skipped",
   input: unknown,
   output: unknown,
   error: string | null,
