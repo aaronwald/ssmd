@@ -66,6 +66,7 @@ macro_rules! setup_or_skip {
 // =============================================================================
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_submit_success() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -106,6 +107,7 @@ async fn test_ems_pump_submit_success() {
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_submit_rejected() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -148,6 +150,7 @@ async fn test_ems_pump_submit_rejected() {
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_submit_rate_limited() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -185,6 +188,7 @@ async fn test_ems_pump_submit_rate_limited() {
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_submit_timeout() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -227,6 +231,7 @@ async fn test_ems_pump_submit_timeout() {
 // =============================================================================
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_cancel_success() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -270,6 +275,7 @@ async fn test_ems_pump_cancel_success() {
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_cancel_without_exchange_id() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -305,6 +311,7 @@ async fn test_ems_pump_cancel_without_exchange_id() {
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_cancel_not_found() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -346,6 +353,7 @@ async fn test_ems_pump_cancel_not_found() {
 // =============================================================================
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_amend_success() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -379,6 +387,7 @@ async fn test_ems_pump_amend_success() {
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_amend_not_found() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -415,6 +424,7 @@ async fn test_ems_pump_amend_not_found() {
 // =============================================================================
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_decrease_success() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -445,6 +455,7 @@ async fn test_ems_pump_decrease_success() {
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_decrease_not_found() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -480,6 +491,7 @@ async fn test_ems_pump_decrease_not_found() {
 // =============================================================================
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_respects_shutdown() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -513,6 +525,7 @@ async fn test_ems_pump_respects_shutdown() {
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_shutdown_mass_cancels_and_drains() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -561,6 +574,7 @@ async fn test_ems_shutdown_mass_cancels_and_drains() {
 // =============================================================================
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_pump_empty_queue() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
@@ -579,6 +593,7 @@ async fn test_ems_pump_empty_queue() {
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL — runs in dedicated CI step with --ignored --test-threads=1
 async fn test_ems_metrics_increment() {
     let (pool, session_id) = setup_or_skip!();
     let mock = MockExchange::new();
