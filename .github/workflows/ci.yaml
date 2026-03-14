@@ -25,10 +25,11 @@ jobs:
           POSTGRES_DB: cdc_test
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5433:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -81,8 +82,16 @@ jobs:
         run: |
           PGPASSWORD=test psql -h localhost -p 5433 -U test -d cdc_test -c "ALTER SYSTEM SET wal_level = logical;"
           PGPASSWORD=test psql -h localhost -p 5433 -U test -d cdc_test -c "ALTER SYSTEM SET max_replication_slots = 4;"
-          docker restart $(docker ps -q --filter "publish=5433")
-          sleep 3
+          CDC_CONTAINER=$(docker ps -q --filter "publish=5433")
+          docker restart "$CDC_CONTAINER"
+          for i in $(seq 1 30); do
+            if PGPASSWORD=test psql -h localhost -p 5433 -U test -d cdc_test -c "SHOW wal_level;" 2>/dev/null | grep -q logical; then
+              echo "wal_level=logical confirmed"
+              break
+            fi
+            echo "Waiting for postgres-cdc restart... ($i)"
+            sleep 1
+          done
 
       - name: Run CDC integration tests
         working-directory: ssmd-rust
