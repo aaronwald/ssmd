@@ -45,14 +45,16 @@ impl Publisher {
         Ok(())
     }
 
-    /// Publish a CDC event with dedup header (Nats-Msg-Id = LSN).
+    /// Publish a CDC event with dedup header (Nats-Msg-Id = lsn:table:op).
     /// JetStream deduplicates by Nats-Msg-Id, making replayed peeks safe.
+    /// LSN alone is NOT unique — a single transaction can touch multiple tables.
     pub async fn publish(&self, event: &CdcEvent) -> Result<()> {
         let subject = format!("cdc.{}.{}", event.table, event.op.as_str());
         let payload = serde_json::to_vec(event)?;
 
+        let dedup_id = event.dedup_id();
         let mut headers = async_nats::HeaderMap::new();
-        headers.insert("Nats-Msg-Id", event.lsn.as_str());
+        headers.insert("Nats-Msg-Id", dedup_id.as_str());
 
         self.js.publish_with_headers(subject.clone(), headers, payload.into()).await
             .map_err(|e| Error::Config(format!("Publish failed: {}", e)))?

@@ -2,18 +2,24 @@
 use deadpool_postgres::{Config, Pool, Runtime};
 use tokio_postgres::NoTls;
 use crate::{Result, messages::{CdcEvent, CdcOperation}};
+use once_cell::sync::Lazy;
 use regex::Regex;
+
+static TABLE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^table ([^:]+): (INSERT|UPDATE|DELETE):(.*)$").unwrap()
+});
+static COL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(\w+)\[([^\]]+)\]:('(?:[^'\\]|\\.)*'|[^\s]+)").unwrap()
+});
 
 pub struct ReplicationSlot {
     pool: Pool,
     slot_name: String,
-    #[allow(dead_code)]
-    publication_name: String,
 }
 
 impl ReplicationSlot {
     /// Connect to PostgreSQL for logical replication slot polling
-    pub async fn connect(database_url: &str, slot_name: &str, publication_name: &str) -> Result<Self> {
+    pub async fn connect(database_url: &str, slot_name: &str) -> Result<Self> {
         let pg_config: tokio_postgres::Config = database_url
             .parse()
             .map_err(|e: tokio_postgres::Error| crate::Error::Config(format!("invalid database URL: {}", e)))?;
@@ -41,8 +47,8 @@ impl ReplicationSlot {
             cfg.dbname = Some(dbname.to_string());
         }
 
-        // CDC polls sequentially — 2 connections is sufficient (peek + advance)
-        cfg.pool = Some(deadpool_postgres::PoolConfig { max_size: 2, ..Default::default() });
+        // CDC polls sequentially (peek then advance) — 1 connection is sufficient
+        cfg.pool = Some(deadpool_postgres::PoolConfig { max_size: 1, ..Default::default() });
 
         let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)
             .map_err(|e| crate::Error::Config(format!("failed to create pool: {}", e)))?;
@@ -57,7 +63,6 @@ impl ReplicationSlot {
         Ok(Self {
             pool,
             slot_name: slot_name.to_string(),
-            publication_name: publication_name.to_string(),
         })
     }
 
@@ -100,18 +105,37 @@ impl ReplicationSlot {
         Ok(row.get(0))
     }
 
+    /// Close the connection pool, ending any active slot usage.
+    /// The replication slot itself persists server-side — this just drops
+    /// the DB connections so the slot is no longer held active.
+    pub fn close(&self) {
+        self.pool.close();
+        tracing::info!(slot = %self.slot_name, "Connection pool closed");
+    }
+
     /// Peek at up to `limit` changes without consuming them from the replication slot.
     /// Use `advance_slot()` after successful processing to consume.
     pub async fn peek_changes(&self, limit: i64) -> Result<Vec<CdcEvent>> {
         let client = self.pool.get().await
             .map_err(|e| crate::Error::Replication(format!("pool error: {}", e)))?;
 
-        let rows = client
+        // Guard against unbounded blocking when WAL backlog is large.
+        // Use SET LOCAL inside a transaction so the timeout is automatically
+        // reset when the transaction ends — no error-path leakage.
+        client.execute("BEGIN", &[]).await?;
+        client.execute("SET LOCAL statement_timeout = '30s'", &[]).await?;
+
+        let result = client
             .query(
                 "SELECT lsn::text, data FROM pg_logical_slot_peek_changes($1, NULL, NULL) LIMIT $2",
                 &[&self.slot_name, &limit],
             )
-            .await?;
+            .await;
+
+        // COMMIT ends the transaction, resetting statement_timeout regardless of success/failure
+        client.execute("COMMIT", &[]).await?;
+
+        let rows = result?;
 
         let mut events = Vec::new();
 
@@ -119,14 +143,12 @@ impl ReplicationSlot {
         // table schema.table: INSERT: col1[type]:value1 col2[type]:value2 ...
         // table schema.table: UPDATE: old-key: col1[type]:value1 col1[type]:value1 ...
         // table schema.table: DELETE: col1[type]:value1
-        let table_re = Regex::new(r"^table ([^:]+): (INSERT|UPDATE|DELETE):(.*)$").unwrap();
-        let col_re = Regex::new(r"(\w+)\[([^\]]+)\]:('(?:[^'\\]|\\.)*'|[^\s]+)").unwrap();
 
         for row in rows {
             let lsn: String = row.get(0);
             let data: String = row.get(1);
 
-            if let Some(caps) = table_re.captures(&data) {
+            if let Some(caps) = TABLE_RE.captures(&data) {
                 let full_table = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                 let table = full_table.split('.').next_back().unwrap_or(full_table).to_string();
                 let op_str = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -144,7 +166,7 @@ impl ReplicationSlot {
                 let mut first_col_name = String::new();
                 let mut first_col_value = serde_json::Value::Null;
 
-                for cap in col_re.captures_iter(cols_str) {
+                for cap in COL_RE.captures_iter(cols_str) {
                     let col_name = cap.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
                     let _col_type = cap.get(2).map(|m| m.as_str()).unwrap_or("");
                     let col_value_str = cap.get(3).map(|m| m.as_str()).unwrap_or("");
