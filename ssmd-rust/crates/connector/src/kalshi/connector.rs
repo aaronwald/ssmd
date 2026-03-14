@@ -724,6 +724,7 @@ impl Connector for KalshiConnector {
                         let cdc_snapshot_lsn = snapshot_lsn.clone();
                         let cdc_snapshot_time = snapshot_time.clone();
                         let initial_markets = tickers.clone();
+                        let cdc_market_tx = new_market_tx.clone();
                         tokio::spawn(async move {
                             match CdcSubscriptionConsumer::new(
                                 &cdc_consumer_config,
@@ -733,7 +734,7 @@ impl Connector for KalshiConnector {
                                 initial_markets,
                             ).await {
                                 Ok(consumer) => {
-                                    if let Err(e) = consumer.run(new_market_tx).await {
+                                    if let Err(e) = consumer.run(cdc_market_tx).await {
                                         error!(error = %e, "CDC consumer error — exiting for restart");
                                         std::process::exit(1);
                                     }
@@ -745,12 +746,60 @@ impl Connector for KalshiConnector {
                             }
                         });
 
+                        // Spawn periodic secmaster refresh — catches markets CDC missed
+                        // (e.g., after CDC outage, slot reset, or NATS restart).
+                        // The shard manager deduplicates, so sending already-subscribed
+                        // markets is safe.
+                        {
+                            let refresh_tx = new_market_tx.clone();
+                            let refresh_client = SecmasterClient::with_config(
+                                &secmaster.url,
+                                secmaster.api_key.clone(),
+                                3,
+                                1000,
+                            );
+                            let refresh_categories = secmaster.categories.clone();
+                            let games_only = secmaster.categories.iter().any(|c| c == "Sports");
+                            tokio::spawn(async move {
+                                // Wait 5 minutes before first refresh (let CDC handle the fast path)
+                                tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
+                                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300));
+                                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                                loop {
+                                    interval.tick().await;
+                                    match refresh_client.get_markets_by_categories(
+                                        &refresh_categories, None, games_only,
+                                    ).await {
+                                        Ok(tickers) => {
+                                            let count = tickers.len();
+                                            let mut new_count = 0u32;
+                                            for ticker in tickers {
+                                                if refresh_tx.send(ShardEvent::Subscribe(ticker)).await.is_err() {
+                                                    warn!("Secmaster refresh: event channel closed");
+                                                    return;
+                                                }
+                                                new_count += 1;
+                                            }
+                                            warn!(
+                                                total_markets = count,
+                                                sent = new_count,
+                                                "Secmaster refresh: sent markets to shard manager"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "Secmaster refresh: failed to fetch markets");
+                                        }
+                                    }
+                                }
+                            });
+                        }
+
                         // Spawn shard manager dispatcher task
                         tokio::spawn(async move {
                             manager.run(new_market_rx).await;
                         });
 
-                        info!("CDC dynamic subscription enabled");
+                        info!("CDC dynamic subscription enabled with 5-min secmaster refresh fallback");
                     }
                 }
             } else {
