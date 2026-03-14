@@ -171,11 +171,14 @@ impl ReplicationSlot {
     /// Advance the replication slot past the given LSN, consuming all changes up to it.
     /// Call this only after all events have been successfully published.
     pub async fn advance_slot(&self, upto_lsn: &str) -> Result<()> {
+        // Use format! for the LSN value — tokio-postgres cannot bind &str to pg_lsn.
+        // The LSN comes from pg_logical_slot_peek_changes output, not user input.
+        let sql = format!(
+            "SELECT pg_replication_slot_advance($1, '{}'::pg_lsn)",
+            upto_lsn.replace('\'', "")
+        );
         self.client
-            .execute(
-                "SELECT pg_replication_slot_advance($1, $2::pg_lsn)",
-                &[&self.slot_name, &upto_lsn],
-            )
+            .execute(&sql, &[&self.slot_name])
             .await?;
         tracing::debug!(slot = %self.slot_name, lsn = %upto_lsn, "Advanced replication slot");
         Ok(())
