@@ -38,6 +38,9 @@ from ssmd_mcp.tools import (
     harman_exchange_audit,
     harman_settlements,
     query_market_lifecycle,
+    list_pipelines,
+    search_pipeline_runs,
+    get_pipeline_run_details,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -741,6 +744,59 @@ TOOLS = [
         },
     ),
     Tool(
+        name="list_pipelines",
+        description=(
+            "List all pipeline definitions with last run status. Returns pipeline ID, "
+            "name, description, trigger type, schedule, enabled status, and last run result. "
+            "Use to find pipeline IDs for searching runs. Requires admin scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        },
+    ),
+    Tool(
+        name="search_pipeline_runs",
+        description=(
+            "Search pipeline runs for a specific pipeline. Returns run ID, status "
+            "(pending/running/completed/failed), trigger info, start/finish times, and date. "
+            "Use list_pipelines first to find the pipeline ID. Requires admin scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "pipeline_id": {
+                    "type": "integer",
+                    "description": "Pipeline ID to search runs for (use list_pipelines to find IDs).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max runs to return. Default 20.",
+                    "default": 20,
+                },
+            },
+            "required": ["pipeline_id"],
+        },
+    ),
+    Tool(
+        name="get_pipeline_run_details",
+        description=(
+            "Get full details of a pipeline run including all stage results. Returns "
+            "run metadata plus each stage's status, input config, output data, error message, "
+            "and timing. The key debugging tool for pipeline failures. Requires admin scope."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "integer",
+                    "description": "Run ID to get details for (from search_pipeline_runs).",
+                },
+            },
+            "required": ["run_id"],
+        },
+    ),
+    Tool(
         name="query_market_lifecycle",
         description=(
             "Query market lifecycle events for a specific market ticker or event. "
@@ -941,6 +997,19 @@ def _run_tool(cfg: Config, name: str, arguments: dict) -> str:
             ticker=arguments.get("ticker"),
             since=arguments.get("since"),
             instance=arguments.get("instance"),
+        )
+    elif name == "list_pipelines":
+        return list_pipelines(cfg)
+    elif name == "search_pipeline_runs":
+        return search_pipeline_runs(
+            cfg,
+            pipeline_id=arguments["pipeline_id"],
+            limit=arguments.get("limit", 20),
+        )
+    elif name == "get_pipeline_run_details":
+        return get_pipeline_run_details(
+            cfg,
+            run_id=arguments["run_id"],
         )
     elif name == "query_market_lifecycle":
         return query_market_lifecycle(

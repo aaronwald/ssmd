@@ -449,6 +449,34 @@ def harman_settlements(
     return json.dumps(result, indent=2, default=str)
 
 
+# --- Pipeline debugging tools ---
+
+
+def list_pipelines(cfg: Config) -> str:
+    """List all pipeline definitions with last run status."""
+    result = api_get(cfg, "/v1/pipelines")
+    return json.dumps(result, indent=2, default=str)
+
+
+def search_pipeline_runs(
+    cfg: Config,
+    pipeline_id: int,
+    limit: int = 20,
+) -> str:
+    """Search pipeline runs for a specific pipeline."""
+    result = api_get(cfg, f"/v1/pipelines/{pipeline_id}/runs")
+    runs = result if isinstance(result, list) else result.get("runs", [])
+    # Limit results
+    runs = runs[:limit]
+    return json.dumps({"count": len(runs), "runs": runs}, indent=2, default=str)
+
+
+def get_pipeline_run_details(cfg: Config, run_id: int) -> str:
+    """Get full pipeline run details including stage results."""
+    result = api_get(cfg, f"/v1/pipelines/runs/{run_id}")
+    return json.dumps(result, indent=2, default=str)
+
+
 def query_market_lifecycle(
     cfg: Config,
     ticker: str | None = None,
