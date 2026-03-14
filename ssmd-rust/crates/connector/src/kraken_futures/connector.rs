@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::messages::KrakenFuturesWsMessage;
 use super::websocket::{KrakenFuturesWebSocket, KrakenFuturesWsError, PING_INTERVAL_SECS};
@@ -82,7 +82,7 @@ impl KrakenFuturesConnector {
                     // Ping timer
                     _ = ping_interval.tick() => {
                         let idle_secs = last_activity_instant.elapsed().as_secs();
-                        warn!(idle_secs, "Sending Kraken Futures ping");
+                        debug!(idle_secs, "Sending Kraken Futures ping");
                         shard_metrics.set_idle_seconds(idle_secs as f64);
                         if let Err(e) = ws.ping().await {
                             let uptime_secs = connected_at.elapsed().as_secs();

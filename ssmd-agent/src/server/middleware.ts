@@ -12,7 +12,10 @@ export function logger(
     const start = Date.now();
     const res = await handler(req);
     const ms = Date.now() - start;
-    console.log(`${req.method} ${new URL(req.url).pathname} ${res.status} ${ms}ms`);
+    const path = new URL(req.url).pathname;
+    if (path !== "/health") {
+      console.log(`${req.method} ${path} ${res.status} ${ms}ms`);
+    }
     return res;
   };
 }

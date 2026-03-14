@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tracing::warn;
+use tracing::debug;
 
 /// Sanitize an input string for safe use as a NATS subject token.
 ///
@@ -33,7 +33,7 @@ pub fn sanitize_subject_token_with_max_len(input: &str, max_len: usize) -> Strin
         .collect();
 
     if sanitized != input && !input.is_empty() {
-        warn!(
+        debug!(
             original = %input,
             sanitized = %sanitized,
             "NATS subject token was sanitized"
