@@ -113,8 +113,32 @@ impl ReplicationSlot {
         tracing::info!(slot = %self.slot_name, "Connection pool closed");
     }
 
+    /// Get and consume up to `limit` changes from the replication slot.
+    /// Changes are atomically consumed — they won't appear in subsequent calls.
+    /// If the caller crashes before processing, changes are lost. Use NATS dedup
+    /// and cache warmer full-refresh on restart to handle this.
+    pub async fn get_changes(&self, limit: i64) -> Result<Vec<CdcEvent>> {
+        let client = self.pool.get().await
+            .map_err(|e| crate::Error::Replication(format!("pool error: {}", e)))?;
+
+        client.execute("BEGIN", &[]).await?;
+        client.execute("SET LOCAL statement_timeout = '30s'", &[]).await?;
+
+        let result = client
+            .query(
+                "SELECT lsn::text, data FROM pg_logical_slot_get_changes($1, NULL, NULL) LIMIT $2",
+                &[&self.slot_name, &limit],
+            )
+            .await;
+
+        client.execute("COMMIT", &[]).await?;
+
+        let rows = result?;
+        Self::parse_test_decoding_rows(rows)
+    }
+
     /// Peek at up to `limit` changes without consuming them from the replication slot.
-    /// Use `advance_slot()` after successful processing to consume.
+    /// Changes remain in the slot — use get_changes() to consume.
     pub async fn peek_changes(&self, limit: i64) -> Result<Vec<CdcEvent>> {
         let client = self.pool.get().await
             .map_err(|e| crate::Error::Replication(format!("pool error: {}", e)))?;
@@ -136,7 +160,11 @@ impl ReplicationSlot {
         client.execute("COMMIT", &[]).await?;
 
         let rows = result?;
+        Self::parse_test_decoding_rows(rows)
+    }
 
+    /// Parse test_decoding output rows into CdcEvents
+    fn parse_test_decoding_rows(rows: Vec<tokio_postgres::Row>) -> Result<Vec<CdcEvent>> {
         let mut events = Vec::new();
 
         // Parse test_decoding output format:
@@ -171,10 +199,8 @@ impl ReplicationSlot {
                     let _col_type = cap.get(2).map(|m| m.as_str()).unwrap_or("");
                     let col_value_str = cap.get(3).map(|m| m.as_str()).unwrap_or("");
 
-                    // Parse value - remove quotes if present
                     let value = if col_value_str.starts_with('\'') && col_value_str.ends_with('\'') {
                         let unquoted = &col_value_str[1..col_value_str.len()-1];
-                        // Unescape single quotes
                         let unescaped = unquoted.replace("''", "'");
                         serde_json::Value::String(unescaped)
                     } else if col_value_str == "null" {
@@ -201,7 +227,6 @@ impl ReplicationSlot {
                     columns.insert(col_name, value);
                 }
 
-                // Build key from first column (assumed to be PK)
                 let key = if !first_col_name.is_empty() {
                     serde_json::json!({ first_col_name: first_col_value })
                 } else {

@@ -1,13 +1,12 @@
-//! CDC integration tests — require PostgreSQL with wal_level=logical and NATS.
+//! CDC integration tests — require PostgreSQL with wal_level=logical.
 //!
 //! Run with: cargo test -p ssmd-cdc --test integration_test -- --ignored --nocapture
 //!
-//! These tests verify the complete CDC cycle:
-//!   CREATE TABLE → INSERT → peek_changes → advance_slot → verify slot advanced
+//! These tests verify the complete CDC cycle using get_changes (atomic consume):
+//!   CREATE TABLE → INSERT → get_changes → verify consumed → get_changes returns empty
 //!
 //! Environment variables:
-//!   CDC_TEST_DATABASE_URL  — PostgreSQL with wal_level=logical (default: postgresql://test:test@localhost:5432/cdc_test)
-//!   CDC_TEST_NATS_URL      — NATS server (default: nats://localhost:4222)
+//!   CDC_TEST_DATABASE_URL — PostgreSQL with wal_level=logical (default: postgresql://test:test@localhost:5432/cdc_test)
 
 use ssmd_cdc::replication::ReplicationSlot;
 use tokio_postgres::NoTls;
@@ -17,7 +16,6 @@ fn database_url() -> String {
         .unwrap_or_else(|_| "postgresql://test:test@localhost:5432/cdc_test".to_string())
 }
 
-/// Helper: direct postgres connection for test setup (creating tables, inserting rows)
 async fn setup_client() -> tokio_postgres::Client {
     let (client, connection) = tokio_postgres::connect(&database_url(), NoTls)
         .await
@@ -30,9 +28,7 @@ async fn setup_client() -> tokio_postgres::Client {
     client
 }
 
-/// Helper: drop test slot if it exists (cleanup between tests)
 async fn cleanup_slot(client: &tokio_postgres::Client, slot_name: &str) {
-    // Drop slot if exists (ignore errors)
     let _ = client
         .execute(
             "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name = $1",
@@ -42,16 +38,13 @@ async fn cleanup_slot(client: &tokio_postgres::Client, slot_name: &str) {
 }
 
 #[tokio::test]
-#[ignore] // Requires PostgreSQL with wal_level=logical
-async fn test_full_cdc_cycle_insert_peek_advance() {
+#[ignore]
+async fn test_full_cdc_cycle_insert_get_consume() {
     let slot_name = "cdc_test_full_cycle";
     let client = setup_client().await;
 
-    // Cleanup any previous test state
     cleanup_slot(&client, slot_name).await;
     client.execute("DROP TABLE IF EXISTS cdc_test_markets", &[]).await.unwrap();
-
-    // Create a test table
     client
         .execute(
             "CREATE TABLE cdc_test_markets (ticker TEXT PRIMARY KEY, status TEXT, volume INT)",
@@ -60,14 +53,13 @@ async fn test_full_cdc_cycle_insert_peek_advance() {
         .await
         .unwrap();
 
-    // Connect CDC replication slot
     let replication = ReplicationSlot::connect(&database_url(), slot_name)
         .await
         .expect("Failed to connect ReplicationSlot");
     replication.ensure_slot().await.expect("Failed to ensure slot");
 
-    // Peek should return empty (no changes since slot creation)
-    let events = replication.peek_changes(100).await.expect("peek failed");
+    // get_changes should return empty (no changes since slot creation)
+    let events = replication.get_changes(100).await.expect("get_changes failed");
     assert!(events.is_empty(), "Expected no events before any changes");
 
     // Insert a row
@@ -79,29 +71,22 @@ async fn test_full_cdc_cycle_insert_peek_advance() {
         .await
         .unwrap();
 
-    // Peek should return the insert event
-    let events = replication.peek_changes(100).await.expect("peek failed");
+    // get_changes should return the insert event AND consume it
+    let events = replication.get_changes(100).await.expect("get_changes failed");
     assert!(!events.is_empty(), "Expected at least one event after INSERT");
 
     let event = &events[0];
     assert_eq!(event.table, "cdc_test_markets");
     assert_eq!(event.op, ssmd_cdc::messages::CdcOperation::Insert);
 
-    // Verify parsed data contains our columns
     let data = event.data.as_ref().expect("event should have data");
     assert_eq!(data.get("ticker").and_then(|v| v.as_str()), Some("KXTEST-001"));
     assert_eq!(data.get("status").and_then(|v| v.as_str()), Some("active"));
     assert_eq!(data.get("volume").and_then(|v| v.as_i64()), Some(100));
 
-    // Record last LSN
-    let last_lsn = events.last().unwrap().lsn.clone();
-
-    // Advance the slot past the insert
-    replication.advance_slot(&last_lsn).await.expect("advance_slot failed");
-
-    // Peek again — should return empty (we advanced past the insert)
-    let events = replication.peek_changes(100).await.expect("peek failed after advance");
-    assert!(events.is_empty(), "Expected no events after advance, got {}", events.len());
+    // get_changes again — should return empty (changes were consumed)
+    let events = replication.get_changes(100).await.expect("get_changes failed after consume");
+    assert!(events.is_empty(), "Expected no events after consume, got {}", events.len());
 
     // Cleanup
     replication.close();
@@ -132,9 +117,9 @@ async fn test_update_and_delete_events() {
     replication.ensure_slot().await.expect("ensure_slot failed");
 
     // Drain any initial events
-    let _ = replication.peek_changes(1000).await;
+    let _ = replication.get_changes(1000).await;
 
-    // Insert, then update, then delete
+    // Insert, update, delete
     client
         .execute("INSERT INTO cdc_test_markets (ticker, status) VALUES ('KXTEST-002', 'active')", &[])
         .await
@@ -148,22 +133,16 @@ async fn test_update_and_delete_events() {
         .await
         .unwrap();
 
-    let events = replication.peek_changes(100).await.expect("peek failed");
+    let events = replication.get_changes(100).await.expect("get_changes failed");
 
-    // Should have 3 events: INSERT, UPDATE, DELETE
     let ops: Vec<&str> = events.iter().map(|e| e.op.as_str()).collect();
     assert!(ops.contains(&"insert"), "Missing INSERT event, got: {:?}", ops);
     assert!(ops.contains(&"update"), "Missing UPDATE event, got: {:?}", ops);
     assert!(ops.contains(&"delete"), "Missing DELETE event, got: {:?}", ops);
 
-    // Verify update has the new status
     let update_event = events.iter().find(|e| e.op == ssmd_cdc::messages::CdcOperation::Update).unwrap();
     let data = update_event.data.as_ref().unwrap();
     assert_eq!(data.get("status").and_then(|v| v.as_str()), Some("settled"));
-
-    // Advance past all events
-    let last_lsn = events.last().unwrap().lsn.clone();
-    replication.advance_slot(&last_lsn).await.expect("advance_slot failed");
 
     // Cleanup
     replication.close();
@@ -174,7 +153,7 @@ async fn test_update_and_delete_events() {
 
 #[tokio::test]
 #[ignore]
-async fn test_same_transaction_multiple_tables() {
+async fn test_same_transaction_multiple_tables_dedup_id() {
     let slot_name = "cdc_test_multi_table";
     let client = setup_client().await;
 
@@ -213,18 +192,12 @@ async fn test_same_transaction_multiple_tables() {
         .unwrap();
     client.execute("COMMIT", &[]).await.unwrap();
 
-    let events = replication.peek_changes(100).await.expect("peek failed");
+    let events = replication.get_changes(100).await.expect("get_changes failed");
 
     // Should have events for BOTH tables
     let tables: Vec<&str> = events.iter().map(|e| e.table.as_str()).collect();
-    assert!(
-        tables.contains(&"cdc_test_events"),
-        "Missing cdc_test_events, got: {:?}", tables
-    );
-    assert!(
-        tables.contains(&"cdc_test_markets"),
-        "Missing cdc_test_markets, got: {:?}", tables
-    );
+    assert!(tables.contains(&"cdc_test_events"), "Missing cdc_test_events, got: {:?}", tables);
+    assert!(tables.contains(&"cdc_test_markets"), "Missing cdc_test_markets, got: {:?}", tables);
 
     // Events from the same transaction may share LSNs — verify dedup_id is unique
     let dedup_ids: Vec<String> = events.iter().map(|e| e.dedup_id()).collect();
@@ -235,11 +208,9 @@ async fn test_same_transaction_multiple_tables() {
         "dedup_ids must be unique, got duplicates: {:?}", dedup_ids
     );
 
-    // Advance and verify clean
-    let last_lsn = events.last().unwrap().lsn.clone();
-    replication.advance_slot(&last_lsn).await.expect("advance_slot failed");
-    let events = replication.peek_changes(100).await.expect("peek after advance failed");
-    assert!(events.is_empty(), "Expected empty after advance");
+    // get_changes again — should be empty (consumed)
+    let events = replication.get_changes(100).await.expect("get_changes after consume failed");
+    assert!(events.is_empty(), "Expected empty after consume, got {}", events.len());
 
     // Cleanup
     replication.close();
@@ -262,7 +233,7 @@ async fn test_slot_survives_reconnect() {
         .await
         .unwrap();
 
-    // First connection: create slot, insert, advance
+    // First connection: create slot, insert, consume
     {
         let replication = ReplicationSlot::connect(&database_url(), slot_name)
             .await
@@ -274,10 +245,8 @@ async fn test_slot_survives_reconnect() {
             .await
             .unwrap();
 
-        let events = replication.peek_changes(100).await.expect("peek failed");
+        let events = replication.get_changes(100).await.expect("get_changes failed");
         assert!(!events.is_empty());
-        let last_lsn = events.last().unwrap().lsn.clone();
-        replication.advance_slot(&last_lsn).await.expect("advance failed");
         replication.close();
     }
 
@@ -287,32 +256,25 @@ async fn test_slot_survives_reconnect() {
         .await
         .unwrap();
 
-    // Second connection: reconnect, should see only the new insert
+    // Second connection: should see only the new insert (first was consumed)
     {
         let replication = ReplicationSlot::connect(&database_url(), slot_name)
             .await
             .expect("reconnect failed");
         replication.ensure_slot().await.expect("ensure_slot failed");
 
-        let events = replication.peek_changes(100).await.expect("peek failed");
+        let events = replication.get_changes(100).await.expect("get_changes failed");
         assert!(!events.is_empty(), "Should see insert made while disconnected");
 
-        // Should NOT see the first insert (already advanced past it)
         let tickers: Vec<String> = events
             .iter()
             .filter_map(|e| e.data.as_ref()?.get("ticker")?.as_str().map(String::from))
             .collect();
         assert!(
-            !tickers.contains(&"KXTEST-R1".to_string()),
-            "Should not see already-advanced event"
-        );
-        assert!(
             tickers.contains(&"KXTEST-R2".to_string()),
-            "Should see new event"
+            "Should see new event, got: {:?}", tickers
         );
 
-        let last_lsn = events.last().unwrap().lsn.clone();
-        replication.advance_slot(&last_lsn).await.expect("advance failed");
         replication.close();
     }
 
