@@ -50,8 +50,9 @@ function toNewMarket(m: ApiMarket): NewMarket {
   };
 }
 
-// PostgreSQL has a 65534 parameter limit. Markets have ~24 fields, so max safe batch is ~2500.
-const MARKETS_BATCH_SIZE = 2500;
+// PostgreSQL has a 65534 parameter limit. Markets have ~24 fields, so max safe batch is ~500.
+// Smaller batches also reduce peak memory from SQL string generation.
+const MARKETS_BATCH_SIZE = 500;
 
 /**
  * Upsert a batch of markets. Caller handles batching (e.g., API pagination).

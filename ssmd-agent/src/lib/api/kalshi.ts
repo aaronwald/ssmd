@@ -200,10 +200,14 @@ export class KalshiClient {
     if (filters?.maxCloseTs) params.push(`max_close_ts=${filters.maxCloseTs}`);
     const queryParams = params.join("&");
 
+    // Smaller page size for nested markets — 200 events × ~36 markets/event
+    // creates ~7200 market objects per page, causing OOM at 512Mi.
+    const pageSize = 50;
+
     do {
       const path = cursor
-        ? `/events?cursor=${cursor}&limit=200&${queryParams}`
-        : `/events?limit=200&${queryParams}`;
+        ? `/events?cursor=${cursor}&limit=${pageSize}&${queryParams}`
+        : `/events?limit=${pageSize}&${queryParams}`;
 
       const data = await this.fetch<PaginatedResponse<KalshiEvent>>(path);
       const rawEvents = (data.events as KalshiEvent[]) || [];
