@@ -32,8 +32,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-          -c wal_level=logical
-          -c max_replication_slots=4
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -78,6 +76,13 @@ jobs:
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/harman_test
         run: cargo test -p ssmd-harman-ems --test ems_tests -- --ignored --nocapture --test-threads=1
+
+      - name: Enable logical replication for CDC tests
+        run: |
+          PGPASSWORD=test psql -h localhost -p 5433 -U test -d cdc_test -c "ALTER SYSTEM SET wal_level = logical;"
+          PGPASSWORD=test psql -h localhost -p 5433 -U test -d cdc_test -c "ALTER SYSTEM SET max_replication_slots = 4;"
+          docker restart $(docker ps -q --filter "publish=5433")
+          sleep 3
 
       - name: Run CDC integration tests
         working-directory: ssmd-rust
