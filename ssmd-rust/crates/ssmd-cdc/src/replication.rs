@@ -209,12 +209,7 @@ impl ReplicationSlot {
     /// Advance the replication slot past the given LSN, consuming all changes up to it.
     /// Call this only after all events have been successfully published.
     pub async fn advance_slot(&self, upto_lsn: &str) -> Result<()> {
-        // Use format! for the LSN value — tokio-postgres cannot bind &str to pg_lsn.
-        // The LSN comes from pg_logical_slot_peek_changes output, not user input.
-        let sql = format!(
-            "SELECT pg_replication_slot_advance($1, '{}'::pg_lsn)",
-            upto_lsn.replace('\'', "")
-        );
+        let sql = build_advance_sql(upto_lsn);
         let client = self.pool.get().await
             .map_err(|e| crate::Error::Replication(format!("pool error: {}", e)))?;
 
@@ -223,5 +218,42 @@ impl ReplicationSlot {
             .await?;
         tracing::debug!(slot = %self.slot_name, lsn = %upto_lsn, "Advanced replication slot");
         Ok(())
+    }
+}
+
+/// Build the SQL for advancing a replication slot.
+/// Uses format! with string literal — tokio-postgres cannot bind &str to pg_lsn.
+/// The LSN comes from pg_logical_slot_peek_changes output, not user input.
+fn build_advance_sql(lsn: &str) -> String {
+    format!(
+        "SELECT pg_replication_slot_advance($1, '{}'::pg_lsn)",
+        lsn.replace('\'', "")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_advance_sql_normal_lsn() {
+        let sql = build_advance_sql("22/1D4AE960");
+        assert_eq!(sql, "SELECT pg_replication_slot_advance($1, '22/1D4AE960'::pg_lsn)");
+    }
+
+    #[test]
+    fn test_build_advance_sql_strips_quotes() {
+        let sql = build_advance_sql("22/1D4A'E960");
+        assert_eq!(sql, "SELECT pg_replication_slot_advance($1, '22/1D4AE960'::pg_lsn)");
+    }
+
+    #[test]
+    fn test_build_advance_sql_uses_single_bind_param() {
+        // The slot name is $1 (bind param). The LSN is a string literal, NOT $2.
+        // This is critical — tokio-postgres cannot bind &str to pg_lsn type.
+        let sql = build_advance_sql("0/14A01058");
+        assert!(!sql.contains("$2"), "LSN must not be a bind parameter — tokio-postgres cannot bind &str to pg_lsn");
+        assert!(sql.contains("$1"), "Slot name must be a bind parameter");
+        assert!(sql.contains("::pg_lsn"), "LSN must be cast to pg_lsn");
     }
 }
