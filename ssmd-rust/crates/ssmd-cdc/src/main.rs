@@ -158,11 +158,10 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // Advance slot only up to the last successfully published LSN
+                // Crash on advance failure — a CDC that peeks without
+                // advancing will accumulate unbounded WAL and never recover.
                 if let Some(ref lsn) = last_published_lsn {
-                    if let Err(e) = replication.advance_slot(lsn).await {
-                        tracing::error!(error = ?e, lsn = %lsn, "Failed to advance slot — will re-peek on next poll");
-                    }
+                    replication.advance_slot(lsn).await?;
                 }
 
                 if batch_failed {
