@@ -1,7 +1,7 @@
 /**
  * Market database operations with upsert support (Drizzle ORM)
  */
-import { eq, isNull, desc, sql, notInArray, count } from "drizzle-orm";
+import { eq, isNull, desc, sql, count } from "drizzle-orm";
 import { type Database, getRawSql } from "./client.ts";
 import { markets, events, series, type Market, type NewMarket } from "./schema.ts";
 import { getExistingEventTickers } from "./events.ts";
@@ -137,33 +137,30 @@ export async function bulkUpsertMarkets(
 }
 
 /**
- * Soft delete markets that are no longer in the API response.
- * Uses temp table approach to avoid PostgreSQL's 65534 parameter limit.
+ * Initialize a temp table for streaming ticker collection.
+ * Call once before the sync loop, then appendMarketTickers() per batch.
+ * @param conn - Reserved connection (temp tables are session-scoped; must use same connection throughout)
  */
-export async function softDeleteMissingMarkets(
-  db: Database,
-  currentTickers: string[]
-): Promise<number> {
-  if (currentTickers.length === 0) {
-    return 0;
-  }
+export async function initMarketTickerTable(conn: ReturnType<typeof getRawSql>): Promise<void> {
+  await conn`CREATE TEMP TABLE IF NOT EXISTS temp_current_markets (ticker TEXT PRIMARY KEY)`;
+  await conn`TRUNCATE temp_current_markets`;
+}
 
-  // Use raw SQL for temp table operations
-  const rawSql = getRawSql();
+/**
+ * Append tickers to the temp table (called per batch during sync).
+ * @param conn - Same reserved connection used for initMarketTickerTable
+ */
+export async function appendMarketTickers(conn: ReturnType<typeof getRawSql>, tickers: string[]): Promise<void> {
+  if (tickers.length === 0) return;
+  await conn`INSERT INTO temp_current_markets (ticker) VALUES ${conn(tickers.map(t => [t]))} ON CONFLICT DO NOTHING`;
+}
 
-  // Create temp table
-  await rawSql`CREATE TEMP TABLE IF NOT EXISTS temp_current_markets (ticker TEXT PRIMARY KEY)`;
-  await rawSql`TRUNCATE temp_current_markets`;
-
-  // Insert tickers in batches (10000 per batch to stay well under parameter limit)
-  const BATCH_SIZE = 10000;
-  for (let i = 0; i < currentTickers.length; i += BATCH_SIZE) {
-    const batch = currentTickers.slice(i, i + BATCH_SIZE);
-    await rawSql`INSERT INTO temp_current_markets (ticker) VALUES ${rawSql(batch.map(t => [t]))} ON CONFLICT DO NOTHING`;
-  }
-
-  // Soft delete markets not in temp table
-  const result = await rawSql`
+/**
+ * Soft delete markets not in the temp table (populated by appendMarketTickers).
+ * @param conn - Same reserved connection used for initMarketTickerTable
+ */
+export async function softDeleteMissingMarkets(conn: ReturnType<typeof getRawSql>): Promise<number> {
+  const result = await conn`
     UPDATE markets
     SET deleted_at = NOW()
     WHERE deleted_at IS NULL

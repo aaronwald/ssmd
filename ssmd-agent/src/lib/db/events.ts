@@ -1,7 +1,7 @@
 /**
  * Event database operations with upsert support (Drizzle ORM)
  */
-import { eq, isNull, desc, sql, inArray, notInArray, count } from "drizzle-orm";
+import { eq, isNull, desc, sql, inArray, count } from "drizzle-orm";
 import { type Database, getRawSql } from "./client.ts";
 import { events, markets, type Event, type NewEvent } from "./schema.ts";
 import type { Event as ApiEvent } from "../types/event.ts";
@@ -104,33 +104,30 @@ export async function getExistingEventTickers(
 }
 
 /**
- * Soft delete events that are no longer in the API response.
- * Uses temp table approach to avoid PostgreSQL's 65534 parameter limit.
+ * Initialize a temp table for streaming ticker collection.
+ * Call once before the sync loop, then appendEventTickers() per batch.
+ * @param conn - Reserved connection (temp tables are session-scoped; must use same connection throughout)
  */
-export async function softDeleteMissingEvents(
-  db: Database,
-  currentTickers: string[]
-): Promise<number> {
-  if (currentTickers.length === 0) {
-    return 0;
-  }
+export async function initEventTickerTable(conn: ReturnType<typeof getRawSql>): Promise<void> {
+  await conn`CREATE TEMP TABLE IF NOT EXISTS temp_current_events (event_ticker TEXT PRIMARY KEY)`;
+  await conn`TRUNCATE temp_current_events`;
+}
 
-  // Use raw SQL for temp table operations
-  const rawSql = getRawSql();
+/**
+ * Append tickers to the temp table (called per batch during sync).
+ * @param conn - Same reserved connection used for initEventTickerTable
+ */
+export async function appendEventTickers(conn: ReturnType<typeof getRawSql>, tickers: string[]): Promise<void> {
+  if (tickers.length === 0) return;
+  await conn`INSERT INTO temp_current_events (event_ticker) VALUES ${conn(tickers.map(t => [t]))} ON CONFLICT DO NOTHING`;
+}
 
-  // Create temp table
-  await rawSql`CREATE TEMP TABLE IF NOT EXISTS temp_current_events (event_ticker TEXT PRIMARY KEY)`;
-  await rawSql`TRUNCATE temp_current_events`;
-
-  // Insert tickers in batches (10000 per batch to stay well under parameter limit)
-  const BATCH_SIZE = 10000;
-  for (let i = 0; i < currentTickers.length; i += BATCH_SIZE) {
-    const batch = currentTickers.slice(i, i + BATCH_SIZE);
-    await rawSql`INSERT INTO temp_current_events (event_ticker) VALUES ${rawSql(batch.map(t => [t]))} ON CONFLICT DO NOTHING`;
-  }
-
-  // Soft delete events not in temp table
-  const result = await rawSql`
+/**
+ * Soft delete events not in the temp table (populated by appendEventTickers).
+ * @param conn - Same reserved connection used for initEventTickerTable
+ */
+export async function softDeleteMissingEvents(conn: ReturnType<typeof getRawSql>): Promise<number> {
+  const result = await conn`
     UPDATE events
     SET deleted_at = NOW()
     WHERE deleted_at IS NULL
