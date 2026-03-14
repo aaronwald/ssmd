@@ -4194,6 +4194,7 @@ dependencies = [
  "axum 0.7.9",
  "chrono",
  "clap",
+ "deadpool-postgres",
  "once_cell",
  "prometheus",
  "regex",

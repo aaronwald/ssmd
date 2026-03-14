@@ -2151,18 +2151,18 @@ route("GET", "/v1/data/snap", async (req) => {
     // SCAN for all keys matching this feed (limit 500)
     const pattern = `snap:${feed}:*`;
     const prefix = `snap:${feed}:`;
-    let cursor = "0";
+    let cursor = 0;
     const seen = new Set<string>();
 
     do {
       const [nextCursor, keys] = await redis.scan(cursor, { pattern, count: 100 });
-      cursor = nextCursor;
+      cursor = typeof nextCursor === "string" ? parseInt(nextCursor, 10) : nextCursor;
       for (const key of keys) {
         if (!seen.has(key) && seen.size < 500) {
           seen.add(key);
         }
       }
-    } while (cursor !== "0" && seen.size < 500);
+    } while (cursor !== 0 && seen.size < 500);
 
     if (seen.size > 0) {
       const keyArray = [...seen];
@@ -3673,7 +3673,7 @@ route("GET", "/v1/hols/volume-compare", async (req, _ctx) => {
 // EDC: Changelog fetch endpoint (used by EDC pipeline)
 const EDC_CHANGELOG_URLS: Record<string, string> = {
   kalshi: "https://docs.kalshi.com/changelog",
-  kraken: "https://docs.kraken.com/api/changelog/",
+  kraken: "https://docs.kraken.com/api/docs/change-log/",
   binance: "https://binance-docs.github.io/apidocs/spot/en/#change-log",
 };
 
@@ -3893,6 +3893,7 @@ function buildHandler(
   }
 
   return async (req: Request) => {
+    try {
     const url = new URL(req.url);
 
     for (const r of routeList) {
@@ -3995,6 +3996,10 @@ function buildHandler(
     }
 
     return json({ error: "Not found" }, 404);
+    } catch (err) {
+      console.error(`[routes] unhandled request error: ${req.method} ${req.url}:`, err);
+      return json({ error: "Internal server error" }, 500);
+    }
   };
 }
 

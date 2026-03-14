@@ -116,7 +116,8 @@ export async function query(sql: string): Promise<QueryResult> {
  */
 export async function closeDuckDB(): Promise<void> {
   if (connection) {
-    connection.close();
+    // @duckdb/node-api exposes close() at runtime but not in type definitions
+    (connection as unknown as { close(): void }).close();
     connection = null;
   }
   if (instance) {
