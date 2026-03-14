@@ -77,7 +77,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Build connector (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./ssmd-rust
           file: ./ssmd-rust/Dockerfile
@@ -124,7 +124,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Build agent (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./ssmd-agent
           file: ./ssmd-agent/Dockerfile
