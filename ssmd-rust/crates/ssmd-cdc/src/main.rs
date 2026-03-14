@@ -3,6 +3,7 @@ use clap::Parser;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_cdc::{config::Config, metrics, publisher::Publisher, replication::ReplicationSlot};
@@ -105,6 +106,8 @@ async fn main() -> anyhow::Result<()> {
     let mut poll_count: u64 = 0;
     const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
+    let mut shutdown_rx = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+
     loop {
         poll_count += 1;
         metrics::CDC_POLLS_TOTAL.inc();
@@ -119,57 +122,57 @@ async fn main() -> anyhow::Result<()> {
             );
         }
 
+        // Default sleep duration — overridden by error/backoff paths below
+        let mut next_sleep = poll_interval;
+
         match replication.peek_changes(args.peek_batch_limit).await {
             Ok(events) => {
                 consecutive_failures = 0; // Reset on success
                 let batch_len = events.len();
 
-                if events.is_empty() {
-                    tokio::time::sleep(poll_interval).await;
-                    continue;
-                }
+                if !events.is_empty() {
+                    // Track the last LSN we successfully publish — we advance to this.
+                    let mut last_published_lsn: Option<String> = None;
+                    let mut batch_failed = false;
 
-                // Track the last LSN we successfully publish — we advance to this.
-                let mut last_published_lsn: Option<String> = None;
-                let mut batch_failed = false;
+                    for event in &events {
+                        // Skip tables we don't need CDC for — but still track LSN
+                        if !publish_tables.contains(event.table.as_str()) {
+                            events_skipped += 1;
+                            metrics::CDC_EVENTS_SKIPPED.inc();
+                            last_published_lsn = Some(event.lsn.clone());
+                            continue;
+                        }
 
-                for event in &events {
-                    // Skip tables we don't need CDC for — but still track LSN
-                    if !publish_tables.contains(event.table.as_str()) {
-                        events_skipped += 1;
-                        metrics::CDC_EVENTS_SKIPPED.inc();
-                        last_published_lsn = Some(event.lsn.clone());
-                        continue;
-                    }
-
-                    if let Err(e) = publisher.publish(event).await {
-                        tracing::error!(error = ?e, table = %event.table, lsn = %event.lsn, "Failed to publish event — aborting batch");
-                        metrics::CDC_PUBLISH_ERRORS.with_label_values(&[&event.table]).inc();
-                        batch_failed = true;
-                        break;
-                    } else {
-                        events_published += 1;
-                        metrics::CDC_EVENTS_PUBLISHED.with_label_values(&[&event.table]).inc();
-                        metrics::CDC_LAST_PUBLISH_TIMESTAMP.set(chrono::Utc::now().timestamp() as f64);
-                        last_published_lsn = Some(event.lsn.clone());
-                        if events_published % 100 == 0 {
-                            tracing::info!(total = events_published, skipped = events_skipped, "Events published");
+                        if let Err(e) = publisher.publish(event).await {
+                            tracing::error!(error = ?e, table = %event.table, lsn = %event.lsn, "Failed to publish event — aborting batch");
+                            metrics::CDC_PUBLISH_ERRORS.with_label_values(&[&event.table]).inc();
+                            batch_failed = true;
+                            break;
+                        } else {
+                            events_published += 1;
+                            metrics::CDC_EVENTS_PUBLISHED.with_label_values(&[&event.table]).inc();
+                            metrics::CDC_LAST_PUBLISH_TIMESTAMP.set(chrono::Utc::now().timestamp() as f64);
+                            last_published_lsn = Some(event.lsn.clone());
+                            if events_published % 100 == 0 {
+                                tracing::info!(total = events_published, skipped = events_skipped, "Events published");
+                            }
                         }
                     }
-                }
 
-                // Crash on advance failure — a CDC that peeks without
-                // advancing will accumulate unbounded WAL and never recover.
-                if let Some(ref lsn) = last_published_lsn {
-                    replication.advance_slot(lsn).await?;
-                }
+                    // Crash on advance failure — a CDC that peeks without
+                    // advancing will accumulate unbounded WAL and never recover.
+                    if let Some(ref lsn) = last_published_lsn {
+                        replication.advance_slot(lsn).await?;
+                    }
 
-                if batch_failed {
-                    // Back off before retrying — NATS dedup prevents duplicates on re-peek
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                } else if batch_len as i64 >= args.peek_batch_limit {
-                    // Full batch — more events waiting, poll again immediately
-                    continue;
+                    if batch_failed {
+                        // Back off before retrying — NATS dedup prevents duplicates on re-peek
+                        next_sleep = Duration::from_secs(2);
+                    } else if batch_len as i64 >= args.peek_batch_limit {
+                        // Full batch — more events waiting, poll again immediately
+                        next_sleep = Duration::ZERO;
+                    }
                 }
             }
             Err(e) => {
@@ -183,13 +186,23 @@ async fn main() -> anyhow::Result<()> {
 
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                     tracing::error!("Max consecutive failures reached, exiting for restart");
+                    replication.close();
                     return Err(e.into());
                 }
 
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                next_sleep = Duration::from_secs(5);
             }
         }
 
-        tokio::time::sleep(poll_interval).await;
+        // Single sleep-or-shutdown select at the bottom of every iteration
+        tokio::select! {
+            biased;
+            _ = shutdown_rx.recv() => {
+                tracing::info!("Received SIGTERM — releasing replication slot");
+                replication.close();
+                return Ok(());
+            }
+            _ = tokio::time::sleep(next_sleep) => {}
+        }
     }
 }
