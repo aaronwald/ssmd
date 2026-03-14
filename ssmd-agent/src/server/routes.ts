@@ -3673,7 +3673,7 @@ route("GET", "/v1/hols/volume-compare", async (req, _ctx) => {
 // EDC: Changelog fetch endpoint (used by EDC pipeline)
 const EDC_CHANGELOG_URLS: Record<string, string> = {
   kalshi: "https://docs.kalshi.com/changelog",
-  kraken: "https://docs.kraken.com/api/changelog/",
+  kraken: "https://docs.kraken.com/api/docs/change-log/",
   binance: "https://binance-docs.github.io/apidocs/spot/en/#change-log",
 };
 
@@ -3893,6 +3893,7 @@ function buildHandler(
   }
 
   return async (req: Request) => {
+    try {
     const url = new URL(req.url);
 
     for (const r of routeList) {
@@ -3995,6 +3996,10 @@ function buildHandler(
     }
 
     return json({ error: "Not found" }, 404);
+    } catch (err) {
+      console.error(`[routes] unhandled request error: ${req.method} ${req.url}:`, err);
+      return json({ error: "Internal server error" }, 500);
+    }
   };
 }
 

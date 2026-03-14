@@ -1,10 +1,11 @@
 // src/replication.rs
-use tokio_postgres::{Client, NoTls};
+use deadpool_postgres::{Config, Pool, Runtime};
+use tokio_postgres::NoTls;
 use crate::{Result, messages::{CdcEvent, CdcOperation}};
 use regex::Regex;
 
 pub struct ReplicationSlot {
-    client: Client,
+    pool: Pool,
     slot_name: String,
     #[allow(dead_code)]
     publication_name: String,
@@ -13,19 +14,48 @@ pub struct ReplicationSlot {
 impl ReplicationSlot {
     /// Connect to PostgreSQL for logical replication slot polling
     pub async fn connect(database_url: &str, slot_name: &str, publication_name: &str) -> Result<Self> {
-        // Note: We don't need replication=database since we poll via pg_logical_slot_get_changes
-        // rather than using the streaming replication protocol
-        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        let pg_config: tokio_postgres::Config = database_url
+            .parse()
+            .map_err(|e: tokio_postgres::Error| crate::Error::Config(format!("invalid database URL: {}", e)))?;
 
-        // Spawn connection handler
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!(error = %e, "PostgreSQL connection error");
+        let mut cfg = Config::new();
+        if let Some(host) = pg_config.get_hosts().first() {
+            match host {
+                tokio_postgres::config::Host::Tcp(h) => cfg.host = Some(h.clone()),
+                #[cfg(unix)]
+                tokio_postgres::config::Host::Unix(p) => {
+                    cfg.host = Some(p.to_string_lossy().to_string())
+                }
             }
-        });
+        }
+        if let Some(port) = pg_config.get_ports().first() {
+            cfg.port = Some(*port);
+        }
+        if let Some(user) = pg_config.get_user() {
+            cfg.user = Some(user.to_string());
+        }
+        if let Some(password) = pg_config.get_password() {
+            cfg.password = Some(String::from_utf8_lossy(password).to_string());
+        }
+        if let Some(dbname) = pg_config.get_dbname() {
+            cfg.dbname = Some(dbname.to_string());
+        }
+
+        // CDC polls sequentially — 2 connections is sufficient (peek + advance)
+        cfg.pool = Some(deadpool_postgres::PoolConfig { max_size: 2, ..Default::default() });
+
+        let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)
+            .map_err(|e| crate::Error::Config(format!("failed to create pool: {}", e)))?;
+
+        // Verify connectivity
+        let client = pool.get().await
+            .map_err(|e| crate::Error::Config(format!("failed to connect: {}", e)))?;
+        drop(client);
+
+        tracing::info!("PostgreSQL connection pool created");
 
         Ok(Self {
-            client,
+            pool,
             slot_name: slot_name.to_string(),
             publication_name: publication_name.to_string(),
         })
@@ -33,7 +63,10 @@ impl ReplicationSlot {
 
     /// Ensure replication slot exists
     pub async fn ensure_slot(&self) -> Result<()> {
-        let exists = self.client
+        let client = self.pool.get().await
+            .map_err(|e| crate::Error::Replication(format!("pool error: {}", e)))?;
+
+        let exists = client
             .query_opt(
                 "SELECT 1 FROM pg_replication_slots WHERE slot_name = $1",
                 &[&self.slot_name],
@@ -43,7 +76,7 @@ impl ReplicationSlot {
 
         if !exists {
             // Use test_decoding which is built into PostgreSQL
-            self.client
+            client
                 .execute(
                     "SELECT pg_create_logical_replication_slot($1, 'test_decoding')",
                     &[&self.slot_name],
@@ -59,7 +92,9 @@ impl ReplicationSlot {
 
     /// Get current WAL LSN
     pub async fn current_lsn(&self) -> Result<String> {
-        let row = self.client
+        let client = self.pool.get().await
+            .map_err(|e| crate::Error::Replication(format!("pool error: {}", e)))?;
+        let row = client
             .query_one("SELECT pg_current_wal_lsn()::text", &[])
             .await?;
         Ok(row.get(0))
@@ -68,7 +103,10 @@ impl ReplicationSlot {
     /// Peek at up to `limit` changes without consuming them from the replication slot.
     /// Use `advance_slot()` after successful processing to consume.
     pub async fn peek_changes(&self, limit: i64) -> Result<Vec<CdcEvent>> {
-        let rows = self.client
+        let client = self.pool.get().await
+            .map_err(|e| crate::Error::Replication(format!("pool error: {}", e)))?;
+
+        let rows = client
             .query(
                 "SELECT lsn::text, data FROM pg_logical_slot_peek_changes($1, NULL, NULL) LIMIT $2",
                 &[&self.slot_name, &limit],
@@ -171,13 +209,16 @@ impl ReplicationSlot {
     /// Advance the replication slot past the given LSN, consuming all changes up to it.
     /// Call this only after all events have been successfully published.
     pub async fn advance_slot(&self, upto_lsn: &str) -> Result<()> {
+        let client = self.pool.get().await
+            .map_err(|e| crate::Error::Replication(format!("pool error: {}", e)))?;
+
         // Use format! for the LSN value — tokio-postgres cannot bind &str to pg_lsn.
         // The LSN comes from pg_logical_slot_peek_changes output, not user input.
         let sql = format!(
             "SELECT pg_replication_slot_advance($1, '{}'::pg_lsn)",
             upto_lsn.replace('\'', "")
         );
-        self.client
+        client
             .execute(&sql, &[&self.slot_name])
             .await?;
         tracing::debug!(slot = %self.slot_name, lsn = %upto_lsn, "Advanced replication slot");

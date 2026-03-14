@@ -72,6 +72,65 @@ pub struct KalshiConnector {
     last_ws_activity_epoch_secs: Arc<AtomicU64>,
 }
 
+/// Handle a shard command (subscribe/unsubscribe). Used by both the blocking recv
+/// arm and the periodic drain arm in the receiver task's select! loop.
+macro_rules! handle_shard_cmd {
+    ($ws:expr, $cmd:expr, $shard_id:expr, $metrics:expr) => {
+        match $cmd {
+            ShardCommand::Subscribe { tickers } => {
+                info!(
+                    shard_id = $shard_id,
+                    market_count = tickers.len(),
+                    "CDC: Adding dynamic market subscriptions"
+                );
+                if let Err(e) = $ws.subscribe_markets("ticker", &tickers).await {
+                    warn!(shard_id = $shard_id, error = %e, "Failed to subscribe to ticker channel");
+                }
+                if let Err(e) = $ws.subscribe_markets("trade", &tickers).await {
+                    warn!(shard_id = $shard_id, error = %e, "Failed to subscribe to trade channel");
+                }
+                let current_count = $metrics.get_markets_subscribed();
+                $metrics.set_markets_subscribed(current_count + tickers.len());
+                info!(
+                    shard_id = $shard_id,
+                    added = tickers.len(),
+                    total = current_count + tickers.len(),
+                    "CDC: Successfully subscribed to new markets"
+                );
+            }
+            ShardCommand::Unsubscribe { tickers } => {
+                info!(
+                    shard_id = $shard_id,
+                    market_count = tickers.len(),
+                    "CDC: Removing market subscriptions"
+                );
+                let mut removed = 0usize;
+                for ticker in &tickers {
+                    match $ws.unsubscribe_market(ticker).await {
+                        Ok(n) => {
+                            removed += 1;
+                            debug!(shard_id = $shard_id, ticker = %ticker, sids = n, "Unsubscribed market");
+                            $metrics.inc_unsubscribed();
+                        }
+                        Err(e) => {
+                            warn!(shard_id = $shard_id, ticker = %ticker, error = %e, "Failed to unsubscribe market");
+                        }
+                    }
+                }
+                let current_count = $metrics.get_markets_subscribed();
+                $metrics.set_markets_subscribed(current_count.saturating_sub(removed));
+                info!(
+                    shard_id = $shard_id,
+                    requested = tickers.len(),
+                    removed,
+                    total = current_count.saturating_sub(removed),
+                    "CDC: Unsubscribe complete"
+                );
+            }
+        }
+    };
+}
+
 impl KalshiConnector {
     /// Create a new Kalshi connector
     pub fn new(credentials: KalshiCredentials, use_demo: bool, ws_url: Option<String>) -> Self {
@@ -314,9 +373,13 @@ impl KalshiConnector {
             use tokio::time::{interval, Instant};
 
             const PING_INTERVAL_SECS: u64 = 30;
+            const CMD_CHECK_INTERVAL_SECS: u64 = 5;
 
             let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            let mut cmd_check_interval = interval(Duration::from_secs(CMD_CHECK_INTERVAL_SECS));
+            cmd_check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             let connected_at = Instant::now();
             let mut message_count: u64 = 0;
@@ -353,6 +416,16 @@ impl KalshiConnector {
                         update_activity(&activity_tracker, &shard_metrics, idle_secs as f64);
                     }
 
+                    // Periodic drain of queued CDC commands during WS idle periods.
+                    // Ensures subscriptions are processed even when no WS data arrives.
+                    _ = cmd_check_interval.tick() => {
+                        if let Some(rx) = cmd_rx.as_mut() {
+                            while let Ok(cmd) = rx.try_recv() {
+                                handle_shard_cmd!(&mut ws, cmd, shard_id, &shard_metrics);
+                            }
+                        }
+                    }
+
                     // Handle shard commands (dynamic subscriptions from CDC)
                     cmd = async {
                         match cmd_rx.as_mut() {
@@ -361,67 +434,8 @@ impl KalshiConnector {
                         }
                     } => {
                         match cmd {
-                            Some(ShardCommand::Subscribe { tickers }) => {
-                                info!(
-                                    shard_id,
-                                    market_count = tickers.len(),
-                                    "CDC: Adding dynamic market subscriptions"
-                                );
-
-                                // Subscribe to ticker channel
-                                if let Err(e) = ws.subscribe_markets("ticker", &tickers).await {
-                                    warn!(shard_id, error = %e, "Failed to subscribe to ticker channel");
-                                    // Continue - don't break the receiver loop
-                                }
-
-                                // Subscribe to trade channel
-                                if let Err(e) = ws.subscribe_markets("trade", &tickers).await {
-                                    warn!(shard_id, error = %e, "Failed to subscribe to trade channel");
-                                }
-
-                                // Update metrics
-                                let current_count = shard_metrics.get_markets_subscribed();
-                                shard_metrics.set_markets_subscribed(current_count + tickers.len());
-
-                                info!(
-                                    shard_id,
-                                    added = tickers.len(),
-                                    total = current_count + tickers.len(),
-                                    "CDC: Successfully subscribed to new markets"
-                                );
-                            }
-                            Some(ShardCommand::Unsubscribe { tickers }) => {
-                                info!(
-                                    shard_id,
-                                    market_count = tickers.len(),
-                                    "CDC: Removing market subscriptions"
-                                );
-
-                                let mut removed = 0usize;
-                                for ticker in &tickers {
-                                    match ws.unsubscribe_market(ticker).await {
-                                        Ok(n) => {
-                                            removed += 1;
-                                            debug!(shard_id, ticker = %ticker, sids = n, "Unsubscribed market");
-                                            shard_metrics.inc_unsubscribed();
-                                        }
-                                        Err(e) => {
-                                            warn!(shard_id, ticker = %ticker, error = %e, "Failed to unsubscribe market");
-                                        }
-                                    }
-                                }
-
-                                // Update metrics
-                                let current_count = shard_metrics.get_markets_subscribed();
-                                shard_metrics.set_markets_subscribed(current_count.saturating_sub(removed));
-
-                                info!(
-                                    shard_id,
-                                    requested = tickers.len(),
-                                    removed,
-                                    total = current_count.saturating_sub(removed),
-                                    "CDC: Unsubscribe complete"
-                                );
+                            Some(cmd) => {
+                                handle_shard_cmd!(&mut ws, cmd, shard_id, &shard_metrics);
                             }
                             None => {
                                 // Command channel closed - CDC disabled or shutting down
