@@ -19,6 +19,21 @@ jobs:
         ports:
           - 5432:5432
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+      postgres-cdc:
+        image: postgres:16
+        env:
+          POSTGRES_DB: cdc_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          -c wal_level=logical
+          -c max_replication_slots=4
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -63,6 +78,13 @@ jobs:
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/harman_test
         run: cargo test -p ssmd-harman-ems --test ems_tests -- --ignored --nocapture --test-threads=1
+
+      - name: Run CDC integration tests
+        working-directory: ssmd-rust
+        env:
+          CDC_TEST_DATABASE_URL: postgresql://test:test@localhost:5433/cdc_test
+          RUST_BACKTRACE: 1
+        run: cargo test -p ssmd-cdc --test integration_test -- --ignored --nocapture --test-threads=1
 
       - name: Rust build
         run: make rust-build
