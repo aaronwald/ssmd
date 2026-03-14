@@ -3596,6 +3596,80 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
   return json(results);
 }, true, "admin:read", "internal");
 
+// HOLS volume comparison: per-ticker REST vs WS volume reconciliation
+route("GET", "/v1/hols/volume-compare", async (req, _ctx) => {
+  const url = new URL(req.url);
+  const date = url.searchParams.get("date") ?? new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(date)) {
+    return json({ error: "date must be YYYY-MM-DD format" }, 400);
+  }
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
+
+  const restPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-5m-kraken.parquet`;
+  const wsPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-1m-ssmd.parquet`;
+
+  try {
+    const result = await duckdbQuery(`
+      WITH rest_daily AS (
+        SELECT
+          hols_ticker,
+          SUM(volume) as rest_volume_base,
+          SUM(tradecount) as rest_tradecount
+        FROM read_parquet('${restPath}')
+        GROUP BY hols_ticker
+      ),
+      ws_daily AS (
+        SELECT
+          hols_ticker,
+          SUM(volume_from) as ws_volume_base,
+          SUM(volume) as ws_volume_quote,
+          SUM(tradecount) as ws_tradecount
+        FROM read_parquet('${wsPath}')
+        WHERE tradecount > 0
+        GROUP BY hols_ticker
+      )
+      SELECT
+        COALESCE(r.hols_ticker, w.hols_ticker) as ticker,
+        r.rest_volume_base,
+        w.ws_volume_base,
+        r.rest_tradecount,
+        w.ws_tradecount,
+        CASE WHEN r.rest_volume_base > 0 AND w.ws_volume_base > 0
+          THEN ROUND(w.ws_volume_base / r.rest_volume_base, 4)
+          ELSE NULL END as volume_ratio,
+        CASE WHEN r.rest_tradecount > 0 AND w.ws_tradecount > 0
+          THEN ROUND(w.ws_tradecount::DOUBLE / r.rest_tradecount::DOUBLE, 4)
+          ELSE NULL END as tradecount_ratio,
+        CASE
+          WHEN r.hols_ticker IS NULL THEN 'ws_only'
+          WHEN w.hols_ticker IS NULL THEN 'rest_only'
+          ELSE 'both'
+        END as coverage
+      FROM rest_daily r
+      FULL OUTER JOIN ws_daily w ON r.hols_ticker = w.hols_ticker
+      ORDER BY ticker
+    `);
+
+    const tickers = result.rows;
+    const both = tickers.filter((t: Record<string, unknown>) => t.coverage === "both");
+    const restOnly = tickers.filter((t: Record<string, unknown>) => t.coverage === "rest_only");
+    const wsOnly = tickers.filter((t: Record<string, unknown>) => t.coverage === "ws_only");
+
+    return json({
+      date,
+      ticker_count: { total: tickers.length, both: both.length, rest_only: restOnly.length, ws_only: wsOnly.length },
+      tickers,
+      rest_only: restOnly.map((t: Record<string, unknown>) => t.ticker),
+      ws_only: wsOnly.map((t: Record<string, unknown>) => t.ticker),
+    });
+  } catch (err) {
+    return json({ error: (err as Error).message, date }, 500);
+  }
+}, true, "admin:read", "internal");
+
 // EDC: Changelog fetch endpoint (used by EDC pipeline)
 const EDC_CHANGELOG_URLS: Record<string, string> = {
   kalshi: "https://docs.kalshi.com/changelog",
