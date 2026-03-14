@@ -139,31 +139,28 @@ export async function bulkUpsertMarkets(
 /**
  * Initialize a temp table for streaming ticker collection.
  * Call once before the sync loop, then appendMarketTickers() per batch.
+ * @param conn - Reserved connection (temp tables are session-scoped; must use same connection throughout)
  */
-export async function initMarketTickerTable(): Promise<void> {
-  const rawSql = getRawSql();
-  await rawSql`CREATE TEMP TABLE IF NOT EXISTS temp_current_markets (ticker TEXT PRIMARY KEY)`;
-  await rawSql`TRUNCATE temp_current_markets`;
+export async function initMarketTickerTable(conn: ReturnType<typeof getRawSql>): Promise<void> {
+  await conn`CREATE TEMP TABLE IF NOT EXISTS temp_current_markets (ticker TEXT PRIMARY KEY)`;
+  await conn`TRUNCATE temp_current_markets`;
 }
 
 /**
  * Append tickers to the temp table (called per batch during sync).
- * Avoids accumulating all tickers in memory.
+ * @param conn - Same reserved connection used for initMarketTickerTable
  */
-export async function appendMarketTickers(tickers: string[]): Promise<void> {
+export async function appendMarketTickers(conn: ReturnType<typeof getRawSql>, tickers: string[]): Promise<void> {
   if (tickers.length === 0) return;
-  const rawSql = getRawSql();
-  await rawSql`INSERT INTO temp_current_markets (ticker) VALUES ${rawSql(tickers.map(t => [t]))} ON CONFLICT DO NOTHING`;
+  await conn`INSERT INTO temp_current_markets (ticker) VALUES ${conn(tickers.map(t => [t]))} ON CONFLICT DO NOTHING`;
 }
 
 /**
  * Soft delete markets not in the temp table (populated by appendMarketTickers).
- * Call after all batches have been streamed.
+ * @param conn - Same reserved connection used for initMarketTickerTable
  */
-export async function softDeleteMissingMarkets(): Promise<number> {
-  const rawSql = getRawSql();
-
-  const result = await rawSql`
+export async function softDeleteMissingMarkets(conn: ReturnType<typeof getRawSql>): Promise<number> {
+  const result = await conn`
     UPDATE markets
     SET deleted_at = NOW()
     WHERE deleted_at IS NULL

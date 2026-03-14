@@ -1,7 +1,7 @@
 /**
  * Secmaster sync command - sync Kalshi events and markets to PostgreSQL
  */
-import { getDb, closeDb } from "../../lib/db/client.ts";
+import { getDb, closeDb, getRawSql } from "../../lib/db/client.ts";
 import { bulkUpsertEvents, initEventTickerTable, appendEventTickers, softDeleteMissingEvents, upsertEvents } from "../../lib/db/events.ts";
 import { bulkUpsertMarkets, initMarketTickerTable, appendMarketTickers, softDeleteMissingMarkets } from "../../lib/db/markets.ts";
 import { getAllActiveSeries, getSeriesByTags, getSeriesByCategory } from "../../lib/db/series.ts";
@@ -102,10 +102,13 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
       console.log(`\n[Events] Starting ${syncMode} sync...`);
       const eventStart = Date.now();
 
-      // Initialize temp table for streaming soft-delete (no in-memory accumulation)
+      // Reserve a connection for temp table operations (temp tables are session-scoped)
       const needsSoftDelete = !options.dryRun && !options.noDelete && !options.activeOnly;
-      if (needsSoftDelete) {
-        await initEventTickerTable();
+      const conn = needsSoftDelete ? await getRawSql().reserve() : null;
+
+      try {
+      if (conn) {
+        await initEventTickerTable(conn);
       }
 
       let batchCount = 0;
@@ -119,20 +122,23 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
         }
 
         // Stream tickers to temp table instead of accumulating in memory
-        if (needsSoftDelete) {
-          await appendEventTickers(batch.map((e) => e.event_ticker));
+        if (conn) {
+          await appendEventTickers(conn, batch.map((e) => e.event_ticker));
         }
       }
 
       result.events.upserted = result.events.fetched;
       console.log(`[Events] Synced ${result.events.fetched} events in ${batchCount} batches`);
 
-      if (needsSoftDelete) {
-        const deleted = await softDeleteMissingEvents();
+      if (conn) {
+        const deleted = await softDeleteMissingEvents(conn);
         result.events.deleted = deleted;
         if (deleted > 0) {
           console.log(`[Events] Soft-deleted ${deleted} missing events`);
         }
+      }
+      } finally {
+        if (conn) conn.release();
       }
 
       result.events.durationMs = Date.now() - eventStart;
@@ -143,13 +149,16 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
       console.log(`\n[Markets] Starting ${syncMode} sync...`);
       const marketStart = Date.now();
 
-      // Initialize temp table for streaming soft-delete (no in-memory accumulation)
+      // Reserve a connection for temp table operations (temp tables are session-scoped)
       const needsSoftDelete = !options.dryRun && !options.noDelete && !options.activeOnly;
-      if (needsSoftDelete) {
-        await initMarketTickerTable();
-      }
+      const mktConn = needsSoftDelete ? await getRawSql().reserve() : null;
 
       let batchCount = 0;
+
+      try {
+      if (mktConn) {
+        await initMarketTickerTable(mktConn);
+      }
 
       // Helper: process a market batch (upsert + stream tickers to temp table)
       const processBatch = async (batch: import("../../lib/types/market.ts").Market[]) => {
@@ -160,8 +169,8 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
           result.markets.skipped += batchResult.skipped;
           batchCount++;
         }
-        if (needsSoftDelete) {
-          await appendMarketTickers(batch.map((m) => m.ticker));
+        if (mktConn) {
+          await appendMarketTickers(mktConn, batch.map((m) => m.ticker));
         }
       };
 
@@ -236,12 +245,15 @@ export async function runSecmasterSync(options: SyncOptions = {}): Promise<SyncR
           (result.markets.skipped > 0 ? ` (${result.markets.skipped} skipped)` : "")
       );
 
-      if (needsSoftDelete) {
-        const deleted = await softDeleteMissingMarkets();
+      if (mktConn) {
+        const deleted = await softDeleteMissingMarkets(mktConn);
         result.markets.deleted = deleted;
         if (deleted > 0) {
           console.log(`[Markets] Soft-deleted ${deleted} missing markets`);
         }
+      }
+      } finally {
+        if (mktConn) mktConn.release();
       }
 
       result.markets.durationMs = Date.now() - marketStart;
