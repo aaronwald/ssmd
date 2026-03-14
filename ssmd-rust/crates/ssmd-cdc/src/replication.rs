@@ -105,10 +105,12 @@ impl ReplicationSlot {
         Ok(row.get(0))
     }
 
-    /// Close the connection pool, releasing the replication slot so a new pod can acquire it.
+    /// Close the connection pool, ending any active slot usage.
+    /// The replication slot itself persists server-side — this just drops
+    /// the DB connections so the slot is no longer held active.
     pub fn close(&self) {
         self.pool.close();
-        tracing::info!(slot = %self.slot_name, "Connection pool closed — replication slot released");
+        tracing::info!(slot = %self.slot_name, "Connection pool closed");
     }
 
     /// Peek at up to `limit` changes without consuming them from the replication slot.
@@ -117,18 +119,23 @@ impl ReplicationSlot {
         let client = self.pool.get().await
             .map_err(|e| crate::Error::Replication(format!("pool error: {}", e)))?;
 
-        // Guard against unbounded blocking when WAL backlog is large
-        client.execute("SET statement_timeout = '30s'", &[]).await?;
+        // Guard against unbounded blocking when WAL backlog is large.
+        // Use SET LOCAL inside a transaction so the timeout is automatically
+        // reset when the transaction ends — no error-path leakage.
+        client.execute("BEGIN", &[]).await?;
+        client.execute("SET LOCAL statement_timeout = '30s'", &[]).await?;
 
-        let rows = client
+        let result = client
             .query(
                 "SELECT lsn::text, data FROM pg_logical_slot_peek_changes($1, NULL, NULL) LIMIT $2",
                 &[&self.slot_name, &limit],
             )
-            .await?;
+            .await;
 
-        // Reset timeout for subsequent queries on this pooled connection
-        client.execute("SET statement_timeout = '0'", &[]).await?;
+        // COMMIT ends the transaction, resetting statement_timeout regardless of success/failure
+        client.execute("COMMIT", &[]).await?;
+
+        let rows = result?;
 
         let mut events = Vec::new();
 
