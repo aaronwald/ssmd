@@ -2387,6 +2387,80 @@ route("GET", "/v1/monitor/markets", async (req) => {
   return json({ markets: [...marketMap.values()] });
 }, true, "datasets:read", "public");
 
+// Canary endpoint — returns markets with snap prices for the nearest closing event in a series.
+// Used by the kxbtcd-canary pipeline to check if the full pipeline is working.
+route("GET", "/v1/internal/canary-markets", async (req) => {
+  const url = new URL(req.url);
+  const series = url.searchParams.get("series");
+  if (!series) {
+    return json({ error: "series query parameter is required" }, 400);
+  }
+
+  const sql = getRawSql();
+  const redis = await getRedis();
+
+  // Find the nearest closing active event for this series
+  const eventRows = await sql`
+    SELECT e.event_ticker
+    FROM events e
+    JOIN markets m ON m.event_ticker = e.event_ticker
+    WHERE e.series_ticker = ${series}
+      AND e.deleted_at IS NULL
+      AND m.deleted_at IS NULL
+      AND m.status IN ('active', 'open')
+      AND m.close_time > NOW()
+    GROUP BY e.event_ticker
+    ORDER BY MIN(m.close_time)
+    LIMIT 1
+  `;
+
+  if (eventRows.length === 0) {
+    return json({ event: null, markets: [], marketsWithPrices: 0, totalMarkets: 0 });
+  }
+
+  const eventTicker = eventRows[0].event_ticker;
+
+  // Get markets from Redis cache (metadata)
+  const raw = await redis.hgetall(`monitor:markets:${eventTicker}`);
+  // deno-lint-ignore no-explicit-any
+  const marketList: any[] = [];
+  const snapKeys: string[] = [];
+  const tickers: string[] = [];
+
+  for (let i = 0; i < raw.length; i += 2) {
+    try {
+      const data = JSON.parse(raw[i + 1]);
+      tickers.push(raw[i]);
+      marketList.push({ ticker: raw[i], ...data });
+      snapKeys.push(`snap:kalshi:${raw[i]}`);
+    } catch { /* skip */ }
+  }
+
+  // Merge snap prices
+  if (snapKeys.length > 0) {
+    const snapValues = await redis.mget(...snapKeys);
+    for (let i = 0; i < tickers.length; i++) {
+      if (!snapValues[i]) continue;
+      try {
+        const snap = JSON.parse(snapValues[i]);
+        const snapData = snap.msg ?? snap;
+        if (snapData.yes_bid_dollars != null) marketList[i].yes_bid = Number(snapData.yes_bid_dollars);
+        if (snapData.yes_ask_dollars != null) marketList[i].yes_ask = Number(snapData.yes_ask_dollars);
+        if (snapData.price_dollars != null) marketList[i].last = Number(snapData.price_dollars);
+      } catch { /* skip */ }
+    }
+  }
+
+  const marketsWithPrices = marketList.filter(m => m.yes_bid != null && m.yes_ask != null).length;
+
+  return json({
+    event: eventTicker,
+    markets: marketList,
+    marketsWithPrices,
+    totalMarkets: marketList.length,
+  });
+}, false, undefined, "internal");
+
 // Monitor search — direct DB queries + snap enrichment (no cache dependency)
 route("GET", "/v1/monitor/search", async (req, ctx) => {
   const url = new URL(req.url);
