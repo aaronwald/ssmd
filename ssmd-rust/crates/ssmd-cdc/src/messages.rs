@@ -1,35 +1,6 @@
 // src/messages.rs
 use serde::{Deserialize, Serialize};
 
-/// wal2json output format
-#[derive(Debug, Deserialize)]
-pub struct WalJsonMessage {
-    pub xid: Option<u64>,
-    #[serde(default)]
-    pub change: Vec<WalJsonChange>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WalJsonChange {
-    pub kind: String,        // "insert", "update", "delete"
-    pub schema: String,      // "public"
-    pub table: String,       // "markets"
-    #[serde(default)]
-    pub columnnames: Vec<String>,
-    #[serde(default)]
-    pub columnvalues: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub oldkeys: Option<OldKeys>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct OldKeys {
-    #[serde(default)]
-    pub keynames: Vec<String>,
-    #[serde(default)]
-    pub keyvalues: Vec<serde_json::Value>,
-}
-
 /// Published CDC event (to NATS)
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CdcEvent {
@@ -70,25 +41,6 @@ impl CdcOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_wal2json_insert() {
-        let json = r#"{
-            "xid": 12345,
-            "change": [{
-                "kind": "insert",
-                "schema": "public",
-                "table": "markets",
-                "columnnames": ["ticker", "status"],
-                "columnvalues": ["INXD-25-B4000", "active"]
-            }]
-        }"#;
-
-        let msg: WalJsonMessage = serde_json::from_str(json).unwrap();
-        assert_eq!(msg.change.len(), 1);
-        assert_eq!(msg.change[0].kind, "insert");
-        assert_eq!(msg.change[0].table, "markets");
-    }
 
     #[test]
     fn test_dedup_id_unique_per_table_and_op() {

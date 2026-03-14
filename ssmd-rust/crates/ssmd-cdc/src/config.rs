@@ -7,7 +7,6 @@ pub struct Config {
     pub database_url: String,
     pub nats_url: String,
     pub slot_name: String,
-    pub publication_name: String,
     pub tables: Vec<String>,
 }
 
@@ -21,9 +20,6 @@ impl Config {
 
         let slot_name = std::env::var("REPLICATION_SLOT")
             .unwrap_or_else(|_| "ssmd_cdc".into());
-
-        let publication_name = std::env::var("PUBLICATION_NAME")
-            .unwrap_or_else(|_| "ssmd_cdc_pub".into());
 
         let tables = std::env::var("CDC_TABLES")
             .map(|s| s.split(',').map(|t| t.trim().to_string()).collect())
@@ -40,7 +36,6 @@ impl Config {
             database_url,
             nats_url,
             slot_name,
-            publication_name,
             tables,
         })
     }

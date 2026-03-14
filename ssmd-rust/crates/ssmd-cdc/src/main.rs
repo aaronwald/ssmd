@@ -88,7 +88,6 @@ async fn main() -> anyhow::Result<()> {
     let replication = ReplicationSlot::connect(
         &config.database_url,
         &config.slot_name,
-        &config.publication_name,
     ).await?;
     replication.ensure_slot().await?;
 

@@ -15,13 +15,11 @@ static COL_RE: Lazy<Regex> = Lazy::new(|| {
 pub struct ReplicationSlot {
     pool: Pool,
     slot_name: String,
-    #[allow(dead_code)]
-    publication_name: String,
 }
 
 impl ReplicationSlot {
     /// Connect to PostgreSQL for logical replication slot polling
-    pub async fn connect(database_url: &str, slot_name: &str, publication_name: &str) -> Result<Self> {
+    pub async fn connect(database_url: &str, slot_name: &str) -> Result<Self> {
         let pg_config: tokio_postgres::Config = database_url
             .parse()
             .map_err(|e: tokio_postgres::Error| crate::Error::Config(format!("invalid database URL: {}", e)))?;
@@ -65,7 +63,6 @@ impl ReplicationSlot {
         Ok(Self {
             pool,
             slot_name: slot_name.to_string(),
-            publication_name: publication_name.to_string(),
         })
     }
 
