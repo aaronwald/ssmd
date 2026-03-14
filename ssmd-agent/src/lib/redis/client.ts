@@ -34,6 +34,23 @@ export async function getRedis(): Promise<Redis> {
   const options = parseRedisUrl();
   redisClient = await connect(options);
   console.log("[redis] Connected to", options.hostname);
+
+  // After reconnect, check if Redis has data. If empty (e.g., after Redis pod
+  // replacement), crash to force K8s restart — rebuilds API key cache, lets
+  // ssmd-cache re-warm monitor data. A reconnect to empty Redis is worse than
+  // a restart because we'd silently serve empty responses.
+  if (redisClient) {
+    try {
+      const dbsize = await redisClient.dbsize();
+      if (dbsize === 0) {
+        console.error("[redis] FATAL: Redis is empty after reconnect — exiting to force restart");
+        Deno.exit(1);
+      }
+    } catch {
+      // dbsize check failed — Redis may be mid-startup, let it proceed
+    }
+  }
+
   return redisClient;
 }
 

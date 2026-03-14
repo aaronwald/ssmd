@@ -18,6 +18,11 @@ impl RedisCache {
         Ok(Self { conn })
     }
 
+    /// Get a clone of the underlying Redis connection (for health checks etc.)
+    pub fn connection(&self) -> redis::aio::MultiplexedConnection {
+        self.conn.clone()
+    }
+
     // --- Hash-based monitor index methods ---
 
     /// HGET a single field from a hash key

@@ -85,6 +85,9 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Spawn Redis health check (every 30s — crash if Redis is unreachable)
+    ssmd_middleware::redis_health::spawn_redis_health_check(cache.connection());
+
     // Start consuming CDC events
     let mut consumer = CdcConsumer::new(
         &config.nats_url,

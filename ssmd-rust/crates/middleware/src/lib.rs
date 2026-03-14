@@ -11,6 +11,8 @@ pub mod latency;
 pub mod lsn;
 pub mod memory;
 pub mod nats;
+#[cfg(feature = "redis-health")]
+pub mod redis_health;
 pub mod storage;
 pub mod transport;
 

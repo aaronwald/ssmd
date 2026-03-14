@@ -333,6 +333,11 @@ async fn main() {
         }
     };
 
+    // Spawn Redis health check if connected (every 30s — crash if lost)
+    if let Some(ref conn) = redis_conn {
+        ssmd_middleware::redis_health::spawn_redis_health_check(conn.clone());
+    }
+
     let state = Arc::new(AppState {
         ems,
         oms: oms.clone(),

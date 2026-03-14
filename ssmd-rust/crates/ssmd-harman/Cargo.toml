@@ -12,6 +12,7 @@ name = "ssmd-harman"
 path = "src/main.rs"
 
 [dependencies]
+ssmd-middleware = { path = "../middleware", features = ["redis-health"] }
 harman = { path = "../harman" }
 ssmd-harman-ems = { path = "../ssmd-harman-ems" }
 ssmd-harman-oms = { path = "../ssmd-harman-oms" }

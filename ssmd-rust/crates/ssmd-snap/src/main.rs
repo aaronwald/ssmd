@@ -55,6 +55,9 @@ async fn main() {
         .expect("Redis PING failed");
     info!("connected to Redis");
 
+    // Spawn Redis health check (every 30s — crash if Redis is unreachable)
+    ssmd_middleware::redis_health::spawn_redis_health_check(redis_conn.clone());
+
     let metrics = Arc::new(Metrics::new());
 
     // Spawn a snap task per subscription
