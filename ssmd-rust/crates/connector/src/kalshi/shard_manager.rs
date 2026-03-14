@@ -122,7 +122,7 @@ impl ShardManager {
                         "Failed to send unsubscribe command, shard may be disconnected"
                     );
                 } else {
-                    info!(shard_id, ticker, "Sent unsubscribe command to shard");
+                    warn!(shard_id, ticker, "Sent unsubscribe command to shard");
                 }
             } else {
                 warn!(shard_id, ticker, "Shard not found for unsubscribe");
@@ -212,7 +212,7 @@ impl ShardManager {
 
                 match cmd_tx.send(cmd).await {
                     Ok(()) => {
-                        info!(
+                        warn!(
                             shard_id,
                             count = batch.len(),
                             "Sent subscription batch to shard"

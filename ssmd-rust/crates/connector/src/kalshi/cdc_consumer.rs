@@ -241,7 +241,7 @@ impl CdcSubscriptionConsumer {
     /// This method runs indefinitely, processing CDC events and sending
     /// qualifying market tickers through the provided channel.
     pub async fn run(mut self, event_tx: mpsc::Sender<ShardEvent>) -> Result<(), CdcError> {
-        info!(
+        warn!(
             snapshot_lsn = %self.snapshot_lsn,
             categories = ?self.categories,
             initial_markets = self.subscribed_markets.len(),
@@ -342,7 +342,7 @@ impl CdcSubscriptionConsumer {
             if event.op == "update" {
                 match market_data.status.as_deref() {
                     Some("active") => {
-                        info!(
+                        warn!(
                             ticker = %market_data.ticker,
                             "CDC: Market transitioned to active"
                         );
@@ -351,7 +351,7 @@ impl CdcSubscriptionConsumer {
                     Some(status) if is_terminal_status(status) => {
                         // Market settled/closed -- trigger unsubscribe if we're subscribed
                         if self.subscribed_markets.remove(&market_data.ticker) {
-                            info!(
+                            warn!(
                                 ticker = %market_data.ticker,
                                 status,
                                 "CDC: Market became terminal, sending unsubscribe"
@@ -402,7 +402,7 @@ impl CdcSubscriptionConsumer {
             }
 
             // Send ticker for subscription
-            info!(
+            warn!(
                 ticker = %market_data.ticker,
                 event_ticker = %market_data.event_ticker,
                 "CDC: New market for subscription"
@@ -438,7 +438,7 @@ impl CdcSubscriptionConsumer {
             }
         }
 
-        info!(
+        warn!(
             processed,
             skipped_lsn,
             skipped_category,
