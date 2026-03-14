@@ -76,12 +76,25 @@ async fn run_snap_inner(
 
     tracing::info!(feed, "consumer connected, processing messages");
 
+    let mut consecutive_receive_errors: u32 = 0;
+    const MAX_CONSECUTIVE_RECEIVE_ERRORS: u32 = 5;
+
     while let Some(msg_result) = messages.next().await {
         let msg = match msg_result {
-            Ok(m) => m,
+            Ok(m) => {
+                consecutive_receive_errors = 0;
+                m
+            }
             Err(e) => {
-                tracing::warn!(feed, error = %e, "message receive error");
+                consecutive_receive_errors += 1;
+                tracing::warn!(feed, error = %e, consecutive_receive_errors, "message receive error");
                 metrics.errors.with_label_values(&[feed, "receive"]).inc();
+                if consecutive_receive_errors >= MAX_CONSECUTIVE_RECEIVE_ERRORS {
+                    return Err(format!(
+                        "{}: {} consecutive receive errors, reconnecting: {}",
+                        feed, consecutive_receive_errors, e
+                    ).into());
+                }
                 continue;
             }
         };
