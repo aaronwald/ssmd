@@ -2151,18 +2151,18 @@ route("GET", "/v1/data/snap", async (req) => {
     // SCAN for all keys matching this feed (limit 500)
     const pattern = `snap:${feed}:*`;
     const prefix = `snap:${feed}:`;
-    let cursor = "0";
+    let cursor = 0;
     const seen = new Set<string>();
 
     do {
       const [nextCursor, keys] = await redis.scan(cursor, { pattern, count: 100 });
-      cursor = nextCursor;
+      cursor = typeof nextCursor === "string" ? parseInt(nextCursor, 10) : nextCursor;
       for (const key of keys) {
         if (!seen.has(key) && seen.size < 500) {
           seen.add(key);
         }
       }
-    } while (cursor !== "0" && seen.size < 500);
+    } while (cursor !== 0 && seen.size < 500);
 
     if (seen.size > 0) {
       const keyArray = [...seen];
