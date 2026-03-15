@@ -162,6 +162,8 @@ Environment variables:
   let messagesProcessed = 0;
   let eventsWritten = 0;
   let errors = 0;
+  let consecutiveErrors = 0;
+  const MAX_CONSECUTIVE_ERRORS = 5;
   const startTime = Date.now();
 
   // Graceful shutdown
@@ -213,6 +215,7 @@ Environment variables:
 
       eventsWritten++;
       messagesProcessed++;
+      consecutiveErrors = 0;
 
       if (eventsWritten <= 5 || eventsWritten % 100 === 0) {
         log(`[${m.event_type}] ${m.market_ticker} (total: ${eventsWritten})`);
@@ -221,7 +224,25 @@ Environment variables:
       msg.ack();
     } catch (e) {
       errors++;
+      consecutiveErrors++;
+      const errStr = String(e);
       logError(`Error processing message: ${e}`);
+
+      // Crash on DB connection failures — let K8s restart
+      if (errStr.includes("CONNECT_TIMEOUT") || errStr.includes("Connection terminated") || errStr.includes("connection refused")) {
+        logError(`Fatal: database unreachable (${consecutiveErrors} consecutive errors) — crashing for restart`);
+        await nc.drain().catch(() => {});
+        await closeDb().catch(() => {});
+        Deno.exit(1);
+      }
+
+      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        logError(`Fatal: ${MAX_CONSECUTIVE_ERRORS} consecutive errors — crashing for restart`);
+        await nc.drain().catch(() => {});
+        await closeDb().catch(() => {});
+        Deno.exit(1);
+      }
+
       msg.nak();
     }
   }
