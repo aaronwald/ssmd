@@ -59,6 +59,29 @@ function fmtInt(v: number | null): string {
   return v != null ? v.toLocaleString() : "-";
 }
 
+/** Format snap age as human-readable relative time, e.g. "2m", "1h 5m" */
+function fmtSnapAge(snapAt: number | null): string {
+  if (snapAt == null) return "-";
+  const ageSecs = Math.floor((Date.now() - snapAt) / 1000);
+  if (ageSecs < 0) return "0s";
+  if (ageSecs < 60) return `${ageSecs}s`;
+  const mins = Math.floor(ageSecs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
+}
+
+/** Color for snap age: green <1m, yellow <5m, orange <30m, red >=30m */
+function snapAgeColor(snapAt: number | null): string {
+  if (snapAt == null) return "text-fg-subtle";
+  const ageSecs = (Date.now() - snapAt) / 1000;
+  if (ageSecs < 60) return "text-green";
+  if (ageSecs < 300) return "text-yellow";
+  if (ageSecs < 1800) return "text-orange";
+  return "text-red";
+}
+
 /** Format a UTC date as human-readable EST time, e.g. "Mar 4 5pm EST" */
 function fmtEventTime(dateStr: string): string {
   const d = new Date(dateStr);
@@ -374,6 +397,7 @@ function StrikeTable({
                 <th className="px-4 py-2 text-right">Last</th>
                 <th className="px-4 py-2 text-right">Vol</th>
                 <th className="px-4 py-2 text-right">OI</th>
+                <th className="px-4 py-2 text-right">Age</th>
                 <th className="px-4 py-2 w-6"></th>
               </tr>
             </thead>
@@ -407,6 +431,7 @@ function StrikeTable({
                     <td className="px-4 py-1.5 font-mono text-right text-xs">{fmtPrice(m.last ?? null)}</td>
                     <td className="px-4 py-1.5 font-mono text-right text-xs">{fmtInt(m.volume ?? null)}</td>
                     <td className="px-4 py-1.5 font-mono text-right text-xs">{fmtInt(m.open_interest ?? null)}</td>
+                    <td className={`px-4 py-1.5 font-mono text-right text-xs ${snapAgeColor(m.snap_at)}`}>{fmtSnapAge(m.snap_at)}</td>
                     <td className="px-4 py-1.5 text-fg-muted">&rarr;</td>
                   </tr>
                 );

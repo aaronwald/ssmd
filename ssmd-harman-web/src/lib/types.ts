@@ -216,6 +216,7 @@ export interface MonitorMarket {
   last: number | null;
   volume: number | null;
   open_interest: number | null;
+  snap_at: number | null;
   exchange?: string;
   // Kraken fields
   bid?: number | null;
