@@ -33,8 +33,6 @@ import { handleVolume } from "./volume-analysis.ts";
 import { handleBilling } from "./billing.ts";
 import { handleSmokeTest } from "./smoke-test.ts";
 import { handleVerifyHourly } from "./verify-hourly.ts";
-import { handleHols } from "./hols.ts";
-
 export async function run(args: string[]): Promise<void> {
   const flags = parse(args, {
     string: ["_", "type", "endpoint", "display-name", "auth-method", "dates", "from", "to", "sha", "feed", "limit", "source", "data", "nats-url", "stream", "subject", "date", "connector-image", "archiver-image", "namespace", "message", "destination", "tail", "tag", "env", "config", "balance", "filter", "cache-dir", "results-dir", "run-id", "image", "bucket", "prefix", "trades-out", "spec", "name", "sort", "min-trades", "ticker", "window", "email", "scopes", "expires", "amount", "description", "days"],
@@ -190,9 +188,11 @@ export async function run(args: string[]): Promise<void> {
       await handleVerifyHourly(flags);
       break;
 
-    case "hols":
+    case "hols": {
+      const { handleHols } = await import("./hols.ts");
       await handleHols(subcommand, flags);
       break;
+    }
 
     case "funding-rate-consumer": {
       const { runFundingRateConsumer } = await import("./funding-rate-consumer.ts");
