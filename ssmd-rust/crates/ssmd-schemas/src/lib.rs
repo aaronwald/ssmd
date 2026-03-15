@@ -51,7 +51,7 @@ impl SchemaRegistry {
                     Box::new(kalshi::KalshiLifecycleSchema),
                 );
             }
-            "kraken-spot" | "kraken" => {
+            "kraken" | "kraken-spot" => {
                 schemas.insert(
                     "ticker".to_string(),
                     Box::new(kraken::KrakenTickerSchema),
@@ -116,7 +116,7 @@ pub fn detect_message_type(feed: &str, json: &serde_json::Value) -> Option<Strin
             // Kalshi uses "type" field: "ticker", "trade", "market_lifecycle_v2", etc.
             json.get("type")?.as_str().map(String::from)
         }
-        "kraken-spot" | "kraken" => {
+        "kraken" | "kraken-spot" => {
             // Kraken Spot V2 uses "channel" field: "ticker", "trade", "heartbeat"
             // Messages without "data" are control messages (skip)
             json.get("data")?;

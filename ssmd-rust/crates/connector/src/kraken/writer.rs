@@ -168,50 +168,50 @@ mod tests {
     #[tokio::test]
     async fn test_publish_trade_json() {
         let transport = Arc::new(InMemoryTransport::new());
-        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken-spot");
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
 
         let mut sub = transport
-            .subscribe("dev.kraken-spot.json.trade.BTC-USD")
+            .subscribe("dev.kraken.json.trade.BTC-USD")
             .await
             .unwrap();
 
         let trade_json = br#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"buy","price":97000.0,"qty":0.001,"ord_type":"market","trade_id":"12345","timestamp":"2026-02-06T12:00:00.000000Z"}]}"#;
-        let msg = Message::new("kraken-spot", trade_json.to_vec());
+        let msg = Message::new("kraken", trade_json.to_vec());
 
         writer.write(&msg).await.unwrap();
 
         let received = sub.next().await.unwrap();
-        assert_eq!(received.subject, "dev.kraken-spot.json.trade.BTC-USD");
+        assert_eq!(received.subject, "dev.kraken.json.trade.BTC-USD");
         assert_eq!(received.payload.as_ref(), trade_json);
     }
 
     #[tokio::test]
     async fn test_publish_ticker_json() {
         let transport = Arc::new(InMemoryTransport::new());
-        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken-spot");
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
 
         let mut sub = transport
-            .subscribe("dev.kraken-spot.json.ticker.BTC-USD")
+            .subscribe("dev.kraken.json.ticker.BTC-USD")
             .await
             .unwrap();
 
         let ticker_json = br#"{"channel":"ticker","type":"update","data":[{"symbol":"BTC/USD","bid":97000.0,"bid_qty":0.50000000,"ask":97000.1,"ask_qty":1.00000000,"last":97000.0,"volume":1234.56789012,"vwap":96500.0,"low":95000.0,"high":98000.0,"change":500.0,"change_pct":0.52}]}"#;
-        let msg = Message::new("kraken-spot", ticker_json.to_vec());
+        let msg = Message::new("kraken", ticker_json.to_vec());
 
         writer.write(&msg).await.unwrap();
 
         let received = sub.next().await.unwrap();
-        assert_eq!(received.subject, "dev.kraken-spot.json.ticker.BTC-USD");
+        assert_eq!(received.subject, "dev.kraken.json.ticker.BTC-USD");
         assert_eq!(received.payload.as_ref(), ticker_json);
     }
 
     #[tokio::test]
     async fn test_skip_heartbeat() {
         let transport = Arc::new(InMemoryTransport::new());
-        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken-spot");
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
 
         let heartbeat_json = br#"{"channel":"heartbeat","type":"update"}"#;
-        let msg = Message::new("kraken-spot", heartbeat_json.to_vec());
+        let msg = Message::new("kraken", heartbeat_json.to_vec());
 
         writer.write(&msg).await.unwrap();
         assert_eq!(writer.message_count(), 0);
@@ -220,10 +220,10 @@ mod tests {
     #[tokio::test]
     async fn test_skip_pong() {
         let transport = Arc::new(InMemoryTransport::new());
-        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken-spot");
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
 
         let pong_json = br#"{"method":"pong","time_in":"2026-02-06T12:00:00.000000Z","time_out":"2026-02-06T12:00:00.000001Z"}"#;
-        let msg = Message::new("kraken-spot", pong_json.to_vec());
+        let msg = Message::new("kraken", pong_json.to_vec());
 
         writer.write(&msg).await.unwrap();
         assert_eq!(writer.message_count(), 0);
@@ -232,10 +232,10 @@ mod tests {
     #[tokio::test]
     async fn test_skip_subscription_result() {
         let transport = Arc::new(InMemoryTransport::new());
-        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken-spot");
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
 
         let sub_json = br#"{"method":"subscribe","result":{"channel":"ticker","symbol":"BTC/USD"},"success":true,"time_in":"2026-02-06T12:00:00.000000Z","time_out":"2026-02-06T12:00:00.000001Z"}"#;
-        let msg = Message::new("kraken-spot", sub_json.to_vec());
+        let msg = Message::new("kraken", sub_json.to_vec());
 
         writer.write(&msg).await.unwrap();
         assert_eq!(writer.message_count(), 0);
@@ -244,15 +244,15 @@ mod tests {
     #[tokio::test]
     async fn test_message_count() {
         let transport = Arc::new(InMemoryTransport::new());
-        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken-spot");
+        let mut writer = KrakenNatsWriter::new(transport.clone(), "dev", "kraken");
 
         let _sub = transport
-            .subscribe("dev.kraken-spot.json.trade.BTC-USD")
+            .subscribe("dev.kraken.json.trade.BTC-USD")
             .await
             .unwrap();
 
         let trade_json = br#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"buy","price":97000.0,"qty":0.001,"ord_type":"market","trade_id":"12345","timestamp":"2026-02-06T12:00:00.000000Z"}]}"#;
-        let msg = Message::new("kraken-spot", trade_json.to_vec());
+        let msg = Message::new("kraken", trade_json.to_vec());
 
         writer.write(&msg).await.unwrap();
         writer.write(&msg).await.unwrap();
@@ -272,7 +272,7 @@ mod tests {
             .unwrap();
 
         let ticker_json = br#"{"channel":"ticker","type":"update","data":[{"symbol":"ETH/USD","bid":3200.0,"bid_qty":10.0,"ask":3201.0,"ask_qty":5.0,"last":3200.5,"volume":50000.0,"vwap":3180.0,"low":3100.0,"high":3300.0,"change":50.0,"change_pct":1.5}]}"#;
-        let msg = Message::new("kraken-spot", ticker_json.to_vec());
+        let msg = Message::new("kraken", ticker_json.to_vec());
 
         writer.write(&msg).await.unwrap();
 

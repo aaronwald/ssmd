@@ -4,6 +4,10 @@
     "trade": { "version": "1.3.0", "notes": "cents integers or dollar strings (WS v2)" },
     "market_lifecycle_v2": { "version": "1.0.0" }
   },
+  "kraken": {
+    "ticker": { "version": "1.0.0" },
+    "trade": { "version": "1.0.0" }
+  },
   "kraken-spot": {
     "ticker": { "version": "1.0.0" },
     "trade": { "version": "1.0.0" }
