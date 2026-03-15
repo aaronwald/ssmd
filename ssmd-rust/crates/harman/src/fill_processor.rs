@@ -222,6 +222,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // requires PostgreSQL (Docker or DATABASE_URL)
     async fn test_fill_transitions_acknowledged_to_filled() {
         let pool = get_pool().await;
         let session_id = setup_clean_session(pool).await.unwrap();
@@ -244,6 +245,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_partial_fill_transitions_to_partially_filled() {
         let pool = get_pool().await;
         let session_id = setup_clean_session(pool).await.unwrap();
@@ -266,6 +268,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_fill_for_terminal_order_still_records() {
         let pool = get_pool().await;
         let session_id = setup_clean_session(pool).await.unwrap();
@@ -288,6 +291,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_overfill_records_fill_not_dropped() {
         let pool = get_pool().await;
         let session_id = setup_clean_session(pool).await.unwrap();
@@ -310,6 +314,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_zero_quantity_fill_skipped() {
         let pool = get_pool().await;
         let session_id = setup_clean_session(pool).await.unwrap();
@@ -327,6 +332,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_duplicate_fill_deduped_by_trade_id() {
         let pool = get_pool().await;
         let session_id = setup_clean_session(pool).await.unwrap();
@@ -346,6 +352,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_external_fill_creates_synthetic_order() {
         let pool = get_pool().await;
         let session_id = setup_clean_session(pool).await.unwrap();
