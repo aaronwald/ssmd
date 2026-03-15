@@ -86,7 +86,8 @@ impl EventIngester {
                     self.handle_event(event, &mut result).await;
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(skipped = n, "event ingester lagged, missed events");
+                    error!(skipped = n, "FATAL: event ingester lagged — fills may be lost, crashing for recovery");
+                    std::process::exit(1);
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     info!("event stream closed, ingester stopping");
