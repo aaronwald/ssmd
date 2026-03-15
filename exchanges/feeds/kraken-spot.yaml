@@ -1,5 +1,5 @@
-name: kraken
-display_name: Kraken Exchange
+name: kraken-spot
+display_name: Kraken Spot Exchange
 type: websocket
 status: active
 versions:
