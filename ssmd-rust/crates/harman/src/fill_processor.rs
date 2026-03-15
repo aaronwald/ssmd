@@ -9,7 +9,7 @@ use crate::state::OrderState;
 use crate::types::{ExchangeFill, Order};
 
 /// Result of a fill import operation.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FillImportResult {
     /// Number of new fills recorded for known orders.
     pub recorded: u64,
@@ -19,17 +19,6 @@ pub struct FillImportResult {
     pub state_updates: u64,
     /// Order IDs that transitioned to Filled state during this import.
     pub newly_filled_order_ids: Vec<i64>,
-}
-
-impl Default for FillImportResult {
-    fn default() -> Self {
-        Self {
-            recorded: 0,
-            external_imported: 0,
-            state_updates: 0,
-            newly_filled_order_ids: Vec::new(),
-        }
-    }
 }
 
 /// Import fills into the database, handling both known and external fills.

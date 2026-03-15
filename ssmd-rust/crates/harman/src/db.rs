@@ -1373,10 +1373,6 @@ pub async fn get_order_by_client_id(
     Ok(row.as_ref().map(row_to_order))
 }
 
-/// Find an order by its exchange-assigned order ID.
-///
-/// No session_id filter — each harman instance has its own DB,
-/// and exchange_order_id is unique within it.
 /// Find a single order by its primary key `id`.
 pub async fn find_order_by_id(pool: &Pool, order_id: i64) -> Result<Option<Order>, String> {
     let client = pool
@@ -1399,6 +1395,10 @@ pub async fn find_order_by_id(pool: &Pool, order_id: i64) -> Result<Option<Order
     Ok(row.as_ref().map(row_to_order))
 }
 
+/// Find an order by its exchange-assigned order ID.
+///
+/// No session_id filter — each harman instance has its own DB,
+/// and exchange_order_id is unique within it.
 pub async fn find_order_by_exchange_id(
     pool: &Pool,
     exchange_order_id: &str,
