@@ -164,10 +164,40 @@ async fn main() -> anyhow::Result<()> {
             Err(e) => {
                 consecutive_failures += 1;
                 metrics::CDC_POLL_ERRORS.inc();
+
+                // Detect statement timeout (SqlState E57014) — WAL backlog too large to decode.
+                // Recovery: advance the slot to current LSN, discarding the backlog.
+                // This is safe because connector reloads all markets from DB on restart,
+                // and cache warmer does a full Redis refresh.
+                let is_statement_timeout = matches!(&e, ssmd_cdc::Error::Postgres(pg_err)
+                    if pg_err.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED));
+
+                if is_statement_timeout {
+                    tracing::warn!(
+                        consecutive_failures = consecutive_failures,
+                        "Statement timeout — WAL backlog too large to decode, advancing slot to current LSN"
+                    );
+                    match replication.current_lsn().await {
+                        Ok(current_lsn) => {
+                            if let Err(adv_err) = replication.advance_slot(&current_lsn).await {
+                                tracing::error!(error = ?adv_err, "Failed to advance slot — crashing for restart");
+                                replication.close();
+                                return Err(adv_err.into());
+                            }
+                            tracing::warn!(lsn = %current_lsn, "Slot advanced past backlog — resuming normal operation");
+                            consecutive_failures = 0;
+                            continue;
+                        }
+                        Err(lsn_err) => {
+                            tracing::error!(error = ?lsn_err, "Failed to get current LSN for slot advance");
+                        }
+                    }
+                }
+
                 tracing::error!(
                     error = ?e,
                     consecutive_failures = consecutive_failures,
-                    "Failed to peek changes"
+                    "Failed to get changes"
                 );
 
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {

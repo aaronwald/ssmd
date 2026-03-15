@@ -117,9 +117,22 @@ export async function upsertMarkets(
           marketType: sql`excluded.market_type`,
           openTime: sql`excluded.open_time`,
           expectedExpirationTime: sql`excluded.expected_expiration_time`,
-          // updated_at is handled by trigger (only updates when data changes)
           deletedAt: sql`NULL`,
         },
+        // Skip no-op updates to avoid unnecessary WAL generation.
+        // Without this, 3.5M markets upserted hourly produce ~5 GB/day of WAL
+        // even when only ~2-3K actually change — causing CDC replication slot bloat.
+        setWhere: sql`(
+          ${markets.status}, ${markets.closeTime}, ${markets.yesBid}, ${markets.yesAsk},
+          ${markets.noBid}, ${markets.noAsk}, ${markets.lastPrice}, ${markets.volume},
+          ${markets.volume24h}, ${markets.openInterest}, ${markets.result},
+          ${markets.expirationValue}, ${markets.canCloseEarly}, ${markets.deletedAt}
+        ) IS DISTINCT FROM (
+          excluded.status, excluded.close_time, excluded.yes_bid, excluded.yes_ask,
+          excluded.no_bid, excluded.no_ask, excluded.last_price, excluded.volume,
+          excluded.volume_24h, excluded.open_interest, excluded.result,
+          excluded.expiration_value, excluded.can_close_early, NULL
+        )`,
       });
   }
 

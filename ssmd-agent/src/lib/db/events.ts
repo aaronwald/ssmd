@@ -61,9 +61,18 @@ export async function upsertEvents(
           strikeDate: sql`excluded.strike_date`,
           mutuallyExclusive: sql`excluded.mutually_exclusive`,
           status: sql`excluded.status`,
-          // updated_at is handled by trigger (only updates when data changes)
           deletedAt: sql`NULL`,
         },
+        // Skip no-op updates to avoid unnecessary WAL generation
+        setWhere: sql`(
+          ${events.title}, ${events.category}, ${events.seriesTicker},
+          ${events.strikeDate}, ${events.mutuallyExclusive}, ${events.status},
+          ${events.deletedAt}
+        ) IS DISTINCT FROM (
+          excluded.title, excluded.category, excluded.series_ticker,
+          excluded.strike_date, excluded.mutually_exclusive, excluded.status,
+          NULL
+        )`,
       });
   }
 
