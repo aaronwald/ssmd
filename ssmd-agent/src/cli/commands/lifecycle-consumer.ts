@@ -11,8 +11,9 @@ import {
   DeliverPolicy,
   Events,
 } from "npm:nats";
+import { eq } from "drizzle-orm";
 import { getDb, closeDb } from "../../lib/db/mod.ts";
-import { marketLifecycleEvents } from "../../lib/db/schema.ts";
+import { markets, marketLifecycleEvents } from "../../lib/db/schema.ts";
 
 const sc = StringCodec();
 
@@ -63,6 +64,23 @@ function loadConfig(): ConsumerConfig {
 function epochToDate(epoch: number | undefined): Date | null {
   if (epoch == null) return null;
   return new Date(epoch * 1000);
+}
+
+/** Lifecycle event types that indicate a terminal market status */
+const TERMINAL_EVENT_TYPES = new Set([
+  "determined", "settled", "closed", "finalized", "deactivated",
+]);
+
+/** Map lifecycle event_type to market status for DB update */
+function eventTypeToStatus(eventType: string): string {
+  switch (eventType) {
+    case "determined": return "determined";
+    case "settled": return "settled";
+    case "finalized": return "finalized";
+    case "closed": return "closed";
+    case "deactivated": return "deactivated";
+    default: return eventType;
+  }
 }
 
 export async function runLifecycleConsumer(args: string[] = Deno.args): Promise<void> {
@@ -212,6 +230,21 @@ Environment variables:
           ...(m.result != null ? { result: m.result } : {}),
         },
       });
+
+      // Update markets table for terminal events → triggers CDC → connector unsubscribe
+      if (TERMINAL_EVENT_TYPES.has(m.event_type)) {
+        const newStatus = eventTypeToStatus(m.event_type);
+        const result = await db.update(markets)
+          .set({ status: newStatus, updatedAt: new Date() })
+          .where(eq(markets.ticker, m.market_ticker));
+        if (result.rowCount && result.rowCount > 0) {
+          log(`[status→${newStatus}] ${m.market_ticker}`);
+        }
+      } else if (m.event_type === "close_date_updated" && m.close_ts) {
+        await db.update(markets)
+          .set({ closeTime: epochToDate(m.close_ts)!, updatedAt: new Date() })
+          .where(eq(markets.ticker, m.market_ticker));
+      }
 
       eventsWritten++;
       messagesProcessed++;
