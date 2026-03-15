@@ -121,6 +121,8 @@ pub struct KalshiFill {
     pub no_price: i64,
     #[serde(default)]
     pub count: i64,
+    #[serde(default)]
+    pub count_fp: Option<String>,
     pub is_taker: bool,
     pub created_time: String,
     #[serde(default)]

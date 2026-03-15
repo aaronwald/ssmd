@@ -691,7 +691,10 @@ impl ExchangeAdapter for KalshiRestClient {
                     side: Self::parse_side(&f.side),
                     action: Self::parse_action(&f.action),
                     price_dollars: Decimal::new(f.yes_price, 2),
-                    quantity: Decimal::from(f.count),
+                    quantity: f.count_fp
+                        .as_ref()
+                        .and_then(|s| s.parse::<Decimal>().ok())
+                        .unwrap_or_else(|| Decimal::from(f.count)),
                     is_taker: f.is_taker,
                     filled_at,
                     client_order_id: f
