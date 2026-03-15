@@ -9,7 +9,7 @@ use crate::state::OrderState;
 use crate::types::{ExchangeFill, Order};
 
 /// Result of a fill import operation.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FillImportResult {
     /// Number of new fills recorded for known orders.
     pub recorded: u64,
@@ -17,6 +17,19 @@ pub struct FillImportResult {
     pub external_imported: u64,
     /// Number of order state updates (e.g., Acknowledged → Filled).
     pub state_updates: u64,
+    /// Order IDs that transitioned to Filled state during this import.
+    pub newly_filled_order_ids: Vec<i64>,
+}
+
+impl Default for FillImportResult {
+    fn default() -> Self {
+        Self {
+            recorded: 0,
+            external_imported: 0,
+            state_updates: 0,
+            newly_filled_order_ids: Vec::new(),
+        }
+    }
 }
 
 /// Import fills into the database, handling both known and external fills.
@@ -174,6 +187,9 @@ pub async fn import_fills(
                     error!(error = %e, order_id, "{}: failed to update order state after fill", actor);
                 } else {
                     result.state_updates += 1;
+                    if new_state == OrderState::Filled {
+                        result.newly_filled_order_ids.push(*order_id);
+                    }
                 }
             }
         }
