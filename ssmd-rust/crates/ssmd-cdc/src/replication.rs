@@ -18,6 +18,11 @@ pub struct ReplicationSlot {
 }
 
 impl ReplicationSlot {
+    /// Get a reference to the connection pool (for health checks)
+    pub fn pool(&self) -> &deadpool_postgres::Pool {
+        &self.pool
+    }
+
     /// Connect to PostgreSQL for logical replication slot polling
     pub async fn connect(database_url: &str, slot_name: &str) -> Result<Self> {
         let pg_config: tokio_postgres::Config = database_url

@@ -91,6 +91,9 @@ async fn main() -> anyhow::Result<()> {
     ).await?;
     replication.ensure_slot().await?;
 
+    // Spawn Postgres health check (every 30s — crash if Postgres is unreachable)
+    ssmd_middleware::postgres_health::spawn_postgres_health_check(replication.pool().clone());
+
     let lsn = replication.current_lsn().await?;
     tracing::info!(lsn = %lsn, "Starting from LSN");
 
