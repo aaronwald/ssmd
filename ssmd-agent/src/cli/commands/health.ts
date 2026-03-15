@@ -840,40 +840,52 @@ async function scoreConnectorFeed(
 
 const ARCHIVE_FEEDS = ["kalshi-crypto", "kalshi-sports", "kraken-futures", "kraken-spot"];
 
-async function scoreArchiveSync(
-  sql: ReturnType<typeof getRawSql>,
-): Promise<{ score: number; details: Record<string, unknown> }> {
-  // Check GCS archive freshness via dq_daily_scores — if DQ scored a feed
-  // recently, data made it from archiver → GCS → parquet-gen → DQ.
-  const archiverScores: Record<string, { score: number; lastScoreAge: number | null }> = {};
+async function scoreArchiveSync(): Promise<{ score: number; details: Record<string, unknown> }> {
+  // Check GCS archive freshness via data-ts /v1/data/freshness endpoint.
+  // Stale threshold: 7h (set by the endpoint). We score based on age_hours.
+  const apiUrl = Deno.env.get("SSMD_API_URL") || "http://ssmd-data-ts-internal.ssmd.svc.cluster.local:8081";
+  const apiKey = Deno.env.get("SSMD_API_KEY") || "";
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["X-API-Key"] = apiKey;
 
-  for (const feed of ARCHIVE_FEEDS) {
-    const rows = await sql`
-      SELECT check_date, updated_at FROM dq_daily_scores
-      WHERE feed = ${feed}
-      ORDER BY check_date DESC LIMIT 1
-    `;
+  const archiverScores: Record<string, { score: number; ageHours: number | null; newestDate: string | null }> = {};
 
-    if (rows.length === 0) {
-      archiverScores[feed] = { score: 0, lastScoreAge: null };
-      continue;
+  try {
+    const res = await fetch(`${apiUrl}/v1/data/freshness`, { headers });
+    if (!res.ok) {
+      console.error(`Freshness API returned ${res.status}`);
+      for (const feed of ARCHIVE_FEEDS) {
+        archiverScores[feed] = { score: 0, ageHours: null, newestDate: null };
+      }
+    } else {
+      const data = await res.json();
+      const feedResults = (data.feeds ?? []) as Array<{ feed: string; status: string; age_hours?: number; newest_date?: string }>;
+
+      for (const feed of ARCHIVE_FEEDS) {
+        const entry = feedResults.find((f) => f.feed === feed);
+        if (!entry || entry.status === "no_data" || entry.status === "error") {
+          archiverScores[feed] = { score: 0, ageHours: null, newestDate: null };
+          continue;
+        }
+
+        const ageHours = entry.age_hours ?? Infinity;
+        let score: number;
+        if (ageHours < 8) score = 100;       // Fresh — within one rotation cycle
+        else if (ageHours < 28) score = 50;   // Stale — more than a day behind
+        else score = 0;                        // Very stale
+
+        archiverScores[feed] = {
+          score,
+          ageHours: ageHours === Infinity ? null : Math.round(ageHours * 10) / 10,
+          newestDate: entry.newest_date ?? null,
+        };
+      }
     }
-
-    const lastDate = rows[0].check_date;
-    const lastUpdated = rows[0].updated_at ? new Date(rows[0].updated_at) : null;
-    const ageHours = lastUpdated
-      ? (Date.now() - lastUpdated.getTime()) / (1000 * 60 * 60)
-      : Infinity;
-
-    let score: number;
-    if (ageHours < 28) score = 100;  // DQ runs daily — within ~1 day is good
-    else if (ageHours < 52) score = 50;
-    else score = 0;
-
-    archiverScores[feed] = {
-      score,
-      lastScoreAge: ageHours === Infinity ? null : Math.round(ageHours * 10) / 10,
-    };
+  } catch (err) {
+    console.error(`Failed to fetch archive freshness: ${err}`);
+    for (const feed of ARCHIVE_FEEDS) {
+      archiverScores[feed] = { score: 0, ageHours: null, newestDate: null };
+    }
   }
 
   const scores = Object.values(archiverScores);
@@ -1184,7 +1196,7 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       scoreConnectorFeed("kalshi-sports", "PROD_KALSHI_SPORTS", nc),
       scoreConnectorFeed("kraken-futures", "PROD_KRAKEN_FUTURES", nc),
       scoreConnectorFeed("kraken-spot", "PROD_KRAKEN_SPOT", nc),
-      scoreArchiveSync(sql),
+      scoreArchiveSync(),
     ]);
 
     // Phase 2: Score completeness, parquet quality, and SLA per GCS feed
