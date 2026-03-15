@@ -29,6 +29,9 @@ pub async fn run(oms: &Oms, session_id: i64) -> Result<(), String> {
     // 3. Discover missing fills
     discover_missing_fills(oms, session_id).await?;
 
+    // 3.5. Invariant: no order should be Filled with zero fills
+    verify_fill_integrity(oms, session_id).await?;
+
     // 4. Discover settlements (zero out positions for settled markets)
     discover_settlements(oms, session_id).await?;
 
@@ -330,6 +333,21 @@ async fn verify_positions(oms: &Oms, session_id: i64) -> Result<(), String> {
         debug!(count = settled_tickers.len(), "settled tickers excluded from position comparison");
     }
 
+    Ok(())
+}
+
+/// Check for orders in Filled state with no fill records.
+/// After discover_missing_fills has run, any remaining orphans are logged as errors.
+async fn verify_fill_integrity(oms: &Oms, session_id: i64) -> Result<(), String> {
+    let orphans = db::find_filled_orders_without_fills(&oms.pool, session_id).await?;
+    if !orphans.is_empty() {
+        error!(
+            count = orphans.len(),
+            order_ids = ?orphans,
+            "INVARIANT VIOLATION: orders in Filled state with no fill records — \
+             discover_missing_fills should have caught these"
+        );
+    }
     Ok(())
 }
 

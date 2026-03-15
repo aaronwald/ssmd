@@ -86,7 +86,8 @@ impl EventIngester {
                     self.handle_event(event, &mut result).await;
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(skipped = n, "event ingester lagged, missed events");
+                    error!(skipped = n, "FATAL: event ingester lagged — fills may be lost, crashing for recovery");
+                    std::process::exit(1);
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     info!("event stream closed, ingester stopping");
@@ -209,6 +210,69 @@ impl EventIngester {
                                 .fills_external_imported
                                 .inc_by(import.external_imported);
                         }
+
+                        // Group handling for newly filled orders (bracket activation,
+                        // PriceMonitor arming, pump triggering). This is the
+                        // authoritative path — fills drive group logic, not OrderUpdate.
+                        for filled_id in &import.newly_filled_order_ids {
+                            let filled_order = match db::find_order_by_id(&self.pool, *filled_id).await {
+                                Ok(Some(o)) => o,
+                                Ok(None) => {
+                                    warn!(order_id = filled_id, "newly filled order not found in DB");
+                                    continue;
+                                }
+                                Err(e) => {
+                                    error!(error = %e, order_id = filled_id, "failed to look up newly filled order");
+                                    continue;
+                                }
+                            };
+
+                            if filled_order.group_id.is_some() {
+                                match db::handle_group_on_fill(
+                                    &self.pool, filled_order.id, filled_order.session_id,
+                                ).await {
+                                    Ok(group_result) => {
+                                        if group_result.activated_for_pump > 0 {
+                                            info!(
+                                                order_id = filled_order.id,
+                                                activated = group_result.activated_for_pump,
+                                                "bracket entry filled — activated exit legs, triggering pump"
+                                            );
+                                            self.pump_trigger.notify(filled_order.session_id);
+                                        }
+                                        if let Some(ref pm) = self.price_monitor {
+                                            for m in &group_result.monitoring_orders {
+                                                info!(
+                                                    order_id = m.order_id,
+                                                    ticker = %m.ticker,
+                                                    trigger_price = %m.trigger_price,
+                                                    "SL order entered monitoring — arming PriceMonitor"
+                                                );
+                                                pm.arm(crate::price_monitor::Trigger {
+                                                    order_id: m.order_id,
+                                                    session_id: m.session_id,
+                                                    group_id: m.group_id,
+                                                    ticker: m.ticker.clone(),
+                                                    side: m.side,
+                                                    action: m.action,
+                                                    trigger_price: m.trigger_price,
+                                                    submit_price: m.submit_price,
+                                                    quantity: m.quantity,
+                                                });
+                                            }
+                                        } else if !group_result.monitoring_orders.is_empty() {
+                                            warn!(
+                                                count = group_result.monitoring_orders.len(),
+                                                "orders entered Monitoring but PriceMonitor is not enabled"
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!(error = %e, order_id = filled_order.id, "failed to handle group on fill");
+                                    }
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         error!(error = %e, "FATAL: fill import from WS failed — crashing to trigger recovery");
@@ -289,76 +353,17 @@ impl EventIngester {
                                     }
                                 }
                             }
-                        } else if status == OrderState::Filled
-                            && order.state != OrderState::Filled
-                        {
-                            // Order fully filled
-                            info!(
-                                order_id = order.id,
-                                "WS: order fully filled"
-                            );
-                            if let Err(e) = db::update_order_state(
-                                &self.pool,
-                                order.id,
-                                order.session_id,
-                                OrderState::Filled,
-                                Some(&exchange_order_id),
-                                None,
-                                "ws_event",
-                            )
-                            .await
-                            {
-                                error!(error = %e, "failed to update filled state from WS");
-                            } else {
-                                result.orders_updated += 1;
-                                // Role-aware group handling on fill:
-                                // Entry fill → activate staged TP/SL exits
-                                // Exit fill → cancel sibling exit
-                                if order.group_id.is_some() {
-                                    match db::handle_group_on_fill(
-                                        &self.pool, order.id, order.session_id,
-                                    ).await {
-                                        Ok(result) => {
-                                            if result.activated_for_pump > 0 {
-                                                info!(
-                                                    order_id = order.id,
-                                                    activated = result.activated_for_pump,
-                                                    "bracket entry filled — activated exit legs, triggering pump"
-                                                );
-                                                self.pump_trigger.notify(order.session_id);
-                                            }
-                                            if let Some(ref pm) = self.price_monitor {
-                                                for m in &result.monitoring_orders {
-                                                    info!(
-                                                        order_id = m.order_id,
-                                                        ticker = %m.ticker,
-                                                        trigger_price = %m.trigger_price,
-                                                        "SL order entered monitoring — arming PriceMonitor"
-                                                    );
-                                                    pm.arm(crate::price_monitor::Trigger {
-                                                        order_id: m.order_id,
-                                                        session_id: m.session_id,
-                                                        group_id: m.group_id,
-                                                        ticker: m.ticker.clone(),
-                                                        side: m.side,
-                                                        action: m.action,
-                                                        trigger_price: m.trigger_price,
-                                                        submit_price: m.submit_price,
-                                                        quantity: m.quantity,
-                                                    });
-                                                }
-                                            } else if !result.monitoring_orders.is_empty() {
-                                                warn!(
-                                                    count = result.monitoring_orders.len(),
-                                                    "orders entered Monitoring but PriceMonitor is not enabled"
-                                                );
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!(error = %e, "failed to handle group on fill");
-                                        }
-                                    }
-                                }
+                        } else if status == OrderState::Filled {
+                            // INFORMATIONAL ONLY — WS user_orders reports aggregate status.
+                            // The fill channel is the authority for fill records and state transitions.
+                            // Do NOT transition state here. fill_processor handles Filled when fills arrive.
+                            if order.state != OrderState::Filled {
+                                info!(
+                                    order_id = order.id,
+                                    current_state = %order.state,
+                                    ws_filled_quantity = %filled_quantity,
+                                    "WS: order_update status=Filled (informational — waiting for fill channel)"
+                                );
                             }
                         } else if status == OrderState::Acknowledged
                             && order.state == OrderState::Submitted

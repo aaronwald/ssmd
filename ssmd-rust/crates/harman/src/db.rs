@@ -1189,6 +1189,30 @@ pub async fn get_filled_quantity(pool: &Pool, order_id: i64) -> Result<Decimal, 
     Ok(row.get("total_filled"))
 }
 
+/// Find orders in Filled state that have no corresponding fill records.
+/// This is an invariant violation — Filled orders must always have fills.
+pub async fn find_filled_orders_without_fills(
+    pool: &Pool,
+    session_id: i64,
+) -> Result<Vec<i64>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT o.id FROM prediction_orders o \
+             WHERE o.session_id = $1 AND o.state = 'filled' \
+             AND NOT EXISTS (SELECT 1 FROM fills f WHERE f.order_id = o.id)",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| format!("find filled without fills: {}", e))?;
+
+    Ok(rows.iter().map(|r| r.get::<_, i64>("id")).collect())
+}
+
 /// A fill record returned by list_fills.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Fill {
@@ -1369,6 +1393,28 @@ pub async fn get_order_by_client_id(
         )
         .await
         .map_err(|e| format!("get order by cid: {}", e))?;
+
+    Ok(row.as_ref().map(row_to_order))
+}
+
+/// Find a single order by its primary key `id`.
+pub async fn find_order_by_id(pool: &Pool, order_id: i64) -> Result<Option<Order>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let row = client
+        .query_opt(
+            "SELECT id, session_id, client_order_id, exchange_order_id, \
+                    ticker, side, action, quantity, price_dollars, \
+                    filled_qty(id) as filled_quantity, time_in_force, state, cancel_reason, \
+                    order_type, trigger_price, group_id, leg_role, created_at, updated_at \
+             FROM prediction_orders WHERE id = $1",
+            &[&order_id],
+        )
+        .await
+        .map_err(|e| format!("find order by id: {}", e))?;
 
     Ok(row.as_ref().map(row_to_order))
 }
