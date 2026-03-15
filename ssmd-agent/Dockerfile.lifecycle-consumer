@@ -1,28 +1,34 @@
-# ssmd-lifecycle-consumer container
-FROM denoland/deno:2.7.4
+# ssmd-lifecycle-consumer: standalone daemon for market lifecycle events
+# Separate from cli-ts to avoid DuckDB native dependency
 
-# Create non-root user
-RUN useradd -r -s /bin/false ssmd
+FROM --platform=$BUILDPLATFORM denoland/deno:2.7.4 AS builder
+
+ARG TARGETPLATFORM
 
 WORKDIR /app
 
-# Copy source
-COPY deno.json .
-COPY src ./src
+COPY deno.json deno.lock ./
+COPY src/ ./src/
 
-# Cache dependencies
-RUN deno cache src/cli/commands/lifecycle-consumer.ts
+RUN deno cache src/cli/lifecycle-main.ts
 
-# Fix ownership for non-root user
-RUN chown -R ssmd:ssmd /app /deno-dir
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+      deno compile --target aarch64-unknown-linux-gnu \
+        --allow-net --allow-env --allow-read --allow-write \
+        --output /app/lifecycle-consumer src/cli/lifecycle-main.ts; \
+    else \
+      deno compile --target x86_64-unknown-linux-gnu \
+        --allow-net --allow-env --allow-read --allow-write \
+        --output /app/lifecycle-consumer src/cli/lifecycle-main.ts; \
+    fi
 
-# Switch to non-root user
-USER ssmd
+FROM debian:bookworm-slim
 
-# Default env vars (can be overridden)
-ENV NATS_URL=nats://nats.nats.svc.cluster.local:4222
-ENV NATS_STREAM=PROD_KALSHI
-ENV NATS_FILTER=prod.kalshi.lifecycle.>
-ENV CONSUMER_NAME=lifecycle-consumer
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
-CMD ["run", "--allow-net", "--allow-env", "src/cli/commands/lifecycle-consumer.ts"]
+COPY --from=builder /app/lifecycle-consumer /usr/local/bin/lifecycle-consumer
+
+RUN useradd -m deno
+USER deno
+
+ENTRYPOINT ["/usr/local/bin/lifecycle-consumer"]
