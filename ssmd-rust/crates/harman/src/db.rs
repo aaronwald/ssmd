@@ -1189,6 +1189,30 @@ pub async fn get_filled_quantity(pool: &Pool, order_id: i64) -> Result<Decimal, 
     Ok(row.get("total_filled"))
 }
 
+/// Find orders in Filled state that have no corresponding fill records.
+/// This is an invariant violation — Filled orders must always have fills.
+pub async fn find_filled_orders_without_fills(
+    pool: &Pool,
+    session_id: i64,
+) -> Result<Vec<i64>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT o.id FROM prediction_orders o \
+             WHERE o.session_id = $1 AND o.state = 'filled' \
+             AND NOT EXISTS (SELECT 1 FROM fills f WHERE f.order_id = o.id)",
+            &[&session_id],
+        )
+        .await
+        .map_err(|e| format!("find filled without fills: {}", e))?;
+
+    Ok(rows.iter().map(|r| r.get::<_, i64>("id")).collect())
+}
+
 /// A fill record returned by list_fills.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Fill {
