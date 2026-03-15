@@ -234,12 +234,10 @@ Environment variables:
       // Update markets table for terminal events → triggers CDC → connector unsubscribe
       if (TERMINAL_EVENT_TYPES.has(m.event_type)) {
         const newStatus = eventTypeToStatus(m.event_type);
-        const result = await db.update(markets)
+        await db.update(markets)
           .set({ status: newStatus, updatedAt: new Date() })
           .where(eq(markets.ticker, m.market_ticker));
-        if (result.rowCount && result.rowCount > 0) {
-          log(`[status→${newStatus}] ${m.market_ticker}`);
-        }
+        log(`[status→${newStatus}] ${m.market_ticker}`);
       } else if (m.event_type === "close_date_updated" && m.close_ts) {
         await db.update(markets)
           .set({ closeTime: epochToDate(m.close_ts)!, updatedAt: new Date() })
