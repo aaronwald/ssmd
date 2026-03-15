@@ -2,6 +2,7 @@ use tracing::info;
 
 use deadpool_postgres::Pool;
 
+use crate::audit::AuditSender;
 use crate::db;
 use crate::types::ExchangeSettlement;
 
@@ -14,6 +15,7 @@ pub async fn record_settlements(
     session_id: i64,
     settlements: &[ExchangeSettlement],
     actor: &str,
+    audit: Option<&AuditSender>,
 ) -> Result<u64, String> {
     let mut count = 0u64;
 
@@ -29,6 +31,20 @@ pub async fn record_settlements(
                 actor,
                 "recorded settlement"
             );
+            if let Some(audit) = audit {
+                audit.ws_event(
+                    Some(session_id),
+                    None,
+                    "settlement_recorded",
+                    Some(serde_json::json!({
+                        "ticker": settlement.ticker,
+                        "market_result": format!("{}", settlement.market_result),
+                        "revenue_cents": settlement.revenue_cents,
+                        "settled_time": settlement.settled_time.to_rfc3339(),
+                    })),
+                    Some(serde_json::json!({"actor": actor})),
+                );
+            }
             count += 1;
         }
     }

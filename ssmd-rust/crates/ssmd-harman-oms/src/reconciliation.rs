@@ -151,7 +151,7 @@ async fn discover_settlements(oms: &Oms, session_id: i64) -> Result<u64, String>
 
     debug!(count = settlements.len(), "fetched exchange settlements");
 
-    settlement_recorder::record_settlements(&oms.pool, session_id, &settlements, "reconciliation")
+    settlement_recorder::record_settlements(&oms.pool, session_id, &settlements, "reconciliation", Some(&oms.audit))
         .await
 }
 

@@ -293,6 +293,7 @@ async fn discover_settlements(oms: &Oms, session_id: i64) -> Result<(), String> 
         session_id,
         &settlements,
         "recovery",
+        Some(&oms.audit),
     )
     .await?;
 

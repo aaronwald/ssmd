@@ -458,10 +458,11 @@ impl EventIngester {
                         let pool = self.pool.clone();
                         let exchange = self.exchange.clone();
                         let ticker = ticker.clone();
+                        let audit = self.audit.clone();
 
                         tokio::spawn(async move {
                             Self::fetch_settlement_with_retry(
-                                &pool, &exchange, &ticker, &session_ids,
+                                &pool, &exchange, &ticker, &session_ids, &audit,
                             ).await;
                         });
                     }
@@ -503,6 +504,7 @@ impl EventIngester {
         exchange: &Arc<dyn ExchangeAdapter>,
         ticker: &str,
         session_ids: &[i64],
+        audit: &AuditSender,
     ) {
         let delays = [
             std::time::Duration::from_secs(2),
@@ -524,6 +526,7 @@ impl EventIngester {
                             *session_id,
                             &settlements,
                             "ws_settlement",
+                            Some(audit),
                         ).await {
                             Ok(count) => {
                                 if count > 0 {
