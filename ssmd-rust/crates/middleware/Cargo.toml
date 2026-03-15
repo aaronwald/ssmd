@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [features]
+postgres-health = ["deadpool-postgres"]
 redis-health = ["redis"]
 
 [dependencies]
@@ -20,6 +21,7 @@ quanta = { workspace = true }
 dashmap = { workspace = true }
 lasso = { workspace = true }
 once_cell = { workspace = true }
+deadpool-postgres = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
 
 [dev-dependencies]
