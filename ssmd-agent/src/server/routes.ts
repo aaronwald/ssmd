@@ -3198,7 +3198,7 @@ route("GET", "/v1/pipelines", async (_req, ctx) => {
     ORDER BY pd.name
   `;
   return json(rows);
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 // Get pipeline with stages
 route("GET", "/v1/pipelines/:id", async (req, ctx) => {
@@ -3212,7 +3212,7 @@ route("GET", "/v1/pipelines/:id", async (req, ctx) => {
 
   const { webhookSecretHash: _wsh, ...safe } = pipeline;
   return json({ ...safe, stages });
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 // Create pipeline with stages
 route("POST", "/v1/pipelines", async (req, ctx) => {
@@ -3333,7 +3333,7 @@ route("GET", "/v1/pipelines/:id/runs", async (req, ctx) => {
     .orderBy(desc(pipelineRuns.createdAt))
     .limit(50);
   return json(runs);
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 // Run detail with stage results
 route("GET", "/v1/pipelines/runs/:runId", async (req, ctx) => {
@@ -3346,7 +3346,7 @@ route("GET", "/v1/pipelines/runs/:runId", async (req, ctx) => {
     .orderBy(pipelineStageResults.startedAt);
 
   return json({ ...run, stage_results: results });
-}, true, "admin:read");
+}, true, "admin:read", "public");
 
 // Manual trigger from UI (accepts optional JSON payload, merged into trigger_info)
 route("POST", "/v1/pipelines/:id/run", async (req, ctx) => {
