@@ -118,6 +118,8 @@ pub struct KalshiFill {
     #[serde(default)]
     pub yes_price: i64,
     #[serde(default)]
+    pub yes_price_dollars: Option<String>,
+    #[serde(default)]
     pub no_price: i64,
     #[serde(default)]
     pub count: i64,

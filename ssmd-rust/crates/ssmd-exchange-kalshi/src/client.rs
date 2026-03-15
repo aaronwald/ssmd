@@ -5,7 +5,7 @@ use rust_decimal::prelude::*;
 use rust_decimal::Decimal;
 use serde::Serialize;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use harman::error::ExchangeError;
@@ -684,17 +684,36 @@ impl ExchangeAdapter for KalshiRestClient {
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now());
 
+                // Compute price and quantity before moving f.trade_id into the struct.
+                // Kalshi migrated from integer cents (yes_price) to dollar strings (yes_price_dollars).
+                let price_dollars = if let Some(ref s) = f.yes_price_dollars {
+                    match s.parse::<Decimal>() {
+                        Ok(d) => d,
+                        Err(e) => {
+                            error!(trade_id = %f.trade_id, raw = %s, error = %e, "REST fill yes_price_dollars parse failed — falling back to yes_price cents");
+                            Decimal::new(f.yes_price, 2)
+                        }
+                    }
+                } else if f.yes_price > 0 {
+                    Decimal::new(f.yes_price, 2)
+                } else {
+                    error!(trade_id = %f.trade_id, "REST fill has no yes_price_dollars and yes_price is 0 — fill price unknown");
+                    Decimal::ZERO
+                };
+
+                let quantity = f.count_fp
+                    .as_ref()
+                    .and_then(|s| s.parse::<Decimal>().ok())
+                    .unwrap_or_else(|| Decimal::from(f.count));
+
                 ExchangeFill {
                     trade_id: f.trade_id,
                     order_id: f.order_id,
                     ticker: f.ticker,
                     side: Self::parse_side(&f.side),
                     action: Self::parse_action(&f.action),
-                    price_dollars: Decimal::new(f.yes_price, 2),
-                    quantity: f.count_fp
-                        .as_ref()
-                        .and_then(|s| s.parse::<Decimal>().ok())
-                        .unwrap_or_else(|| Decimal::from(f.count)),
+                    price_dollars,
+                    quantity,
                     is_taker: f.is_taker,
                     filled_at,
                     client_order_id: f
