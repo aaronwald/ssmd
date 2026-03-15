@@ -99,6 +99,25 @@ pub enum WsMessage {
     Unknown,
 }
 
+impl WsMessage {
+    /// Short label for logging
+    pub fn type_str(&self) -> &'static str {
+        match self {
+            WsMessage::Subscribed { .. } => "subscribed",
+            WsMessage::Ok { .. } => "ok",
+            WsMessage::Unsubscribed { .. } => "unsubscribed",
+            WsMessage::Ticker { .. } => "ticker",
+            WsMessage::Trade { .. } => "trade",
+            WsMessage::OrderbookSnapshot { .. } => "orderbook_snapshot",
+            WsMessage::OrderbookDelta { .. } => "orderbook_delta",
+            WsMessage::MarketLifecycleV2 { .. } => "market_lifecycle_v2",
+            WsMessage::EventLifecycle { .. } => "event_lifecycle",
+            WsMessage::Error { .. } => "error",
+            WsMessage::Unknown => "unknown",
+        }
+    }
+}
+
 /// Ticker update data
 #[derive(Debug, Clone, Deserialize)]
 pub struct TickerData {

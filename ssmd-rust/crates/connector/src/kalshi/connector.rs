@@ -35,7 +35,7 @@ use ssmd_middleware::now_tsc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Commands that can be sent to a shard's receiver task
 #[derive(Debug)]
@@ -455,6 +455,7 @@ impl KalshiConnector {
                         match result {
                             Ok((raw_json, msg)) => {
                                 message_count += 1;
+                                trace!(shard_id, message_count, msg_type = %msg.type_str(), "WS recv");
                                 // Record metrics and determine if we should forward
                                 let should_forward = match &msg {
                                     WsMessage::Ticker { .. } => {
