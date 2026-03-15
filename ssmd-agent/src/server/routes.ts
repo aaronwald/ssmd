@@ -2329,6 +2329,7 @@ route("GET", "/v1/monitor/markets", async (req) => {
             if (typeof snap.ask === "number") market.ask = snap.ask;
             if (typeof snap.last === "number") market.last = snap.last;
             if (snap.funding_rate != null) market.funding_rate = snap.funding_rate;
+            if (snap._snap_at) market.snap_at = snap._snap_at;
           } else {
             // Kalshi: snap data is nested in msg object
             // Old format: yes_bid/yes_ask/price (integer cents)
@@ -2350,6 +2351,7 @@ route("GET", "/v1/monitor/markets", async (req) => {
             if (vol != null) market.volume = Number(vol);
             const oi = snapData.open_interest ?? snapData.open_interest_fp;
             if (oi != null) market.open_interest = Number(oi);
+            market.snap_at = snapData._snap_at ?? snap._snap_at ?? null;
           }
         } catch {
           // skip unparseable snap
