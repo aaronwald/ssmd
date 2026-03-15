@@ -140,10 +140,29 @@ pub async fn import_fills(
     // Update order states for orders that received new fills
     for order_id in &orders_with_new_fills {
         if let Some(order) = session_orders.iter().find(|o| o.id == *order_id) {
+            let filled_qty = db::get_filled_quantity(pool, *order_id).await?;
+
             if order.state.is_terminal() {
+                // Order already terminal — verify fill count integrity
+                if order.state == OrderState::Filled && filled_qty == Decimal::ZERO {
+                    error!(
+                        order_id = order.id,
+                        actor,
+                        "INVARIANT VIOLATION: order in Filled state with zero fills"
+                    );
+                }
+                if filled_qty > order.quantity {
+                    warn!(
+                        order_id = order.id,
+                        filled_qty = %filled_qty,
+                        order_qty = %order.quantity,
+                        actor,
+                        "overfill detected — fills exceed order quantity (fill recorded, not dropped)"
+                    );
+                }
                 continue;
             }
-            let filled_qty = db::get_filled_quantity(pool, *order_id).await?;
+
             let new_state = if filled_qty >= order.quantity {
                 OrderState::Filled
             } else if filled_qty > Decimal::ZERO {
