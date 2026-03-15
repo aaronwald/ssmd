@@ -240,7 +240,8 @@ Environment variables:
         }
       } else if (m.event_type === "close_date_updated" && m.close_ts) {
         const sql = getRawSql();
-        await sql`UPDATE markets SET close_time = ${epochToDate(m.close_ts)!}, updated_at = NOW() WHERE ticker = ${m.market_ticker}`;
+        const closeTime = new Date(m.close_ts * 1000).toISOString();
+        await sql`UPDATE markets SET close_time = ${closeTime}::timestamptz, updated_at = NOW() WHERE ticker = ${m.market_ticker}`;
       }
 
       eventsWritten++;
