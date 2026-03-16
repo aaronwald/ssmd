@@ -11,7 +11,7 @@ COPY deno.json .
 COPY src ./src
 
 # Cache dependencies (creates /deno-dir cache)
-RUN deno cache src/main.ts
+RUN deno cache src/server/main.ts
 
 # Fix ownership for non-root user
 RUN chown -R ssmd:ssmd /app /deno-dir
@@ -22,4 +22,4 @@ USER ssmd
 # Health check endpoint
 EXPOSE 8080
 
-CMD ["run", "--no-lock", "--allow-net", "--allow-env", "src/main.ts"]
+CMD ["run", "--no-lock", "--allow-net", "--allow-env", "src/server/main.ts"]
