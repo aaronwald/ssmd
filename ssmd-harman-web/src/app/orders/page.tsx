@@ -55,7 +55,7 @@ function OrdersContent() {
   const posMap = useMemo(() => {
     const m = new Map<string, LocalPosition>();
     if (positions) {
-      for (const p of positions.local) m.set(p.ticker, p);
+      for (const p of positions.positions) m.set(p.ticker, p);
     }
     return m;
   }, [positions]);

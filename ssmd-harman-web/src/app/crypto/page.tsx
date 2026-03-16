@@ -207,8 +207,7 @@ function CryptoContent() {
   const positionTickers = useMemo(() => {
     if (!positions) return new Set<string>();
     const set = new Set<string>();
-    for (const p of positions.exchange) set.add(p.ticker);
-    for (const p of positions.local) set.add(p.ticker);
+    for (const p of positions.positions) set.add(p.ticker);
     return set;
   }, [positions]);
 

@@ -74,13 +74,6 @@ export interface AuditEntry {
   created_at: string;
 }
 
-export interface ExchangePosition {
-  ticker: string;
-  side: Side;
-  quantity: string;
-  market_value_dollars: string;
-}
-
 export interface LocalPosition {
   ticker: string;
   net_quantity: string;
@@ -89,8 +82,7 @@ export interface LocalPosition {
 }
 
 export interface PositionsView {
-  exchange: ExchangePosition[];
-  local: LocalPosition[];
+  positions: LocalPosition[];
 }
 
 export interface RiskResponse {

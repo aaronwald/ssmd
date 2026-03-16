@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { SnapAgeDot } from "@/components/snap-age-dot";
 import { usePositions, useSnapMap, useInfo } from "@/lib/hooks";
-import type { ExchangePosition, LocalPosition, NormalizedSnapshot } from "@/lib/types";
+import type { LocalPosition, NormalizedSnapshot } from "@/lib/types";
 
 export default function Dashboard() {
   const { data: positions } = usePositions();
@@ -16,23 +16,16 @@ export default function Dashboard() {
   const positionTickers = useMemo(() => {
     if (!positions) return undefined;
     const tickers = new Set<string>();
-    for (const p of positions.local) tickers.add(p.ticker);
-    for (const p of positions.exchange) tickers.add(p.ticker);
+    for (const p of positions.positions) tickers.add(p.ticker);
     return tickers.size > 0 ? Array.from(tickers) : undefined;
   }, [positions]);
 
   const { data: snapMap, error: snapError } = useSnapMap(feed, positionTickers);
 
-  const filteredExchange = useMemo(() => {
-    if (!positions) return [];
-    if (!hideZero) return positions.exchange;
-    return positions.exchange.filter((p: ExchangePosition) => parseFloat(p.quantity) !== 0);
-  }, [positions, hideZero]);
-
   const filteredLocal = useMemo(() => {
     if (!positions) return [];
-    if (!hideZero) return positions.local;
-    return positions.local.filter((p: LocalPosition) => parseFloat(p.net_quantity) !== 0);
+    if (!hideZero) return positions.positions;
+    return positions.positions.filter((p: LocalPosition) => parseFloat(p.net_quantity) !== 0);
   }, [positions, hideZero]);
 
   const snapFor = (ticker: string): NormalizedSnapshot | undefined =>
@@ -64,93 +57,44 @@ export default function Dashboard() {
             Hide zero
           </label>
         </div>
-        {positions && (filteredLocal.length > 0 || filteredExchange.length > 0) ? (
-          <div className="space-y-4">
-            {/* Filled positions — primary view */}
-            {filteredLocal.length > 0 && (
-              <div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-xs text-fg-muted border-b border-border">
-                        <th className="pb-2 pr-4">Ticker</th>
-                        <th className="pb-2 pr-4 text-right">Position</th>
-                        <th className="pb-2 pr-4 text-right">Buy Filled</th>
-                        <th className="pb-2 pr-4 text-right">Sell Filled</th>
-                        <th className="pb-2 pr-4 text-right">Bid</th>
-                        <th className="pb-2 pr-4 text-right">Ask</th>
-                        <th className="pb-2 pr-4 text-right">Last</th>
-                        <th className="pb-2 text-right">Mkt Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredLocal.map((p: LocalPosition) => {
-                        const snap = snapFor(p.ticker);
-                        const netQty = parseFloat(p.net_quantity);
-                        const mktVal = snap?.last != null ? netQty * snap.last : null;
-                        return (
-                          <tr key={p.ticker} className="border-b border-border-subtle">
-                            <td className="py-2 pr-4 font-mono">
-                              <Link href={`/markets?q=${encodeURIComponent(p.ticker)}`} className="text-accent hover:underline">{p.ticker}</Link>
-                              <SnapAgeDot snapAt={snap?.snapAt ?? null} />
-                            </td>
-                            <td className={`py-2 pr-4 font-mono text-right ${netQty > 0 ? "text-green" : netQty < 0 ? "text-red" : "text-fg-subtle"}`}>{p.net_quantity}</td>
-                            <td className="py-2 pr-4 font-mono text-right">{p.buy_filled}</td>
-                            <td className="py-2 pr-4 font-mono text-right">{p.sell_filled}</td>
-                            <td className="py-2 pr-4 font-mono text-right text-fg-muted">{snap?.yesBid != null ? snap.yesBid.toFixed(2) : "—"}</td>
-                            <td className="py-2 pr-4 font-mono text-right text-fg-muted">{snap?.yesAsk != null ? snap.yesAsk.toFixed(2) : "—"}</td>
-                            <td className="py-2 pr-4 font-mono text-right text-fg-muted">{snap?.last != null ? snap.last.toFixed(2) : "—"}</td>
-                            <td className="py-2 font-mono text-right text-fg-muted">{mktVal != null ? `$${mktVal.toFixed(2)}` : "—"}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-            {/* Exchange-reported positions — collapsible reconciliation view */}
-            {filteredExchange.length > 0 && (
-            <details className="group">
-              <summary className="text-xs text-fg-muted cursor-pointer hover:text-fg select-none">
-                Exchange Reported ({filteredExchange.length})
-              </summary>
-              <div className="overflow-x-auto mt-2">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-xs text-fg-muted border-b border-border">
-                      <th className="pb-2 pr-4">Ticker</th>
-                      <th className="pb-2 pr-4">Side</th>
-                      <th className="pb-2 pr-4 text-right">Qty</th>
-                      <th className="pb-2 pr-4 text-right">Mkt Value</th>
-                      <th className="pb-2 pr-4 text-right">Yes Bid</th>
-                      <th className="pb-2 pr-4 text-right">Yes Ask</th>
-                      <th className="pb-2 text-right">Last</th>
+        {positions && filteredLocal.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-fg-muted border-b border-border">
+                  <th className="pb-2 pr-4">Ticker</th>
+                  <th className="pb-2 pr-4 text-right">Position</th>
+                  <th className="pb-2 pr-4 text-right">Buy Filled</th>
+                  <th className="pb-2 pr-4 text-right">Sell Filled</th>
+                  <th className="pb-2 pr-4 text-right">Bid</th>
+                  <th className="pb-2 pr-4 text-right">Ask</th>
+                  <th className="pb-2 pr-4 text-right">Last</th>
+                  <th className="pb-2 text-right">Mkt Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredLocal.map((p: LocalPosition) => {
+                  const snap = snapFor(p.ticker);
+                  const netQty = parseFloat(p.net_quantity);
+                  const mktVal = snap?.last != null ? netQty * snap.last : null;
+                  return (
+                    <tr key={p.ticker} className="border-b border-border-subtle">
+                      <td className="py-2 pr-4 font-mono">
+                        <Link href={`/markets?q=${encodeURIComponent(p.ticker)}`} className="text-accent hover:underline">{p.ticker}</Link>
+                        <SnapAgeDot snapAt={snap?.snapAt ?? null} />
+                      </td>
+                      <td className={`py-2 pr-4 font-mono text-right ${netQty > 0 ? "text-green" : netQty < 0 ? "text-red" : "text-fg-subtle"}`}>{p.net_quantity}</td>
+                      <td className="py-2 pr-4 font-mono text-right">{p.buy_filled}</td>
+                      <td className="py-2 pr-4 font-mono text-right">{p.sell_filled}</td>
+                      <td className="py-2 pr-4 font-mono text-right text-fg-muted">{snap?.yesBid != null ? snap.yesBid.toFixed(2) : "—"}</td>
+                      <td className="py-2 pr-4 font-mono text-right text-fg-muted">{snap?.yesAsk != null ? snap.yesAsk.toFixed(2) : "—"}</td>
+                      <td className="py-2 pr-4 font-mono text-right text-fg-muted">{snap?.last != null ? snap.last.toFixed(2) : "—"}</td>
+                      <td className="py-2 font-mono text-right text-fg-muted">{mktVal != null ? `$${mktVal.toFixed(2)}` : "—"}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {filteredExchange.map((p: ExchangePosition) => {
-                      const snap = snapFor(p.ticker);
-                      return (
-                        <tr key={p.ticker} className="border-b border-border-subtle">
-                          <td className="py-2 pr-4 font-mono">
-                            <Link href={`/markets?q=${encodeURIComponent(p.ticker)}`} className="text-accent hover:underline">{p.ticker}</Link>
-                            <SnapAgeDot snapAt={snap?.snapAt ?? null} />
-                          </td>
-                          <td className="py-2 pr-4 uppercase">{p.side}</td>
-                          <td className="py-2 pr-4 font-mono text-right">{p.quantity}</td>
-                          <td className="py-2 pr-4 font-mono text-right">${p.market_value_dollars}</td>
-                          <td className="py-2 pr-4 font-mono text-right text-fg-muted">{snap?.yesBid != null ? snap.yesBid.toFixed(2) : "—"}</td>
-                          <td className="py-2 pr-4 font-mono text-right text-fg-muted">{snap?.yesAsk != null ? snap.yesAsk.toFixed(2) : "—"}</td>
-                          <td className="py-2 font-mono text-right text-fg-muted">{snap?.last != null ? snap.last.toFixed(2) : "—"}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </details>
-            )}
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         ) : (
           <p className="text-xs text-fg-subtle">No positions</p>
