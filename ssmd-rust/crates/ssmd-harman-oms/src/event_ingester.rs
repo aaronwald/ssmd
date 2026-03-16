@@ -14,8 +14,9 @@ use tracing::{debug, error, info, warn};
 
 use harman::audit::AuditSender;
 use harman::db;
-use harman::exchange::{ExchangeAdapter, ExchangeEvent};
+use harman::exchange::ExchangeEvent;
 use harman::fill_processor;
+use harman::settlement_compute;
 use harman::settlement_recorder;
 use harman::state::OrderState;
 use harman::types::{CancelReason, ExchangeFill};
@@ -27,7 +28,6 @@ use crate::runner::PumpTrigger;
 /// Ingests WS events and writes to DB via shared processors.
 pub struct EventIngester {
     pool: Pool,
-    exchange: Arc<dyn ExchangeAdapter>,
     metrics: Arc<OmsMetrics>,
     audit: AuditSender,
     pump_trigger: PumpTrigger,
@@ -49,7 +49,6 @@ pub struct IngestResult {
 impl EventIngester {
     pub fn new(
         pool: Pool,
-        exchange: Arc<dyn ExchangeAdapter>,
         metrics: Arc<OmsMetrics>,
         audit: AuditSender,
         pump_trigger: PumpTrigger,
@@ -58,7 +57,6 @@ impl EventIngester {
     ) -> Self {
         Self {
             pool,
-            exchange,
             metrics,
             audit,
             pump_trigger,
@@ -443,28 +441,75 @@ impl EventIngester {
                     None,
                 );
 
-                // Check if any session holds an unsettled position for this ticker.
-                // If so, spawn a background task to fetch + record the settlement.
-                // Spawned to avoid blocking the ingester loop during retry backoff.
                 match db::sessions_with_unsettled_position(&self.pool, ticker).await {
                     Ok(session_ids) if !session_ids.is_empty() => {
-                        info!(
-                            ticker = %ticker,
-                            market_result = ?market_result,
-                            sessions = ?session_ids,
-                            "WS: market settled — spawning settlement fetch task"
-                        );
-
-                        let pool = self.pool.clone();
-                        let exchange = self.exchange.clone();
-                        let ticker = ticker.clone();
-                        let audit = self.audit.clone();
-
-                        tokio::spawn(async move {
-                            Self::fetch_settlement_with_retry(
-                                &pool, &exchange, &ticker, &session_ids, &audit,
-                            ).await;
-                        });
+                        for &session_id in &session_ids {
+                            match db::get_fill_summaries_for_settlement(
+                                &self.pool, session_id, ticker,
+                            ).await {
+                                Ok(summaries) => {
+                                    match settlement_compute::compute_settlement(
+                                        ticker, *market_result, settled_time, &summaries,
+                                    ) {
+                                        Ok(Some(settlement)) => {
+                                            match settlement_recorder::record_settlements(
+                                                &self.pool,
+                                                session_id,
+                                                &[settlement],
+                                                "ws_settlement",
+                                                Some(&self.audit),
+                                            ).await {
+                                                Ok(count) => {
+                                                    if count > 0 {
+                                                        info!(
+                                                            session_id,
+                                                            ticker = %ticker,
+                                                            market_result = ?market_result,
+                                                            "WS: settlement recorded from fills"
+                                                        );
+                                                        result.settlements_noted += 1;
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    error!(
+                                                        error = %e,
+                                                        ticker = %ticker,
+                                                        session_id,
+                                                        "FATAL: failed to record settlement — crashing for recovery"
+                                                    );
+                                                    std::process::exit(1);
+                                                }
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            warn!(
+                                                ticker = %ticker,
+                                                session_id,
+                                                "no fills found for settlement (unexpected)"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                error = %e,
+                                                ticker = %ticker,
+                                                session_id,
+                                                "FATAL: settlement computation failed — crashing for recovery"
+                                            );
+                                            std::process::exit(1);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        error = %e,
+                                        ticker = %ticker,
+                                        session_id,
+                                        "FATAL: failed to query fills for settlement — crashing for recovery"
+                                    );
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
                     }
                     Ok(_) => {
                         debug!(ticker = %ticker, "WS: market settled (no local position)");
@@ -494,89 +539,4 @@ impl EventIngester {
         }
     }
 
-    /// Fetch a specific settlement from REST with retry + backoff.
-    ///
-    /// Spawned as a background task so the ingester loop is not blocked.
-    /// The Kalshi REST API has propagation delay — the settlement may not be
-    /// available immediately after the WS MarketSettled event fires.
-    async fn fetch_settlement_with_retry(
-        pool: &Pool,
-        exchange: &Arc<dyn ExchangeAdapter>,
-        ticker: &str,
-        session_ids: &[i64],
-        audit: &AuditSender,
-    ) {
-        let delays = [
-            std::time::Duration::from_secs(2),
-            std::time::Duration::from_secs(5),
-            std::time::Duration::from_secs(15),
-        ];
-        let max_attempts = delays.len();
-
-        for (attempt, delay) in delays.iter().enumerate() {
-            tokio::time::sleep(*delay).await;
-            let attempt_number = attempt + 1;
-
-            match exchange.get_settlements(None, Some(ticker)).await {
-                Ok(settlements) if !settlements.is_empty() => {
-                    let mut any_recorded = false;
-                    for session_id in session_ids {
-                        match settlement_recorder::record_settlements(
-                            pool,
-                            *session_id,
-                            &settlements,
-                            "ws_settlement",
-                            Some(audit),
-                        ).await {
-                            Ok(count) => {
-                                if count > 0 {
-                                    info!(
-                                        session_id,
-                                        count,
-                                        ticker = %ticker,
-                                        attempt = attempt_number,
-                                        "recorded settlement from WS event"
-                                    );
-                                    any_recorded = true;
-                                }
-                            }
-                            Err(e) => {
-                                error!(error = %e, ticker = %ticker, "failed to record settlement from WS event");
-                            }
-                        }
-                    }
-                    if any_recorded {
-                        return;
-                    }
-                    // REST returned data but DB insert failed for all sessions — retry
-                    warn!(ticker = %ticker, attempt = attempt_number, "settlement fetched but DB write failed, will retry");
-                }
-                Ok(_) => {
-                    if attempt_number < max_attempts {
-                        warn!(
-                            ticker = %ticker,
-                            attempt = attempt_number,
-                            max_attempts,
-                            "settlement not yet in REST response, will retry"
-                        );
-                    } else {
-                        warn!(
-                            ticker = %ticker,
-                            attempt = attempt_number,
-                            max_attempts,
-                            "settlement not present in REST response on final attempt"
-                        );
-                    }
-                }
-                Err(e) => {
-                    error!(error = %e, ticker = %ticker, attempt = attempt_number, "failed to fetch settlement from REST");
-                }
-            }
-        }
-
-        error!(
-            ticker = %ticker,
-            "settlement not recorded after all retries — will be caught by recovery on next restart"
-        );
-    }
 }

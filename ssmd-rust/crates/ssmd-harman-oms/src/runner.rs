@@ -220,7 +220,6 @@ impl OmsRunner {
         let rx = event_stream.subscribe();
         let ingester = EventIngester::new(
             self.oms.pool.clone(),
-            self.oms.exchange.clone(),
             self.oms.metrics.clone(),
             self.oms.audit.clone(),
             self.pump_trigger.clone(),
