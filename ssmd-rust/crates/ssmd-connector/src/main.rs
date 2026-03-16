@@ -289,7 +289,9 @@ async fn run_kraken_connector(
 
     info!(symbols = ?symbols, "Creating Kraken connector");
 
-    let connector = ssmd_connector_lib::kraken::KrakenConnector::new(symbols, ws_url);
+    let connector = ssmd_connector_lib::kraken::KrakenConnector::with_feed_name(
+        symbols, ws_url, feed.name.clone(),
+    );
 
     match env_config.transport.transport_type {
         TransportType::Nats => {

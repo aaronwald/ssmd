@@ -18,6 +18,8 @@ use tracing::{debug, error, info, trace};
 /// Kraken connector implementing the ssmd Connector trait
 pub struct KrakenConnector {
     symbols: Vec<String>,
+    /// Feed name for metrics labels (e.g., "kraken-spot", "kraken")
+    feed_name: String,
     /// WebSocket URL override from feed config (None = use default constant)
     ws_url: Option<String>,
     tx: Option<mpsc::Sender<TimestampedMsg>>,
@@ -29,9 +31,15 @@ pub struct KrakenConnector {
 impl KrakenConnector {
     /// Create a new Kraken connector with the given symbols
     pub fn new(symbols: Vec<String>, ws_url: Option<String>) -> Self {
+        Self::with_feed_name(symbols, ws_url, "kraken".to_string())
+    }
+
+    /// Create a new Kraken connector with an explicit feed name for metrics
+    pub fn with_feed_name(symbols: Vec<String>, ws_url: Option<String>, feed_name: String) -> Self {
         let (tx, rx) = mpsc::channel(1000);
         Self {
             symbols,
+            feed_name,
             ws_url,
             tx: Some(tx),
             rx: Some(rx),
@@ -142,8 +150,8 @@ impl Connector for KrakenConnector {
 
         let activity_tracker = Arc::clone(&self.last_ws_activity_epoch_secs);
 
-        // Create metrics
-        let connector_metrics = ConnectorMetrics::new("kraken", "spot");
+        // Create metrics — use feed_name so kraken-spot emits feed="kraken-spot"
+        let connector_metrics = ConnectorMetrics::new(&self.feed_name, "spot");
         connector_metrics.set_shards_total(1);
         // Pre-init MESSAGES_TOTAL so the feed label exists in Prometheus
         connector_metrics.for_shard(0).init(&["ticker", "trade"]);
