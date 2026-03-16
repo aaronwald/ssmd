@@ -5,6 +5,7 @@ pub mod exchange;
 pub mod fill_processor;
 pub mod order_importer;
 pub mod risk;
+pub mod settlement_compute;
 pub mod settlement_recorder;
 pub mod state;
 pub mod test_helpers;

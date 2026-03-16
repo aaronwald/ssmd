@@ -2829,6 +2829,47 @@ pub async fn record_settlement(
     Ok(result > 0)
 }
 
+/// Get fill summaries for settlement computation, grouped by (side, action).
+///
+/// Returns aggregated fill data that can be passed to `settlement_compute::compute_settlement()`
+/// to derive a full ExchangeSettlement without a REST API call.
+pub async fn get_fill_summaries_for_settlement(
+    pool: &Pool,
+    session_id: i64,
+    ticker: &str,
+) -> Result<Vec<crate::settlement_compute::FillSummary>, String> {
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("pool error: {}", e))?;
+
+    let rows = client
+        .query(
+            "SELECT o.side, o.action, \
+             SUM(f.quantity) as total_quantity, \
+             SUM(f.price_dollars * f.quantity) as total_cost, \
+             SUM(CASE WHEN f.is_taker THEN f.quantity ELSE 0 END) as taker_quantity \
+             FROM fills f \
+             JOIN prediction_orders o ON f.order_id = o.id \
+             WHERE o.session_id = $1 AND o.ticker = $2 \
+             GROUP BY o.side, o.action",
+            &[&session_id, &ticker],
+        )
+        .await
+        .map_err(|e| format!("get_fill_summaries_for_settlement: {}", e))?;
+
+    Ok(rows
+        .iter()
+        .map(|row| crate::settlement_compute::FillSummary {
+            side: row.get("side"),
+            action: row.get("action"),
+            total_quantity: row.get("total_quantity"),
+            total_cost: row.get("total_cost"),
+            taker_quantity: row.get("taker_quantity"),
+        })
+        .collect())
+}
+
 /// Get all tickers that have settlement records for a session.
 pub async fn get_settled_tickers(
     pool: &Pool,
