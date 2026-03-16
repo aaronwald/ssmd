@@ -43,8 +43,6 @@ fn build_test_ingester(
 ) -> EventIngester {
     let registry = prometheus::Registry::new();
     let metrics = Arc::new(OmsMetrics::new(&registry));
-    let mock = MockExchange::new();
-    let exchange: Arc<dyn harman::exchange::ExchangeAdapter> = Arc::new(mock);
 
     // Create an audit sender with a large buffer. We don't spawn the writer —
     // events are buffered and silently dropped when the channel is full or on shutdown.
@@ -55,7 +53,6 @@ fn build_test_ingester(
 
     EventIngester::new(
         pool,
-        exchange,
         metrics,
         audit,
         pump_trigger,

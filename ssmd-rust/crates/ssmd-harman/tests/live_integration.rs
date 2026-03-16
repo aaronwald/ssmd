@@ -826,35 +826,18 @@ async fn test_live_positions() {
     let (status, json) = c.positions().await;
     assert_eq!(status, 200, "positions endpoint failed");
 
-    // Response has both exchange and local positions
+    // Response has positions computed from fills in the DB
     assert!(
-        json.get("exchange").is_some(),
-        "response missing exchange field: {:?}",
-        json
-    );
-    assert!(
-        json.get("local").is_some(),
-        "response missing local field: {:?}",
+        json.get("positions").is_some(),
+        "response missing positions field: {:?}",
         json
     );
 
-    let exchange = json["exchange"].as_array().expect("exchange array");
-    println!("exchange positions: {}", exchange.len());
-    for pos in exchange {
-        assert!(pos.get("ticker").is_some(), "exchange position missing ticker");
-        assert!(pos.get("side").is_some(), "exchange position missing side");
-        assert!(pos.get("quantity").is_some(), "exchange position missing quantity");
-        assert!(
-            pos.get("market_value_dollars").is_some(),
-            "exchange position missing market_value_dollars"
-        );
-    }
-
-    let local = json["local"].as_array().expect("local array");
-    println!("local positions: {}", local.len());
-    for pos in local {
-        assert!(pos.get("ticker").is_some(), "local position missing ticker");
-        assert!(pos.get("net_quantity").is_some(), "local position missing net_quantity");
+    let positions = json["positions"].as_array().expect("positions array");
+    println!("positions: {}", positions.len());
+    for pos in positions {
+        assert!(pos.get("ticker").is_some(), "position missing ticker");
+        assert!(pos.get("net_quantity").is_some(), "position missing net_quantity");
     }
 }
 

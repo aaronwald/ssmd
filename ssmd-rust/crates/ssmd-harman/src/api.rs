@@ -1112,15 +1112,13 @@ async fn me_handler(
 /// Query parameters for positions endpoint
 #[derive(Deserialize)]
 struct PositionsQuery {
-    /// If true, returns all-sessions view (exchange + per-session breakdown + aggregate)
+    /// If true, returns all-sessions view (aggregate + per-session breakdown)
     #[serde(default)]
     all: bool,
 }
 
-/// Returns both exchange positions (from Kalshi API) and local positions
-/// (computed from filled orders in DB). This lets the user compare both
-/// views and spot discrepancies.
-/// With `?all=true`, returns per-session breakdown across all active sessions.
+/// Returns positions computed from fills in the DB (source of truth).
+/// With `?all=true`, returns aggregate + per-session breakdown across all active sessions.
 async fn positions_handler(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SessionContext>,

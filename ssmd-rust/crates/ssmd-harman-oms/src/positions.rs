@@ -2,27 +2,18 @@ use serde::Serialize;
 
 use harman::db;
 use harman::db::LocalPosition;
-use harman::types::Position;
 
 use crate::Oms;
 
 #[derive(Debug, Serialize)]
 pub struct PositionsView {
-    pub exchange: Vec<Position>,
-    pub local: Vec<LocalPosition>,
+    pub positions: Vec<LocalPosition>,
 }
 
-/// Fetch both exchange and local positions for a session.
+/// Compute positions for a session from fills in the DB.
 pub async fn positions(oms: &Oms, session_id: i64) -> Result<PositionsView, String> {
-    let exchange = oms
-        .exchange
-        .get_positions()
-        .await
-        .map_err(|e| format!("get positions: {}", e))?;
-
-    let local = db::compute_local_positions(&oms.pool, session_id).await?;
-
-    Ok(PositionsView { exchange, local })
+    let positions = db::compute_local_positions(&oms.pool, session_id).await?;
+    Ok(PositionsView { positions })
 }
 
 /// Per-session positions breakdown for admin view
@@ -32,27 +23,20 @@ pub struct SessionPositions {
     pub positions: Vec<LocalPosition>,
 }
 
-/// All-sessions positions view: exchange-wide + per-session breakdown + aggregate local
+/// All-sessions positions view: aggregate + per-session breakdown
 #[derive(Debug, Serialize)]
 pub struct AllPositionsView {
-    pub exchange: Vec<Position>,
-    pub aggregate_local: Vec<LocalPosition>,
+    pub aggregate: Vec<LocalPosition>,
     pub sessions: Vec<SessionPositions>,
 }
 
-/// Fetch exchange positions + per-session breakdown for all active sessions.
+/// Compute positions for all active sessions from fills in the DB.
 pub async fn all_positions(
     oms: &Oms,
     exchange_type: &str,
     environment: &str,
 ) -> Result<AllPositionsView, String> {
-    let exchange = oms
-        .exchange
-        .get_positions()
-        .await
-        .map_err(|e| format!("get positions: {}", e))?;
-
-    let aggregate_local =
+    let aggregate =
         db::compute_all_local_positions(&oms.pool, exchange_type, environment).await?;
 
     let session_ids =
@@ -70,8 +54,7 @@ pub async fn all_positions(
     }
 
     Ok(AllPositionsView {
-        exchange,
-        aggregate_local,
+        aggregate,
         sessions,
     })
 }
