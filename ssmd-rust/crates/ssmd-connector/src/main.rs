@@ -150,7 +150,9 @@ async fn run_kalshi_connector(
         .unwrap_or(false);
 
     // Extract WebSocket URL from feed config (overrides hardcoded constants)
-    let ws_url = feed.get_latest_version().map(|v| v.endpoint.clone());
+    let ws_url = feed.get_latest_version()
+        .map(|v| v.endpoint.clone())
+        .filter(|url| !url.contains("MISSING_FEED_CONFIGMAP"));
 
     // Check if lifecycle mode is enabled (dedicated lifecycle collector)
     let lifecycle_enabled = env_config.lifecycle.as_ref().is_some_and(|c| c.enabled);
@@ -284,10 +286,13 @@ async fn run_kraken_connector(
         })
         .unwrap_or_else(|_| vec!["BTC/USD".to_string(), "ETH/USD".to_string()]);
 
-    // Extract WebSocket URL from feed config (overrides hardcoded constants)
-    let ws_url = feed.get_latest_version().map(|v| v.endpoint.clone());
+    // Extract WebSocket URL from feed config (overrides hardcoded constants).
+    // Filter out operator placeholder URLs that indicate no feed ConfigMap exists.
+    let ws_url = feed.get_latest_version()
+        .map(|v| v.endpoint.clone())
+        .filter(|url| !url.contains("MISSING_FEED_CONFIGMAP"));
 
-    info!(symbols = ?symbols, "Creating Kraken connector");
+    info!(symbols = ?symbols, ?ws_url, "Creating Kraken connector");
 
     let connector = ssmd_connector_lib::kraken::KrakenConnector::with_feed_name(
         symbols, ws_url, feed.name.clone(),
@@ -329,7 +334,9 @@ async fn run_kraken_futures_connector(
         ]);
 
     // Extract WebSocket URL from feed config (overrides hardcoded constants)
-    let ws_url = feed.get_latest_version().map(|v| v.endpoint.clone());
+    let ws_url = feed.get_latest_version()
+        .map(|v| v.endpoint.clone())
+        .filter(|url| !url.contains("MISSING_FEED_CONFIGMAP"));
 
     info!(product_ids = ?product_ids, "Creating Kraken Futures connector");
 
@@ -397,7 +404,9 @@ async fn run_polymarket_connector(
         });
 
     // Extract WebSocket URL from feed config (overrides hardcoded constants)
-    let ws_url = feed.get_latest_version().map(|v| v.endpoint.clone());
+    let ws_url = feed.get_latest_version()
+        .map(|v| v.endpoint.clone())
+        .filter(|url| !url.contains("MISSING_FEED_CONFIGMAP"));
 
     let connector = if let Some(tokens) = static_tokens {
         // Priority 1: Static token IDs from environment variable
