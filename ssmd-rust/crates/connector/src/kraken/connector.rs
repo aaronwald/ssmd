@@ -52,6 +52,7 @@ impl KrakenConnector {
         mut ws: KrakenWebSocket,
         tx: mpsc::Sender<TimestampedMsg>,
         activity_tracker: Arc<AtomicU64>,
+        shard_metrics: crate::metrics::ShardMetrics,
     ) {
         fn update_activity(tracker: &AtomicU64) {
             use std::time::{SystemTime, UNIX_EPOCH};
@@ -88,29 +89,38 @@ impl KrakenConnector {
 
                     // Receive message from WebSocket
                     result = ws.recv_raw() => {
-                        update_activity(&activity_tracker);
-
                         match result {
                             Ok((raw_json, msg)) => {
-                                let should_forward = matches!(
-                                    &msg,
+                                // Only update activity on successful data — not errors
+                                update_activity(&activity_tracker);
+
+                                let should_forward = match &msg {
                                     KrakenWsMessage::ChannelMessage { channel, .. }
-                                    if channel == "ticker" || channel == "trade"
-                                );
+                                    if channel == "ticker" => {
+                                        shard_metrics.inc_ticker();
+                                        true
+                                    }
+                                    KrakenWsMessage::ChannelMessage { channel, .. }
+                                    if channel == "trade" => {
+                                        shard_metrics.inc_trade();
+                                        true
+                                    }
+                                    KrakenWsMessage::Heartbeat { .. } => {
+                                        trace!("Kraken heartbeat received");
+                                        false
+                                    }
+                                    KrakenWsMessage::Pong { .. } => {
+                                        trace!("Kraken pong received");
+                                        false
+                                    }
+                                    KrakenWsMessage::SubscriptionResult { .. } => {
+                                        debug!("Kraken subscription result received");
+                                        false
+                                    }
+                                    _ => false,
+                                };
 
                                 if !should_forward {
-                                    match &msg {
-                                        KrakenWsMessage::Heartbeat { .. } => {
-                                            trace!("Kraken heartbeat received");
-                                        }
-                                        KrakenWsMessage::Pong { .. } => {
-                                            trace!("Kraken pong received");
-                                        }
-                                        KrakenWsMessage::SubscriptionResult { .. } => {
-                                            debug!("Kraken subscription result received");
-                                        }
-                                        _ => {}
-                                    }
                                     continue;
                                 }
 
@@ -183,8 +193,9 @@ impl Connector for KrakenConnector {
             "Kraken connector subscribed to ticker and trade channels"
         );
 
-        // Spawn receiver task
-        Self::spawn_receiver_task(ws, tx, activity_tracker);
+        // Spawn receiver task with shard metrics for message counting
+        let shard_metrics = connector_metrics.for_shard(0);
+        Self::spawn_receiver_task(ws, tx, activity_tracker, shard_metrics);
 
         Ok(())
     }
