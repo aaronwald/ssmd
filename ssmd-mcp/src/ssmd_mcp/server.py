@@ -247,9 +247,10 @@ TOOLS = [
     Tool(
         name="browse_series",
         description=(
-            "Browse series within a category. Returns series tickers with titles "
-            "and counts of active events and markets. "
-            "Drill-down: categories → series → events → markets."
+            "List all series (product lines) in a category. "
+            "E.g., Crypto category has KXBTCD (Bitcoin hourly), KXETHD (Ethereum hourly), etc. "
+            "Returns series tickers with titles and counts of active events and markets. "
+            "Hierarchy: categories → series → events → markets."
         ),
         inputSchema={
             "type": "object",
@@ -265,16 +266,18 @@ TOOLS = [
     Tool(
         name="browse_events",
         description=(
-            "Browse events within a series. Returns event tickers with titles, "
-            "status, strike dates, and market counts. "
-            "Drill-down: categories → series → events → markets."
+            "List all hourly/daily events (contracts) for a series. "
+            "Use this to see which contracts exist for a series like KXBTCD. "
+            "Returns event tickers (e.g., KXBTCD-26MAR1619), status, strike dates, and market counts. "
+            "Kalshi convention: hour in ticker is EST (e.g., 1619 = 4:19 PM EST = 21:19 UTC). "
+            "Hierarchy: categories → series → events → markets."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "series": {
                     "type": "string",
-                    "description": "Series ticker to browse (e.g., 'KXBTCD').",
+                    "description": "Series ticker (e.g., 'KXBTCD' for Bitcoin hourly, 'KXETHD' for Ethereum).",
                 },
             },
             "required": ["series"],
@@ -283,16 +286,18 @@ TOOLS = [
     Tool(
         name="browse_markets",
         description=(
-            "Browse markets within an event with live prices. Returns market tickers "
-            "with titles, status, close times, and live bid/ask/last/volume/OI from snap data. "
-            "Drill-down: categories → series → events → markets."
+            "Get live prices for all markets (strike levels) in an event/contract. "
+            "This is the primary tool for checking if a contract has live data. "
+            "Pass an event ticker like KXBTCD-26MAR1619 to see all strike prices "
+            "with live bid/ask/last/volume/OI from snap. "
+            "Hierarchy: categories → series → events → markets."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "event": {
                     "type": "string",
-                    "description": "Event ticker to browse (e.g., 'KXBTCD-26FEB28').",
+                    "description": "Event ticker (e.g., 'KXBTCD-26MAR1619' for BTC hourly at 7:19 PM EST).",
                 },
             },
             "required": ["event"],
