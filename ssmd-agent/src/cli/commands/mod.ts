@@ -14,7 +14,6 @@ import { handleSecmaster } from "./secmaster.ts";
 import { handleFees } from "./fees.ts";
 import { handleSeries } from "./series.ts";
 import { handleSignalDeploy } from "./signal-deploy.ts";
-import { handleNotifierDeploy } from "./notifier-deploy.ts";
 import { handleConnectorDeploy } from "./connector-deploy.ts";
 import { handleArchiverDeploy } from "./archiver-deploy.ts";
 import { handleScale } from "./scale.ts";
@@ -71,12 +70,6 @@ export async function run(args: string[]): Promise<void> {
       await handleFeedCommand(subcommand, flags);
       break;
 
-    case "backtest": {
-      const { handleBacktest } = await import("./backtest.ts");
-      await handleBacktest(subcommand, flags);
-      break;
-    }
-
     case "secmaster":
       await handleSecmaster(subcommand, flags);
       break;
@@ -89,17 +82,9 @@ export async function run(args: string[]): Promise<void> {
       await handleSeries(subcommand, flags);
       break;
 
-    case "signal": {
-      // CR management commands go to signal-deploy
-      if (["deploy", "status", "logs", "delete"].includes(subcommand)) {
-        await handleSignalDeploy(subcommand, flags);
-      } else {
-        // Local signal commands (list, run, subscribe)
-        const { handleSignal } = await import("./signal.ts");
-        await handleSignal(subcommand, flags);
-      }
+    case "signal":
+      await handleSignalDeploy(subcommand, flags);
       break;
-    }
 
     case "scale":
       await handleScale(subcommand, flags);
@@ -107,10 +92,6 @@ export async function run(args: string[]): Promise<void> {
 
     case "schedule":
       await handleSchedule(subcommand, flags);
-      break;
-
-    case "notifier":
-      await handleNotifierDeploy(subcommand, flags);
       break;
 
     case "connector":
@@ -128,12 +109,6 @@ export async function run(args: string[]): Promise<void> {
     case "env":
       await handleEnv(subcommand, flags);
       break;
-
-    case "momentum": {
-      const { handleMomentum } = await import("./momentum.ts");
-      await handleMomentum(subcommand, flags);
-      break;
-    }
 
     case "health":
       await handleHealth(subcommand, flags);
@@ -206,11 +181,6 @@ export async function run(args: string[]): Promise<void> {
       break;
     }
 
-    case "agent":
-      // Launch the existing agent REPL
-      await import("../../cli.ts");
-      break;
-
     default:
       console.error(`Unknown command: ${command}`);
       console.log("");
@@ -274,7 +244,7 @@ async function handleFeedCommand(
 }
 
 function printHelp(): void {
-  console.log("ssmd - Market data CLI and agent");
+  console.log("ssmd - Market data CLI");
   console.log("");
   console.log("USAGE:");
   console.log("  ssmd [--env <name>] <command> [options]");
@@ -287,14 +257,11 @@ function printHelp(): void {
   console.log("  series            Series metadata operations");
   console.log("  secmaster         Security master database operations");
   console.log("  fees              Fee schedule database operations");
-  console.log("  backtest          Run signal backtests");
-  console.log("  signal            Run signals locally or manage Signal CRs");
-  console.log("  notifier          Manage Notifier CRs in Kubernetes");
+  console.log("  signal            Manage Signal CRs in Kubernetes");
   console.log("  connector         Manage Connector CRs in Kubernetes");
   console.log("  archiver          Manage Archiver CRs in Kubernetes");
   console.log("  scale             Scale SSMD components up/down for maintenance");
   console.log("  schedule          List and describe Temporal schedules");
-  console.log("  momentum          Paper trading momentum models on live data");
   console.log("  kraken            Kraken spot + perpetuals sync");
   console.log("  binance           Binance spot pairs sync");
   console.log("  polymarket        Polymarket conditions sync");
@@ -310,7 +277,6 @@ function printHelp(): void {
   console.log("  hols              HOLS strategy — OHLCV from Kraken Spot REST or WS trade aggregation");
   console.log("  funding-rate-consumer  Consume Kraken Futures funding rates from NATS");
   console.log("  lifecycle-consumer  Consume Kalshi lifecycle events from NATS");
-  console.log("  agent             Start interactive agent REPL");
   console.log("");
   console.log("OPTIONS:");
   console.log("  --env <name>      Override current environment for this command");

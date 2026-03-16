@@ -1,5 +1,5 @@
 .PHONY: rust-build rust-test rust-clippy rust-clean rust-all
-.PHONY: agent-check agent-test agent-run cli-check
+.PHONY: cli-check cli-test
 .PHONY: all test lint clean generate-k8s setup
 .PHONY: worker-check
 .PHONY: harman-integration-test
@@ -47,18 +47,12 @@ rust-clean:
 
 rust-all: rust-clippy rust-test rust-build
 
-# TypeScript CLI/Agent targets
+# TypeScript CLI targets
 cli-check:
-	cd ssmd-agent && deno check src/cli.ts
+	cd ssmd-agent && deno task check
 
-agent-check:
-	cd ssmd-agent && deno check src/main.ts src/cli.ts
-
-agent-test:
+cli-test:
 	cd ssmd-agent && deno test --allow-read --allow-write --allow-net --allow-env test/
-
-agent-run:
-	cd ssmd-agent && deno task agent
 
 # Worker targets
 worker-check:
@@ -67,9 +61,9 @@ worker-check:
 # Combined targets
 all: lint test rust-build
 
-test: rust-test agent-test
+test: rust-test cli-test
 
-lint: rust-clippy agent-check worker-check
+lint: rust-clippy cli-check worker-check
 
 clean: rust-clean
 
