@@ -2444,7 +2444,7 @@ route("GET", "/v1/internal/canary-markets", async (req) => {
     for (let i = 0; i < tickers.length; i++) {
       if (!snapValues[i]) continue;
       try {
-        const snap = JSON.parse(snapValues[i]);
+        const snap = JSON.parse(snapValues[i] as string);
         const snapData = snap.msg ?? snap;
         if (snapData.yes_bid_dollars != null) marketList[i].yes_bid = Number(snapData.yes_bid_dollars);
         if (snapData.yes_ask_dollars != null) marketList[i].yes_ask = Number(snapData.yes_ask_dollars);
