@@ -1,43 +1,45 @@
 # Multi-stage build for ssmd-connector
-# Stage 1: Build
-FROM rust:1.94-bookworm AS builder
+# Uses cargo-chef to cache dependency compilation across builds.
+# Only Cargo.toml/Cargo.lock changes trigger a full rebuild.
 
-# Install Cap'n Proto compiler (required for ssmd-schema)
+# Stage 1: Chef — install cargo-chef
+FROM rust:1.94-bookworm AS chef
+RUN cargo install cargo-chef
 RUN apt-get update && apt-get install -y capnproto && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /build
 
-# Copy workspace files
+# Stage 2: Planner — generate recipe.json (dependency lockfile for chef)
+FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Build release binary
+# Stage 3: Builder — cook deps (cached), then build app
+FROM chef AS builder
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json --package ssmd-connector
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
 RUN cargo build --release --package ssmd-connector
 
-# Stage 2: Runtime
+# Stage 4: Runtime
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
 RUN useradd -r -s /bin/false ssmd
 
 WORKDIR /app
 
-# Copy binary from builder
 COPY --from=builder /build/target/release/ssmd-connector /app/ssmd-connector
 
-# Create data directory
 RUN mkdir -p /data && chown ssmd:ssmd /data
 
 USER ssmd
 
-# Health check endpoint
 EXPOSE 8080
 
-# Default command
 ENTRYPOINT ["/app/ssmd-connector"]
 CMD ["--help"]
