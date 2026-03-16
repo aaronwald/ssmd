@@ -92,10 +92,19 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                             let message = Message::new_with_tsc(Arc::clone(&self.feed_name), data, ws_tsc);
                             let write_start = now_tsc();
 
-                            if let Err(e) = self.writer.write(&message).await {
-                                // Write failures are fatal - indicates parse bug or NATS issue
-                                error!(error = %e, "Failed to write message - exiting to trigger restart");
-                                return Err(ConnectorError::WriteFailed(e.to_string()));
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(10),
+                                self.writer.write(&message),
+                            ).await {
+                                Ok(Ok(())) => {} // success
+                                Ok(Err(e)) => {
+                                    error!(error = %e, "Failed to write message - exiting to trigger restart");
+                                    return Err(ConnectorError::WriteFailed(e.to_string()));
+                                }
+                                Err(_) => {
+                                    error!("NATS publish timed out after 10s - exiting to trigger restart");
+                                    return Err(ConnectorError::WriteFailed("publish timeout".to_string()));
+                                }
                             }
                             let write_end = now_tsc();
                             metrics::observe_nats_publish_duration(
