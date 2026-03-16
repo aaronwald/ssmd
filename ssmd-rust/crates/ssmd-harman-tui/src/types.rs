@@ -221,23 +221,10 @@ pub struct DecreaseOrderRequest {
     pub reduce_by: String,
 }
 
-/// Position info from GET /v1/admin/positions
-#[derive(Debug, Clone, Deserialize)]
-pub struct PositionInfo {
-    pub ticker: String,
-    pub side: Side,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub quantity: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub market_value_dollars: Decimal,
-}
-
 /// Response from GET /v1/admin/positions
 #[derive(Debug, Deserialize)]
 pub struct PositionsResponse {
-    pub exchange: Vec<PositionInfo>,
-    #[serde(default)]
-    pub local: Vec<LocalPositionInfo>,
+    pub positions: Vec<LocalPositionInfo>,
 }
 
 /// Local position computed from filled orders

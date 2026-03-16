@@ -97,21 +97,10 @@ pub fn compute_settlement(
     let no_count = no_bought - no_sold;
 
     // each contract settles at $1.00
+    // Positive count = long (receives payout), negative = short (owes payout)
     let payout = match market_result {
-        MarketResult::Yes => {
-            if yes_count > Decimal::ZERO {
-                yes_count
-            } else {
-                Decimal::ZERO
-            }
-        }
-        MarketResult::No => {
-            if no_count > Decimal::ZERO {
-                no_count
-            } else {
-                Decimal::ZERO
-            }
-        }
+        MarketResult::Yes => yes_count,
+        MarketResult::No => no_count,
         MarketResult::Void => cost_basis, // refund at cost basis -> revenue = 0
         MarketResult::Scalar | MarketResult::Unknown => {
             return Err(format!(
@@ -127,10 +116,10 @@ pub fn compute_settlement(
 
     let fee_cost_dollars = total_taker_contracts * taker_fee_per_contract();
 
-    // value_cents = winning side net count * 100
+    // value_cents = absolute notional value at settlement (direction captured in revenue)
     let value_cents = match market_result {
-        MarketResult::Yes => Some(decimal_cents_to_i64(yes_count * hundred)?),
-        MarketResult::No => Some(decimal_cents_to_i64(no_count * hundred)?),
+        MarketResult::Yes => Some(decimal_cents_to_i64(yes_count.abs() * hundred)?),
+        MarketResult::No => Some(decimal_cents_to_i64(no_count.abs() * hundred)?),
         MarketResult::Void => None,
         MarketResult::Scalar | MarketResult::Unknown => {
             return Err(format!(
@@ -335,5 +324,33 @@ mod tests {
         assert_eq!(s.revenue_cents, 0);
         assert_eq!(s.market_result, MarketResult::Void);
         assert_eq!(s.value_cents, None);
+    }
+
+    #[test]
+    fn test_compute_settlement_short_yes_loses() {
+        // Sold 10 Yes at $0.60 (short Yes) -> proceeds $6.00, cost_basis = -$6.00
+        // Result: Yes -> short owes $10.00 at settlement
+        // Payout = -10 * $1.00 = -$10.00
+        // Revenue = -$10.00 - (-$6.00) = -$4.00 = -400 cents
+        let fills = vec![FillSummary {
+            side: "yes".to_string(),
+            action: "sell".to_string(),
+            total_quantity: Decimal::from(10),
+            total_cost: Decimal::new(600, 2), // $6.00
+            taker_quantity: Decimal::from(10),
+        }];
+
+        let s = compute_settlement(
+            "KXBTCD-26-T100K",
+            MarketResult::Yes,
+            Utc::now(),
+            &fills,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(s.yes_count, Decimal::from(-10));
+        assert_eq!(s.revenue_cents, -400);
+        assert_eq!(s.value_cents, Some(1000)); // abs(10) * 100
     }
 }

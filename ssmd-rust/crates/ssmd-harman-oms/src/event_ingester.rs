@@ -477,6 +477,7 @@ impl EventIngester {
                                                         session_id,
                                                         "FATAL: failed to record settlement — crashing for recovery"
                                                     );
+                                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                                     std::process::exit(1);
                                                 }
                                             }
@@ -495,6 +496,7 @@ impl EventIngester {
                                                 session_id,
                                                 "FATAL: settlement computation failed — crashing for recovery"
                                             );
+                                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                             std::process::exit(1);
                                         }
                                     }
@@ -506,6 +508,7 @@ impl EventIngester {
                                         session_id,
                                         "FATAL: failed to query fills for settlement — crashing for recovery"
                                     );
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                     std::process::exit(1);
                                 }
                             }
@@ -516,6 +519,7 @@ impl EventIngester {
                     }
                     Err(e) => {
                         error!(error = %e, ticker = %ticker, "FATAL: failed to check unsettled positions — crashing for recovery");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         std::process::exit(1);
                     }
                 }
