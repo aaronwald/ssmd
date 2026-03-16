@@ -68,7 +68,7 @@ pub struct KalshiConnector {
     nats_url: Option<String>,
     tx: Option<mpsc::Sender<TimestampedMsg>>,
     rx: Option<mpsc::Receiver<TimestampedMsg>>,
-    /// Last WebSocket activity timestamp (epoch seconds) - updated on ping/pong AND data messages
+    /// Last WebSocket activity timestamp (epoch seconds) - updated ONLY on received data/pong, never on ping send
     last_ws_activity_epoch_secs: Arc<AtomicU64>,
 }
 
@@ -353,17 +353,23 @@ impl KalshiConnector {
         shard_metrics: ShardMetrics,
         mut cmd_rx: Option<mpsc::Receiver<ShardCommand>>,
     ) {
-        // Helper to update activity timestamp and metrics
+        // Helper to update activity timestamp and metrics.
+        // Called ONLY when recv_raw returns data to the caller (not on ping send).
         fn update_activity(tracker: &AtomicU64, metrics: &ShardMetrics, idle_secs: f64) {
             use std::time::{SystemTime, UNIX_EPOCH};
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+                .expect("system clock before UNIX_EPOCH")
+                .as_secs();
             tracker.store(now, Ordering::SeqCst);
             metrics.set_last_activity(now as f64);
             metrics.set_idle_seconds(idle_secs);
         }
+
+        // Get pong tracker — updated inside recv_raw when Pong frames arrive.
+        // This is the only way to detect liveness on idle connections where
+        // recv_raw never returns data to the caller (all messages are pongs).
+        let pong_tracker = ws.pong_tracker();
 
         // Mark shard as connected
         shard_metrics.set_connected();
@@ -374,6 +380,9 @@ impl KalshiConnector {
 
             const PING_INTERVAL_SECS: u64 = 30;
             const CMD_CHECK_INTERVAL_SECS: u64 = 5;
+            /// If no data or pong received for this long, the connection is dead.
+            /// Must be > PING_INTERVAL_SECS to allow at least one ping/pong round-trip.
+            const RECV_STALENESS_SECS: u64 = 90;
 
             let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -393,12 +402,48 @@ impl KalshiConnector {
 
             loop {
                 tokio::select! {
-                    // Ping timer fired - send keepalive
+                    // Ping timer fired - send keepalive and check for stale connection
                     _ = ping_interval.tick() => {
                         let idle_secs = last_activity.elapsed().as_secs();
                         debug!(shard_id, idle_secs, "Sending WebSocket ping keepalive");
-                        // Update idle seconds metric before ping
                         shard_metrics.set_idle_seconds(idle_secs as f64);
+
+                        // Check if we've received ANY data or pong recently.
+                        // A successful ping send only means the OS TCP buffer accepted it —
+                        // it does NOT prove the remote end is alive. Only received data or
+                        // pong proves liveness. We check two sources:
+                        //   - last_activity: updated when recv_raw returns data to this loop
+                        //   - pong_tracker: updated inside recv_raw when Pong frames arrive
+                        //     (pongs don't bubble up to the caller, they're handled internally)
+                        // Connection is alive if EITHER source is recent.
+                        let last_pong_epoch = pong_tracker.load(Ordering::SeqCst);
+                        let now_epoch = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("system clock before UNIX_EPOCH")
+                            .as_secs();
+                        let pong_age_secs = if last_pong_epoch > 0 {
+                            now_epoch.saturating_sub(last_pong_epoch)
+                        } else {
+                            // No pong received yet — use idle_secs (time since connect/last data)
+                            idle_secs
+                        };
+                        let stale_secs = idle_secs.min(pong_age_secs);
+
+                        if stale_secs >= RECV_STALENESS_SECS {
+                            let uptime_secs = connected_at.elapsed().as_secs();
+                            error!(
+                                shard_id,
+                                idle_secs,
+                                pong_age_secs,
+                                uptime_secs,
+                                message_count,
+                                reason = "stale_connection",
+                                "No data or pong received for {stale_secs}s (threshold {RECV_STALENESS_SECS}s), exiting for restart"
+                            );
+                            shard_metrics.set_disconnected();
+                            std::process::exit(1);
+                        }
+
                         if let Err(e) = ws.ping().await {
                             let uptime_secs = connected_at.elapsed().as_secs();
                             error!(
@@ -412,8 +457,8 @@ impl KalshiConnector {
                             shard_metrics.set_disconnected();
                             std::process::exit(1);
                         }
-                        // Ping succeeded - update activity tracker
-                        update_activity(&activity_tracker, &shard_metrics, idle_secs as f64);
+                        // Do NOT update_activity here — ping send succeeding does not
+                        // prove the connection is alive. Only received data/pong updates activity.
                     }
 
                     // Periodic drain of queued CDC commands during WS idle periods.

@@ -6,6 +6,8 @@ use crate::kalshi::auth::{AuthError, KalshiCredentials};
 use crate::kalshi::messages::{WsCommand, WsMessage, WsParams};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::net::TcpStream;
@@ -137,6 +139,10 @@ pub struct KalshiWebSocket {
     command_id: u64,
     subscribed_markets: HashSet<String>,
     sid_tracker: SidTracker,
+    /// Epoch seconds of last received Pong frame. Updated inside recv_raw when
+    /// the server replies to our Ping. Shared with the connector loop so the
+    /// staleness check can verify the remote end is actually alive.
+    pong_tracker: Arc<AtomicU64>,
 }
 
 impl KalshiWebSocket {
@@ -189,6 +195,7 @@ impl KalshiWebSocket {
             command_id: 0,
             subscribed_markets: HashSet::new(),
             sid_tracker: SidTracker::new(),
+            pong_tracker: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -492,6 +499,11 @@ impl KalshiWebSocket {
                 Ok(Some(Ok(Message::Ping(data)))) => {
                     trace!("Received ping, sending pong");
                     self.ws.send(Message::Pong(data)).await?;
+                    self.update_pong_tracker();
+                }
+                Ok(Some(Ok(Message::Pong(_)))) => {
+                    trace!("Received pong");
+                    self.update_pong_tracker();
                 }
                 Ok(Some(Ok(Message::Close(frame)))) => {
                     info!(frame = ?frame, "WebSocket closed");
@@ -622,6 +634,26 @@ impl KalshiWebSocket {
     pub async fn ping(&mut self) -> Result<(), WebSocketError> {
         self.ws.send(Message::Ping(vec![])).await?;
         Ok(())
+    }
+
+    /// Get an Arc handle to the pong tracker for external staleness checks.
+    /// The value is epoch seconds of the last received Pong (or server Ping) frame.
+    /// The connector loop's staleness check (RECV_STALENESS_SECS in connector.rs)
+    /// reads this to verify the remote end is alive — a successful ping SEND does
+    /// not prove liveness, only a received pong does.
+    pub fn pong_tracker(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.pong_tracker)
+    }
+
+    /// Update pong tracker with current epoch time.
+    /// Panics if system clock is before UNIX_EPOCH — broken system time is unrecoverable.
+    fn update_pong_tracker(&self) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before UNIX_EPOCH — cannot track connection liveness")
+            .as_secs();
+        self.pong_tracker.store(now, Ordering::SeqCst);
     }
 
     /// Close the connection gracefully
