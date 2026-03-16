@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::select;
+use tokio::task::JoinSet;
 use tracing::{error, info};
 
 use crate::error::ConnectorError;
@@ -72,6 +73,7 @@ impl<C: Connector, W: Writer> Runner<C, W> {
         info!(feed = %self.feed_name, "Connected to data source");
 
         let mut rx = self.connector.messages();
+        let mut connector_tasks: Option<JoinSet<()>> = self.connector.tasks();
         let mut shutdown = shutdown;
 
         loop {
@@ -113,6 +115,28 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                             self.connected.store(false, Ordering::SeqCst);
                             error!("Connector disconnected unexpectedly - exiting to trigger restart");
                             return Err(ConnectorError::Disconnected("channel closed".to_string()));
+                        }
+                    }
+                }
+                // Monitor background tasks — detect panics/exits instead of silent data loss
+                result = async {
+                    match connector_tasks.as_mut() {
+                        Some(tasks) => tasks.join_next().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match result {
+                        Some(Ok(())) => {
+                            error!("Connector task exited unexpectedly");
+                            return Err(ConnectorError::Disconnected("task exited".to_string()));
+                        }
+                        Some(Err(e)) => {
+                            error!(error = %e, "Connector task panicked");
+                            return Err(ConnectorError::Disconnected(format!("task panic: {}", e)));
+                        }
+                        None => {
+                            error!("All connector tasks completed unexpectedly");
+                            return Err(ConnectorError::Disconnected("all tasks done".to_string()));
                         }
                     }
                 }

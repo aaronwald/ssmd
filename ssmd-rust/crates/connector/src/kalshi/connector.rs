@@ -35,6 +35,7 @@ use ssmd_middleware::now_tsc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tracing::{debug, error, info, trace, warn};
 
 /// Commands that can be sent to a shard's receiver task
@@ -70,6 +71,9 @@ pub struct KalshiConnector {
     rx: Option<mpsc::Receiver<TimestampedMsg>>,
     /// Last WebSocket activity timestamp (epoch seconds) - updated ONLY on received data/pong, never on ping send
     last_ws_activity_epoch_secs: Arc<AtomicU64>,
+    /// Background tasks (shard receivers, CDC consumer, shard manager).
+    /// Monitored by the runner — any exit or panic triggers a crash instead of silent data loss.
+    task_set: Option<JoinSet<()>>,
 }
 
 /// Handle a shard command (subscribe/unsubscribe). Used by both the blocking recv
@@ -147,6 +151,7 @@ impl KalshiConnector {
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
+            task_set: None,
         }
     }
 
@@ -179,6 +184,7 @@ impl KalshiConnector {
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
+            task_set: None,
         }
     }
 
@@ -212,6 +218,7 @@ impl KalshiConnector {
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
+            task_set: None,
         }
     }
 
@@ -238,6 +245,7 @@ impl KalshiConnector {
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
+            task_set: None,
         }
     }
 
@@ -342,10 +350,13 @@ impl KalshiConnector {
         Ok(())
     }
 
-    /// Spawn a WebSocket receiver task that forwards messages to the channel
+    /// Spawn a WebSocket receiver task that forwards messages to the channel.
     ///
+    /// The task is added to the provided JoinSet so the runner can detect exits/panics
+    /// instead of silently losing data from fire-and-forget spawns.
     /// Optionally accepts a command receiver for dynamic subscription updates (CDC).
     fn spawn_receiver_task(
+        task_set: &mut JoinSet<()>,
         mut ws: KalshiWebSocket,
         tx: mpsc::Sender<TimestampedMsg>,
         activity_tracker: Arc<AtomicU64>,
@@ -374,7 +385,7 @@ impl KalshiConnector {
         // Mark shard as connected
         shard_metrics.set_connected();
 
-        tokio::spawn(async move {
+        task_set.spawn(async move {
             use std::time::Duration;
             use tokio::time::{interval, Instant};
 
@@ -616,6 +627,9 @@ impl Connector for KalshiConnector {
         // Clone activity tracker for the spawned tasks
         let activity_tracker = Arc::clone(&self.last_ws_activity_epoch_secs);
 
+        // JoinSet to track all background tasks — runner monitors for exits/panics
+        let mut task_set = JoinSet::new();
+
         // Determine subscription mode and get markets
         if let Some(ref secmaster) = self.secmaster_config {
             if !secmaster.categories.is_empty() {
@@ -727,6 +741,7 @@ impl Connector for KalshiConnector {
 
                     // Spawn receiver task for this shard
                     Self::spawn_receiver_task(
+                        &mut task_set,
                         ws,
                         tx.clone(),
                         Arc::clone(&activity_tracker),
@@ -770,7 +785,7 @@ impl Connector for KalshiConnector {
                         let cdc_snapshot_lsn = snapshot_lsn.clone();
                         let cdc_snapshot_time = snapshot_time.clone();
                         let initial_markets = tickers.clone();
-                        tokio::spawn(async move {
+                        task_set.spawn(async move {
                             match CdcSubscriptionConsumer::new(
                                 &cdc_consumer_config,
                                 categories,
@@ -792,7 +807,7 @@ impl Connector for KalshiConnector {
                         });
 
                         // Spawn shard manager dispatcher task
-                        tokio::spawn(async move {
+                        task_set.spawn(async move {
                             manager.run(new_market_rx).await;
                         });
 
@@ -812,7 +827,7 @@ impl Connector for KalshiConnector {
                 self.subscribe_global(&mut ws).await?;
                 let shard_metrics = connector_metrics.for_shard(0);
                 shard_metrics.init(&["ticker", "trade", "orderbook", "lifecycle", "event_lifecycle"]);
-                Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics, None);
+                Self::spawn_receiver_task(&mut task_set, ws, tx, activity_tracker, 0, shard_metrics, None);
             }
         } else if let Some(ref lifecycle) = self.lifecycle_config {
             if lifecycle.enabled {
@@ -828,7 +843,7 @@ impl Connector for KalshiConnector {
                 self.subscribe_lifecycle_only(&mut ws).await?;
                 let shard_metrics = connector_metrics.for_shard(0);
                 shard_metrics.init(&["lifecycle", "event_lifecycle"]);
-                Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics, None);
+                Self::spawn_receiver_task(&mut task_set, ws, tx, activity_tracker, 0, shard_metrics, None);
             } else {
                 return Err(ConnectorError::ConnectionFailed(
                     "Lifecycle config present but disabled".to_string()
@@ -847,9 +862,10 @@ impl Connector for KalshiConnector {
             self.subscribe_global(&mut ws).await?;
             let shard_metrics = connector_metrics.for_shard(0);
             shard_metrics.init(&["ticker", "trade", "orderbook", "lifecycle", "event_lifecycle"]);
-            Self::spawn_receiver_task(ws, tx, activity_tracker, 0, shard_metrics, None);
+            Self::spawn_receiver_task(&mut task_set, ws, tx, activity_tracker, 0, shard_metrics, None);
         }
 
+        self.task_set = Some(task_set);
         Ok(())
     }
 
@@ -865,6 +881,10 @@ impl Connector for KalshiConnector {
 
     fn activity_handle(&self) -> Option<Arc<AtomicU64>> {
         Some(Arc::clone(&self.last_ws_activity_epoch_secs))
+    }
+
+    fn tasks(&mut self) -> Option<JoinSet<()>> {
+        self.task_set.take()
     }
 }
 

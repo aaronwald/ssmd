@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 use crate::error::{ConnectorError, ResolverError, WriterError};
 use crate::message::Message;
@@ -27,6 +28,13 @@ pub trait Connector: Send + Sync {
     /// Used for health checks - returns None if connector doesn't track activity.
     /// Activity includes both ping/pong and data messages.
     fn activity_handle(&self) -> Option<Arc<AtomicU64>> {
+        None
+    }
+
+    /// Take ownership of spawned background tasks (shard receivers, CDC consumer, etc.).
+    /// The runner monitors these via JoinSet — if any task exits or panics, the
+    /// connector crashes instead of silently losing data.
+    fn tasks(&mut self) -> Option<JoinSet<()>> {
         None
     }
 }
