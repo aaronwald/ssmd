@@ -609,10 +609,17 @@ where
         Arc::clone(&activity_handle),
         STALE_THRESHOLD_SECS,
     );
-    tokio::spawn(async move {
+    let health_handle = tokio::spawn(async move {
         if let Err(e) = ssmd_connector_lib::run_server(health_addr, server_state).await {
             error!(error = %e, "Health server error");
         }
+    });
+    tokio::spawn(async move {
+        match health_handle.await {
+            Ok(()) => error!("Health server exited unexpectedly"),
+            Err(e) => error!(error = %e, "Health server panicked"),
+        }
+        std::process::exit(1);
     });
     info!(addr = %health_addr, stale_threshold_secs = STALE_THRESHOLD_SECS, "Health server started");
 
