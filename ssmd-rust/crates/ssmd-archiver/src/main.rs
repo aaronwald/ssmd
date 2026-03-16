@@ -95,15 +95,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         last_message_epoch_secs.clone(),
     );
     let health_addr = args.health_addr;
-    tokio::spawn(async move {
+
+    // Spawn a task per stream
+    let mut tasks: JoinSet<Result<(), Box<dyn std::error::Error + Send + Sync>>> = JoinSet::new();
+
+    // Health server runs in the JoinSet — if it exits, the archiver shuts down
+    tasks.spawn(async move {
         info!(%health_addr, "Starting health/metrics server");
         if let Err(e) = run_server(health_addr, server_state).await {
             error!(error = %e, "Health server failed");
         }
+        Err("Health server exited unexpectedly".into())
     });
-
-    // Spawn a task per stream
-    let mut tasks: JoinSet<Result<(), Box<dyn std::error::Error + Send + Sync>>> = JoinSet::new();
 
     for stream_config in config.nats.streams {
         let shutdown = shutdown.clone();
@@ -390,8 +393,17 @@ async fn archive_stream(
                                 Ok(()) => {
                                     for msg in pending_acks {
                                         let seq = msg.seq;
-                                        if let Err(e) = msg.ack().await {
-                                            error!(stream_name = %stream_name, error = %e, seq = seq, "Failed to ack message");
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_secs(5),
+                                            msg.ack(),
+                                        ).await {
+                                            Ok(Ok(())) => {}
+                                            Ok(Err(e)) => {
+                                                error!(stream_name = %stream_name, error = %e, seq = seq, "Failed to ack message");
+                                            }
+                                            Err(_) => {
+                                                warn!(stream_name = %stream_name, seq = seq, "Ack timed out after 5s — message will be redelivered");
+                                            }
                                         }
                                     }
                                 }
