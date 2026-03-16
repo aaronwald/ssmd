@@ -76,6 +76,56 @@ impl<C: Connector, W: Writer> Runner<C, W> {
         let mut connector_tasks: Option<JoinSet<()>> = self.connector.tasks();
         let mut shutdown = shutdown;
 
+        // Spawn independent watchdog — detects ALL shards going silent.
+        // Runs as a separate tokio::spawn (NOT in the JoinSet) so it cannot
+        // be blocked by hung shard tasks or a stuck recv_raw() future.
+        // The per-shard staleness check (90s in connector.rs) is the primary
+        // defense. This watchdog is the last-resort safety net at 120s.
+        {
+            let watchdog_activity = self.activity_handle();
+            let watchdog_feed = Arc::clone(&self.feed_name);
+            tokio::spawn(async move {
+                const WATCHDOG_CHECK_INTERVAL_SECS: u64 = 15;
+                const WATCHDOG_STALENESS_SECS: u64 = 120;
+
+                let mut check_interval = tokio::time::interval(
+                    std::time::Duration::from_secs(WATCHDOG_CHECK_INTERVAL_SECS),
+                );
+                check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+                // Skip the immediate first tick
+                check_interval.tick().await;
+
+                loop {
+                    check_interval.tick().await;
+
+                    let last_epoch = watchdog_activity.load(Ordering::SeqCst);
+                    if last_epoch == 0 {
+                        // Not yet initialized — shards haven't started receiving
+                        continue;
+                    }
+
+                    let now_epoch = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let stale_secs = now_epoch.saturating_sub(last_epoch);
+
+                    if stale_secs >= WATCHDOG_STALENESS_SECS {
+                        error!(
+                            feed = %watchdog_feed,
+                            stale_secs,
+                            threshold = WATCHDOG_STALENESS_SECS,
+                            last_epoch,
+                            reason = "watchdog_stale",
+                            "WATCHDOG: No activity for {stale_secs}s, exiting for restart"
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            });
+        }
+
         loop {
             select! {
                 _ = shutdown.changed() => {

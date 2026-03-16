@@ -455,18 +455,40 @@ impl KalshiConnector {
                             std::process::exit(1);
                         }
 
-                        if let Err(e) = ws.ping().await {
-                            let uptime_secs = connected_at.elapsed().as_secs();
-                            error!(
-                                shard_id,
-                                error = %e,
-                                uptime_secs,
-                                message_count,
-                                reason = "ping_failed",
-                                "Kalshi ping failed, exiting for restart"
-                            );
-                            shard_metrics.set_disconnected();
-                            std::process::exit(1);
+                        // Wrap ping in a timeout — if the TCP send buffer is full
+                        // (dead peer, kernel retransmitting), ping().await blocks
+                        // indefinitely, which would prevent the staleness check
+                        // above from ever running again.
+                        match tokio::time::timeout(
+                            Duration::from_secs(10),
+                            ws.ping(),
+                        ).await {
+                            Ok(Ok(())) => {} // Ping sent (only means OS buffer accepted it)
+                            Ok(Err(e)) => {
+                                let uptime_secs = connected_at.elapsed().as_secs();
+                                error!(
+                                    shard_id,
+                                    error = %e,
+                                    uptime_secs,
+                                    message_count,
+                                    reason = "ping_failed",
+                                    "Kalshi ping failed, exiting for restart"
+                                );
+                                shard_metrics.set_disconnected();
+                                std::process::exit(1);
+                            }
+                            Err(_) => {
+                                let uptime_secs = connected_at.elapsed().as_secs();
+                                error!(
+                                    shard_id,
+                                    uptime_secs,
+                                    message_count,
+                                    reason = "ping_send_timeout",
+                                    "Ping send timed out after 10s (TCP buffer full, peer likely dead), exiting for restart"
+                                );
+                                shard_metrics.set_disconnected();
+                                std::process::exit(1);
+                            }
                         }
                         // Do NOT update_activity here — ping send succeeding does not
                         // prove the connection is alive. Only received data/pong updates activity.

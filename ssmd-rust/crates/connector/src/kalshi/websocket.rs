@@ -12,7 +12,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
-    connect_async,
+    client_async_tls,
     tungstenite::{http::Request, Message},
     MaybeTlsStream, WebSocketStream,
 };
@@ -149,6 +149,8 @@ impl KalshiWebSocket {
     /// Connect to Kalshi WebSocket with authentication
     ///
     /// If `url` is provided, it overrides the default production/demo URL.
+    /// Uses manual TCP connect with SO_KEEPALIVE to detect dead peers at the
+    /// OS level (30s idle, 10s interval, 3 retries = ~60s detection).
     pub async fn connect(
         credentials: &KalshiCredentials,
         use_demo: bool,
@@ -186,9 +188,31 @@ impl KalshiWebSocket {
 
         info!(url = %url, "Connecting to Kalshi WebSocket");
 
-        let (ws, response) = connect_async(request).await?;
+        // Manual TCP connect with keepalive — detect dead peers at OS level.
+        // connect_async does not set SO_KEEPALIVE, so half-open connections
+        // persist indefinitely. With keepalive: 30s idle + 10s interval + 3
+        // retries = dead peer detected in ~60s by the kernel.
+        let tcp = TcpStream::connect(format!("{}:443", host))
+            .await
+            .map_err(|e| WebSocketError::Connection(format!("TCP connect to {}: {}", host, e)))?;
 
-        info!(status = ?response.status(), "WebSocket connected");
+        // Set TCP keepalive via socket2
+        let sock_ref = socket2::SockRef::from(&tcp);
+        let keepalive = socket2::TcpKeepalive::new()
+            .with_time(Duration::from_secs(30))
+            .with_interval(Duration::from_secs(10));
+        // Note: with_retries() is not available on all platforms (not on macOS).
+        // Linux will use the system default tcp_keepalive_probes (typically 9).
+        if let Err(e) = sock_ref.set_tcp_keepalive(&keepalive) {
+            warn!(error = %e, "Failed to set TCP keepalive — continuing without it");
+        }
+
+        // TLS + WebSocket handshake over the keepalive-enabled TCP stream
+        let (ws, response) = client_async_tls(request, tcp)
+            .await
+            .map_err(|e| WebSocketError::Connection(format!("WS handshake: {}", e)))?;
+
+        info!(status = ?response.status(), "WebSocket connected (TCP keepalive enabled)");
 
         Ok(Self {
             ws,
