@@ -64,20 +64,28 @@ pub fn compute_settlement(
 
     for fs in fill_summaries {
         match (fs.side.as_str(), fs.action.as_str()) {
-            ("yes", "buy") | ("no", "buy") => {
+            ("yes", "buy") => {
                 buy_cost += fs.total_cost;
+                yes_bought += fs.total_quantity;
             }
-            ("yes", "sell") | ("no", "sell") => {
+            ("yes", "sell") => {
                 sell_proceeds += fs.total_cost;
+                yes_sold += fs.total_quantity;
             }
-            _ => {}
-        }
-        match (fs.side.as_str(), fs.action.as_str()) {
-            ("yes", "buy") => yes_bought += fs.total_quantity,
-            ("yes", "sell") => yes_sold += fs.total_quantity,
-            ("no", "buy") => no_bought += fs.total_quantity,
-            ("no", "sell") => no_sold += fs.total_quantity,
-            _ => {}
+            ("no", "buy") => {
+                buy_cost += fs.total_cost;
+                no_bought += fs.total_quantity;
+            }
+            ("no", "sell") => {
+                sell_proceeds += fs.total_cost;
+                no_sold += fs.total_quantity;
+            }
+            _ => {
+                return Err(format!(
+                    "unexpected fill side/action: {}/{}",
+                    fs.side, fs.action
+                ));
+            }
         }
         total_taker_contracts += fs.taker_quantity;
     }
@@ -88,25 +96,29 @@ pub fn compute_settlement(
     let yes_count = yes_bought - yes_sold;
     let no_count = no_bought - no_sold;
 
-    let one_dollar = Decimal::ONE;
-
+    // each contract settles at $1.00
     let payout = match market_result {
         MarketResult::Yes => {
             if yes_count > Decimal::ZERO {
-                yes_count * one_dollar
+                yes_count
             } else {
                 Decimal::ZERO
             }
         }
         MarketResult::No => {
             if no_count > Decimal::ZERO {
-                no_count * one_dollar
+                no_count
             } else {
                 Decimal::ZERO
             }
         }
         MarketResult::Void => cost_basis, // refund at cost basis -> revenue = 0
-        _ => Decimal::ZERO,
+        MarketResult::Scalar | MarketResult::Unknown => {
+            return Err(format!(
+                "unsupported market result {:?} for ticker {}",
+                market_result, ticker
+            ));
+        }
     };
 
     let revenue = payout - cost_basis;
@@ -119,8 +131,13 @@ pub fn compute_settlement(
     let value_cents = match market_result {
         MarketResult::Yes => Some(decimal_cents_to_i64(yes_count * hundred)?),
         MarketResult::No => Some(decimal_cents_to_i64(no_count * hundred)?),
-        MarketResult::Void => Some(0),
-        _ => None,
+        MarketResult::Void => None,
+        MarketResult::Scalar | MarketResult::Unknown => {
+            return Err(format!(
+                "unsupported market result {:?} for ticker {}",
+                market_result, ticker
+            ));
+        }
     };
 
     let event_ticker = derive_event_ticker(ticker);
@@ -317,6 +334,6 @@ mod tests {
         let s = result.expect("should produce settlement");
         assert_eq!(s.revenue_cents, 0);
         assert_eq!(s.market_result, MarketResult::Void);
-        assert_eq!(s.value_cents, Some(0));
+        assert_eq!(s.value_cents, None);
     }
 }
