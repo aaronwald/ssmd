@@ -14,9 +14,9 @@ interface ScaleFlags {
 // 1. Operator first (stop CRD reconciliation of connector/archiver/signal deployments)
 // 2. Worker (stop Temporal activities that orchestrate other components)
 // 3. Data producers (connectors, lifecycle)
-// 4. Data consumers (signals, momentum, notifier)
+// 4. Data consumers (signals)
 // 5. Pipeline (cdc, cache — passive consumers, safe to stop late)
-// 6. Read-only services last (data-api, agent)
+// 6. Read-only services last (data-api)
 //
 // NOT included (infrastructure — always running):
 //   ssmd-postgres (StatefulSet), ssmd-redis, ssmd-debug (utility pod)
@@ -34,13 +34,10 @@ const COMPONENTS: Component[] = [
   { label: "lifecycle-consumer", deployment: "ssmd-lifecycle-consumer" },
   { label: "funding-rate-consumer", deployment: "ssmd-funding-rate-consumer" },
   { label: "signals", selector: "app.kubernetes.io/name=ssmd-signal" },
-  { label: "momentum", deployment: "ssmd-momentum", podLabel: "app=ssmd-momentum" },
-  { label: "notifier", deployment: "ssmd-notifier", podLabel: "app=ssmd-notifier" },
   { label: "cdc", deployment: "ssmd-cdc", podLabel: "app=ssmd-cdc" },
   { label: "cache", deployment: "ssmd-cache", podLabel: "app=ssmd-cache" },
   { label: "archiver", selector: "app.kubernetes.io/name=ssmd-archiver" },
   { label: "data-api", deployment: "ssmd-data-ts", podLabel: "app=ssmd-data-ts" },
-  { label: "agent", deployment: "ssmd-agent", podLabel: "app=ssmd-agent" },
 ];
 
 

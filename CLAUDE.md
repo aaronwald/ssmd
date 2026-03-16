@@ -31,13 +31,11 @@ make rust-clean     # Clean Rust build artifacts
 make rust-all       # Clippy + test + build
 ```
 
-### TypeScript CLI/Agent (Deno)
+### TypeScript CLI (Deno)
 
 ```bash
 make cli-check      # Type check CLI
-make agent-check    # Type check CLI + agent
-make agent-test     # Run agent tests
-make agent-run      # Start agent REPL (requires ANTHROPIC_API_KEY)
+make cli-test       # Run CLI tests
 ```
 
 ### Database Migrations (dbmate)
@@ -125,16 +123,13 @@ ssmd-rust/crates/
 ssmd-worker/       # Temporal worker (Node.js, shells out to ssmd CLI)
 ```
 
-### TypeScript CLI/Agent (`ssmd-agent/`)
+### TypeScript CLI/Server (`ssmd-agent/`)
 
 ```
 ssmd-agent/
-├── src/cli/        # CLI commands (secmaster, backtest, fees, health, diagnosis)
+├── src/cli/        # CLI commands (secmaster, fees, health, diagnosis, deployment)
 ├── src/lib/        # Shared library (db, api, types, guardrails)
 ├── src/server/     # data-ts HTTP API server (routes, auth, OpenRouter proxy)
-├── src/agent/      # LangGraph agent with tools
-├── prompts/        # System prompts (system.md)
-└── src/main.ts     # Agent REPL entrypoint
 ```
 
 ### Diagnosis Pipeline
@@ -206,7 +201,6 @@ The ssmd-operators project manages Kubernetes CRDs for market data components:
 | `connectors.ssmd.ssmd.io` | Manages WebSocket connector pods |
 | `archivers.ssmd.ssmd.io` | Manages NATS → JSONL.gz archiver pods |
 | `signals.ssmd.ssmd.io` | Manages signal evaluation pods |
-| `notifiers.ssmd.ssmd.io` | Manages alert notification pods |
 
 ```bash
 # Generate CRDs after modifying *_types.go

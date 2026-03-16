@@ -21,7 +21,6 @@ Market data capture, archival, signal development, and order management platform
 - **CDC**: PostgreSQL → ssmd-cdc → NATS → Connector (dynamic subs) + ssmd-cache (Redis)
 - **Snap**: NATS → ssmd-snap → Redis (latest ticker per instrument, 5-min TTL)
 - **Funding rates**: NATS → Funding Rate Consumer → pair_snapshots (PostgreSQL)
-- **Signals**: Signal Runner → NATS (SIGNAL_FIRES) → Notifier → ntfy.sh
 - **Archives**: Archiver → local PVC → GCS sync (Temporal scheduled)
 - **Diagnosis**: PostgreSQL (scores) + data-ts (freshness/volume) → Claude → Email
 - **Pipelines**: Webhook/cron trigger → data-ts → Pipeline Worker → stages (sql, http, openrouter, email)
@@ -60,13 +59,8 @@ Market data capture, archival, signal development, and order management platform
 |-----------|------|---------|
 | CLI | `src/cli/` | Secmaster sync, data quality, scaling, fees, deployment |
 | HTTP API | `src/server/` | REST API for market data and secmaster |
-| Signal Runner | `src/runtime/` | Real-time signal evaluation daemon |
-| Notifier | `src/cli/commands/notifier.ts` | Signal fire → ntfy.sh notification routing (standalone deploy as ssmd-notifier) |
-| Momentum | `src/momentum/` | Paper trading momentum engine + backtesting |
-| Agent | `src/agent/` | LangGraph REPL with market data tools |
 | Pipeline Worker | `src/cli/commands/pipeline-worker.ts` | Poll pipeline_runs, execute typed stages (sql, http, openrouter, email) |
 | Funding Rate Consumer | `src/cli/commands/funding-rate-consumer.ts` | NATS → pair_snapshots (Kraken Futures) |
-| State Builders | `src/state/` | Orderbook, price history, volume profile |
 | Shared Lib | `src/lib/` | DB (Drizzle), API clients, types (Zod), pricing, auth |
 
 ### Python (`ssmd-mcp/`)
@@ -105,7 +99,6 @@ Kubernetes operator with CRDs for all ssmd workloads:
 | `connectors.ssmd.ssmd.io` | WebSocket connector pods |
 | `archivers.ssmd.ssmd.io` | NATS → JSONL.gz archiver pods |
 | `signals.ssmd.ssmd.io` | Signal evaluation pods |
-| `notifiers.ssmd.ssmd.io` | Alert notification pods |
 | `snaps.ssmd.ssmd.io` | NATS → Redis snap service pods |
 | `harmans.ssmd.ssmd.io` | Order gateway deployments + services |
 
@@ -236,28 +229,6 @@ REST API with API key auth (`X-API-Key` header). Scopes: `secmaster:read`, `data
 | `GET /v1/harman/sessions/:id/settlements` | Query settlements for a session |
 | `GET /v1/auth/validate` | Validate API key and return scopes |
 
-### LangGraph Agent Tools
-
-The agent REPL (`ssmd-agent/src/agent/`) provides LangGraph tools that wrap the API:
-
-| Tool | Description |
-|------|-------------|
-| `list_markets` | Query Kalshi markets with point-in-time support |
-| `get_market` | Get market by ticker |
-| `list_events` / `get_event` | Kalshi events |
-| `list_series` / `get_series` | Kalshi series |
-| `list_pairs` / `get_pair` | Kraken trading pairs |
-| `get_pair_snapshots` | Funding rate time series |
-| `list_conditions` / `get_condition` | Polymarket conditions |
-| `get_secmaster_stats` | Cross-exchange stats |
-| `get_fee_schedule` / `get_fees` | Fee lookup by series or tier |
-| `list_datasets` / `sample_data` / `list_tickers` | Browse archived data |
-| `get_schema` | Get schema for a message type |
-| `orderbook_builder` / `price_history_builder` / `volume_profile_builder` | State builders for signal development |
-| `list_builders` | List available state builders |
-| `run_backtest` / `deploy_signal` | Signal evaluation and deployment |
-| `get_today` | Current UTC date |
-
 ### CLI (`ssmd`)
 
 | Command | Purpose |
@@ -278,21 +249,17 @@ The agent REPL (`ssmd-agent/src/agent/`) provides LangGraph tools that wrap the 
 | `archiver sync/deploy/list/status/logs/delete` | Archiver management |
 | `connector deploy/list/status/logs/delete` | Connector CR management |
 | `signal deploy/list/status/logs/delete` | Signal CR management |
-| `notifier deploy/list/status/logs/delete` | Notifier CR management |
-| `momentum run/backtest` | Momentum paper trading + backtesting |
 | `funding-rate-consumer` | Kraken Futures funding rate NATS consumer |
 | `status` | Cluster-wide status overview |
 | `env` | Environment context management |
 | `feed` | Feed configuration management |
 | `init` | Initialize exchanges directory |
-| `agent` | Start interactive LangGraph REPL |
 
 ## Documentation
 
 | Doc | Purpose |
 |-----|---------|
 | [CLAUDE.md](CLAUDE.md) | Build commands, detailed architecture, latency design |
-| [AGENT.md](AGENT.md) | Signal development agent |
 | [Researcher Quickstart](docs/researcher-quickstart.md) | API access, MCP setup, data download |
 
 ### Data Schemas
