@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "kalshi" => {
             run_kalshi_connector(&feed, &env_config, health_addr, shutdown_rx).await
         }
-        "kraken" => {
+        "kraken" | "kraken-spot" => {
             run_kraken_connector(&feed, &env_config, health_addr, shutdown_rx).await
         }
         "kraken-futures" => {
