@@ -526,12 +526,14 @@ impl KalshiConnector {
 
                     // Receive message from WebSocket
                     result = ws.recv_raw() => {
-                        last_activity = Instant::now();
-                        // Update activity tracker on any received message (including pongs)
-                        update_activity(&activity_tracker, &shard_metrics, 0.0);
-
                         match result {
                             Ok((raw_json, msg)) => {
+                                // Only update activity on successful data receipt —
+                                // NOT on errors. Updating on errors defeats the
+                                // watchdog (resets staleness clock even when no data flows).
+                                last_activity = Instant::now();
+                                update_activity(&activity_tracker, &shard_metrics, 0.0);
+
                                 message_count += 1;
                                 trace!(shard_id, message_count, msg_type = %msg.type_str(), "WS recv");
                                 // Record metrics and determine if we should forward
