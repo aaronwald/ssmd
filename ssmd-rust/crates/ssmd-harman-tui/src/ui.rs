@@ -303,7 +303,7 @@ fn format_price(val: Option<f64>) -> String {
 }
 
 fn draw_positions(f: &mut Frame, app: &App, area: Rect) {
-    if app.positions.is_empty() && app.local_positions.is_empty() {
+    if app.local_positions.is_empty() {
         let msg = Paragraph::new("  No positions")
             .style(Style::default().fg(Color::DarkGray))
             .block(Block::default().borders(Borders::ALL).title(" Positions "));
@@ -311,147 +311,79 @@ fn draw_positions(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    // Split into exchange (top) and local (bottom)
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+    let header = Row::new(vec![
+        Cell::from("Ticker"),
+        Cell::from("Net Qty"),
+        Cell::from("Buy Filled"),
+        Cell::from("Sell Filled"),
+        Cell::from("Last"),
+        Cell::from("Mkt Value"),
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
 
-    // --- Exchange positions (top) ---
-    {
-        let header = Row::new(vec![
-            Cell::from("Ticker"),
-            Cell::from("Side"),
-            Cell::from("Qty"),
-            Cell::from("Mkt Value"),
-            Cell::from("Yes Bid"),
-            Cell::from("Yes Ask"),
-            Cell::from("Last"),
-        ])
-        .style(
+    let rows: Vec<Row> = app
+        .local_positions
+        .iter()
+        .map(|pos| {
+            let net_color = if pos.net_quantity > Decimal::ZERO {
+                Color::Green
+            } else if pos.net_quantity < Decimal::ZERO {
+                Color::Red
+            } else {
+                Color::DarkGray
+            };
+            let snap = app.snapshots.iter().find(|s| s.ticker == pos.ticker);
+            let last = snap.and_then(|s| s.last_price);
+            let mkt_value = last.map(|p| {
+                let net_f64 = pos.net_quantity.to_string().parse::<f64>().unwrap_or(0.0);
+                net_f64 * p
+            });
+            Row::new(vec![
+                Cell::from(pos.ticker.clone()),
+                Cell::from(pos.net_quantity.to_string()).style(Style::default().fg(net_color)),
+                Cell::from(pos.buy_filled.to_string()),
+                Cell::from(pos.sell_filled.to_string()),
+                Cell::from(format_price(last)),
+                Cell::from(match mkt_value {
+                    Some(v) => format!("${:.2}", v),
+                    None => "—".to_string(),
+                }),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Min(20),
+        Constraint::Length(10),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(10),
+        Constraint::Length(12),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Positions ({}) ", app.local_positions.len())),
+        )
+        .row_highlight_style(
             Style::default()
-                .fg(Color::Yellow)
+                .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         );
 
-        let rows: Vec<Row> = app
-            .positions
-            .iter()
-            .map(|pos| {
-                let snap = app.snapshots.iter().find(|s| s.ticker == pos.ticker);
-                let side_color = match pos.side {
-                    crate::types::Side::Yes => Color::Green,
-                    crate::types::Side::No => Color::Red,
-                };
-                Row::new(vec![
-                    Cell::from(pos.ticker.clone()),
-                    Cell::from(pos.side.to_string()).style(Style::default().fg(side_color)),
-                    Cell::from(pos.quantity.to_string()),
-                    Cell::from(format!("${}", pos.market_value_dollars)),
-                    Cell::from(format_price(snap.and_then(|s| s.yes_bid))),
-                    Cell::from(format_price(snap.and_then(|s| s.yes_ask))),
-                    Cell::from(format_price(snap.and_then(|s| s.last_price))),
-                ])
-            })
-            .collect();
-
-        let widths = [
-            Constraint::Min(20),
-            Constraint::Length(6),
-            Constraint::Length(10),
-            Constraint::Length(12),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-        ];
-
-        let table = Table::new(rows, widths)
-            .header(header)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" Exchange Positions ({}) ", app.positions.len())),
-            )
-            .row_highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            );
-
-        let mut state = TableState::default();
-        if !app.positions.is_empty() {
-            state.select(Some(app.pos_selected));
-        }
-
-        f.render_stateful_widget(table, chunks[0], &mut state);
+    let mut state = TableState::default();
+    if !app.local_positions.is_empty() {
+        state.select(Some(app.pos_selected));
     }
 
-    // --- Local positions (bottom) ---
-    {
-        let header = Row::new(vec![
-            Cell::from("Ticker"),
-            Cell::from("Net Qty"),
-            Cell::from("Buy Filled"),
-            Cell::from("Sell Filled"),
-            Cell::from("Last"),
-            Cell::from("Mkt Value"),
-        ])
-        .style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
-
-        let rows: Vec<Row> = app
-            .local_positions
-            .iter()
-            .map(|pos| {
-                let net_color = if pos.net_quantity > Decimal::ZERO {
-                    Color::Green
-                } else if pos.net_quantity < Decimal::ZERO {
-                    Color::Red
-                } else {
-                    Color::DarkGray
-                };
-                let snap = app.snapshots.iter().find(|s| s.ticker == pos.ticker);
-                let last = snap.and_then(|s| s.last_price);
-                let mkt_value = last.map(|p| {
-                    let net_f64 = pos.net_quantity.to_string().parse::<f64>().unwrap_or(0.0);
-                    net_f64 * p
-                });
-                Row::new(vec![
-                    Cell::from(pos.ticker.clone()),
-                    Cell::from(pos.net_quantity.to_string()).style(Style::default().fg(net_color)),
-                    Cell::from(pos.buy_filled.to_string()),
-                    Cell::from(pos.sell_filled.to_string()),
-                    Cell::from(format_price(last)),
-                    Cell::from(match mkt_value {
-                        Some(v) => format!("${:.2}", v),
-                        None => "—".to_string(),
-                    }),
-                ])
-            })
-            .collect();
-
-        let widths = [
-            Constraint::Min(20),
-            Constraint::Length(10),
-            Constraint::Length(12),
-            Constraint::Length(12),
-            Constraint::Length(10),
-            Constraint::Length(12),
-        ];
-
-        let table = Table::new(rows, widths)
-            .header(header)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" Local Positions ({}) ", app.local_positions.len())),
-            );
-
-        f.render_widget(table, chunks[1]);
-    }
+    f.render_stateful_widget(table, area, &mut state);
 }
 
 fn draw_market_data(f: &mut Frame, app: &App, area: Rect) {

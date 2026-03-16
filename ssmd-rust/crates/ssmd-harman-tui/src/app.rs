@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::client::{DataClient, HarmanClient};
-use crate::types::{CreateOrderRequest, LocalPositionInfo, Order, OrderState, PositionInfo, RiskInfo, Snapshot};
+use crate::types::{CreateOrderRequest, LocalPositionInfo, Order, OrderState, RiskInfo, Snapshot};
 
 /// Active tab in the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,8 +194,7 @@ pub struct App {
     pub snap_selected: usize,
     // Sorted ticker list for autocomplete (built from snapshots)
     pub known_tickers: Vec<String>,
-    // Positions
-    pub positions: Vec<PositionInfo>,
+    // Positions (fill-derived)
     pub local_positions: Vec<LocalPositionInfo>,
     pub pos_selected: usize,
 }
@@ -221,7 +220,6 @@ impl App {
             market_feed: "kalshi".to_string(),
             snap_selected: 0,
             known_tickers: Vec::new(),
-            positions: Vec::new(),
             local_positions: Vec::new(),
             pos_selected: 0,
         }
@@ -268,11 +266,10 @@ impl App {
             }
         }
 
-        // Poll positions (exchange + local)
+        // Poll positions (fill-derived)
         match self.client.list_positions().await {
-            Ok((exchange, local)) => {
-                self.positions = exchange;
-                self.local_positions = local;
+            Ok(positions) => {
+                self.local_positions = positions;
             }
             Err(e) => {
                 let msg = format!("positions: {}", e);
@@ -322,10 +319,10 @@ impl App {
         }
 
         // Clamp pos_selected
-        if self.positions.is_empty() {
+        if self.local_positions.is_empty() {
             self.pos_selected = 0;
-        } else if self.pos_selected >= self.positions.len() {
-            self.pos_selected = self.positions.len() - 1;
+        } else if self.pos_selected >= self.local_positions.len() {
+            self.pos_selected = self.local_positions.len() - 1;
         }
     }
 
@@ -413,7 +410,7 @@ impl App {
 
     /// Select the next position row.
     pub fn pos_next(&mut self) {
-        if !self.positions.is_empty() && self.pos_selected < self.positions.len() - 1 {
+        if !self.local_positions.is_empty() && self.pos_selected < self.local_positions.len() - 1 {
             self.pos_selected += 1;
         }
     }

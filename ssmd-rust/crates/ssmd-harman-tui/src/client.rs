@@ -3,7 +3,7 @@ use reqwest::Client;
 
 use crate::types::{
     CreateOrderRequest, HealthResponse, LocalPositionInfo, MassCancelResult, Order, OrdersResponse,
-    PositionInfo, PositionsResponse, PumpResult, ReconcileResult, RiskInfo, Snapshot, SnapResponse,
+    PositionsResponse, PumpResult, ReconcileResult, RiskInfo, Snapshot, SnapResponse,
 };
 
 /// HTTP client for the harman order management API.
@@ -206,8 +206,8 @@ impl HarmanClient {
         resp.json().await.context("reconcile: parse response")
     }
 
-    /// GET /v1/admin/positions — returns (exchange, local) positions
-    pub async fn list_positions(&self) -> Result<(Vec<PositionInfo>, Vec<LocalPositionInfo>)> {
+    /// GET /v1/admin/positions — returns fill-derived positions
+    pub async fn list_positions(&self) -> Result<Vec<LocalPositionInfo>> {
         let url = format!("{}/v1/admin/positions", self.base_url);
         let resp = self
             .client
@@ -218,11 +218,11 @@ impl HarmanClient {
             .context("list_positions request failed")?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|e| format!("<error reading body: {}>", e));
             anyhow::bail!("list_positions: {} {}", status, body);
         }
         let body: PositionsResponse = resp.json().await.context("list_positions: parse response")?;
-        Ok((body.exchange, body.local))
+        Ok(body.positions)
     }
 
     /// GET /v1/admin/risk
