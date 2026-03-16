@@ -5,6 +5,8 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use url::Url;
 
+use tracing::warn;
+
 use crate::error::ConnectorError;
 use crate::traits::{Connector, TimestampedMsg};
 use ssmd_middleware::now_tsc;
@@ -66,19 +68,28 @@ impl Connector for WebSocketConnector {
                 match msg {
                     Ok(WsMessage::Text(text)) => {
                         if tx.send((now_tsc(), text.into_bytes())).await.is_err() {
+                            warn!("WS reader: message channel closed, exiting");
                             break;
                         }
                     }
                     Ok(WsMessage::Binary(data)) => {
                         if tx.send((now_tsc(), data)).await.is_err() {
+                            warn!("WS reader: message channel closed, exiting");
                             break;
                         }
                     }
-                    Ok(WsMessage::Close(_)) => break,
-                    Err(_) => break,
+                    Ok(WsMessage::Close(frame)) => {
+                        warn!(?frame, "WS reader: received close frame, exiting");
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "WS reader: WebSocket error, exiting");
+                        break;
+                    }
                     _ => {}
                 }
             }
+            warn!("WS reader: stream ended");
         });
 
         Ok(())
