@@ -515,7 +515,8 @@ impl EventIngester {
                         debug!(ticker = %ticker, "WS: market settled (no local position)");
                     }
                     Err(e) => {
-                        error!(error = %e, ticker = %ticker, "failed to check unsettled positions");
+                        error!(error = %e, ticker = %ticker, "FATAL: failed to check unsettled positions — crashing for recovery");
+                        std::process::exit(1);
                     }
                 }
             }
