@@ -42,11 +42,39 @@ impl Subscriber {
 
         let jetstream = jetstream::new(client);
 
-        // Get or create consumer
-        let consumer = jetstream
+        // Get stream and validate filter subject before creating consumer
+        let mut stream = jetstream
             .get_stream(&stream_config.stream)
             .await
-            .map_err(|e| ArchiverError::Nats(format!("Stream not found: {}", e)))?
+            .map_err(|e| ArchiverError::Nats(format!("Stream not found: {}", e)))?;
+
+        // Validate filter subject matches stream subjects — crash on mismatch
+        // to prevent silent data loss (lifecycle stream incident: 1,856 messages
+        // dropped over a month because filter didn't match stream subjects).
+        let stream_info = stream
+            .info()
+            .await
+            .map_err(|e| ArchiverError::Nats(format!("Failed to get stream info: {}", e)))?;
+
+        let stream_subjects = &stream_info.config.subjects;
+        let filter = &stream_config.filter;
+
+        if !filter_matches_stream_subjects(filter, stream_subjects) {
+            return Err(ArchiverError::Nats(format!(
+                "Filter subject '{}' does not match any stream '{}' subjects: {:?}. \
+                 This will result in zero messages delivered.",
+                filter, stream_config.stream, stream_subjects
+            )));
+        }
+
+        info!(
+            stream = %stream_config.stream,
+            filter = %filter,
+            stream_subjects = ?stream_subjects,
+            "Stream subject validation passed"
+        );
+
+        let consumer = stream
             .get_or_create_consumer(
                 &stream_config.consumer,
                 jetstream::consumer::pull::Config {
@@ -123,6 +151,23 @@ impl Subscriber {
 
 }
 
+/// Check if a NATS filter subject is compatible with any of the stream's subjects.
+/// A filter is compatible if it shares a prefix with a stream subject (before wildcards).
+/// e.g., filter "prod.kalshi.json.ticker.>" matches stream "prod.kalshi.>"
+fn filter_matches_stream_subjects(filter: &str, stream_subjects: &[String]) -> bool {
+    stream_subjects.iter().any(|stream_sub| {
+        let stream_prefix = stream_sub
+            .trim_end_matches('>')
+            .trim_end_matches('*')
+            .trim_end_matches('.');
+        let filter_prefix = filter
+            .trim_end_matches('>')
+            .trim_end_matches('*')
+            .trim_end_matches('.');
+        filter_prefix.starts_with(stream_prefix) || stream_prefix.starts_with(filter_prefix)
+    })
+}
+
 fn compute_gap_and_next(expected_seq: Option<u64>, seq: u64) -> (Option<(u64, u64)>, Option<u64>) {
     let gap = match expected_seq {
         Some(expected) if seq > expected => Some((expected.saturating_sub(1), seq - expected)),
@@ -142,7 +187,7 @@ fn compute_gap_and_next(expected_seq: Option<u64>, seq: u64) -> (Option<(u64, u6
 
 #[cfg(test)]
 mod tests {
-    use super::compute_gap_and_next;
+    use super::{compute_gap_and_next, filter_matches_stream_subjects};
 
     #[test]
     fn test_compute_gap_and_next_detects_gap() {
@@ -186,5 +231,61 @@ mod tests {
         let (gap, next) = compute_gap_and_next(None, 42);
         assert_eq!(gap, None);
         assert_eq!(next, Some(43));
+    }
+
+    // --- filter_matches_stream_subjects tests ---
+
+    #[test]
+    fn test_filter_matches_superset_stream() {
+        // Stream "prod.kalshi.>" captures everything; filter is a subset
+        let subjects = vec!["prod.kalshi.>".to_string()];
+        assert!(filter_matches_stream_subjects("prod.kalshi.json.ticker.>", &subjects));
+    }
+
+    #[test]
+    fn test_filter_matches_exact_stream_subject() {
+        let subjects = vec!["prod.kalshi.json.ticker.>".to_string()];
+        assert!(filter_matches_stream_subjects("prod.kalshi.json.ticker.>", &subjects));
+    }
+
+    #[test]
+    fn test_filter_no_match_different_prefix() {
+        // The lifecycle stream incident: stream has lifecycle subjects, filter has json
+        let subjects = vec!["prod.kalshi.lifecycle.>".to_string()];
+        assert!(!filter_matches_stream_subjects("prod.kalshi.json.lifecycle.>", &subjects));
+    }
+
+    #[test]
+    fn test_filter_matches_one_of_multiple_subjects() {
+        let subjects = vec![
+            "prod.kalshi.lifecycle.>".to_string(),
+            "prod.kalshi.json.>".to_string(),
+        ];
+        assert!(filter_matches_stream_subjects("prod.kalshi.json.ticker.>", &subjects));
+    }
+
+    #[test]
+    fn test_filter_no_match_empty_subjects() {
+        let subjects: Vec<String> = vec![];
+        assert!(!filter_matches_stream_subjects("prod.kalshi.>", &subjects));
+    }
+
+    #[test]
+    fn test_filter_matches_with_star_wildcard() {
+        let subjects = vec!["prod.kalshi.>".to_string()];
+        assert!(filter_matches_stream_subjects("prod.kalshi.json.*", &subjects));
+    }
+
+    #[test]
+    fn test_filter_no_match_completely_different() {
+        let subjects = vec!["prod.kraken.>".to_string()];
+        assert!(!filter_matches_stream_subjects("prod.kalshi.json.>", &subjects));
+    }
+
+    #[test]
+    fn test_filter_matches_stream_is_subset_of_filter() {
+        // Stream subject is more specific than filter — still compatible
+        let subjects = vec!["prod.kalshi.json.ticker.>".to_string()];
+        assert!(filter_matches_stream_subjects("prod.kalshi.>", &subjects));
     }
 }
