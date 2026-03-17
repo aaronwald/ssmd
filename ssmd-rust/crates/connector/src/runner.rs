@@ -86,7 +86,11 @@ impl<C: Connector, W: Writer> Runner<C, W> {
             let watchdog_feed = Arc::clone(&self.feed_name);
             tokio::spawn(async move {
                 const WATCHDOG_CHECK_INTERVAL_SECS: u64 = 15;
-                const WATCHDOG_STALENESS_SECS: u64 = 120;
+                const DEFAULT_WATCHDOG_STALENESS_SECS: u64 = 120;
+                let watchdog_staleness_secs: u64 = std::env::var("WATCHDOG_STALENESS_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(DEFAULT_WATCHDOG_STALENESS_SECS);
 
                 let mut check_interval = tokio::time::interval(
                     std::time::Duration::from_secs(WATCHDOG_CHECK_INTERVAL_SECS),
@@ -111,11 +115,11 @@ impl<C: Connector, W: Writer> Runner<C, W> {
                         .unwrap_or(0);
                     let stale_secs = now_epoch.saturating_sub(last_epoch);
 
-                    if stale_secs >= WATCHDOG_STALENESS_SECS {
+                    if stale_secs >= watchdog_staleness_secs {
                         error!(
                             feed = %watchdog_feed,
                             stale_secs,
-                            threshold = WATCHDOG_STALENESS_SECS,
+                            threshold = watchdog_staleness_secs,
                             last_epoch,
                             reason = "watchdog_stale",
                             "WATCHDOG: No activity for {stale_secs}s, exiting for restart"

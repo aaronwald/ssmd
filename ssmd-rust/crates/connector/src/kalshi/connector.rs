@@ -393,7 +393,11 @@ impl KalshiConnector {
             const CMD_CHECK_INTERVAL_SECS: u64 = 5;
             /// If no data or pong received for this long, the connection is dead.
             /// Must be > PING_INTERVAL_SECS to allow at least one ping/pong round-trip.
-            const RECV_STALENESS_SECS: u64 = 90;
+            const DEFAULT_RECV_STALENESS_SECS: u64 = 90;
+            let recv_staleness_secs: u64 = std::env::var("RECV_STALENESS_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_RECV_STALENESS_SECS);
 
             let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -440,7 +444,7 @@ impl KalshiConnector {
                         };
                         let stale_secs = idle_secs.min(pong_age_secs);
 
-                        if stale_secs >= RECV_STALENESS_SECS {
+                        if stale_secs >= recv_staleness_secs {
                             let uptime_secs = connected_at.elapsed().as_secs();
                             error!(
                                 shard_id,
@@ -449,7 +453,7 @@ impl KalshiConnector {
                                 uptime_secs,
                                 message_count,
                                 reason = "stale_connection",
-                                "No data or pong received for {stale_secs}s (threshold {RECV_STALENESS_SECS}s), exiting for restart"
+                                "No data or pong received for {stale_secs}s (threshold {recv_staleness_secs}s), exiting for restart"
                             );
                             shard_metrics.set_disconnected();
                             std::process::exit(1);
