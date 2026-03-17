@@ -342,11 +342,42 @@ impl CdcSubscriptionConsumer {
             if event.op == "update" {
                 match market_data.status.as_deref() {
                     Some("active") => {
+                        // Market transitioned to active — subscribe if not already tracked.
+                        // This handles markets that were created as "initialized" before the
+                        // connector started and only became active later via secmaster sync.
+                        if self.subscribed_markets.contains(&market_data.ticker) {
+                            debug!(
+                                ticker = %market_data.ticker,
+                                "CDC: Market transitioned to active (already subscribed)"
+                            );
+                            if let Err(e) = msg.ack().await {
+                                warn!(error = %e, "Failed to ack message");
+                            }
+                            continue;
+                        }
+                        // Not yet subscribed — check category filter then subscribe
+                        if !self.should_subscribe(&market_data.event_ticker).await {
+                            skipped_category += 1;
+                            if let Err(e) = msg.ack().await {
+                                warn!(error = %e, "Failed to ack message");
+                            }
+                            continue;
+                        }
                         warn!(
                             ticker = %market_data.ticker,
-                            "CDC: Market transitioned to active"
+                            event_ticker = %market_data.event_ticker,
+                            "CDC: Market transitioned to active, sending subscribe"
                         );
+                        if event_tx.send(ShardEvent::Subscribe(market_data.ticker.clone())).await.is_err() {
+                            error!("Event channel closed, stopping CDC consumer");
+                            break;
+                        }
+                        self.subscribed_markets.insert(market_data.ticker);
                         subscribed_update += 1;
+                        if let Err(e) = msg.ack().await {
+                            warn!(error = %e, "Failed to ack message");
+                        }
+                        continue;
                     }
                     Some(status) if is_terminal_status(status) => {
                         // Market settled/closed -- trigger unsubscribe if we're subscribed
