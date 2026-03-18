@@ -884,6 +884,12 @@ async function sendReport(data: ReportData): Promise<void> {
     return;
   }
 
+  const emailOnFailureOnly = Deno.env.get("HOLS_EMAIL_ON_FAILURE_ONLY") === "true";
+  if (emailOnFailureOnly && data.failCount === 0) {
+    console.log("[hols] No failures, skipping email (HOLS_EMAIL_ON_FAILURE_ONLY=true)");
+    return;
+  }
+
   const jobLabel = data.jobLabel ?? (data.job === "generate" ? "Spot REST OHLC" : "WS Trade Aggregate");
   const statusColor = data.failCount === 0 ? "#1e7e34" : "#c5221f";
   const statusText = data.failCount === 0 ? "SUCCESS" : `${data.failCount} FAILURES`;
