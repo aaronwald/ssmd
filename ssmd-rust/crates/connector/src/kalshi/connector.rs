@@ -618,6 +618,17 @@ impl KalshiConnector {
                             }
                             Err(e) => {
                                 let uptime_secs = connected_at.elapsed().as_secs();
+                                let subscribed_count = ws.subscribed_markets().len();
+                                let last_pong = ws.pong_tracker().load(std::sync::atomic::Ordering::Relaxed);
+                                let pong_age_secs = if last_pong > 0 {
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs()
+                                        .saturating_sub(last_pong)
+                                } else {
+                                    0 // never received a pong
+                                };
                                 let reason = match &e {
                                     WebSocketError::ConnectionClosed => "connection_closed",
                                     WebSocketError::Connection(_) => "read_timeout",
@@ -629,6 +640,8 @@ impl KalshiConnector {
                                     error = %e,
                                     uptime_secs,
                                     message_count,
+                                    subscribed_count,
+                                    pong_age_secs,
                                     reason,
                                     "Kalshi WebSocket disconnect, exiting for restart"
                                 );
