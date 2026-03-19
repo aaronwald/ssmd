@@ -693,23 +693,22 @@ impl Connector for KalshiConnector {
                     .unwrap_or_else(|| "unknown".to_string());
                 let connector_metrics = ConnectorMetrics::new("kalshi", &category_label);
 
-                // Shard markets into groups of MAX_MARKETS_PER_SUBSCRIPTION
+                // Shard size for startup distribution. Defaults to 200 (vs 256 WS hard limit)
+                // to leave headroom per shard for CDC market additions during contract rollovers.
+                let shard_size = std::env::var("SHARD_SIZE")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(200)
+                    .min(MAX_MARKETS_PER_SUBSCRIPTION); // never exceed WS limit
+
                 let mut shards: Vec<Vec<String>> = tickers
-                    .chunks(MAX_MARKETS_PER_SUBSCRIPTION)
+                    .chunks(shard_size)
                     .map(|chunk| chunk.to_vec())
                     .collect();
 
-                // When CDC is enabled, ensure at least one shard has capacity for new markets
-                // Add an extra empty shard if the last shard is at or near capacity (>80% full)
-                if cdc_enabled {
-                    let needs_headroom = shards.last()
-                        .map(|s| s.len() >= (MAX_MARKETS_PER_SUBSCRIPTION * 4 / 5))
-                        .unwrap_or(true); // Also add if no shards exist
-
-                    if needs_headroom {
-                        info!("CDC enabled: adding headroom shard for dynamic subscriptions");
-                        shards.push(Vec::new());
-                    }
+                // When CDC is enabled, ensure at least one shard exists for new markets
+                if cdc_enabled && shards.is_empty() {
+                    shards.push(Vec::new());
                 }
 
                 let num_shards = shards.len();
@@ -718,6 +717,7 @@ impl Connector for KalshiConnector {
                 info!(
                     total_markets = tickers.len(),
                     num_shards = num_shards,
+                    shard_size = shard_size,
                     max_per_shard = MAX_MARKETS_PER_SUBSCRIPTION,
                     cdc_enabled = cdc_enabled,
                     snapshot_lsn = %snapshot_lsn,
