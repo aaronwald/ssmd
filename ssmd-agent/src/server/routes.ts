@@ -3688,14 +3688,17 @@ route("GET", "/v1/hols/volume-compare", async (req, _ctx) => {
   const wsPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-1m-ssmd.parquet`;
 
   try {
+    // Normalize Kraken REST→WS ticker differences: XBT→BTC, XDG→DOGE
+    // REST API uses legacy tickers (XBT, XDG), WS v2 uses standard (BTC, DOGE)
+    const TICKER_NORM = `CASE hols_ticker WHEN 'XBTUSDT' THEN 'BTCUSDT' WHEN 'XDGUSDT' THEN 'DOGEUSDT' ELSE hols_ticker END`;
     const result = await duckdbQuery(`
       WITH rest_daily AS (
         SELECT
-          hols_ticker,
+          ${TICKER_NORM} as hols_ticker,
           SUM(volume) as rest_volume_base,
           SUM(tradecount) as rest_tradecount
         FROM read_parquet('${restPath}')
-        GROUP BY hols_ticker
+        GROUP BY ${TICKER_NORM}
       ),
       ws_daily AS (
         SELECT
