@@ -6,6 +6,7 @@ import type { MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
 
 const SERIES_LS_KEY = "crypto-selected-series";
+const HIDE_ZERO_VOL_KEY = "crypto-hide-zero-vol";
 
 /** Read URL search params directly (avoids useSearchParams Suspense re-trigger) */
 function getUrlParam(key: string): string | null {
@@ -130,6 +131,9 @@ function countdownColor(targetDate: string | null): string {
 
 function CryptoContent() {
   const [slideOverMarket, setSlideOverMarket] = useState<MonitorMarket | null>(null);
+  const [hideZeroVol, setHideZeroVol] = useState(() => {
+    try { return localStorage.getItem(HIDE_ZERO_VOL_KEY) === "true"; } catch { return false; }
+  });
 
   // 1. Fetch all crypto series
   const { data: allSeries } = useSeries("Crypto");
@@ -244,6 +248,11 @@ function CryptoContent() {
           eventTicker={selectedEvent}
           markets={markets}
           positionTickers={positionTickers}
+          hideZeroVol={hideZeroVol}
+          onHideZeroVolChange={(v) => {
+            setHideZeroVol(v);
+            try { localStorage.setItem(HIDE_ZERO_VOL_KEY, String(v)); } catch {}
+          }}
           onMarketClick={(m) => setSlideOverMarket(m)}
         />
       )}
@@ -367,24 +376,43 @@ function StrikeTable({
   eventTicker,
   markets,
   positionTickers,
+  hideZeroVol,
+  onHideZeroVolChange,
   onMarketClick,
 }: {
   eventTicker: string;
   markets: MonitorMarket[];
   positionTickers: Set<string>;
+  hideZeroVol: boolean;
+  onHideZeroVolChange: (v: boolean) => void;
   onMarketClick: (m: MonitorMarket) => void;
 }) {
-  // Sort by strike descending
+  // Sort by strike descending, optionally filter zero volume
   const sorted = useMemo(() => {
-    return [...markets].sort((a, b) => extractStrike(b.ticker) - extractStrike(a.ticker));
-  }, [markets]);
+    let filtered = [...markets];
+    if (hideZeroVol) {
+      filtered = filtered.filter((m) => (m.volume ?? 0) > 0);
+    }
+    return filtered.sort((a, b) => extractStrike(b.ticker) - extractStrike(a.ticker));
+  }, [markets, hideZeroVol]);
 
   return (
     <div>
-      <h2 className="text-sm font-medium text-fg-muted mb-2">
-        Markets for {eventTicker}
-        <span className="ml-2 text-fg-subtle">({sorted.length})</span>
-      </h2>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-sm font-medium text-fg-muted">
+          Markets for {eventTicker}
+          <span className="ml-2 text-fg-subtle">({sorted.length}{hideZeroVol ? `/${markets.length}` : ""})</span>
+        </h2>
+        <label className="flex items-center gap-1.5 text-xs text-fg-muted cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={hideZeroVol}
+            onChange={(e) => onHideZeroVolChange(e.target.checked)}
+            className="rounded border-border accent-accent"
+          />
+          Hide 0 vol
+        </label>
+      </div>
       <div className="bg-bg-raised border border-border rounded-lg overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
