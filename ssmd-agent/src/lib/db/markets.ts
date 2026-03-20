@@ -214,6 +214,7 @@ export async function listMarketsWithSnapshot(
     eventTicker?: string;
     closingBefore?: string;
     closingAfter?: string;
+    openBefore?: string;
     asOf?: string;
     gamesOnly?: boolean;
     limit?: number;
@@ -256,6 +257,7 @@ export async function listMarkets(
     eventTicker?: string;
     closingBefore?: string;
     closingAfter?: string;
+    openBefore?: string;
     asOf?: string;
     gamesOnly?: boolean;
     limit?: number;
@@ -285,6 +287,9 @@ export async function listMarkets(
   }
   if (options.closingAfter) {
     conditions.push(sql`${markets.closeTime} > ${options.closingAfter}`);
+  }
+  if (options.openBefore) {
+    conditions.push(sql`(${markets.openTime} IS NULL OR ${markets.openTime} <= ${options.openBefore})`);
   }
 
   // If filtering by category, series, or gamesOnly, need to join events (and possibly series)

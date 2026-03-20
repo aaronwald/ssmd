@@ -132,10 +132,12 @@ impl SecmasterClient {
         close_within_hours: Option<u32>,
         games_only: bool,
     ) -> Result<Vec<String>, SecmasterError> {
+        let open_cutoff = (chrono::Utc::now() + chrono::Duration::minutes(15)).to_rfc3339();
         let mut url = format!(
-            "{}/v1/markets?category={}&status=active&limit=10000",
+            "{}/v1/markets?category={}&status=active&limit=50000&open_before={}",
             self.base_url,
-            urlencoding::encode(category)
+            urlencoding::encode(category),
+            urlencoding::encode(&open_cutoff)
         );
         if let Some(hours) = close_within_hours {
             url.push_str(&format!("&close_within_hours={}", hours));
@@ -248,10 +250,16 @@ impl SecmasterClient {
         close_within_hours: Option<u32>,
         games_only: bool,
     ) -> Result<MarketsWithSnapshot, SecmasterError> {
+        // Only fetch markets open now or within 15 minutes. Pre-open markets waste shard
+        // slots — lifecycle events via CDC handle new opens dynamically. The 15-min buffer
+        // avoids missing markets right at the open boundary.
+        let open_cutoff = (chrono::Utc::now() + chrono::Duration::minutes(15)).to_rfc3339();
+        let encoded_cutoff = urlencoding::encode(&open_cutoff);
         let mut url = format!(
-            "{}/v1/markets?category={}&status=active&limit=10000&include_snapshot=true",
+            "{}/v1/markets?category={}&status=active&limit=50000&include_snapshot=true&open_before={}",
             self.base_url,
-            urlencoding::encode(category)
+            urlencoding::encode(category),
+            encoded_cutoff
         );
         if let Some(hours) = close_within_hours {
             url.push_str(&format!("&close_within_hours={}", hours));
