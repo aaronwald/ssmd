@@ -712,7 +712,24 @@ impl Connector for KalshiConnector {
                 }
 
                 let num_shards = shards.len();
+                let total_capacity = num_shards * shard_size;
+                let overflow = tickers.len().saturating_sub(total_capacity);
                 connector_metrics.set_shards_total(num_shards);
+                connector_metrics.set_shard_capacity(shard_size);
+                connector_metrics.set_markets_requested(tickers.len());
+                connector_metrics.set_markets_overflow(overflow);
+
+                if overflow > 0 {
+                    warn!(
+                        total_markets = tickers.len(),
+                        total_capacity = total_capacity,
+                        overflow = overflow,
+                        num_shards = num_shards,
+                        shard_size = shard_size,
+                        "SUBSCRIPTION OVERFLOW: {} markets cannot fit in {} shards — these markets will have no WS data",
+                        overflow, num_shards,
+                    );
+                }
 
                 info!(
                     total_markets = tickers.len(),

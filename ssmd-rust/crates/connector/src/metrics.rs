@@ -74,6 +74,36 @@ static MARKETS_UNSUBSCRIBED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("Failed to register markets_unsubscribed_total metric")
 });
 
+/// Total markets loaded from secmaster at startup (requested subscription count)
+static MARKETS_REQUESTED: Lazy<IntGaugeVec> = Lazy::new(|| {
+    register_int_gauge_vec!(
+        "ssmd_connector_markets_requested",
+        "Total markets loaded from secmaster (may exceed shard capacity)",
+        &[LABEL_FEED, LABEL_CATEGORY]
+    )
+    .expect("Failed to register markets_requested metric")
+});
+
+/// Markets that could not be assigned to any shard (phantom-subscribed)
+static MARKETS_OVERFLOW: Lazy<IntGaugeVec> = Lazy::new(|| {
+    register_int_gauge_vec!(
+        "ssmd_connector_markets_overflow",
+        "Markets loaded from secmaster but not assigned to any WS shard (no capacity)",
+        &[LABEL_FEED, LABEL_CATEGORY]
+    )
+    .expect("Failed to register markets_overflow metric")
+});
+
+/// Maximum markets per shard (WS subscription limit)
+static SHARD_CAPACITY: Lazy<IntGaugeVec> = Lazy::new(|| {
+    register_int_gauge_vec!(
+        "ssmd_connector_shard_capacity",
+        "Maximum markets per shard (configured shard size)",
+        &[LABEL_FEED, LABEL_CATEGORY]
+    )
+    .expect("Failed to register shard_capacity metric")
+});
+
 /// Total messages that failed to parse per shard
 static PARSE_ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     register_int_counter_vec!(
@@ -151,6 +181,27 @@ impl ConnectorMetrics {
         SHARDS_TOTAL
             .with_label_values(&[&self.feed, &self.category])
             .set(count as i64);
+    }
+
+    /// Record total markets requested from secmaster
+    pub fn set_markets_requested(&self, count: usize) {
+        MARKETS_REQUESTED
+            .with_label_values(&[&self.feed, &self.category])
+            .set(count as i64);
+    }
+
+    /// Record markets that couldn't fit in any shard
+    pub fn set_markets_overflow(&self, count: usize) {
+        MARKETS_OVERFLOW
+            .with_label_values(&[&self.feed, &self.category])
+            .set(count as i64);
+    }
+
+    /// Record configured shard capacity
+    pub fn set_shard_capacity(&self, capacity: usize) {
+        SHARD_CAPACITY
+            .with_label_values(&[&self.feed, &self.category])
+            .set(capacity as i64);
     }
 
     /// Record number of markets subscribed for a shard
@@ -370,6 +421,19 @@ mod tests {
 
         let output = encode_metrics().unwrap();
         assert!(output.contains("ssmd_connector_markets_unsubscribed_total"));
+    }
+
+    #[test]
+    fn test_capacity_metrics() {
+        let metrics = ConnectorMetrics::new("kalshi", "test_capacity");
+        metrics.set_markets_requested(29821);
+        metrics.set_markets_overflow(19821);
+        metrics.set_shard_capacity(200);
+
+        let output = encode_metrics().unwrap();
+        assert!(output.contains("ssmd_connector_markets_requested"));
+        assert!(output.contains("ssmd_connector_markets_overflow"));
+        assert!(output.contains("ssmd_connector_shard_capacity"));
     }
 
     #[test]
