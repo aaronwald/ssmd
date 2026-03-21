@@ -118,6 +118,8 @@ macro_rules! handle_shard_cmd {
                         }
                         Err(e) => {
                             warn!(shard_id = $shard_id, ticker = %ticker, error = %e, "Failed to unsubscribe market");
+                            removed += 1;
+                            $metrics.inc_unsubscribed();
                         }
                     }
                 }

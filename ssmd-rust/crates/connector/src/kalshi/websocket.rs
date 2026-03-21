@@ -234,6 +234,7 @@ impl KalshiWebSocket {
                 market_ticker: None,
                 market_tickers: None,
                 sids: None,
+                action: None,
             },
         };
 
@@ -256,6 +257,7 @@ impl KalshiWebSocket {
                 market_ticker: Some(market_ticker.to_string()),
                 market_tickers: None,
                 sids: None,
+                action: None,
             },
         };
 
@@ -279,6 +281,7 @@ impl KalshiWebSocket {
                 market_ticker: None,
                 market_tickers: None,
                 sids: None,
+                action: None,
             },
         };
 
@@ -303,6 +306,7 @@ impl KalshiWebSocket {
                 market_ticker: None,
                 market_tickers: None,
                 sids: None,
+                action: None,
             },
         };
 
@@ -324,6 +328,7 @@ impl KalshiWebSocket {
                 market_ticker: Some(market_ticker.to_string()),
                 market_tickers: None,
                 sids: None,
+                action: None,
             },
         };
 
@@ -359,6 +364,7 @@ impl KalshiWebSocket {
                 market_ticker: None,
                 market_tickers: Some(tickers.to_vec()),
                 sids: None,
+                action: None,
             },
         };
 
@@ -555,6 +561,7 @@ impl KalshiWebSocket {
                 market_ticker: None,
                 market_tickers: None,
                 sids: Some(sids.to_vec()),
+                action: None,
             },
         };
 
@@ -600,58 +607,69 @@ impl KalshiWebSocket {
             .map_err(|_| WebSocketError::SubscriptionFailed("Unsubscribe timeout".into()))?
     }
 
-    /// Unsubscribe a single market from all its channels.
-    /// Handles batch semantics: unsubscribes the batch sid, then
-    /// resubscribes remaining markets in each affected batch.
-    /// Returns the number of sids unsubscribed.
+    /// Remove a single market from a subscription using update_subscription.
+    /// Non-destructive — only the specified market is removed, all other
+    /// markets in the subscription continue receiving data.
+    async fn remove_market_from_subscription(
+        &mut self,
+        sid: u64,
+        ticker: &str,
+    ) -> Result<(), WebSocketError> {
+        self.command_id += 1;
+        let cmd = WsCommand {
+            id: self.command_id,
+            cmd: "update_subscription".to_string(),
+            params: WsParams {
+                channels: vec![],
+                market_ticker: None,
+                market_tickers: Some(vec![ticker.to_string()]),
+                sids: Some(vec![sid]),
+                action: Some("delete_markets".to_string()),
+            },
+        };
+
+        let msg = serde_json::to_string(&cmd)?;
+        debug!(
+            sid,
+            ticker,
+            cmd_id = self.command_id,
+            "Removing market from subscription via update_subscription"
+        );
+        self.ws.send(Message::Text(msg)).await?;
+        self.wait_for_subscription(self.command_id).await
+    }
+
+    /// Unsubscribe a single market from all its channels using
+    /// per-market update_subscription (non-destructive).
+    /// Returns the number of sids the market was removed from.
     pub async fn unsubscribe_market(&mut self, ticker: &str) -> Result<usize, WebSocketError> {
-        let affected = self.sid_tracker.remove_market(ticker);
-        if affected.is_empty() {
+        let sids = self.sid_tracker.sids_for_ticker(ticker);
+        if sids.is_empty() {
             debug!(ticker, "Market not tracked in sid_tracker, nothing to unsubscribe");
             return Ok(0);
         }
 
-        let mut unsubscribed_count = 0;
-
-        for (old_sid, channel, remaining) in affected {
-            // Unsubscribe the old batch
-            self.unsubscribe_sids(&[old_sid]).await?;
-            unsubscribed_count += 1;
-
-            // Remove the settled market from our local set
-            self.subscribed_markets.remove(ticker);
-
-            // Resubscribe remaining markets in the batch (if any)
-            if !remaining.is_empty() {
-                match self.subscribe_markets(&channel, &remaining).await {
-                    Ok(new_sid) => {
-                        info!(
-                            old_sid,
-                            ?new_sid,
-                            channel = %channel,
-                            remaining = remaining.len(),
-                            ticker,
-                            "Resubscribed remaining markets after unsubscribe"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            old_sid,
-                            channel = %channel,
-                            remaining = remaining.len(),
-                            ticker,
-                            error = %e,
-                            "Failed to resubscribe remaining markets after unsubscribe"
-                        );
-                        return Err(e);
-                    }
+        for sid in &sids {
+            match self.remove_market_from_subscription(*sid, ticker).await {
+                Ok(()) => {
+                    debug!(sid, ticker, "Removed market from subscription");
                 }
-            } else {
-                info!(old_sid, channel = %channel, ticker, "Batch empty after unsubscribe");
+                Err(WebSocketError::ConnectionClosed) => {
+                    // Connection dead — must propagate to crash the shard
+                    return Err(WebSocketError::ConnectionClosed);
+                }
+                Err(e) => {
+                    // Kalshi may have already cleaned up settled markets — fire and forget
+                    warn!(sid, ticker, error = %e, "Failed to remove market from subscription (may already be settled)");
+                }
             }
         }
 
-        Ok(unsubscribed_count)
+        // Clean up local tracking regardless of WS result
+        self.sid_tracker.remove_market(ticker);
+        self.subscribed_markets.remove(ticker);
+
+        Ok(sids.len())
     }
 
     /// Send a ping to keep connection alive
@@ -777,11 +795,39 @@ mod tests {
                 market_ticker: None,
                 market_tickers: None,
                 sids: Some(vec![42, 43]),
+                action: None,
             },
         };
 
         let json = serde_json::to_string(&cmd).expect("Failed to serialize");
         assert!(json.contains(r#""cmd":"unsubscribe""#));
         assert!(json.contains(r#""sids":[42,43]"#));
+        // channels should be omitted when empty
+        assert!(!json.contains("channels"));
+    }
+
+    #[test]
+    fn test_update_subscription_delete_markets_serialization() {
+        let cmd = WsCommand {
+            id: 125,
+            cmd: "update_subscription".to_string(),
+            params: WsParams {
+                channels: vec![],
+                market_ticker: None,
+                market_tickers: Some(vec!["KXBTCD-26MAR2117-T70000".to_string()]),
+                sids: Some(vec![42]),
+                action: Some("delete_markets".to_string()),
+            },
+        };
+
+        let json = serde_json::to_string(&cmd).expect("Failed to serialize");
+        assert!(json.contains(r#""cmd":"update_subscription""#));
+        assert!(json.contains(r#""action":"delete_markets""#));
+        assert!(json.contains(r#""sids":[42]"#));
+        assert!(json.contains("KXBTCD-26MAR2117-T70000"));
+        // channels should be omitted when empty
+        assert!(!json.contains("channels"));
+        // action should NOT be omitted
+        assert!(json.contains("action"));
     }
 }

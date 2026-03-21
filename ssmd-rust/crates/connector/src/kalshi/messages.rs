@@ -215,6 +215,7 @@ pub struct WsCommand {
 /// WebSocket command parameters
 #[derive(Debug, Serialize)]
 pub struct WsParams {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub market_ticker: Option<String>,
@@ -223,6 +224,9 @@ pub struct WsParams {
     /// Subscription IDs to update (for update_subscription command)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sids: Option<Vec<u64>>,
+    /// Action for update_subscription: "add_markets" or "delete_markets"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 #[cfg(test)]
@@ -401,6 +405,7 @@ mod tests {
                 market_ticker: None,
                 market_tickers: None,
                 sids: None,
+                action: None,
             },
         };
 
@@ -422,6 +427,7 @@ mod tests {
                 market_ticker: Some("KXTEST-123".to_string()),
                 market_tickers: None,
                 sids: None,
+                action: None,
             },
         };
 
@@ -439,6 +445,7 @@ mod tests {
                 market_ticker: None,
                 market_tickers: Some(vec!["KXTEST-1".to_string(), "KXTEST-2".to_string()]),
                 sids: None,
+                action: None,
             },
         };
 

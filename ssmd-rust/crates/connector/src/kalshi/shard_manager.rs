@@ -379,4 +379,73 @@ mod tests {
         assert_eq!(manager.shard_for_ticker("M-1"), Some(0));
         assert_eq!(manager.shard_for_ticker("M-2"), None);
     }
+
+    #[test]
+    fn test_startup_tickers_have_shard_mapping() {
+        // Simulate startup: create manager with initial markets, register shards,
+        // and record ticker-to-shard mappings (as connector.rs does at startup).
+        let initial = vec![
+            "MARKET-A".to_string(),
+            "MARKET-B".to_string(),
+            "MARKET-C".to_string(),
+        ];
+        let mut manager = ShardManager::new(initial);
+
+        let (tx0, _rx0) = mpsc::channel::<ShardCommand>(10);
+        let (tx1, _rx1) = mpsc::channel::<ShardCommand>(10);
+
+        // Shard 0 gets MARKET-A and MARKET-B
+        let shard0_tickers = vec!["MARKET-A".to_string(), "MARKET-B".to_string()];
+        manager.register_shard(0, tx0, shard0_tickers.len());
+        for ticker in &shard0_tickers {
+            manager.record_ticker_shard(ticker, 0);
+        }
+
+        // Shard 1 gets MARKET-C
+        let shard1_tickers = vec!["MARKET-C".to_string()];
+        manager.register_shard(1, tx1, shard1_tickers.len());
+        for ticker in &shard1_tickers {
+            manager.record_ticker_shard(ticker, 1);
+        }
+
+        // Verify all startup tickers resolve to correct shards
+        assert_eq!(manager.shard_for_ticker("MARKET-A"), Some(0));
+        assert_eq!(manager.shard_for_ticker("MARKET-B"), Some(0));
+        assert_eq!(manager.shard_for_ticker("MARKET-C"), Some(1));
+        assert_eq!(manager.shard_for_ticker("NONEXISTENT"), None);
+
+        // Verify subscribed_markets is populated
+        assert!(manager.is_subscribed("MARKET-A"));
+        assert!(manager.is_subscribed("MARKET-B"));
+        assert!(manager.is_subscribed("MARKET-C"));
+    }
+
+    #[tokio::test]
+    async fn test_startup_ticker_unsubscribe_routes_to_shard() {
+        // Verify that unsubscribing a startup ticker sends the command to the correct shard
+        let initial = vec!["M-1".to_string(), "M-2".to_string()];
+        let mut manager = ShardManager::new(initial);
+
+        let (tx0, mut rx0) = mpsc::channel::<ShardCommand>(10);
+        let (tx1, mut rx1) = mpsc::channel::<ShardCommand>(10);
+
+        // Record startup ticker mappings (as connector.rs does)
+        manager.register_shard(0, tx0, 1);
+        manager.record_ticker_shard("M-1", 0);
+
+        manager.register_shard(1, tx1, 1);
+        manager.record_ticker_shard("M-2", 1);
+
+        // Unsubscribe M-2 — should route to shard 1
+        let removed = manager.remove_subscription("M-2").await;
+        assert!(removed);
+        assert!(!manager.is_subscribed("M-2"));
+
+        // Shard 0 should have no commands
+        assert!(rx0.try_recv().is_err());
+
+        // Shard 1 should have the unsubscribe command
+        let cmd = rx1.try_recv().unwrap();
+        assert!(matches!(cmd, ShardCommand::Unsubscribe { ref tickers } if tickers == &["M-2"]));
+    }
 }
