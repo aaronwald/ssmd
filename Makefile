@@ -4,7 +4,7 @@
 .PHONY: worker-check
 .PHONY: harman-integration-test
 
-CARGO := . $$HOME/.cargo/env && cargo
+CARGO := if [ -f "$$HOME/.cargo/env" ]; then . "$$HOME/.cargo/env"; fi && cargo
 RUST_DIR := ssmd-rust
 
 # Setup development dependencies (Debian/Ubuntu)
