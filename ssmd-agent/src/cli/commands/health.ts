@@ -838,7 +838,7 @@ async function scoreConnectorFeed(
   };
 }
 
-const ARCHIVE_FEEDS = ["kalshi-crypto", "kalshi-sports", "kraken-futures", "kraken-spot"];
+const ARCHIVE_FEEDS = ["kalshi", "kalshi-sports", "kraken-futures", "kraken-spot"];
 
 async function scoreArchiveSync(): Promise<{ score: number; details: Record<string, unknown> }> {
   // Check GCS archive freshness via data-ts /v1/data/freshness endpoint.

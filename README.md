@@ -255,6 +255,120 @@ REST API with API key auth (`X-API-Key` header). Scopes: `secmaster:read`, `data
 | `feed` | Feed configuration management |
 | `init` | Initialize exchanges directory |
 
+## Prometheus Metrics
+
+All components expose metrics on `/metrics` (default port 9090). Scraped by GMP PodMonitoring at 60s intervals.
+
+### Connector (`ssmd-connector`)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `ssmd_connector_messages_total` | Counter | feed, category, shard, message_type | Total messages received |
+| `ssmd_connector_last_activity_timestamp` | Gauge | feed, category, shard | Unix timestamp of last WS activity per shard |
+| `ssmd_connector_websocket_connected` | Gauge | feed, category, shard | WS connection status (1=connected, 0=disconnected) |
+| `ssmd_connector_shards_total` | Gauge | feed, category | Total number of WS shards |
+| `ssmd_connector_markets_subscribed` | Gauge | feed, category, shard | Markets subscribed per shard |
+| `ssmd_connector_markets_unsubscribed_total` | Counter | feed, category, shard | Markets unsubscribed (settled/closed) |
+| `ssmd_connector_markets_requested` | Gauge | feed, category | Total markets loaded from secmaster |
+| `ssmd_connector_markets_overflow` | Gauge | feed, category | Markets not assigned to any shard (no capacity) |
+| `ssmd_connector_shard_capacity` | Gauge | feed, category | Maximum markets per shard (configured) |
+| `ssmd_connector_parse_errors_total` | Counter | feed, category, shard | Messages that failed to deserialize |
+| `ssmd_connector_idle_seconds` | Gauge | feed, category, shard | Seconds since last message per shard |
+| `ssmd_connector_ws_process_duration_seconds` | Histogram | feed | End-to-end WS message processing duration |
+| `ssmd_connector_nats_publish_duration_seconds` | Histogram | feed | NATS publish duration |
+
+### Archiver (`ssmd-archiver`)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `ssmd_archiver_messages_total` | Counter | feed, stream, message_type | Total messages written |
+| `ssmd_archiver_bytes_total` | Counter | feed, stream | Total bytes written |
+| `ssmd_archiver_files_rotated_total` | Counter | feed, stream | File rotations completed |
+| `ssmd_archiver_validation_failures_total` | Counter | feed, stream | Validation failures |
+| `ssmd_archiver_parse_failures_total` | Counter | feed, stream | Parse failures |
+| `ssmd_archiver_gaps_total` | Counter | feed, stream | NATS sequence gaps detected |
+| `ssmd_archiver_active_streams` | Gauge | — | Active stream subscriptions |
+| `ssmd_archiver_last_message_timestamp` | Gauge | feed, stream | Unix timestamp of last message archived |
+
+### CDC (`ssmd-cdc`)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `ssmd_cdc_events_published_total` | Counter | table | CDC events published to NATS |
+| `ssmd_cdc_events_skipped_total` | Counter | — | CDC events skipped (table filter) |
+| `ssmd_cdc_poll_errors_total` | Counter | — | CDC poll failures |
+| `ssmd_cdc_last_publish_timestamp` | Gauge | — | Unix epoch of last successful publish |
+| `ssmd_cdc_polls_total` | Counter | — | Total poll iterations |
+| `ssmd_cdc_publish_errors_total` | Counter | table | Events that failed to publish to NATS |
+
+### Cache (`ssmd-cache`)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `ssmd_cache_cdc_events_total` | Counter | table, operation | CDC events processed |
+| `ssmd_cache_cdc_last_event_timestamp` | Gauge | — | Unix epoch of last CDC event |
+| `ssmd_cache_cdc_gaps_total` | Counter | — | LSN gaps detected |
+| `ssmd_cache_cdc_skipped_total` | Counter | — | Events skipped (LSN before snapshot) |
+| `ssmd_cache_redis_writes_total` | Counter | operation | Redis HSET/HDEL operations |
+
+### Snap (`ssmd-snap`)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `snap_messages_received_total` | Counter | feed | Ticker messages received from NATS |
+| `snap_redis_writes_total` | Counter | feed | Successful Redis SET operations |
+| `snap_errors_total` | Counter | feed, error_type | Errors encountered |
+
+### Harman EMS (`ssmd-harman-ems`)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `harman_orders_dequeued_total` | Counter | — | Orders dequeued from queue |
+| `harman_orders_submitted_total` | Counter | — | Orders submitted to exchange |
+| `harman_orders_rejected_total` | Counter | — | Orders rejected by exchange |
+| `harman_orders_cancelled_total` | Counter | — | Orders cancelled |
+| `harman_fills_recorded_total` | Counter | — | Fills recorded |
+| `harman_orders_amended_total` | Counter | — | Orders amended on exchange |
+| `harman_orders_decreased_total` | Counter | — | Orders decreased on exchange |
+
+### Harman OMS (`ssmd-harman-oms`)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `harman_reconciliation_ok_total` | Counter | — | Successful reconciliation cycles |
+| `harman_reconciliation_mismatch_total` | Counter | severity | Position mismatches detected |
+| `harman_reconciliation_duration_seconds` | Histogram | — | Reconciliation cycle duration |
+| `harman_reconciliation_last_success_timestamp` | Gauge | — | Epoch of last successful reconciliation |
+| `harman_reconciliation_fills_discovered_total` | Counter | — | Fills discovered during reconciliation |
+| `harman_reconciliation_settlements_discovered_total` | Counter | — | Settlements discovered during reconciliation |
+| `harman_fills_external_imported_total` | Counter | — | External fills imported as synthetic orders |
+
+### data-ts (`ssmd-agent/src/server/`)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `ssmd_data_http_request_duration_seconds` | Histogram | method, path, status | HTTP request latency |
+| `ssmd_data_http_requests_total` | Counter | method, path, status | Total HTTP requests |
+| `ssmd_data_http_in_flight_requests` | Gauge | — | Requests currently being processed |
+| `ssmd_data_records_served_total` | Counter | feed | Records served from datasets |
+| `ssmd_data_datasets_scanned_total` | Counter | feed | Datasets scanned |
+| `ssmd_api_requests_total` | Counter | key_prefix, method, path, status | API requests by key prefix |
+| `ssmd_api_rate_limit_hits_total` | Counter | key_prefix | Rate limit hits by key prefix |
+| `ssmd_api_request_duration_seconds` | Histogram | method, path | API request duration |
+
+### Funding Rate Consumer
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `ssmd_funding_rate_messages_total` | Counter | — | Ticker messages processed |
+| `ssmd_funding_rate_flushes_total` | Counter | — | Flush cycles completed |
+| `ssmd_funding_rate_snapshots_total` | Counter | — | Snapshots written to DB |
+| `ssmd_funding_rate_products_tracked` | Gauge | — | Products currently tracked |
+| `ssmd_funding_rate_last_flush_timestamp` | Gauge | — | Unix timestamp of last successful flush |
+| `ssmd_funding_rate_buffer_size` | Gauge | — | Current buffered ticker entries |
+| `ssmd_funding_rate_connected` | Gauge | — | NATS consumer connected (1/0) |
+| `ssmd_funding_rate_flush_errors_total` | Counter | — | Flush errors |
+
 ## Documentation
 
 | Doc | Purpose |
