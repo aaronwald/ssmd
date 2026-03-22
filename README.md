@@ -1,4 +1,4 @@
-# ssmd - Vibing Market Data
+# ssmd - Market Data Vibes
 
 Market data capture, archival, signal development, and order management platform. Connects to exchange WebSocket APIs, publishes to NATS JetStream, archives to compressed files, and manages order lifecycle across exchanges.
 

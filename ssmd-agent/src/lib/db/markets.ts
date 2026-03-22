@@ -126,12 +126,14 @@ export async function upsertMarkets(
           ${markets.status}, ${markets.closeTime}, ${markets.yesBid}, ${markets.yesAsk},
           ${markets.noBid}, ${markets.noAsk}, ${markets.lastPrice}, ${markets.volume},
           ${markets.volume24h}, ${markets.openInterest}, ${markets.result},
-          ${markets.expirationValue}, ${markets.canCloseEarly}, ${markets.deletedAt}
+          ${markets.expirationValue}, ${markets.canCloseEarly}, ${markets.deletedAt},
+          ${markets.expectedExpirationTime}
         ) IS DISTINCT FROM (
           excluded.status, excluded.close_time, excluded.yes_bid, excluded.yes_ask,
           excluded.no_bid, excluded.no_ask, excluded.last_price, excluded.volume,
           excluded.volume_24h, excluded.open_interest, excluded.result,
-          excluded.expiration_value, excluded.can_close_early, NULL
+          excluded.expiration_value, excluded.can_close_early, NULL,
+          excluded.expected_expiration_time
         )`,
       });
   }
