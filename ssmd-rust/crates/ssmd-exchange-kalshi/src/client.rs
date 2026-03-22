@@ -618,7 +618,11 @@ impl ExchangeAdapter for KalshiRestClient {
                 let status = Self::map_order_status(&o);
                 let side = Self::parse_side(&o.side);
                 let action = Self::parse_action(&o.action);
-                let price_dollars = Decimal::new(o.yes_price, 2);
+                let price_dollars = o
+                    .yes_price_dollars
+                    .as_ref()
+                    .and_then(|s| s.parse::<Decimal>().ok())
+                    .unwrap_or_else(|| Decimal::new(o.yes_price.unwrap_or(0), 2));
                 let client_order_id = o
                     .client_order_id
                     .as_deref()
@@ -691,20 +695,30 @@ impl ExchangeAdapter for KalshiRestClient {
                         Ok(d) => d,
                         Err(e) => {
                             error!(trade_id = %f.trade_id, raw = %s, error = %e, "REST fill yes_price_dollars parse failed — falling back to yes_price cents");
-                            Decimal::new(f.yes_price, 2)
+                            match f.yes_price {
+                                Some(cents) if cents > 0 => Decimal::new(cents, 2),
+                                _ => {
+                                    error!(trade_id = %f.trade_id, "REST fill: yes_price_dollars unparseable and yes_price missing — fill price unknown");
+                                    Decimal::ZERO
+                                }
+                            }
                         }
                     }
-                } else if f.yes_price > 0 {
-                    Decimal::new(f.yes_price, 2)
                 } else {
-                    error!(trade_id = %f.trade_id, "REST fill has no yes_price_dollars and yes_price is 0 — fill price unknown");
-                    Decimal::ZERO
+                    match f.yes_price {
+                        Some(cents) if cents > 0 => Decimal::new(cents, 2),
+                        _ => {
+                            error!(trade_id = %f.trade_id, "REST fill has no yes_price_dollars and no yes_price — fill price unknown");
+                            Decimal::ZERO
+                        }
+                    }
                 };
 
                 let quantity = f.count_fp
                     .as_ref()
                     .and_then(|s| s.parse::<Decimal>().ok())
-                    .unwrap_or_else(|| Decimal::from(f.count));
+                    .or_else(|| f.count.map(Decimal::from))
+                    .unwrap_or(Decimal::ZERO);
 
                 ExchangeFill {
                     trade_id: f.trade_id,
@@ -792,7 +806,15 @@ impl ExchangeAdapter for KalshiRestClient {
                 .map_err(|e| ExchangeError::Unexpected(e.to_string()))?;
 
             let new_order = &amend_resp.order;
-            let yes_price = new_order.yes_price;
+            let new_price = new_order
+                .yes_price_dollars
+                .as_ref()
+                .and_then(|s| s.parse::<Decimal>().ok())
+                .or_else(|| new_order.yes_price.map(|c| Decimal::new(c, 2)))
+                .ok_or_else(|| ExchangeError::Unexpected(format!(
+                    "amend response for order {} has no yes_price_dollars and no yes_price",
+                    new_order.order_id
+                )))?;
             let remaining = new_order.effective_remaining();
 
             // Kalshi amend creates a new unfilled order — the response only
@@ -800,7 +822,7 @@ impl ExchangeAdapter for KalshiRestClient {
             // the total quantity for the new order.
             Ok(AmendResult {
                 exchange_order_id: new_order.order_id.clone(),
-                new_price_dollars: Decimal::new(yes_price, 2),
+                new_price_dollars: new_price,
                 new_quantity: Decimal::from(remaining),
                 filled_quantity: Decimal::ZERO,
                 remaining_quantity: Decimal::from(remaining),

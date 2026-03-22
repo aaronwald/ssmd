@@ -31,9 +31,13 @@ pub struct KalshiOrder {
     pub side: String,
     pub action: String,
     #[serde(default)]
-    pub yes_price: i64,
+    pub yes_price: Option<i64>,
     #[serde(default)]
-    pub no_price: i64,
+    pub yes_price_dollars: Option<String>,
+    #[serde(default)]
+    pub no_price: Option<i64>,
+    #[serde(default)]
+    pub no_price_dollars: Option<String>,
     #[serde(default)]
     pub count_fp: Option<String>,
     #[serde(default)]
@@ -116,13 +120,15 @@ pub struct KalshiFill {
     pub side: String,
     pub action: String,
     #[serde(default)]
-    pub yes_price: i64,
+    pub yes_price: Option<i64>,
     #[serde(default)]
     pub yes_price_dollars: Option<String>,
     #[serde(default)]
-    pub no_price: i64,
+    pub no_price: Option<i64>,
     #[serde(default)]
-    pub count: i64,
+    pub no_price_dollars: Option<String>,
+    #[serde(default)]
+    pub count: Option<i64>,
     #[serde(default)]
     pub count_fp: Option<String>,
     pub is_taker: bool,

@@ -84,7 +84,9 @@ pub struct ErrorData {
 
 /// Fill event from the `fill` private channel.
 ///
-/// `yes_price` is in cents (1-99). `ts` is Unix seconds.
+/// Kalshi is migrating from integer cents (`yes_price`) to dollar strings
+/// (`yes_price_dollars`). We accept both — prefer `yes_price_dollars` when
+/// present, fall back to `yes_price` cents. `ts` is Unix seconds.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FillData {
     pub trade_id: String,
@@ -92,7 +94,14 @@ pub struct FillData {
     pub market_ticker: String,
     pub is_taker: bool,
     pub side: String,
-    pub yes_price: i64,
+    #[serde(default)]
+    pub yes_price: Option<i64>,
+    #[serde(default)]
+    pub yes_price_dollars: Option<String>,
+    #[serde(default)]
+    pub no_price: Option<i64>,
+    #[serde(default)]
+    pub no_price_dollars: Option<String>,
     #[serde(default)]
     pub count: Option<i64>,
     #[serde(default)]
@@ -106,10 +115,14 @@ pub struct FillData {
 impl FillData {
     /// Convert to `ExchangeEvent::Fill`.
     ///
-    /// `yes_price` (cents) → divide by 100 for dollars.
+    /// Prefers `yes_price_dollars` (string) over `yes_price` (cents).
     /// `count_fp` is preferred over `count` for quantity.
     pub fn to_exchange_event(&self) -> Option<ExchangeEvent> {
-        let price_dollars = Decimal::new(self.yes_price, 2);
+        let price_dollars = self
+            .yes_price_dollars
+            .as_ref()
+            .and_then(|s| s.parse::<Decimal>().ok())
+            .or_else(|| self.yes_price.map(|c| Decimal::new(c, 2)))?;
         let quantity = self
             .count_fp
             .as_ref()
@@ -365,7 +378,7 @@ mod tests {
             WsPrivateMessage::Fill { sid, msg } => {
                 assert_eq!(sid, Some(2));
                 assert_eq!(msg.market_ticker, "KXBTCD-26MAR0620-T105000");
-                assert_eq!(msg.yes_price, 62);
+                assert_eq!(msg.yes_price, Some(62));
                 assert!(msg.is_taker);
                 assert_eq!(msg.action, "buy");
 
@@ -378,6 +391,53 @@ mod tests {
                     } => {
                         assert_eq!(price_dollars, Decimal::new(62, 2)); // $0.62
                         assert_eq!(quantity, Decimal::new(1000, 2)); // 10.00
+                    }
+                    _ => panic!("expected Fill event"),
+                }
+            }
+            _ => panic!("expected Fill variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_fill_dollar_string_only() {
+        // Kalshi new format: yes_price_dollars instead of yes_price integer
+        let json = r#"{
+            "type": "fill",
+            "sid": 1,
+            "msg": {
+                "trade_id": "7c101b39-01c1-7db0-b018-63cc06278365",
+                "order_id": "3ded933f-469f-4fcd-8575-46261fd8c1b8",
+                "market_ticker": "KXNBAGAME-26MAR22BKNSAC-SAC",
+                "is_taker": true,
+                "side": "yes",
+                "yes_price_dollars": "0.7200",
+                "count_fp": "18.00",
+                "fee_cost": "0.2600",
+                "action": "buy",
+                "post_position_fp": "18.00",
+                "purchased_side": "yes",
+                "ts": 1774223390,
+                "subaccount": 0
+            }
+        }"#;
+        let msg: WsPrivateMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            WsPrivateMessage::Fill { msg, .. } => {
+                assert!(msg.yes_price.is_none(), "yes_price should be absent");
+                assert_eq!(msg.yes_price_dollars.as_deref(), Some("0.7200"));
+
+                let event = msg.to_exchange_event().unwrap();
+                match event {
+                    ExchangeEvent::Fill {
+                        price_dollars,
+                        quantity,
+                        ticker,
+                        ..
+                    } => {
+                        assert_eq!(price_dollars, Decimal::new(7200, 4)); // $0.7200
+                        assert_eq!(quantity, Decimal::new(1800, 2)); // 18.00
+                        assert_eq!(ticker, "KXNBAGAME-26MAR22BKNSAC-SAC");
                     }
                     _ => panic!("expected Fill event"),
                 }
