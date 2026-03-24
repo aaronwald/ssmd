@@ -1,5 +1,6 @@
+use futures_util::TryStreamExt;
 use tokio_postgres::{Client, NoTls};
-use crate::{Result, cache::RedisCache};
+use crate::{Result, Error, cache::RedisCache};
 
 pub struct CacheWarmer {
     client: Client,
@@ -7,11 +8,15 @@ pub struct CacheWarmer {
 
 impl CacheWarmer {
     pub async fn connect(database_url: &str) -> Result<Self> {
+        if database_url.is_empty() {
+            return Err(Error::Database("DATABASE_URL is empty".to_string()));
+        }
         let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
-                tracing::error!(error = %e, "PostgreSQL connection error");
+                tracing::error!(error = %e, "PostgreSQL connection error — exiting");
+                std::process::exit(1);
             }
         });
 
@@ -29,9 +34,8 @@ impl CacheWarmer {
     /// Build monitor index hashes for hierarchical browsing.
     /// Only includes live data: events with at least one market whose close_time > NOW().
     ///
-    /// Uses DEL-before-repopulate: clears all monitor:* keys first, then rebuilds from
-    /// Postgres with `WHERE status = 'active'`. This provides a 5-minute bound on stale
-    /// data even if CDC misses a lifecycle transition.
+    /// Uses :_tmp suffix keys with atomic RENAME to avoid empty reads during rebuild.
+    /// All queries use streaming cursors to avoid materializing full result sets in memory.
     ///
     /// Creates:
     ///   monitor:categories          → { cat: {"event_count":N,"series_count":N} }
@@ -39,253 +43,269 @@ impl CacheWarmer {
     ///   monitor:events:{series}     → { event: {"title":"...","status":"...","strike_date":"...","market_count":N} }
     ///   monitor:markets:{event}     → { market: {"title":"...","status":"...","close_time":"..."} }
     ///
-    /// Also warms Kraken pairs and Polymarket conditions into the same hierarchy.
+    /// Also warms Kraken pairs into the same hierarchy.
     pub async fn warm_monitor_indexes(&self, cache: &RedisCache) -> Result<u64> {
         let start = std::time::Instant::now();
 
         // Write all data to :_tmp suffix keys, then atomically RENAME to final keys.
-        // This avoids the race where DEL-before-rebuild leaves empty results for readers.
         let mut tmp_keys: Vec<String> = Vec::new();
         let mut final_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut total_keys: u64 = 0;
 
         // 1. Categories: only categories that have events with live markets
-        let cat_rows = self.client
-            .query(
-                r#"
-                SELECT e.category,
-                       COUNT(DISTINCT e.event_ticker) AS event_count,
-                       COUNT(DISTINCT e.series_ticker) AS series_count
-                FROM events e
-                WHERE e.status = 'active'
-                  AND e.category IS NOT NULL
-                  AND EXISTS (
-                    SELECT 1 FROM markets m
-                    WHERE m.event_ticker = e.event_ticker
-                      AND m.status = 'active'
-                      AND m.close_time > NOW()
-                  )
-                GROUP BY e.category
-                "#,
-                &[],
-            )
-            .await?;
-
-        let mut total_keys: u64 = 0;
         let tmp_cat_key = "monitor:categories:_tmp".to_string();
-        for row in &cat_rows {
-            let category: String = row.get(0);
-            let event_count: i64 = row.get(1);
-            let series_count: i64 = row.get(2);
-            let val = serde_json::json!({
-                "event_count": event_count,
-                "series_count": series_count,
-            });
-            cache.hset(&tmp_cat_key, &category, &val.to_string()).await?;
+        {
+            let stream = self.client
+                .query_raw(
+                    r#"
+                    SELECT e.category,
+                           COUNT(DISTINCT e.event_ticker) AS event_count,
+                           COUNT(DISTINCT e.series_ticker) AS series_count
+                    FROM events e
+                    WHERE e.status = 'active'
+                      AND e.category IS NOT NULL
+                      AND EXISTS (
+                        SELECT 1 FROM markets m
+                        WHERE m.event_ticker = e.event_ticker
+                          AND m.status = 'active'
+                          AND m.close_time > NOW()
+                      )
+                    GROUP BY e.category
+                    "#,
+                    &[] as &[&str],
+                )
+                .await?;
+            tokio::pin!(stream);
+            let mut count = 0u64;
+            while let Some(row) = stream.try_next().await? {
+                let category: String = row.get(0);
+                let event_count: i64 = row.get(1);
+                let series_count: i64 = row.get(2);
+                let val = serde_json::json!({
+                    "event_count": event_count,
+                    "series_count": series_count,
+                });
+                cache.hset(&tmp_cat_key, &category, &val.to_string()).await?;
+                count += 1;
+            }
+            tmp_keys.push(tmp_cat_key);
+            final_keys.insert("monitor:categories".to_string());
+            total_keys += count;
+            tracing::info!(categories = count, "Warmed monitor:categories:_tmp");
         }
-        tmp_keys.push(tmp_cat_key);
-        final_keys.insert("monitor:categories".to_string());
-        total_keys += cat_rows.len() as u64;
-        tracing::info!(categories = cat_rows.len(), "Warmed monitor:categories:_tmp (Kalshi)");
 
         // 2. Series per category: only series with live events/markets
-        let series_rows = self.client
-            .query(
-                r#"
-                SELECT e.category, s.ticker, s.title,
-                       COUNT(DISTINCT e.event_ticker) AS active_events,
-                       COUNT(DISTINCT m.ticker) AS active_markets
-                FROM series s
-                JOIN events e ON e.series_ticker = s.ticker AND e.status = 'active'
-                  AND EXISTS (
-                    SELECT 1 FROM markets m2
-                    WHERE m2.event_ticker = e.event_ticker
-                      AND m2.status = 'active'
-                      AND m2.close_time > NOW()
-                  )
-                LEFT JOIN markets m ON m.event_ticker = e.event_ticker
-                  AND m.status = 'active' AND m.close_time > NOW()
-                WHERE e.category IS NOT NULL
-                GROUP BY e.category, s.ticker, s.title
-                "#,
-                &[],
-            )
-            .await?;
-
-        for row in &series_rows {
-            let category: String = row.get(0);
-            let ticker: String = row.get(1);
-            let title: Option<String> = row.get(2);
-            let active_events: i64 = row.get(3);
-            let active_markets: i64 = row.get(4);
-            let val = serde_json::json!({
-                "title": title.unwrap_or_default(),
-                "active_events": active_events,
-                "active_markets": active_markets,
-            });
-            let tmp_key = format!("monitor:series:{}:_tmp", category);
-            let final_key = format!("monitor:series:{}", category);
-            cache.hset(&tmp_key, &ticker, &val.to_string()).await?;
-            if final_keys.insert(final_key) {
-                tmp_keys.push(tmp_key);
+        {
+            let stream = self.client
+                .query_raw(
+                    r#"
+                    SELECT e.category, s.ticker, s.title,
+                           COUNT(DISTINCT e.event_ticker) AS active_events,
+                           COUNT(DISTINCT m.ticker) AS active_markets
+                    FROM series s
+                    JOIN events e ON e.series_ticker = s.ticker AND e.status = 'active'
+                      AND EXISTS (
+                        SELECT 1 FROM markets m2
+                        WHERE m2.event_ticker = e.event_ticker
+                          AND m2.status = 'active'
+                          AND m2.close_time > NOW()
+                      )
+                    LEFT JOIN markets m ON m.event_ticker = e.event_ticker
+                      AND m.status = 'active' AND m.close_time > NOW()
+                    WHERE e.category IS NOT NULL
+                    GROUP BY e.category, s.ticker, s.title
+                    "#,
+                    &[] as &[&str],
+                )
+                .await?;
+            tokio::pin!(stream);
+            let mut count = 0u64;
+            while let Some(row) = stream.try_next().await? {
+                let category: String = row.get(0);
+                let ticker: String = row.get(1);
+                let title: Option<String> = row.get(2);
+                let active_events: i64 = row.get(3);
+                let active_markets: i64 = row.get(4);
+                let val = serde_json::json!({
+                    "title": title.unwrap_or_default(),
+                    "active_events": active_events,
+                    "active_markets": active_markets,
+                });
+                let tmp_key = format!("monitor:series:{}:_tmp", category);
+                let final_key = format!("monitor:series:{}", category);
+                cache.hset(&tmp_key, &ticker, &val.to_string()).await?;
+                if final_keys.insert(final_key) {
+                    tmp_keys.push(tmp_key);
+                }
+                count += 1;
             }
+            total_keys += count;
+            tracing::info!(series_entries = count, "Warmed monitor:series:*:_tmp");
         }
-        total_keys += series_rows.len() as u64;
-        tracing::info!(series_entries = series_rows.len(), "Warmed monitor:series:*:_tmp");
 
         // 3. Events per series: only events with live markets, with accurate market_count
-        let event_rows = self.client
-            .query(
-                r#"
-                SELECT e.series_ticker, e.event_ticker, e.title, e.status,
-                       e.strike_date::text,
-                       COUNT(m.ticker) AS market_count,
-                       MIN(m.expected_expiration_time)::text AS expected_expiration_time
-                FROM events e
-                JOIN markets m ON m.event_ticker = e.event_ticker
-                  AND m.status = 'active' AND m.close_time > NOW()
-                WHERE e.status = 'active'
-                GROUP BY e.series_ticker, e.event_ticker, e.title, e.status, e.strike_date
-                "#,
-                &[],
-            )
-            .await?;
-
-        for row in &event_rows {
-            let series_ticker: String = row.get(0);
-            let event_ticker: String = row.get(1);
-            let title: Option<String> = row.get(2);
-            let status: String = row.get(3);
-            let strike_date: Option<String> = row.get(4);
-            let market_count: i64 = row.get(5);
-            let expected_expiration_time: Option<String> = row.get(6);
-            let val = serde_json::json!({
-                "title": title.unwrap_or_default(),
-                "status": status,
-                "strike_date": strike_date,
-                "market_count": market_count,
-                "expected_expiration_time": expected_expiration_time,
-            });
-            let tmp_key = format!("monitor:events:{}:_tmp", series_ticker);
-            let final_key = format!("monitor:events:{}", series_ticker);
-            cache.hset(&tmp_key, &event_ticker, &val.to_string()).await?;
-            if final_keys.insert(final_key) {
-                tmp_keys.push(tmp_key);
+        {
+            let stream = self.client
+                .query_raw(
+                    r#"
+                    SELECT e.series_ticker, e.event_ticker, e.title, e.status,
+                           e.strike_date::text,
+                           COUNT(m.ticker) AS market_count,
+                           MIN(m.expected_expiration_time)::text AS expected_expiration_time
+                    FROM events e
+                    JOIN markets m ON m.event_ticker = e.event_ticker
+                      AND m.status = 'active' AND m.close_time > NOW()
+                    WHERE e.status = 'active'
+                    GROUP BY e.series_ticker, e.event_ticker, e.title, e.status, e.strike_date
+                    "#,
+                    &[] as &[&str],
+                )
+                .await?;
+            tokio::pin!(stream);
+            let mut count = 0u64;
+            while let Some(row) = stream.try_next().await? {
+                let series_ticker: String = row.get(0);
+                let event_ticker: String = row.get(1);
+                let title: Option<String> = row.get(2);
+                let status: String = row.get(3);
+                let strike_date: Option<String> = row.get(4);
+                let market_count: i64 = row.get(5);
+                let expected_expiration_time: Option<String> = row.get(6);
+                let val = serde_json::json!({
+                    "title": title.unwrap_or_default(),
+                    "status": status,
+                    "strike_date": strike_date,
+                    "market_count": market_count,
+                    "expected_expiration_time": expected_expiration_time,
+                });
+                let tmp_key = format!("monitor:events:{}:_tmp", series_ticker);
+                let final_key = format!("monitor:events:{}", series_ticker);
+                cache.hset(&tmp_key, &event_ticker, &val.to_string()).await?;
+                if final_keys.insert(final_key) {
+                    tmp_keys.push(tmp_key);
+                }
+                count += 1;
             }
+            total_keys += count;
+            tracing::info!(event_entries = count, "Warmed monitor:events:*:_tmp");
         }
-        total_keys += event_rows.len() as u64;
-        tracing::info!(event_entries = event_rows.len(), "Warmed monitor:events:*:_tmp");
 
         // 4. Markets per event: only live markets (close_time in future)
-        let market_rows = self.client
-            .query(
-                r#"
-                SELECT m.event_ticker, m.ticker, m.title, m.status, m.close_time::text,
-                       m.expected_expiration_time::text
-                FROM markets m
-                WHERE m.status = 'active'
-                  AND m.close_time > NOW()
-                "#,
-                &[],
-            )
-            .await?;
-
-        for row in &market_rows {
-            let event_ticker: String = row.get(0);
-            let market_ticker: String = row.get(1);
-            let title: Option<String> = row.get(2);
-            let status: String = row.get(3);
-            let close_time: Option<String> = row.get(4);
-            let expected_expiration_time: Option<String> = row.get(5);
-            let val = serde_json::json!({
-                "title": title.unwrap_or_default(),
-                "status": status,
-                "close_time": close_time,
-                "expected_expiration_time": expected_expiration_time,
-            });
-            let tmp_key = format!("monitor:markets:{}:_tmp", event_ticker);
-            let final_key = format!("monitor:markets:{}", event_ticker);
-            cache.hset(&tmp_key, &market_ticker, &val.to_string()).await?;
-            if final_keys.insert(final_key) {
-                tmp_keys.push(tmp_key);
+        {
+            let stream = self.client
+                .query_raw(
+                    r#"
+                    SELECT m.event_ticker, m.ticker, m.title, m.status, m.close_time::text,
+                           m.expected_expiration_time::text
+                    FROM markets m
+                    WHERE m.status = 'active'
+                      AND m.close_time > NOW()
+                    "#,
+                    &[] as &[&str],
+                )
+                .await?;
+            tokio::pin!(stream);
+            let mut count = 0u64;
+            while let Some(row) = stream.try_next().await? {
+                let event_ticker: String = row.get(0);
+                let market_ticker: String = row.get(1);
+                let title: Option<String> = row.get(2);
+                let status: String = row.get(3);
+                let close_time: Option<String> = row.get(4);
+                let expected_expiration_time: Option<String> = row.get(5);
+                let val = serde_json::json!({
+                    "title": title.unwrap_or_default(),
+                    "status": status,
+                    "close_time": close_time,
+                    "expected_expiration_time": expected_expiration_time,
+                });
+                let tmp_key = format!("monitor:markets:{}:_tmp", event_ticker);
+                let final_key = format!("monitor:markets:{}", event_ticker);
+                cache.hset(&tmp_key, &market_ticker, &val.to_string()).await?;
+                if final_keys.insert(final_key) {
+                    tmp_keys.push(tmp_key);
+                }
+                count += 1;
             }
+            total_keys += count;
+            tracing::info!(market_entries = count, "Warmed monitor:markets:*:_tmp");
         }
-        total_keys += market_rows.len() as u64;
-        tracing::info!(market_entries = market_rows.len(), "Warmed monitor:markets:*:_tmp");
 
-        // 4b. Warm lifecycle events into existing market hashes
-        let lifecycle_rows = self.client
-            .query(
-                r#"
-                SELECT mle.market_ticker, mle.event_type, mle.received_at::text,
-                       mle.metadata::text
-                FROM market_lifecycle_events mle
-                JOIN markets m ON m.ticker = mle.market_ticker
-                WHERE m.status = 'active'
-                  AND m.close_time > NOW()
-                ORDER BY mle.market_ticker, mle.received_at
-                "#,
-                &[],
-            )
-            .await?;
+        // 4b. Warm lifecycle events into existing market hashes (streamed, grouped by market)
+        {
+            let stream = self.client
+                .query_raw(
+                    r#"
+                    SELECT mle.market_ticker, mle.event_type, mle.received_at::text,
+                           mle.metadata::text
+                    FROM market_lifecycle_events mle
+                    JOIN markets m ON m.ticker = mle.market_ticker
+                    WHERE m.status = 'active'
+                      AND m.close_time > NOW()
+                    ORDER BY mle.market_ticker, mle.received_at
+                    "#,
+                    &[] as &[&str],
+                )
+                .await?;
+            tokio::pin!(stream);
 
-        let mut lifecycle_by_market: std::collections::HashMap<String, Vec<serde_json::Value>> =
-            std::collections::HashMap::new();
-        for row in &lifecycle_rows {
-            let market_ticker: String = row.get(0);
-            let event_type: String = row.get(1);
-            let received_at: Option<String> = row.get(2);
-            let metadata_str: Option<String> = row.get(3);
-            let metadata: serde_json::Value = metadata_str
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or(serde_json::json!({}));
+            // Stream rows and flush per-market batch when market_ticker changes.
+            // ORDER BY market_ticker guarantees contiguous grouping.
+            let mut current_market: Option<String> = None;
+            let mut lifecycle_batch: Vec<serde_json::Value> = Vec::new();
+            let mut lifecycle_count = 0u64;
+            let mut total_lifecycle_events = 0u64;
 
-            lifecycle_by_market
-                .entry(market_ticker)
-                .or_default()
-                .push(serde_json::json!({
+            while let Some(row) = stream.try_next().await? {
+                let market_ticker: String = row.get(0);
+                let event_type: String = row.get(1);
+                let received_at: Option<String> = row.get(2);
+                let metadata_str: Option<String> = row.get(3);
+                let metadata: serde_json::Value = match metadata_str {
+                    Some(s) => serde_json::from_str(&s).map_err(|e| {
+                        Error::Database(format!("malformed lifecycle metadata for {}: {}", market_ticker, e))
+                    })?,
+                    None => serde_json::json!({}),
+                };
+                total_lifecycle_events += 1;
+
+                // Flush previous batch if market changed
+                if current_market.as_deref() != Some(&market_ticker) {
+                    if let Some(ref prev_market) = current_market {
+                        lifecycle_count += flush_lifecycle(cache, prev_market, &lifecycle_batch).await?;
+                    }
+                    lifecycle_batch.clear();
+                    current_market = Some(market_ticker.clone());
+                }
+
+                lifecycle_batch.push(serde_json::json!({
                     "type": event_type,
                     "ts": received_at.unwrap_or_default(),
                     "metadata": metadata,
                 }));
-        }
-
-        let mut lifecycle_count = 0u64;
-        for (market_ticker, events) in &lifecycle_by_market {
-            let event_ticker = extract_event_ticker(market_ticker);
-            let tmp_key = format!("monitor:markets:{}:_tmp", event_ticker);
-
-            let existing: Option<String> = cache.hget(&tmp_key, market_ticker).await.unwrap_or(None);
-            if let Some(existing_str) = existing {
-                if let Ok(mut market_json) = serde_json::from_str::<serde_json::Value>(&existing_str) {
-                    if let Some(obj) = market_json.as_object_mut() {
-                        obj.insert("lifecycle_events".to_string(), serde_json::json!(events));
-                    }
-                    cache.hset(&tmp_key, market_ticker, &market_json.to_string()).await?;
-                    lifecycle_count += 1;
-                }
             }
+            // Flush final batch
+            if let Some(ref prev_market) = current_market {
+                lifecycle_count += flush_lifecycle(cache, prev_market, &lifecycle_batch).await?;
+            }
+
+            tracing::info!(
+                markets_with_lifecycle = lifecycle_count,
+                total_lifecycle_events,
+                "Warmed lifecycle events into monitor:markets:*"
+            );
         }
-        tracing::info!(
-            markets_with_lifecycle = lifecycle_count,
-            total_lifecycle_events = lifecycle_rows.len(),
-            "Warmed lifecycle events into monitor:markets:*"
-        );
 
         // 5. Kraken Futures pairs → merged into monitor hierarchy
         total_keys += self.warm_pairs_monitor(cache, &mut tmp_keys, &mut final_keys).await?;
 
-        // 6. Polymarket conditions/tokens → merged into monitor hierarchy
-        total_keys += self.warm_polymarket_monitor(cache, &mut tmp_keys, &mut final_keys).await?;
-
         // Atomic swap: RENAME each :_tmp key to its final name.
-        // Readers see either old complete data or new complete data, never empty.
         let mut renamed = 0u64;
         let mut empty_deleted = 0u64;
         for tmp_key in &tmp_keys {
             let final_key = tmp_key.trim_end_matches(":_tmp");
             let len = cache.hlen(tmp_key).await?;
             if len == 0 {
-                // No data written — clean up both tmp and final
                 let _ = cache.del_key(tmp_key).await;
                 let _ = cache.del_key(final_key).await;
                 empty_deleted += 1;
@@ -319,12 +339,15 @@ impl CacheWarmer {
 
     /// Warm Kraken pairs into the monitor hierarchy.
     ///
+    /// Kraken pairs are few (~20-50), so grouping by base currency in memory is fine.
+    ///
     /// Hierarchy mapping:
     ///   Category: "Kraken Futures"
     ///   Series:   base currency group (BTC, ETH, etc.)
     ///   Event:    "{base}-perps" synthetic event for perpetuals
-    ///   Market:   "kraken:{pair_id}" (e.g., "kraken:PF_XBTUSD")
+    ///   Market:   pair_id (e.g., "PF_XBTUSD")
     async fn warm_pairs_monitor(&self, cache: &RedisCache, tmp_keys: &mut Vec<String>, final_keys: &mut std::collections::HashSet<String>) -> Result<u64> {
+        // Kraken pairs are few (~20-50), collect to group by base currency
         let rows = self.client
             .query(
                 r#"
@@ -345,7 +368,6 @@ impl CacheWarmer {
             return Ok(0);
         }
 
-        // Group by base currency for series/event aggregation
         let mut base_groups: std::collections::HashMap<String, Vec<&tokio_postgres::Row>> =
             std::collections::HashMap::new();
         for row in &rows {
@@ -355,18 +377,14 @@ impl CacheWarmer {
 
         let mut total_keys: u64 = 0;
 
-        // Category: "Kraken Futures"
         let cat_val = serde_json::json!({
             "instrument_count": rows.len(),
             "base_count": base_groups.len(),
         });
         cache.hset("monitor:categories:_tmp", "Kraken Futures", &cat_val.to_string()).await?;
-        // monitor:categories:_tmp already tracked from Kalshi step
         total_keys += 1;
 
-        // Series + Events + Markets per base currency
         for (base, group) in &base_groups {
-            // Series: base currency under "Kraken Futures" category
             let active_pairs: usize = group.len();
             let series_val = serde_json::json!({
                 "title": format!("{} Perpetuals", base),
@@ -380,7 +398,6 @@ impl CacheWarmer {
             }
             total_keys += 1;
 
-            // Event: synthetic "{base}-perps"
             let event_key = format!("{}-perps", base);
             let event_val = serde_json::json!({
                 "title": format!("Active {} Perps", base),
@@ -394,7 +411,6 @@ impl CacheWarmer {
             }
             total_keys += 1;
 
-            // Markets: each pair under the synthetic event
             let tmp_markets = format!("monitor:markets:{}:_tmp", event_key);
             let final_markets = format!("monitor:markets:{}", event_key);
             for row in group {
@@ -408,7 +424,6 @@ impl CacheWarmer {
                 let tradeable: Option<bool> = row.get(9);
                 let suspended: Option<bool> = row.get(10);
 
-                let market_key = pair_id.clone();
                 let market_val = serde_json::json!({
                     "pair_id": pair_id,
                     "market_type": market_type,
@@ -422,7 +437,7 @@ impl CacheWarmer {
                     "exchange": "kraken-futures",
                     "price_type": "asset_price",
                 });
-                cache.hset(&tmp_markets, &market_key, &market_val.to_string()).await?;
+                cache.hset(&tmp_markets, &pair_id, &market_val.to_string()).await?;
                 total_keys += 1;
             }
             if final_keys.insert(final_markets) {
@@ -439,161 +454,13 @@ impl CacheWarmer {
         Ok(total_keys)
     }
 
-    /// Warm Polymarket conditions and tokens into the monitor hierarchy.
-    ///
-    /// Hierarchy mapping:
-    ///   Category: condition.category (merged with Kalshi categories where overlapping)
-    ///   Series:   "PM:{category}" synthetic series
-    ///   Event:    condition_id
-    ///   Market:   token_id
-    async fn warm_polymarket_monitor(&self, cache: &RedisCache, tmp_keys: &mut Vec<String>, final_keys: &mut std::collections::HashSet<String>) -> Result<u64> {
-        // Query active conditions with their tokens
-        let condition_rows = self.client
-            .query(
-                r#"
-                SELECT c.condition_id, c.question, c.category, c.status,
-                       c.end_date::text, c.accepting_orders, c.event_id,
-                       COUNT(t.token_id) AS token_count
-                FROM polymarket_conditions c
-                LEFT JOIN polymarket_tokens t ON t.condition_id = c.condition_id
-                WHERE c.deleted_at IS NULL
-                  AND c.status = 'active'
-                GROUP BY c.condition_id, c.question, c.category, c.status,
-                         c.end_date, c.accepting_orders, c.event_id
-                "#,
-                &[],
-            )
-            .await?;
-
-        if condition_rows.is_empty() {
-            tracing::info!("No active Polymarket conditions to warm");
-            return Ok(0);
-        }
-
-        // Group by category for aggregation
-        let mut cat_groups: std::collections::HashMap<String, Vec<&tokio_postgres::Row>> =
-            std::collections::HashMap::new();
-        for row in &condition_rows {
-            let category: Option<String> = row.get(2);
-            let cat = category.unwrap_or_else(|| "Uncategorized".to_string());
-            cat_groups.entry(cat).or_default().push(row);
-        }
-
-        let mut total_keys: u64 = 0;
-
-        // Categories: merge PM condition counts into monitor:categories:_tmp
-        // Read-merge-write to preserve existing Kalshi fields (event_count, series_count)
-        for (category, group) in &cat_groups {
-            let existing = cache.hget("monitor:categories:_tmp", category).await?;
-            let mut val: serde_json::Value = existing
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_else(|| serde_json::json!({}));
-            val["pm_condition_count"] = serde_json::json!(group.len());
-            cache.hset("monitor:categories:_tmp", category, &val.to_string()).await?;
-            // monitor:categories:_tmp already tracked from Kalshi step
-            total_keys += 1;
-
-            // Series: "PM:{category}" under each category
-            let series_key = format!("PM:{}", category);
-            let series_val = serde_json::json!({
-                "title": format!("Polymarket {}", category),
-                "active_conditions": group.len(),
-            });
-            let tmp_series = format!("monitor:series:{}:_tmp", category);
-            let final_series_key = format!("monitor:series:{}", category);
-            cache.hset(&tmp_series, &series_key, &series_val.to_string()).await?;
-            if final_keys.insert(final_series_key) {
-                tmp_keys.push(tmp_series);
-            }
-            total_keys += 1;
-
-            // Events: each condition is an event under the PM series
-            let tmp_events = format!("monitor:events:{}:_tmp", series_key);
-            let final_events = format!("monitor:events:{}", series_key);
-            for row in group {
-                let condition_id: String = row.get(0);
-                let question: String = row.get(1);
-                let status: String = row.get(3);
-                let end_date: Option<String> = row.get(4);
-                let accepting_orders: Option<bool> = row.get(5);
-                let event_id: Option<String> = row.get(6);
-                let token_count: i64 = row.get(7);
-
-                let event_val = serde_json::json!({
-                    "title": question,
-                    "status": status,
-                    "end_date": end_date,
-                    "accepting_orders": accepting_orders,
-                    "event_id": event_id,
-                    "token_count": token_count,
-                    "exchange": "polymarket",
-                    "price_type": "probability",
-                });
-                cache.hset(&tmp_events, &condition_id, &event_val.to_string()).await?;
-                total_keys += 1;
-            }
-            if final_keys.insert(final_events) {
-                tmp_keys.push(format!("monitor:events:{}:_tmp", series_key));
-            }
-        }
-
-        // Markets: tokens under each condition
-        let token_rows = self.client
-            .query(
-                r#"
-                SELECT t.token_id, t.condition_id, t.outcome, t.outcome_index,
-                       t.price::text
-                FROM polymarket_tokens t
-                JOIN polymarket_conditions c ON c.condition_id = t.condition_id
-                WHERE c.deleted_at IS NULL
-                  AND c.status = 'active'
-                "#,
-                &[],
-            )
-            .await?;
-
-        for row in &token_rows {
-            let token_id: String = row.get(0);
-            let condition_id: String = row.get(1);
-            let outcome: String = row.get(2);
-            let outcome_index: i32 = row.get(3);
-            let price: Option<String> = row.get(4);
-
-            let market_val = serde_json::json!({
-                "outcome": outcome,
-                "outcome_index": outcome_index,
-                "price": price,
-                "exchange": "polymarket",
-                "price_type": "probability",
-            });
-            let tmp_markets = format!("monitor:markets:{}:_tmp", condition_id);
-            let final_markets = format!("monitor:markets:{}", condition_id);
-            cache.hset(&tmp_markets, &token_id, &market_val.to_string()).await?;
-            if final_keys.insert(final_markets) {
-                tmp_keys.push(tmp_markets);
-            }
-            total_keys += 1;
-        }
-
-        tracing::info!(
-            conditions = condition_rows.len(),
-            tokens = token_rows.len(),
-            categories = cat_groups.len(),
-            "Warmed Polymarket conditions into monitor hierarchy"
-        );
-
-        Ok(total_keys)
-    }
-
     /// Warm cache on startup — only monitor indexes (the tradable universe).
     pub async fn warm_all(&self, cache: &RedisCache) -> Result<String> {
         let start = std::time::Instant::now();
 
-        // Get LSN before warming
         let lsn = self.current_lsn().await?;
         tracing::info!(lsn = %lsn, "Snapshot LSN");
 
-        // Build monitor index hashes (hierarchical browsing)
         let indexes = self.warm_monitor_indexes(cache).await?;
 
         let elapsed = start.elapsed();
@@ -605,6 +472,31 @@ impl CacheWarmer {
 
         Ok(lsn)
     }
+}
+
+/// Flush a batch of lifecycle events into the existing market hash entry in Redis.
+async fn flush_lifecycle(
+    cache: &RedisCache,
+    market_ticker: &str,
+    events: &[serde_json::Value],
+) -> Result<u64> {
+    if events.is_empty() {
+        return Ok(0);
+    }
+    let event_ticker = extract_event_ticker(market_ticker);
+    let tmp_key = format!("monitor:markets:{}:_tmp", event_ticker);
+
+    let existing: Option<String> = cache.hget(&tmp_key, market_ticker).await.unwrap_or(None);
+    if let Some(existing_str) = existing {
+        if let Ok(mut market_json) = serde_json::from_str::<serde_json::Value>(&existing_str) {
+            if let Some(obj) = market_json.as_object_mut() {
+                obj.insert("lifecycle_events".to_string(), serde_json::json!(events));
+            }
+            cache.hset(&tmp_key, market_ticker, &market_json.to_string()).await?;
+            return Ok(1);
+        }
+    }
+    Ok(0)
 }
 
 /// Extract event_ticker from market_ticker.

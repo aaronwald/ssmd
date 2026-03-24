@@ -213,9 +213,8 @@ impl CdcConsumer {
                             "pairs" => {
                                 self.handle_pairs_event(&event, &key, cache).await?;
                             }
-                            "polymarket_conditions" => {
-                                self.handle_polymarket_condition_event(&event, &key, cache).await?;
-                            }
+                            // Polymarket decommissioned — skip CDC events
+                            "polymarket_conditions" | "polymarket_tokens" => {}
                             "market_lifecycle_events" => {
                                 self.handle_lifecycle_event(&event, cache).await?;
                             }
@@ -421,67 +420,6 @@ impl CdcConsumer {
         Ok(())
     }
 
-    /// Handle polymarket_conditions CDC events — update monitor hierarchy.
-    /// HSET on active status, HDEL on terminal/deleted status.
-    async fn handle_polymarket_condition_event(
-        &self,
-        event: &CdcEvent,
-        condition_id: &str,
-        cache: &RedisCache,
-    ) -> Result<()> {
-        match event.op.as_str() {
-            "insert" | "update" => {
-                if let Some(data) = &event.data {
-                    let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("active");
-                    let deleted_at = data.get("deleted_at");
-                    let is_active = status == "active"
-                        && (deleted_at.is_none() || deleted_at == Some(&serde_json::Value::Null));
-
-                    let category = data.get("category")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Uncategorized");
-                    let series_key = format!("PM:{}", category);
-                    let events_hash = format!("monitor:events:{}", series_key);
-
-                    if is_active {
-                        let question = data.get("question").and_then(|v| v.as_str()).unwrap_or("");
-                        let end_date = data.get("end_date").and_then(|v| v.as_str());
-                        let accepting_orders = data.get("accepting_orders").and_then(|v| v.as_bool());
-                        let event_id = data.get("event_id").and_then(|v| v.as_str());
-
-                        let event_val = serde_json::json!({
-                            "title": question,
-                            "status": status,
-                            "end_date": end_date,
-                            "accepting_orders": accepting_orders,
-                            "event_id": event_id,
-                            "exchange": "polymarket",
-                            "price_type": "probability",
-                        });
-                        if let Err(e) = cache.hset(&events_hash, condition_id, &event_val.to_string()).await {
-                            tracing::warn!(error = %e, "Failed to update monitor:events for Polymarket condition");
-                        } else {
-                            self.metrics.redis_writes.with_label_values(&["hset"]).inc();
-                        }
-                    } else {
-                        // Not active — remove from monitor hash
-                        if let Err(e) = cache.hdel(&events_hash, condition_id).await {
-                            tracing::warn!(error = %e, "Failed to HDEL Polymarket condition from monitor");
-                        } else {
-                            self.metrics.redis_writes.with_label_values(&["hdel"]).inc();
-                        }
-                        tracing::debug!(condition_id, status, "HDEL Polymarket condition from monitor");
-                    }
-                }
-            }
-            "delete" => {
-                tracing::debug!(condition_id, "Polymarket condition delete - periodic refresh will clean up");
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
 
     /// Handle market_lifecycle_events CDC events — append lifecycle entries to
     /// the existing market JSON in monitor:markets:{event} hash.
