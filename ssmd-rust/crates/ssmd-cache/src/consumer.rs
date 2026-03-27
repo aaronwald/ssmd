@@ -1,10 +1,10 @@
 use async_nats::jetstream::{self, consumer::pull::Stream, Context};
+use deadpool_postgres::Pool;
 use futures_util::StreamExt;
 use ssmd_middleware::{lsn_gte, lsn::Lsn};
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
-use tokio_postgres::{Client, NoTls};
 use chrono::Utc;
 use crate::{Result, Error, cache::RedisCache, metrics::CacheMetrics};
 
@@ -26,25 +26,15 @@ const EVENT_SERIES_CACHE_CAP: usize = 10_000;
 /// Uses LRU cache as L1 (bounded), PostgreSQL as L2 fallback
 pub struct EventSeriesLookup {
     cache: LruCache<String, String>,
-    db_client: Client,
+    pool: Pool,
 }
 
 impl EventSeriesLookup {
-    pub async fn new(database_url: &str) -> Result<Self> {
-        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await
-            .map_err(|e| Error::Database(format!("Connection failed: {}", e)))?;
-
-        // Spawn connection handler
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!(error = %e, "EventSeriesLookup DB connection error");
-            }
-        });
-
-        Ok(Self {
+    pub fn new(pool: Pool) -> Self {
+        Self {
             cache: LruCache::new(NonZeroUsize::new(EVENT_SERIES_CACHE_CAP).unwrap()),
-            db_client: client,
-        })
+            pool,
+        }
     }
 
     /// Get series_ticker - check in-memory first, then query PostgreSQL
@@ -54,8 +44,15 @@ impl EventSeriesLookup {
             return Some(series.clone());
         }
 
-        // L2: Query PostgreSQL
-        match self.db_client
+        // L2: Query PostgreSQL via pool
+        let client = match self.pool.get().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(event_ticker, error = %e, "Failed to get DB client for series lookup");
+                return None;
+            }
+        };
+        match client
             .query_opt(
                 "SELECT series_ticker FROM events WHERE event_ticker = $1",
                 &[&event_ticker],
@@ -100,7 +97,7 @@ impl CdcConsumer {
         stream_name: &str,
         consumer_name: &str,
         snapshot_lsn: String,
-        database_url: &str,
+        pool: Pool,
         metrics: CacheMetrics,
     ) -> Result<Self> {
         let client = async_nats::connect(nats_url).await
@@ -130,8 +127,8 @@ impl CdcConsumer {
             .await
             .map_err(|e| Error::Nats(format!("Get messages failed: {}", e)))?;
 
-        // Create event→series lookup with DB connection
-        let event_series_lookup = EventSeriesLookup::new(database_url).await?;
+        // Create event→series lookup with pool
+        let event_series_lookup = EventSeriesLookup::new(pool);
 
         Ok(Self {
             stream: messages,

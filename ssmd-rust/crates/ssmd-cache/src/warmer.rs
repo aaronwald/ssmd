@@ -1,31 +1,20 @@
 use futures_util::TryStreamExt;
-use tokio_postgres::{Client, NoTls};
+use deadpool_postgres::Pool;
 use crate::{Result, Error, cache::RedisCache};
 
 pub struct CacheWarmer {
-    client: Client,
+    pool: Pool,
 }
 
 impl CacheWarmer {
-    pub async fn connect(database_url: &str) -> Result<Self> {
-        if database_url.is_empty() {
-            return Err(Error::Database("DATABASE_URL is empty".to_string()));
-        }
-        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!(error = %e, "PostgreSQL connection error — exiting");
-                std::process::exit(1);
-            }
-        });
-
-        Ok(Self { client })
+    pub fn new(pool: Pool) -> Self {
+        Self { pool }
     }
 
     /// Get current WAL LSN (for race condition handling)
     pub async fn current_lsn(&self) -> Result<String> {
-        let row = self.client
+        let client = self.pool.get().await?;
+        let row = client
             .query_one("SELECT pg_current_wal_lsn()::text", &[])
             .await?;
         Ok(row.get(0))
@@ -46,6 +35,7 @@ impl CacheWarmer {
     /// Also warms Kraken pairs into the same hierarchy.
     pub async fn warm_monitor_indexes(&self, cache: &RedisCache) -> Result<u64> {
         let start = std::time::Instant::now();
+        let client = self.pool.get().await?;
 
         // Write all data to :_tmp suffix keys, then atomically RENAME to final keys.
         let mut tmp_keys: Vec<String> = Vec::new();
@@ -55,7 +45,7 @@ impl CacheWarmer {
         // 1. Categories: only categories that have events with live markets
         let tmp_cat_key = "monitor:categories:_tmp".to_string();
         {
-            let stream = self.client
+            let stream = client
                 .query_raw(
                     r#"
                     SELECT e.category,
@@ -96,7 +86,7 @@ impl CacheWarmer {
 
         // 2. Series per category: only series with live events/markets
         {
-            let stream = self.client
+            let stream = client
                 .query_raw(
                     r#"
                     SELECT e.category, s.ticker, s.title,
@@ -145,7 +135,7 @@ impl CacheWarmer {
 
         // 3. Events per series: only events with live markets, with accurate market_count
         {
-            let stream = self.client
+            let stream = client
                 .query_raw(
                     r#"
                     SELECT e.series_ticker, e.event_ticker, e.title, e.status,
@@ -192,7 +182,7 @@ impl CacheWarmer {
 
         // 4. Markets per event: only live markets (close_time in future)
         {
-            let stream = self.client
+            let stream = client
                 .query_raw(
                     r#"
                     SELECT m.event_ticker, m.ticker, m.title, m.status, m.close_time::text,
@@ -233,7 +223,7 @@ impl CacheWarmer {
 
         // 4b. Warm lifecycle events into existing market hashes (streamed, grouped by market)
         {
-            let stream = self.client
+            let stream = client
                 .query_raw(
                     r#"
                     SELECT mle.market_ticker, mle.event_type, mle.received_at::text,
@@ -347,8 +337,9 @@ impl CacheWarmer {
     ///   Event:    "{base}-perps" synthetic event for perpetuals
     ///   Market:   pair_id (e.g., "PF_XBTUSD")
     async fn warm_pairs_monitor(&self, cache: &RedisCache, tmp_keys: &mut Vec<String>, final_keys: &mut std::collections::HashSet<String>) -> Result<u64> {
+        let client = self.pool.get().await?;
         // Kraken pairs are few (~20-50), collect to group by base currency
-        let rows = self.client
+        let rows = client
             .query(
                 r#"
                 SELECT pair_id, base, quote, market_type, status,

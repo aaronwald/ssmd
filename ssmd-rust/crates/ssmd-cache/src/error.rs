@@ -17,6 +17,9 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("Pool error: {0}")]
+    Pool(#[from] deadpool_postgres::PoolError),
+
     #[error("Configuration error: {0}")]
     Config(String),
 }

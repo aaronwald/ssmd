@@ -58,30 +58,36 @@ async fn main() -> anyhow::Result<()> {
         axum::serve(listener, app).await.unwrap();
     });
 
+    // Create shared Postgres pool (max_size=4: warmer, CDC lookup, lifecycle writes, health check)
+    let pg_pool = {
+        let mut cfg = deadpool_postgres::Config::new();
+        cfg.url = Some(config.database_url.clone());
+        cfg.pool = Some(deadpool_postgres::PoolConfig { max_size: 4, ..Default::default() });
+        cfg.create_pool(
+            Some(deadpool_postgres::Runtime::Tokio1),
+            tokio_postgres::NoTls,
+        ).expect("Failed to create Postgres pool")
+    };
+
     // Connect to Redis
     let cache = RedisCache::new(&config.redis_url).await?;
 
-    // Connect to PostgreSQL and warm cache
-    let warmer = CacheWarmer::connect(&config.database_url).await?;
+    // Warm cache from PostgreSQL
+    let warmer = CacheWarmer::new(pg_pool.clone());
     let snapshot_lsn = warmer.warm_all(&cache).await?;
 
     // Spawn periodic monitor index refresh (every 5 minutes)
     let refresh_cache = cache.clone();
-    let refresh_db_url = config.database_url.clone();
+    let refresh_warmer = CacheWarmer::new(pg_pool.clone());
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
         interval.tick().await; // skip first tick — warm_all already ran
         loop {
             interval.tick().await;
-            match CacheWarmer::connect(&refresh_db_url).await {
-                Ok(warmer) => {
-                    match warmer.warm_monitor_indexes(&refresh_cache).await {
-                        Ok(keys) => tracing::info!(keys, "Periodic monitor index refresh"),
-                        Err(e) => tracing::error!(error = %e, "Monitor index refresh failed"),
-                    }
-                }
+            match refresh_warmer.warm_monitor_indexes(&refresh_cache).await {
+                Ok(keys) => tracing::info!(keys, "Periodic monitor index refresh"),
                 Err(e) => {
-                    tracing::error!(error = %e, "DB connect failed for periodic refresh — exiting");
+                    tracing::error!(error = %e, "Monitor index refresh failed — exiting");
                     std::process::exit(1);
                 }
             }
@@ -92,38 +98,7 @@ async fn main() -> anyhow::Result<()> {
     ssmd_middleware::redis_health::spawn_redis_health_check(cache.connection());
 
     // Spawn Postgres health check (every 30s — crash if Postgres is unreachable)
-    {
-        let mut pg_cfg = deadpool_postgres::Config::new();
-        let pg_config: tokio_postgres::Config = config.database_url.parse()
-            .expect("DATABASE_URL already validated");
-        if let Some(host) = pg_config.get_hosts().first() {
-            match host {
-                tokio_postgres::config::Host::Tcp(h) => pg_cfg.host = Some(h.clone()),
-                #[cfg(unix)]
-                tokio_postgres::config::Host::Unix(p) => {
-                    pg_cfg.host = Some(p.to_string_lossy().to_string())
-                }
-            }
-        }
-        if let Some(port) = pg_config.get_ports().first() {
-            pg_cfg.port = Some(*port);
-        }
-        if let Some(user) = pg_config.get_user() {
-            pg_cfg.user = Some(user.to_string());
-        }
-        if let Some(password) = pg_config.get_password() {
-            pg_cfg.password = Some(String::from_utf8_lossy(password).to_string());
-        }
-        if let Some(dbname) = pg_config.get_dbname() {
-            pg_cfg.dbname = Some(dbname.to_string());
-        }
-        pg_cfg.pool = Some(deadpool_postgres::PoolConfig { max_size: 1, ..Default::default() });
-        let pg_pool = pg_cfg.create_pool(
-            Some(deadpool_postgres::Runtime::Tokio1),
-            tokio_postgres::NoTls,
-        ).expect("Failed to create Postgres health check pool");
-        ssmd_middleware::postgres_health::spawn_postgres_health_check(pg_pool);
-    }
+    ssmd_middleware::postgres_health::spawn_postgres_health_check(pg_pool.clone());
 
     // Start consuming CDC events
     let mut consumer = CdcConsumer::new(
@@ -131,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
         &config.stream_name,
         &config.consumer_name,
         snapshot_lsn,
-        &config.database_url,
+        pg_pool.clone(),
         cache_metrics,
     ).await?;
 
