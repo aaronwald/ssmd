@@ -7,6 +7,11 @@ pub struct CacheMetrics {
     pub gaps: IntCounter,
     pub skipped: IntCounter,
     pub redis_writes: IntCounterVec,
+    // Lifecycle consumer metrics
+    pub lifecycle_events: IntCounterVec,
+    pub lifecycle_errors: IntCounter,
+    pub lifecycle_db_writes: IntCounter,
+    pub lifecycle_status_updates: IntCounter,
 }
 
 impl CacheMetrics {
@@ -28,12 +33,29 @@ impl CacheMetrics {
             Opts::new("ssmd_cache_redis_writes_total", "Redis HSET/HDEL operations"),
             &["operation"],
         )?;
+        let lifecycle_events = IntCounterVec::new(
+            Opts::new("ssmd_cache_lifecycle_events_total", "Lifecycle events processed"),
+            &["event_type"],
+        )?;
+        let lifecycle_errors = IntCounter::with_opts(
+            Opts::new("ssmd_cache_lifecycle_errors_total", "Lifecycle processing errors"),
+        )?;
+        let lifecycle_db_writes = IntCounter::with_opts(
+            Opts::new("ssmd_cache_lifecycle_db_writes_total", "Lifecycle DB inserts"),
+        )?;
+        let lifecycle_status_updates = IntCounter::with_opts(
+            Opts::new("ssmd_cache_lifecycle_status_updates_total", "Market status updates from lifecycle"),
+        )?;
 
         registry.register(Box::new(cdc_events.clone()))?;
         registry.register(Box::new(last_event_timestamp.clone()))?;
         registry.register(Box::new(gaps.clone()))?;
         registry.register(Box::new(skipped.clone()))?;
         registry.register(Box::new(redis_writes.clone()))?;
+        registry.register(Box::new(lifecycle_events.clone()))?;
+        registry.register(Box::new(lifecycle_errors.clone()))?;
+        registry.register(Box::new(lifecycle_db_writes.clone()))?;
+        registry.register(Box::new(lifecycle_status_updates.clone()))?;
 
         Ok(Self {
             cdc_events,
@@ -41,6 +63,10 @@ impl CacheMetrics {
             gaps,
             skipped,
             redis_writes,
+            lifecycle_events,
+            lifecycle_errors,
+            lifecycle_db_writes,
+            lifecycle_status_updates,
         })
     }
 }
