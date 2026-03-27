@@ -2,6 +2,7 @@ pub mod cache;
 pub mod config;
 pub mod consumer;
 pub mod error;
+pub mod lifecycle;
 pub mod metrics;
 pub mod warmer;
 
