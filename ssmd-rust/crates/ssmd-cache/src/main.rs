@@ -7,6 +7,7 @@ use ssmd_cache::{
     cache::RedisCache,
     warmer::CacheWarmer,
     consumer::CdcConsumer,
+    lifecycle::LifecycleConsumer,
     metrics::CacheMetrics,
 };
 
@@ -100,17 +101,41 @@ async fn main() -> anyhow::Result<()> {
     // Spawn Postgres health check (every 30s — crash if Postgres is unreachable)
     ssmd_middleware::postgres_health::spawn_postgres_health_check(pg_pool.clone());
 
-    // Start consuming CDC events
-    let mut consumer = CdcConsumer::new(
+    // Start CDC consumer
+    let mut cdc_consumer = CdcConsumer::new(
         &config.nats_url,
         &config.stream_name,
         &config.consumer_name,
         snapshot_lsn,
         pg_pool.clone(),
+        cache_metrics.clone(),
+    ).await?;
+
+    // Start lifecycle consumer (subscribes to PROD_KALSHI_LIFECYCLE)
+    let mut lifecycle_consumer = LifecycleConsumer::new(
+        &config.nats_url,
+        &config.lifecycle_stream,
+        &config.lifecycle_consumer,
+        &config.lifecycle_filter,
+        pg_pool.clone(),
         cache_metrics,
     ).await?;
 
-    consumer.run(&cache).await?;
+    tracing::info!(
+        lifecycle_stream = %config.lifecycle_stream,
+        lifecycle_consumer = %config.lifecycle_consumer,
+        "Lifecycle consumer ready"
+    );
 
-    Ok(())
+    // Run both consumers — either failing crashes the process (no limping)
+    tokio::select! {
+        result = cdc_consumer.run(&cache) => {
+            tracing::error!(result = ?result, "CDC consumer exited");
+            std::process::exit(1);
+        }
+        result = lifecycle_consumer.run() => {
+            tracing::error!(result = ?result, "Lifecycle consumer exited");
+            std::process::exit(1);
+        }
+    }
 }
