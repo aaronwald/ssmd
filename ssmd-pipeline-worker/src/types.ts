@@ -47,3 +47,6 @@ export const HTTP_URL_ALLOWLIST = [
   "http://ssmd-data-ts-internal:8081/",
   "http://ssmd-data-ts-internal.ssmd.svc.cluster.local:8081/",
 ];
+
+/** Auth headers that must never be passed from stage config — auth is auto-injected */
+export const FORBIDDEN_HEADER_KEYS = ["authorization", "cookie", "x-api-key", "x-api-token"];

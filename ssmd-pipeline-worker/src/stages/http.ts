@@ -1,6 +1,17 @@
 import type { StageConfig, StageResult } from "../types.ts";
-import { HTTP_URL_ALLOWLIST, MAX_OUTPUT_SIZE } from "../types.ts";
+import { FORBIDDEN_HEADER_KEYS, HTTP_URL_ALLOWLIST, MAX_OUTPUT_SIZE } from "../types.ts";
 import type { ExecuteContext } from "./mod.ts";
+
+/** Strip forbidden auth headers from config (defense-in-depth) */
+export function stripForbiddenHeaders(headers: Record<string, string>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (!FORBIDDEN_HEADER_KEYS.includes(key.toLowerCase())) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
 
 export function validateUrl(url: string, allowlist: string[]): boolean {
   let parsed: URL;
@@ -44,7 +55,9 @@ export async function executeHttp(
   }
 
   const method = (config.method ?? "GET").toUpperCase();
-  const headers: Record<string, string> = { ...config.headers };
+  const headers: Record<string, string> = config.headers
+    ? stripForbiddenHeaders(config.headers)
+    : {};
 
   // Auto-inject admin API key for internal URLs (never store keys in config)
   if (!headers["Authorization"] && !headers["authorization"] && _ctx.adminApiKey) {
