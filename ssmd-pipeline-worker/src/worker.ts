@@ -204,13 +204,16 @@ async function executeRun(
 
     const stageFinished = new Date();
 
+    // Strip _context before persisting — it may contain webhook secrets
+    const persistConfig = stripContextFromConfig(resolvedConfig);
+
     // Record stage result
     await insertStageResult(
       sql,
       run.id,
       stage.id,
       result.status,
-      resolvedConfig,
+      persistConfig,
       result.output ?? null,
       result.error ?? null,
       stageStarted,
@@ -263,6 +266,15 @@ async function executeRun(
 
   await finishRun(sql, run.id, runFailed ? "failed" : "completed");
   console.log(`[worker] run=${run.id} finished status=${runFailed ? "failed" : "completed"}`);
+}
+
+// ── Security helpers ───────────────────────────────────────────
+
+/** Strip _context before persisting — contains triggerInfo which may have secrets */
+export function stripContextFromConfig(config: StageConfig): StageConfig {
+  if (!("_context" in config)) return config;
+  const { _context: _, ...rest } = config;
+  return rest as StageConfig;
 }
 
 // ── Template resolution for stage config ────────────────────────
