@@ -3231,6 +3231,27 @@ route("GET", "/v1/pipelines/:id", async (req, ctx) => {
   return json({ ...safe, stages });
 }, true, "admin:read", "public");
 
+// Must match FORBIDDEN_HEADER_KEYS in ssmd-pipeline-worker/src/types.ts
+const FORBIDDEN_PIPELINE_HEADERS = ["authorization", "cookie", "x-api-key", "x-api-token"];
+
+/** Validate stage configs — reject forbidden headers in HTTP stages */
+function validateStageConfigs(
+  stages: Array<{ stage_type: string; config?: Record<string, unknown> }>,
+): string | null {
+  for (let i = 0; i < stages.length; i++) {
+    const stage = stages[i];
+    if (stage.stage_type === "http" && stage.config?.headers) {
+      const hdrs = stage.config.headers as Record<string, string>;
+      const keys = Object.keys(hdrs).map((k) => k.toLowerCase());
+      const forbidden = keys.filter((k) => FORBIDDEN_PIPELINE_HEADERS.includes(k));
+      if (forbidden.length > 0) {
+        return `Stage ${i}: forbidden headers in HTTP config: ${forbidden.join(", ")}. Auth is auto-injected for internal URLs.`;
+      }
+    }
+  }
+  return null;
+}
+
 // Create pipeline with stages
 route("POST", "/v1/pipelines", async (req, ctx) => {
   const body = await req.json();
@@ -3238,6 +3259,11 @@ route("POST", "/v1/pipelines", async (req, ctx) => {
 
   if (!name || !trigger_type) {
     return json({ error: "name and trigger_type required" }, 400);
+  }
+
+  if (stages && Array.isArray(stages)) {
+    const configError = validateStageConfigs(stages);
+    if (configError) return json({ error: configError }, 400);
   }
 
   let webhookSecret: string | null = null;
@@ -3300,33 +3326,48 @@ route("PUT", "/v1/pipelines/:id", async (req, ctx) => {
     updates.webhookSecretHash = null;
   }
 
-  let pipeline;
-  if (Object.keys(updates).length > 0) {
-    [pipeline] = await ctx.db.update(pipelineDefinitions)
-      .set(updates)
-      .where(eq(pipelineDefinitions.id, id))
-      .returning();
-  } else {
-    [pipeline] = await ctx.db.select().from(pipelineDefinitions)
-      .where(eq(pipelineDefinitions.id, id));
-  }
-
-  if (!pipeline) return json({ error: "Not found" }, 404);
-
   if (body.stages && Array.isArray(body.stages)) {
-    await ctx.db.delete(pipelineStages).where(eq(pipelineStages.pipelineId, id));
-    for (let i = 0; i < body.stages.length; i++) {
-      await ctx.db.insert(pipelineStages).values({
-        pipelineId: id,
-        position: i,
-        name: body.stages[i].name ?? `Stage ${i}`,
-        stageType: body.stages[i].stage_type,
-        config: body.stages[i].config ?? {},
-      });
-    }
+    const configError = validateStageConfigs(body.stages);
+    if (configError) return json({ error: configError }, 400);
   }
 
-  const { webhookSecretHash: _wsh2, ...safePipeline } = pipeline;
+  let pipeline;
+
+  try {
+    await ctx.db.transaction(async (tx) => {
+      if (Object.keys(updates).length > 0) {
+        [pipeline] = await tx.update(pipelineDefinitions)
+          .set(updates)
+          .where(eq(pipelineDefinitions.id, id))
+          .returning();
+      } else {
+        [pipeline] = await tx.select().from(pipelineDefinitions)
+          .where(eq(pipelineDefinitions.id, id));
+      }
+
+      if (!pipeline) throw new Error("not_found");
+
+      if (body.stages && Array.isArray(body.stages)) {
+        await tx.delete(pipelineStages).where(eq(pipelineStages.pipelineId, id));
+        for (let i = 0; i < body.stages.length; i++) {
+          await tx.insert(pipelineStages).values({
+            pipelineId: id,
+            position: i,
+            name: body.stages[i].name ?? `Stage ${i}`,
+            stageType: body.stages[i].stage_type,
+            config: body.stages[i].config ?? {},
+          });
+        }
+      }
+    });
+  } catch (e) {
+    if (e instanceof Error && e.message === "not_found") {
+      return json({ error: "Not found" }, 404);
+    }
+    throw e;
+  }
+
+  const { webhookSecretHash: _wsh2, ...safePipeline } = pipeline!;
   return json(safePipeline);
 }, true, "admin:write");
 
