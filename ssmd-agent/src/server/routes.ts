@@ -1152,6 +1152,19 @@ route("GET", "/v1/billing/report", async (req, ctx) => {
     byKey[row.keyPrefix].errors += row.errors;
   }
 
+  // Query last access time per key from api_request_log
+  const lastAccessRows = await ctx.db
+    .select({
+      keyPrefix: apiRequestLog.keyPrefix,
+      lastAccessAt: sql<string>`MAX(${apiRequestLog.createdAt})::text`.as("last_access_at"),
+    })
+    .from(apiRequestLog)
+    .groupBy(apiRequestLog.keyPrefix);
+  const lastAccessByKey: Record<string, string> = {};
+  for (const row of lastAccessRows) {
+    lastAccessByKey[row.keyPrefix] = row.lastAccessAt;
+  }
+
   const report = billableKeys.map((k) => ({
     keyPrefix: k.keyPrefix,
     keyName: k.name,
@@ -1159,6 +1172,7 @@ route("GET", "/v1/billing/report", async (req, ctx) => {
     totalRequests: byKey[k.keyPrefix]?.requests ?? 0,
     totalBytes: byKey[k.keyPrefix]?.bytes ?? 0,
     totalErrors: byKey[k.keyPrefix]?.errors ?? 0,
+    lastAccessAt: lastAccessByKey[k.keyPrefix] ?? null,
   }));
 
   return json({ month, from, to: nextMonth, keys: report });

@@ -6,8 +6,8 @@
  */
 import { getDb, closeDb } from "../../lib/db/mod.ts";
 import { listRecentAccess } from "../../lib/db/accesslog.ts";
-import { apiKeys } from "../../lib/db/schema.ts";
-import { isNull, isNotNull, gte, and, lte } from "drizzle-orm";
+import { apiKeys, apiRequestLog } from "../../lib/db/schema.ts";
+import { isNull, isNotNull, gte, and, lte, sql } from "drizzle-orm";
 import nodemailer from "nodemailer";
 
 export async function handleAuditEmail(): Promise<void> {
@@ -71,7 +71,20 @@ export async function handleAuditEmail(): Promise<void> {
         ),
       );
 
-    // 4. API usage stats (optional — requires SSMD_API_URL + SSMD_API_KEY with admin:read)
+    // 4. Last access time per key from api_request_log
+    const lastAccessRows = await db
+      .select({
+        keyPrefix: apiRequestLog.keyPrefix,
+        lastAccessAt: sql<string>`MAX(${apiRequestLog.createdAt})::text`.as("last_access_at"),
+      })
+      .from(apiRequestLog)
+      .groupBy(apiRequestLog.keyPrefix);
+    const lastAccessByKey: Record<string, string> = {};
+    for (const row of lastAccessRows) {
+      lastAccessByKey[row.keyPrefix] = row.lastAccessAt;
+    }
+
+    // 5. API usage stats (optional — requires SSMD_API_URL + SSMD_API_KEY with admin:read)
     let apiUsage: ApiUsageEntry[] = [];
     if (apiUrl && apiKey) {
       apiUsage = await fetchApiUsage(apiUrl, apiKey);
@@ -82,7 +95,7 @@ export async function handleAuditEmail(): Promise<void> {
 
     // Build HTML email
     const dateStr = yesterday.toISOString().slice(0, 10);
-    const html = buildEmailHtml(dateStr, recentAccess, activeFiltered, expiredKeys, apiUsage);
+    const html = buildEmailHtml(dateStr, recentAccess, activeFiltered, expiredKeys, apiUsage, lastAccessByKey);
 
     // Send email
     const transporter = nodemailer.createTransport({
@@ -189,6 +202,7 @@ function buildEmailHtml(
   activeKeys: KeyEntry[],
   expiredKeys: KeyEntry[],
   apiUsage: ApiUsageEntry[] = [],
+  lastAccessByKey: Record<string, string> = {},
 ): string {
   const styles = `
     <style>
@@ -240,6 +254,9 @@ function buildEmailHtml(
       const expires = k.expiresAt
         ? new Date(k.expiresAt).toISOString().slice(0, 16)
         : "never";
+      const lastAccess = lastAccessByKey[k.keyPrefix]
+        ? new Date(lastAccessByKey[k.keyPrefix]).toISOString().slice(0, 16)
+        : "never";
       return `
         <tr>
           <td>${escapeHtml(k.keyPrefix)}</td>
@@ -247,13 +264,14 @@ function buildEmailHtml(
           <td>${escapeHtml(k.scopes.join(", "))}</td>
           <td>${new Date(k.createdAt).toISOString().slice(0, 10)}</td>
           <td>${expires}</td>
+          <td>${lastAccess}</td>
         </tr>
       `;
     }).join("");
 
     activeKeysHtml = `
       <table>
-        <tr><th>Prefix</th><th>Email</th><th>Scopes</th><th>Created</th><th>Expires</th></tr>
+        <tr><th>Prefix</th><th>Email</th><th>Scopes</th><th>Created</th><th>Expires</th><th>Last Access</th></tr>
         ${rows}
       </table>
     `;

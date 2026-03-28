@@ -264,6 +264,7 @@ async function sendBillingReport(_flags: BillingFlags): Promise<void> {
       totalRequests: number;
       totalBytes: number;
       totalErrors: number;
+      lastAccessAt: string | null;
     }>;
   };
 
@@ -278,6 +279,7 @@ async function sendBillingReport(_flags: BillingFlags): Promise<void> {
     credits: number;
     debits: number;
     balance: number;
+    lastAccessAt: string | null;
   }> = [];
 
   for (const k of report.keys) {
@@ -303,6 +305,7 @@ async function sendBillingReport(_flags: BillingFlags): Promise<void> {
       credits,
       debits,
       balance,
+      lastAccessAt: k.lastAccessAt ?? null,
     });
   }
 
@@ -319,13 +322,16 @@ async function sendBillingReport(_flags: BillingFlags): Promise<void> {
 
   const col = (s: string, w: number) => s.length > w ? s.slice(0, w - 1) + "…" : s.padEnd(w);
   console.log(
-    `  ${col("Prefix", 18)}${col("Name", 24)}${col("Email", 28)}${"Reqs".padStart(8)} ${"Bytes".padStart(10)} ${"Errs".padStart(6)} ${"Balance".padStart(12)} Status`,
+    `  ${col("Prefix", 18)}${col("Name", 24)}${col("Email", 28)}${"Reqs".padStart(8)} ${"Bytes".padStart(10)} ${"Errs".padStart(6)} ${"Balance".padStart(12)} ${"Last Access".padStart(18)} Status`,
   );
-  console.log(`  ${"-".repeat(116)}`);
+  console.log(`  ${"-".repeat(136)}`);
   for (const r of rows) {
     const status = r.balance >= 0 ? "OK" : "DEFICIT";
+    const lastAccess = r.lastAccessAt
+      ? new Date(r.lastAccessAt).toISOString().slice(0, 16)
+      : "never";
     console.log(
-      `  ${col(r.prefix, 18)}${col(r.name, 24)}${col(r.email, 28)}${r.requests.toLocaleString().padStart(8)} ${formatBytes(r.bytes).padStart(10)} ${String(r.errors).padStart(6)} $${r.balance.toFixed(2).padStart(11)} ${status}`,
+      `  ${col(r.prefix, 18)}${col(r.name, 24)}${col(r.email, 28)}${r.requests.toLocaleString().padStart(8)} ${formatBytes(r.bytes).padStart(10)} ${String(r.errors).padStart(6)} $${r.balance.toFixed(2).padStart(11)} ${lastAccess.padStart(18)} ${status}`,
     );
   }
   console.log();
@@ -381,6 +387,7 @@ function buildBillingEmailHtml(
     credits: number;
     debits: number;
     balance: number;
+    lastAccessAt: string | null;
   }>,
   totalKeys: number,
   totalRequests: number,
@@ -389,6 +396,9 @@ function buildBillingEmailHtml(
   const keyRows = rows.map((r) => {
     const status = r.balance >= 0 ? "OK" : "DEFICIT";
     const statusColor = r.balance >= 0 ? "#22c55e" : "#ef4444";
+    const lastAccess = r.lastAccessAt
+      ? new Date(r.lastAccessAt).toISOString().slice(0, 16).replace("T", " ")
+      : "never";
     return `<tr>
       <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${r.prefix}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${r.name}</td>
@@ -397,6 +407,7 @@ function buildBillingEmailHtml(
       <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">${formatBytes(r.bytes)}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">${r.errors}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">$${r.balance.toFixed(2)}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${lastAccess}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: center; color: ${statusColor}; font-weight: bold;">${status}</td>
     </tr>`;
   }).join("\n");
@@ -434,6 +445,7 @@ function buildBillingEmailHtml(
           <th style="padding: 8px; text-align: right; border-bottom: 2px solid #e5e7eb;">Bytes</th>
           <th style="padding: 8px; text-align: right; border-bottom: 2px solid #e5e7eb;">Errors</th>
           <th style="padding: 8px; text-align: right; border-bottom: 2px solid #e5e7eb;">Balance</th>
+          <th style="padding: 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Last Access</th>
           <th style="padding: 8px; text-align: center; border-bottom: 2px solid #e5e7eb;">Status</th>
         </tr>
       </thead>
