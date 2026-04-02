@@ -1,7 +1,7 @@
 # ssmd-lifecycle-consumer: standalone daemon for market lifecycle events
 # Separate from cli-ts to avoid DuckDB native dependency
 
-FROM --platform=$BUILDPLATFORM denoland/deno:2.7.4 AS builder
+FROM --platform=$BUILDPLATFORM denoland/deno:2.7.9 AS builder
 
 ARG TARGETPLATFORM
 
