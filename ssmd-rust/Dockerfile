@@ -3,7 +3,7 @@
 # Only Cargo.toml/Cargo.lock changes trigger a full rebuild.
 
 # Stage 1: Chef — install cargo-chef
-FROM rust:1.94-bookworm AS chef
+FROM rust:1.95-bookworm AS chef
 RUN cargo install cargo-chef
 RUN apt-get update && apt-get install -y capnproto && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
