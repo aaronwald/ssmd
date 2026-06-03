@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 use tracing::info;
 
+mod config;
 mod gcs;
 mod lifecycle;
 mod record;
