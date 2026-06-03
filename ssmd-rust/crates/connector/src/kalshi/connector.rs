@@ -314,10 +314,45 @@ impl KalshiConnector {
             self.subscription_config.retry_attempts,
             self.subscription_config.retry_delay_ms,
         );
-        let result = client
-            .get_markets_by_categories_with_snapshot(&secmaster.categories, secmaster.close_within_hours, secmaster.games_only)
-            .await
-            .map_err(|e| ConnectorError::ConnectionFailed(format!("secmaster query: {}", e)))?;
+
+        // Series-suffix mode (e.g. KALSHI_SERIES_SUFFIX=15M): auto-discover all series in the
+        // category ending in the suffix and subscribe their FULL active set — no open/close
+        // time window. For bounded universes (15-minute markets) this removes the clock
+        // dependency entirely; CDC handles creates/settles. Falls back to category+window mode
+        // when unset.
+        let series_suffix = std::env::var("KALSHI_SERIES_SUFFIX")
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        let result = if let Some(suffix) = &series_suffix {
+            // Fail loud rather than defaulting the category — a wrong category would silently
+            // subscribe the wrong universe.
+            let category = secmaster.categories.first().ok_or_else(|| {
+                ConnectorError::ConnectionFailed(
+                    "KALSHI_SERIES_SUFFIX set but no category configured".to_string(),
+                )
+            })?;
+            info!(
+                suffix = %suffix,
+                category = %category,
+                "Using series-suffix subscription mode (full active universe, no time window)"
+            );
+            client
+                .get_markets_by_series_suffix_with_snapshot(category, suffix)
+                .await
+                .map_err(|e| {
+                    ConnectorError::ConnectionFailed(format!("secmaster series-suffix query: {}", e))
+                })?
+        } else {
+            client
+                .get_markets_by_categories_with_snapshot(
+                    &secmaster.categories,
+                    secmaster.close_within_hours,
+                    secmaster.games_only,
+                )
+                .await
+                .map_err(|e| ConnectorError::ConnectionFailed(format!("secmaster query: {}", e)))?
+        };
 
         if result.tickers.is_empty() {
             return Err(ConnectorError::ConnectionFailed(format!(
@@ -836,6 +871,11 @@ impl Connector for KalshiConnector {
                             secmaster_api_key: secmaster.api_key.clone(),
                             feed: "kalshi".to_string(),
                             category: category_label.clone(),
+                            // Series-suffix mode: CDC subscribes new markets by ticker pattern
+                            // (no per-market category HTTP lookup → no 429 path).
+                            series_suffix: std::env::var("KALSHI_SERIES_SUFFIX")
+                                .ok()
+                                .filter(|s| !s.is_empty()),
                         };
 
                         let categories = secmaster.categories.clone();
