@@ -834,6 +834,8 @@ impl Connector for KalshiConnector {
                             consumer_name,
                             secmaster_url: secmaster.url.clone(),
                             secmaster_api_key: secmaster.api_key.clone(),
+                            feed: "kalshi".to_string(),
+                            category: category_label.clone(),
                         };
 
                         let categories = secmaster.categories.clone();

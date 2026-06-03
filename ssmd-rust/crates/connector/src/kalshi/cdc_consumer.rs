@@ -61,6 +61,10 @@ pub struct CdcConfig {
     pub secmaster_url: String,
     /// Secmaster API key (optional)
     pub secmaster_api_key: Option<String>,
+    /// Feed label for metrics (e.g. "kalshi")
+    pub feed: String,
+    /// Category label for metrics (e.g. "crypto")
+    pub category: String,
 }
 
 /// CDC consumer for dynamic market subscriptions
@@ -78,6 +82,10 @@ pub struct CdcSubscriptionConsumer {
     /// prevents the secmaster API from being flooded (429) during bursts of
     /// new markets (e.g. 15-minute crypto series rolling every 15 minutes).
     event_category_cache: HashMap<String, String>,
+    /// Feed label for metrics (e.g. "kalshi")
+    feed: String,
+    /// Category label for metrics (e.g. "crypto")
+    category: String,
 }
 
 /// Decision for whether to subscribe to a market based on its event category.
@@ -244,6 +252,9 @@ impl CdcSubscriptionConsumer {
             1000, // retry delay ms
         );
 
+        // Pre-initialize CDC metrics so GMP discovers them during healthy periods.
+        crate::metrics::init_cdc_metrics(&config.feed, &config.category);
+
         Ok(Self {
             stream: messages,
             snapshot_lsn,
@@ -251,6 +262,8 @@ impl CdcSubscriptionConsumer {
             categories: categories.into_iter().collect(),
             subscribed_markets: initial_markets.into_iter().collect(),
             event_category_cache: HashMap::new(),
+            feed: config.feed.clone(),
+            category: config.category.clone(),
         })
     }
 
@@ -297,6 +310,7 @@ impl CdcSubscriptionConsumer {
             Ok(None) => {
                 // 404: market exists in CDC but its event is not in secmaster
                 // yet (sync race). Retry rather than drop.
+                crate::metrics::inc_cdc_lookup_failure(&self.feed, &self.category);
                 debug!(
                     event_ticker = %event_ticker,
                     "Event not yet in secmaster, will retry (not dropping market)"
@@ -305,6 +319,7 @@ impl CdcSubscriptionConsumer {
             }
             Err(e) => {
                 // Transient (429/5xx/network). Retry rather than drop.
+                crate::metrics::inc_cdc_lookup_failure(&self.feed, &self.category);
                 warn!(
                     event_ticker = %event_ticker,
                     error = %e,
@@ -321,10 +336,17 @@ impl CdcSubscriptionConsumer {
     ///
     /// Returns `true` if the message was NAKed (caller should treat as retried),
     /// `false` if we gave up and acked.
-    async fn nak_or_give_up(msg: &jetstream::Message, ticker: &str, event_ticker: &str) -> bool {
+    async fn nak_or_give_up(
+        msg: &jetstream::Message,
+        ticker: &str,
+        event_ticker: &str,
+        feed: &str,
+        category: &str,
+    ) -> bool {
         let delivered = msg.info().map(|i| i.delivered).unwrap_or(1);
 
         if delivered >= MAX_LOOKUP_RETRIES {
+            crate::metrics::inc_cdc_market_dropped(feed, category);
             error!(
                 ticker = %ticker,
                 event_ticker = %event_ticker,
@@ -489,6 +511,8 @@ impl CdcSubscriptionConsumer {
                                     &msg,
                                     &market_data.ticker,
                                     &market_data.event_ticker,
+                                    &self.feed,
+                                    &self.category,
                                 )
                                 .await
                                 {
@@ -570,8 +594,14 @@ impl CdcSubscriptionConsumer {
                     continue;
                 }
                 SubscribeDecision::Retry => {
-                    if Self::nak_or_give_up(&msg, &market_data.ticker, &market_data.event_ticker)
-                        .await
+                    if Self::nak_or_give_up(
+                        &msg,
+                        &market_data.ticker,
+                        &market_data.event_ticker,
+                        &self.feed,
+                        &self.category,
+                    )
+                    .await
                     {
                         retried += 1;
                     } else {
