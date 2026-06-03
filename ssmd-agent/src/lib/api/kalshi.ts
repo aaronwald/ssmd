@@ -19,8 +19,23 @@ export interface KalshiSeries {
   category: string;
   tags?: string[];
   volume?: number;
+  /** Kalshi renamed series volume to volume_fp (a stringified float). */
+  volume_fp?: string;
   fee_type?: string;
   fee_multiplier?: number;
+}
+
+/**
+ * Parse a series volume. Kalshi renamed `volume` (number) to `volume_fp`
+ * (a stringified float, e.g. "7083218.00"); prefer volume_fp, fall back to
+ * the legacy numeric field, default to 0 on missing/invalid input.
+ */
+export function parseSeriesVolume(s: Pick<KalshiSeries, "volume" | "volume_fp">): number {
+  if (s.volume_fp != null && s.volume_fp !== "") {
+    const parsed = Number.parseFloat(s.volume_fp);
+    if (Number.isFinite(parsed)) return Math.round(parsed);
+  }
+  return s.volume ?? 0;
 }
 
 /**
@@ -346,7 +361,10 @@ export class KalshiClient {
         : `/series${queryParams ? "?" + queryParams : ""}`;
 
       const data = await this.fetch<PaginatedResponse<KalshiSeries>>(path);
-      const series = (data.series as KalshiSeries[]) || [];
+      const rawSeries = (data.series as KalshiSeries[]) || [];
+      // Normalize the renamed volume_fp field into `volume` so downstream
+      // consumers (series sync, --min-volume filtering) work unchanged.
+      const series = rawSeries.map((s) => ({ ...s, volume: parseSeriesVolume(s) }));
 
       page++;
 
