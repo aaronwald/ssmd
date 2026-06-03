@@ -11,6 +11,7 @@ name = "ssmd-settlement-snap"
 path = "src/main.rs"
 
 [dependencies]
+ssmd-middleware = { path = "../middleware", features = ["redis-health", "postgres-health"] }
 tokio = { workspace = true }
 async-nats = { workspace = true }
 serde = { workspace = true }
@@ -24,6 +25,11 @@ chrono = { workspace = true }
 futures-util = { workspace = true }
 object_store = { workspace = true }
 bytes = { workspace = true }
+redis = { workspace = true }
+deadpool-postgres = { workspace = true }
+tokio-postgres = { workspace = true }
+prometheus = { workspace = true }
+axum = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
