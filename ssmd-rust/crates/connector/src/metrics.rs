@@ -114,6 +114,30 @@ static PARSE_ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("Failed to register parse_errors_total metric")
 });
 
+/// Total CDC category lookups that failed (429/5xx/network) or hit a not-yet-synced
+/// event (404), per feed/category. A sustained nonzero rate means the connector
+/// cannot resolve categories for new markets (e.g. secmaster rate-limiting).
+static CDC_LOOKUP_FAILURES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "ssmd_connector_cdc_lookup_failures_total",
+        "Total CDC event-category lookups that failed or had to be retried",
+        &[LABEL_FEED, LABEL_CATEGORY]
+    )
+    .expect("Failed to register cdc_lookup_failures_total metric")
+});
+
+/// Total markets the CDC consumer gave up subscribing after exhausting retries,
+/// per feed/category. ANY nonzero value means a market was NOT subscribed and is
+/// receiving no live data — a critical, page-worthy condition.
+static CDC_MARKETS_DROPPED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "ssmd_connector_cdc_markets_dropped_total",
+        "Total markets the CDC consumer gave up subscribing after exhausting retries",
+        &[LABEL_FEED, LABEL_CATEGORY]
+    )
+    .expect("Failed to register cdc_markets_dropped_total metric")
+});
+
 /// Idle seconds since last message per shard
 static IDLE_SECONDS: Lazy<GaugeVec> = Lazy::new(|| {
     register_gauge_vec!(
@@ -158,6 +182,28 @@ pub fn observe_nats_publish_duration(feed: &str, secs: f64) {
     NATS_PUBLISH_DURATION
         .with_label_values(&[feed])
         .observe(secs);
+}
+
+/// Pre-initialize CDC metric time series so GMP discovers the metric names even
+/// when there have been zero failures (otherwise the alert metric is absent and
+/// the policy cannot evaluate during healthy periods).
+pub fn init_cdc_metrics(feed: &str, category: &str) {
+    CDC_LOOKUP_FAILURES_TOTAL.with_label_values(&[feed, category]);
+    CDC_MARKETS_DROPPED_TOTAL.with_label_values(&[feed, category]);
+}
+
+/// Record a failed/retried CDC category lookup.
+pub fn inc_cdc_lookup_failure(feed: &str, category: &str) {
+    CDC_LOOKUP_FAILURES_TOTAL
+        .with_label_values(&[feed, category])
+        .inc();
+}
+
+/// Record a market that was dropped after exhausting CDC subscription retries.
+pub fn inc_cdc_market_dropped(feed: &str, category: &str) {
+    CDC_MARKETS_DROPPED_TOTAL
+        .with_label_values(&[feed, category])
+        .inc();
 }
 
 /// Handle for recording metrics for a specific connector instance

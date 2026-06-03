@@ -5,11 +5,11 @@
 
 use crate::kalshi::shard_manager::ShardEvent;
 use crate::secmaster::SecmasterClient;
-use async_nats::jetstream::{self, consumer::pull::Stream, consumer::DeliverPolicy, Context};
+use async_nats::jetstream::{self, consumer::pull::Stream, consumer::DeliverPolicy, AckKind, Context};
 use chrono::Duration as ChronoDuration;
 use futures_util::StreamExt;
 use ssmd_middleware::lsn_gte;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -61,6 +61,10 @@ pub struct CdcConfig {
     pub secmaster_url: String,
     /// Secmaster API key (optional)
     pub secmaster_api_key: Option<String>,
+    /// Feed label for metrics (e.g. "kalshi")
+    pub feed: String,
+    /// Category label for metrics (e.g. "crypto")
+    pub category: String,
 }
 
 /// CDC consumer for dynamic market subscriptions
@@ -72,7 +76,62 @@ pub struct CdcSubscriptionConsumer {
     categories: HashSet<String>,
     /// Already subscribed markets (to prevent duplicates)
     subscribed_markets: HashSet<String>,
+    /// Cache of event_ticker -> category to avoid one HTTP lookup per market.
+    /// A single event has hundreds of strike markets that all resolve to the
+    /// same category; caching collapses that to one lookup per event and
+    /// prevents the secmaster API from being flooded (429) during bursts of
+    /// new markets (e.g. 15-minute crypto series rolling every 15 minutes).
+    event_category_cache: HashMap<String, String>,
+    /// Feed label for metrics (e.g. "kalshi")
+    feed: String,
+    /// Category label for metrics (e.g. "crypto")
+    category: String,
 }
+
+/// Decision for whether to subscribe to a market based on its event category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubscribeDecision {
+    /// Event category matches the filter — subscribe.
+    Subscribe,
+    /// Event category is known and does not match — skip permanently (ack).
+    SkipCategory,
+    /// Category is unknown because the lookup failed (429/5xx/network) or the
+    /// event is not yet synced (404). Must retry — NEVER drop the market on a
+    /// transient failure.
+    Retry,
+}
+
+/// Decide subscription from a (possibly unknown) category and the filter set.
+///
+/// Pure function so the branching logic is unit-testable without HTTP/NATS.
+/// `category == None` means the category could not be resolved → retry.
+fn decide_from_category(category: Option<&str>, categories: &HashSet<String>) -> SubscribeDecision {
+    // No filter configured → subscribe to everything.
+    if categories.is_empty() {
+        return SubscribeDecision::Subscribe;
+    }
+    match category {
+        Some(cat) if categories.contains(cat) => SubscribeDecision::Subscribe,
+        Some(_) => SubscribeDecision::SkipCategory,
+        None => SubscribeDecision::Retry,
+    }
+}
+
+/// Max entries in the event->category cache before it is cleared (defensive
+/// bound on memory; categories never change so a full clear is harmless).
+const MAX_CATEGORY_CACHE: usize = 50_000;
+
+/// Backoff applied when NAKing a market whose category lookup failed.
+const LOOKUP_RETRY_BACKOFF: Duration = Duration::from_secs(5);
+
+/// Number of failed deliveries after which we start emitting ERROR logs (the
+/// signal a CDC-failure alert keys on).
+const ALERT_DELIVERY_THRESHOLD: i64 = 3;
+
+/// Hard cap on redeliveries for a single market before we give up *loudly*
+/// (ERROR log + ack). At LOOKUP_RETRY_BACKOFF this is ~100s of retries, which
+/// is far longer than any transient secmaster outage should last.
+const MAX_LOOKUP_RETRIES: i64 = 20;
 
 /// Check if a market status is terminal (market will no longer produce data).
 /// These statuses should trigger unsubscribe from the WebSocket.
@@ -193,47 +252,127 @@ impl CdcSubscriptionConsumer {
             1000, // retry delay ms
         );
 
+        // Pre-initialize CDC metrics so GMP discovers them during healthy periods.
+        crate::metrics::init_cdc_metrics(&config.feed, &config.category);
+
         Ok(Self {
             stream: messages,
             snapshot_lsn,
             secmaster_client,
             categories: categories.into_iter().collect(),
             subscribed_markets: initial_markets.into_iter().collect(),
+            event_category_cache: HashMap::new(),
+            feed: config.feed.clone(),
+            category: config.category.clone(),
         })
     }
 
-    /// Check if a market's event category matches our filter
-    async fn should_subscribe(&self, event_ticker: &str) -> bool {
-        // If no categories configured, subscribe to all
+    /// Resolve whether to subscribe to a market, using a cached event->category
+    /// map and falling back to a secmaster lookup on cache miss.
+    ///
+    /// Unlike the previous implementation, a failed lookup (429/5xx/network) or
+    /// a not-yet-synced event (404) returns [`SubscribeDecision::Retry`] instead
+    /// of silently dropping the market. The caller NAKs so JetStream redelivers.
+    async fn resolve_decision(&mut self, event_ticker: &str) -> SubscribeDecision {
+        // No filter configured → subscribe to all, no lookup needed.
         if self.categories.is_empty() {
-            return true;
+            return SubscribeDecision::Subscribe;
         }
 
-        // Look up the event to get its category
+        // Cache hit — one HTTP lookup per event instead of per market.
+        if let Some(category) = self.event_category_cache.get(event_ticker) {
+            return decide_from_category(Some(category), &self.categories);
+        }
+
+        // Cache miss — look up the event's category.
         match self.secmaster_client.get_event(event_ticker).await {
             Ok(Some(event)) => {
-                let matches = self.categories.contains(&event.category);
+                // Defensive: bound cache growth. Categories never change, so a
+                // full clear only costs re-lookups, never correctness.
+                if self.event_category_cache.len() >= MAX_CATEGORY_CACHE {
+                    warn!(
+                        size = self.event_category_cache.len(),
+                        "Event category cache full, clearing"
+                    );
+                    self.event_category_cache.clear();
+                }
+                let decision = decide_from_category(Some(&event.category), &self.categories);
                 debug!(
                     event_ticker = %event_ticker,
                     category = %event.category,
-                    matches = matches,
-                    "Category lookup"
+                    ?decision,
+                    "Category lookup (cached)"
                 );
-                matches
+                self.event_category_cache
+                    .insert(event_ticker.to_string(), event.category);
+                decision
             }
             Ok(None) => {
-                warn!(event_ticker = %event_ticker, "Event not found, skipping market");
-                false
+                // 404: market exists in CDC but its event is not in secmaster
+                // yet (sync race). Retry rather than drop.
+                crate::metrics::inc_cdc_lookup_failure(&self.feed, &self.category);
+                debug!(
+                    event_ticker = %event_ticker,
+                    "Event not yet in secmaster, will retry (not dropping market)"
+                );
+                SubscribeDecision::Retry
             }
             Err(e) => {
+                // Transient (429/5xx/network). Retry rather than drop.
+                crate::metrics::inc_cdc_lookup_failure(&self.feed, &self.category);
                 warn!(
                     event_ticker = %event_ticker,
                     error = %e,
-                    "Failed to lookup event, skipping market"
+                    "Event lookup failed, will retry (not dropping market)"
                 );
-                false
+                SubscribeDecision::Retry
             }
         }
+    }
+
+    /// NAK a message so JetStream redelivers it after a backoff, bounding total
+    /// retries via the message's own delivery count. On the final attempt the
+    /// market is given up *loudly* (ERROR log, then ack) — never silently.
+    ///
+    /// Returns `true` if the message was NAKed (caller should treat as retried),
+    /// `false` if we gave up and acked.
+    async fn nak_or_give_up(
+        msg: &jetstream::Message,
+        ticker: &str,
+        event_ticker: &str,
+        feed: &str,
+        category: &str,
+    ) -> bool {
+        let delivered = msg.info().map(|i| i.delivered).unwrap_or(1);
+
+        if delivered >= MAX_LOOKUP_RETRIES {
+            crate::metrics::inc_cdc_market_dropped(feed, category);
+            error!(
+                ticker = %ticker,
+                event_ticker = %event_ticker,
+                delivered,
+                "CDC: giving up subscribing market after repeated failed category lookups — \
+                 market NOT subscribed (secmaster unavailable?)"
+            );
+            if let Err(e) = msg.ack().await {
+                warn!(error = %e, "Failed to ack message after give-up");
+            }
+            return false;
+        }
+
+        if delivered >= ALERT_DELIVERY_THRESHOLD {
+            error!(
+                ticker = %ticker,
+                event_ticker = %event_ticker,
+                delivered,
+                "CDC: market category lookup repeatedly failing, will retry"
+            );
+        }
+
+        if let Err(e) = msg.ack_with(AckKind::Nak(Some(LOOKUP_RETRY_BACKOFF))).await {
+            warn!(error = %e, "Failed to NAK message");
+        }
+        true
     }
 
     /// Run the CDC consumer, sending new market tickers to the channel
@@ -257,6 +396,8 @@ impl CdcSubscriptionConsumer {
         let mut skipped_delete: u64 = 0;
         let mut skipped_update_inactive: u64 = 0;
         let mut unsubscribed: u64 = 0;
+        let mut retried: u64 = 0;
+        let mut dropped_after_retries: u64 = 0;
 
         let mut consecutive_errors = 0u32;
         const MAX_CONSECUTIVE_ERRORS: u32 = 5;
@@ -356,12 +497,31 @@ impl CdcSubscriptionConsumer {
                             continue;
                         }
                         // Not yet subscribed — check category filter then subscribe
-                        if !self.should_subscribe(&market_data.event_ticker).await {
-                            skipped_category += 1;
-                            if let Err(e) = msg.ack().await {
-                                warn!(error = %e, "Failed to ack message");
+                        match self.resolve_decision(&market_data.event_ticker).await {
+                            SubscribeDecision::Subscribe => {}
+                            SubscribeDecision::SkipCategory => {
+                                skipped_category += 1;
+                                if let Err(e) = msg.ack().await {
+                                    warn!(error = %e, "Failed to ack message");
+                                }
+                                continue;
                             }
-                            continue;
+                            SubscribeDecision::Retry => {
+                                if Self::nak_or_give_up(
+                                    &msg,
+                                    &market_data.ticker,
+                                    &market_data.event_ticker,
+                                    &self.feed,
+                                    &self.category,
+                                )
+                                .await
+                                {
+                                    retried += 1;
+                                } else {
+                                    dropped_after_retries += 1;
+                                }
+                                continue;
+                            }
                         }
                         warn!(
                             ticker = %market_data.ticker,
@@ -424,12 +584,31 @@ impl CdcSubscriptionConsumer {
             }
 
             // Check if market's event category matches our filter
-            if !self.should_subscribe(&market_data.event_ticker).await {
-                skipped_category += 1;
-                if let Err(e) = msg.ack().await {
-                    warn!(error = %e, "Failed to ack message");
+            match self.resolve_decision(&market_data.event_ticker).await {
+                SubscribeDecision::Subscribe => {}
+                SubscribeDecision::SkipCategory => {
+                    skipped_category += 1;
+                    if let Err(e) = msg.ack().await {
+                        warn!(error = %e, "Failed to ack message");
+                    }
+                    continue;
                 }
-                continue;
+                SubscribeDecision::Retry => {
+                    if Self::nak_or_give_up(
+                        &msg,
+                        &market_data.ticker,
+                        &market_data.event_ticker,
+                        &self.feed,
+                        &self.category,
+                    )
+                    .await
+                    {
+                        retried += 1;
+                    } else {
+                        dropped_after_retries += 1;
+                    }
+                    continue;
+                }
             }
 
             // Send ticker for subscription
@@ -464,6 +643,8 @@ impl CdcSubscriptionConsumer {
                     subscribed,
                     subscribed_update,
                     unsubscribed,
+                    retried,
+                    dropped_after_retries,
                     "CDC consumer progress"
                 );
             }
@@ -479,6 +660,8 @@ impl CdcSubscriptionConsumer {
             subscribed,
             subscribed_update,
             unsubscribed,
+            retried,
+            dropped_after_retries,
             "CDC consumer stopped"
         );
 
@@ -542,6 +725,74 @@ mod tests {
         assert_eq!(market.ticker, "KXTEST-123");
         assert_eq!(market.event_ticker, "KXEVENT-1");
         assert_eq!(market.status, Some("active".to_string()));
+    }
+
+    fn cats(items: &[&str]) -> HashSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn decide_subscribes_when_no_filter() {
+        // Empty filter = subscribe to everything, even with unknown category.
+        let empty = HashSet::new();
+        assert_eq!(
+            decide_from_category(None, &empty),
+            SubscribeDecision::Subscribe
+        );
+        assert_eq!(
+            decide_from_category(Some("Sports"), &empty),
+            SubscribeDecision::Subscribe
+        );
+    }
+
+    #[test]
+    fn decide_subscribes_on_matching_category() {
+        let filter = cats(&["Crypto"]);
+        assert_eq!(
+            decide_from_category(Some("Crypto"), &filter),
+            SubscribeDecision::Subscribe
+        );
+    }
+
+    #[test]
+    fn decide_skips_on_nonmatching_category() {
+        let filter = cats(&["Crypto"]);
+        assert_eq!(
+            decide_from_category(Some("Sports"), &filter),
+            SubscribeDecision::SkipCategory
+        );
+    }
+
+    #[test]
+    fn decide_retries_when_category_unknown() {
+        // The critical regression guard: a failed/absent lookup must RETRY,
+        // never be treated as a permanent skip (which dropped the market).
+        let filter = cats(&["Crypto"]);
+        assert_eq!(
+            decide_from_category(None, &filter),
+            SubscribeDecision::Retry
+        );
+    }
+
+    #[test]
+    fn decide_matches_one_of_several_categories() {
+        let filter = cats(&["Crypto", "Economics"]);
+        assert_eq!(
+            decide_from_category(Some("Economics"), &filter),
+            SubscribeDecision::Subscribe
+        );
+        assert_eq!(
+            decide_from_category(Some("Politics"), &filter),
+            SubscribeDecision::SkipCategory
+        );
+    }
+
+    #[test]
+    fn retry_constants_bound_backoff_duration() {
+        // Sanity: total retry window is long enough to ride out a transient
+        // secmaster outage but still terminates.
+        assert!(MAX_LOOKUP_RETRIES > ALERT_DELIVERY_THRESHOLD);
+        assert!(LOOKUP_RETRY_BACKOFF.as_secs() >= 1);
     }
 
     #[test]
