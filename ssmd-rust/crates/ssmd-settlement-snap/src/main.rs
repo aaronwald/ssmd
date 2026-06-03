@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 use tracing::info;
 
+mod lifecycle;
 mod symbology;
 
 #[tokio::main]
