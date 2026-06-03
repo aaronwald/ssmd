@@ -4,7 +4,6 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { useSeries, useEvents, useMarkets, usePositions } from "@/lib/hooks";
 import type { MonitorSeries, MonitorEvent, MonitorMarket } from "@/lib/types";
 import { MarketSlideOver } from "@/components/market-slide-over";
-import { FifteenMinPanel } from "@/components/fifteen-min-panel";
 
 const SERIES_LS_KEY = "crypto-selected-series";
 const HIDE_ZERO_VOL_KEY = "crypto-hide-zero-vol";
@@ -212,17 +211,6 @@ function CryptoContent() {
     setUrlParams({ event: ticker });
   }, []);
 
-  // Select a specific series + event together (used by the 15-minute panel click-through).
-  const selectSeriesAndEvent = useCallback((series: string, event: string) => {
-    if (!series || !event) return; // ignore malformed rows rather than navigate to a bad state
-    setSelectedSeries(series);
-    setSelectedEvent(event);
-    // localStorage is non-critical UI persistence; failures (quota/private mode) must not
-    // block navigation — matches selectSeries() above.
-    try { localStorage.setItem(SERIES_LS_KEY, series); } catch {}
-    setUrlParams({ series, event });
-  }, []);
-
   // 5. Fetch markets for selected event
   const { data: markets } = useMarkets(selectedEvent);
 
@@ -239,9 +227,6 @@ function CryptoContent() {
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold">Crypto</h1>
-
-      {/* 15-minute momentum markets — one live row per coin, pinned at top */}
-      <FifteenMinPanel onSelect={selectSeriesAndEvent} />
 
       {/* Series pills */}
       {sortedSeries.length > 0 && (

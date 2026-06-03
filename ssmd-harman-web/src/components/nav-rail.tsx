@@ -77,6 +77,14 @@ function TrendingUpIcon() {
   );
 }
 
+function ClockIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
+
 function ChevronLeftIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -376,6 +384,13 @@ export function NavRail() {
           label="Crypto"
           icon={TrendingUpIcon}
           active={pathname === "/crypto" || pathname.startsWith("/crypto/")}
+          collapsed={navCollapsed}
+        />
+        <NavItem
+          href="/15m"
+          label="15-Minute"
+          icon={ClockIcon}
+          active={pathname === "/15m"}
           collapsed={navCollapsed}
         />
         <NavItem

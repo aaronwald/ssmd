@@ -3,24 +3,24 @@
 import useSWR from "swr";
 import { useEffect, useState } from "react";
 import { getSeries, getEvents, getMarkets } from "@/lib/api";
-import { useSnapMap } from "@/lib/hooks";
-import type { MonitorEvent } from "@/lib/types";
+import type { MonitorEvent, MonitorMarket } from "@/lib/types";
 
 // 15-minute crypto markets are momentum contracts ("is <coin> up in the next 15 min?")
 // with one market per event and no fixed strike. Every coin's contract rolls on the same
 // 15-minute boundary, so we show one compact live row per coin with a single shared
-// countdown. Metadata (which event is currently live) refreshes slowly; prices come from
-// snap on the fast path.
+// countdown. Prices come from the monitor markets endpoint (snap merged server-side) —
+// the same priced path the strike table uses (NOT useSnapMap, which is instance-scoped).
 const SERIES_SUFFIX = "15M";
-const META_REFRESH_MS = 15000; // catch the 15-min roll within ~15s
-const SNAP_FEED = "kalshi";
+const REFRESH_MS = 5000;
 
 interface PanelRow {
   coin: string;
   series: string;
   eventTicker: string;
-  marketTicker: string;
   volume: number | null;
+  yesBid: number | null;
+  yesAsk: number | null;
+  last: number | null;
   closeMs: number;
 }
 
@@ -40,21 +40,27 @@ function coinFromSeries(series: string): string {
 /**
  * Fetch the current live 15-minute market for every *15M crypto series.
  * Per series, the live market is the active event with the soonest future close.
+ * Every API response is treated as untrusted: non-arrays and missing fields are
+ * coerced to empty / null rather than allowed to throw mid-render.
  */
 async function fetch15mRows(): Promise<PanelRow[]> {
   const allSeries = await getSeries("Crypto");
-  const series15m = allSeries.filter((s) => s.ticker.endsWith(SERIES_SUFFIX));
+  if (!Array.isArray(allSeries) || allSeries.length === 0) return [];
+  const series15m = allSeries.filter((s) => typeof s?.ticker === "string" && s.ticker.endsWith(SERIES_SUFFIX));
   if (series15m.length === 0) return [];
 
   const withEvents = await Promise.all(
-    series15m.map(async (s) => ({ series: s.ticker, events: await getEvents(s.ticker) })),
+    series15m.map(async (s) => {
+      const events = await getEvents(s.ticker);
+      return { series: s.ticker, events: Array.isArray(events) ? events : [] };
+    }),
   );
 
   const now = Date.now();
   const liveEvents = withEvents
     .map(({ series, events }) => {
       const live = events
-        .filter((e) => e.status === "active")
+        .filter((e) => e?.status === "active")
         .map((e) => ({ e, t: eventCloseMs(e) }))
         .filter((x): x is { e: MonitorEvent; t: number } => x.t != null && x.t > now)
         .sort((a, b) => a.t - b.t)[0];
@@ -65,14 +71,16 @@ async function fetch15mRows(): Promise<PanelRow[]> {
   const rows = await Promise.all(
     liveEvents.map(async ({ series, event, closeMs }) => {
       const markets = await getMarkets(event.ticker);
-      const m = markets[0];
-      if (!m) return null;
+      const m: MonitorMarket | undefined = Array.isArray(markets) ? markets[0] : undefined;
+      if (!m || typeof m.ticker !== "string") return null;
       return {
         coin: coinFromSeries(series),
         series,
         eventTicker: event.ticker,
-        marketTicker: m.ticker,
-        volume: m.volume,
+        volume: m.volume ?? null,
+        yesBid: m.yes_bid ?? null,
+        yesAsk: m.yes_ask ?? null,
+        last: m.last ?? null,
         closeMs,
       } satisfies PanelRow;
     }),
@@ -99,11 +107,18 @@ function useCountdown(targetMs: number | null): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
-/** Mid of yes bid/ask, falling back to last. */
-function yesProbability(snap: { yesBid: number | null; yesAsk: number | null; last: number | null } | undefined): number | null {
-  if (!snap) return null;
-  if (snap.yesBid != null && snap.yesAsk != null) return (snap.yesBid + snap.yesAsk) / 2;
-  return snap.last;
+/** Mid of yes bid/ask, falling back to last. Result is a 0–1 probability. */
+function yesProbability(row: PanelRow): number | null {
+  if (row.yesBid != null && row.yesAsk != null) return (row.yesBid + row.yesAsk) / 2;
+  return row.last;
+}
+
+/** Compact volume, e.g. 386957 -> "387k", 1_240_000 -> "1.2M". */
+function fmtVol(v: number | null): string {
+  if (v == null) return "—";
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${Math.round(v / 1_000)}k`;
+  return Math.round(v).toLocaleString();
 }
 
 export function FifteenMinPanel({
@@ -111,52 +126,58 @@ export function FifteenMinPanel({
 }: {
   onSelect: (series: string, event: string) => void;
 }) {
-  const { data: rows } = useSWR("data-15m-rows", fetch15mRows, {
-    refreshInterval: META_REFRESH_MS,
+  const { data: rows, error } = useSWR("data-15m-rows", fetch15mRows, {
+    refreshInterval: REFRESH_MS,
     keepPreviousData: true,
   });
-
-  const tickers = rows?.map((r) => r.marketTicker);
-  const { data: snap } = useSnapMap(SNAP_FEED, tickers);
 
   // All coins roll together → one shared countdown to the soonest close.
   const closeMs = rows && rows.length > 0 ? Math.min(...rows.map((r) => r.closeMs)) : null;
   const countdown = useCountdown(closeMs);
 
-  if (!rows || rows.length === 0) return null;
-
   return (
     <section aria-labelledby="fifteen-min-heading" className="rounded-lg border border-border bg-bg-raised">
-      <header className="flex items-baseline justify-between border-b border-border px-4 py-2">
-        <h2 id="fifteen-min-heading" className="text-sm font-semibold text-fg">
+      <header className="flex items-baseline justify-between border-b border-border px-4 py-3">
+        <h2 id="fifteen-min-heading" className="text-base font-semibold text-fg">
           15-Minute <span className="font-normal text-fg-subtle">· up in next 15 min?</span>
         </h2>
-        <span className="font-mono text-xs text-red">⏱ {countdown}</span>
+        <span className="font-mono text-sm text-red">⏱ {countdown}</span>
       </header>
-      <ul className="divide-y divide-border">
-        {rows.map((r) => {
-          const yes = yesProbability(snap?.get(r.marketTicker));
-          return (
-            <li key={r.series}>
-              <button
-                onClick={() => onSelect(r.series, r.eventTicker)}
-                className="flex w-full items-center gap-4 px-4 py-2 text-left transition-colors hover:bg-bg"
-              >
-                <span className="w-16 shrink-0 font-medium text-fg">{r.coin}</span>
-                <span className="w-24 shrink-0 font-mono text-sm">
-                  <span className="text-fg-subtle">Yes </span>
-                  <span className={yes == null ? "text-fg-subtle" : yes >= 0.5 ? "text-green" : "text-fg"}>
-                    {yes == null ? "—" : yes.toFixed(2)}
+
+      {error && (
+        <div className="px-4 py-6 text-center text-sm text-red">Failed to load 15-minute markets.</div>
+      )}
+      {!error && !rows && (
+        <div className="px-4 py-6 text-center text-sm text-fg-subtle">Loading…</div>
+      )}
+      {!error && rows && rows.length === 0 && (
+        <div className="px-4 py-6 text-center text-sm text-fg-subtle">No active 15-minute markets.</div>
+      )}
+
+      {rows && rows.length > 0 && (
+        <ul className="divide-y divide-border">
+          {rows.map((r) => {
+            const yes = yesProbability(r);
+            return (
+              <li key={r.series}>
+                <button
+                  onClick={() => onSelect(r.series, r.eventTicker)}
+                  className="flex w-full items-center gap-4 px-4 py-2.5 text-left transition-colors hover:bg-bg"
+                >
+                  <span className="w-16 shrink-0 font-medium text-fg">{r.coin}</span>
+                  <span className="w-28 shrink-0 font-mono text-sm">
+                    <span className="text-fg-subtle">Yes </span>
+                    <span className={yes == null ? "text-fg-subtle" : yes >= 0.5 ? "text-green" : "text-fg"}>
+                      {yes == null ? "—" : yes.toFixed(2)}
+                    </span>
                   </span>
-                </span>
-                <span className="ml-auto font-mono text-xs text-fg-subtle">
-                  vol {r.volume != null ? r.volume.toLocaleString() : "—"}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+                  <span className="ml-auto font-mono text-xs text-fg-subtle">vol {fmtVol(r.volume)}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
 }
