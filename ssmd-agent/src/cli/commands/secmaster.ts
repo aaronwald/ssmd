@@ -48,6 +48,8 @@ export interface SyncOptions {
   bySeries?: boolean;
   /** Filter to specific category (for series-based sync) */
   category?: string;
+  /** Only sync series whose ticker ends with this suffix, e.g. "15M" (series-based sync) */
+  seriesSuffix?: string;
   /** Filter to specific tags (for series-based sync) */
   tags?: string[];
   /** Minimum volume threshold for series (filters low-activity series) */
@@ -313,6 +315,13 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
     } else {
       console.log(`\n[Series] Fetching all active series from database...${volFilter}`);
       seriesList = await getAllActiveSeries(options.minVolume);
+    }
+
+    if (options.seriesSuffix) {
+      const before = seriesList.length;
+      const suffix = options.seriesSuffix;
+      seriesList = seriesList.filter((s) => s.ticker.endsWith(suffix));
+      console.log(`[Series] Filtered to ${seriesList.length}/${before} series ending in "${suffix}"`);
     }
 
     console.log(`[Series] Found ${seriesList.length} series to sync`);
@@ -760,6 +769,7 @@ export async function handleSecmaster(
         activeOnly: Boolean(flags["active-only"]),
         bySeries: Boolean(flags["by-series"]),
         category: flags.category ? String(flags.category) : undefined,
+        seriesSuffix: flags["series-suffix"] ? String(flags["series-suffix"]) : undefined,
         tags: tags.length > 0 ? tags : undefined,
         minVolume: flags["min-volume"] ? Number(flags["min-volume"]) : undefined,
         minCloseDaysAgo: flags["min-close-days-ago"] ? Number(flags["min-close-days-ago"]) : undefined,
@@ -841,6 +851,7 @@ export async function handleSecmaster(
       console.log("Options for sync:");
       console.log("  --by-series      Use series-based sync (fast, targeted)");
       console.log("  --category=X     Filter by category (with --by-series)");
+      console.log("  --series-suffix=X  Only series ending in X, e.g. 15M (with --by-series)");
       console.log("  --tag=X          Filter to specific tags (with --by-series)");
       console.log("  --min-volume=N   Only sync series with volume >= N");
       console.log("  --min-close-days-ago=N  Only sync markets closing within N days");
