@@ -471,24 +471,31 @@ impl SecmasterClient {
         }
     }
 
-    /// Fetch all active markets for a single series WITH CDC snapshot metadata.
-    /// Unlike the category fetch, there is NO open/close time filter — the entire
-    /// active set for the series is returned.
-    pub async fn get_markets_by_series_with_snapshot(
+    /// Return all active markets in `category` whose series (the ticker segment before the
+    /// first `-`) ends with `suffix` (e.g. "15M"), with CDC snapshot metadata.
+    ///
+    /// Uses the standard `/v1/markets?category=…&status=active` endpoint (same proven
+    /// `MarketsResponse` decode as category mode — there is no `/v1/series` endpoint) with
+    /// NO open/close time window, then filters to the suffix client-side. Subscription
+    /// membership therefore never depends on the wall clock: markets are returned the moment
+    /// they exist (the exchange streams data once they open) and CDC handles creates/settles.
+    /// Suitable for bounded universes (e.g. the ~1,150 active 15-minute crypto markets).
+    pub async fn get_markets_by_series_suffix_with_snapshot(
         &self,
-        series_ticker: &str,
+        category: &str,
+        suffix: &str,
     ) -> Result<MarketsWithSnapshot, SecmasterError> {
         let url = format!(
-            "{}/v1/markets?series={}&status=active&limit=50000&include_snapshot=true",
+            "{}/v1/markets?category={}&status=active&limit=50000&include_snapshot=true",
             self.base_url,
-            urlencoding::encode(series_ticker)
+            urlencoding::encode(category)
         );
 
         let mut last_error = None;
         for attempt in 0..=self.retry_attempts {
             if attempt > 0 {
                 let delay = self.retry_delay_ms * 2u64.pow(attempt - 1);
-                warn!(attempt, delay_ms = delay, series_ticker = %series_ticker, "Retrying secmaster series request");
+                warn!(attempt, delay_ms = delay, category = %category, "Retrying secmaster series-suffix request");
                 sleep(Duration::from_millis(delay)).await;
             }
 
@@ -501,13 +508,34 @@ impl SecmasterClient {
                 Ok(response) => {
                     if response.status().is_success() {
                         let response_body: MarketsResponse = response.json().await?;
-                        let tickers: Vec<String> =
-                            response_body.markets.into_iter().map(|m| m.ticker).collect();
                         let snapshot_lsn =
                             response_body.snapshot_lsn.unwrap_or_else(|| "0/0".to_string());
                         let snapshot_time = response_body
                             .snapshot_time
                             .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+                        // Keep only markets whose series part ends with the suffix.
+                        let mut tickers: Vec<String> = response_body
+                            .markets
+                            .into_iter()
+                            .map(|m| m.ticker)
+                            .filter(|t| {
+                                t.split('-').next().map_or(false, |series| series.ends_with(suffix))
+                            })
+                            .collect();
+                        tickers.sort();
+
+                        if tickers.is_empty() {
+                            return Err(SecmasterError::NoMarketsFound(vec![format!(
+                                "{category}*{suffix}"
+                            )]));
+                        }
+
+                        info!(
+                            category = %category,
+                            suffix = %suffix,
+                            total_markets = tickers.len(),
+                            "Filtered active markets by series suffix"
+                        );
                         return Ok(MarketsWithSnapshot { tickers, snapshot_lsn, snapshot_time });
                     } else {
                         let status = response.status().as_u16();
@@ -522,77 +550,7 @@ impl SecmasterClient {
             }
         }
         Err(last_error
-            .unwrap_or_else(|| SecmasterError::NoMarketsFound(vec![series_ticker.to_string()])))
-    }
-
-    /// Auto-discover series in a category whose ticker ends with `suffix` (e.g. "15M")
-    /// and return ALL their active markets with snapshot metadata.
-    ///
-    /// No time-window filter: subscription membership never depends on the clock. Markets
-    /// are returned the moment they exist (the exchange streams data once they open), and
-    /// CDC handles creates/settles thereafter. Suitable for bounded universes (e.g. the
-    /// ~1,150 active 15-minute crypto markets) where subscribing the full set is cheap.
-    pub async fn get_markets_by_series_suffix_with_snapshot(
-        &self,
-        category: &str,
-        suffix: &str,
-    ) -> Result<MarketsWithSnapshot, SecmasterError> {
-        let series_list = self.get_series(category, false).await?;
-        let matching: Vec<&SeriesItem> =
-            series_list.iter().filter(|s| s.ticker.ends_with(suffix)).collect();
-
-        info!(
-            category = %category,
-            suffix = %suffix,
-            matched_series = matching.len(),
-            "Auto-discovered series by suffix"
-        );
-
-        if matching.is_empty() {
-            return Err(SecmasterError::NoMarketsFound(vec![format!("{category}*{suffix}")]));
-        }
-
-        let mut all_tickers = HashSet::new();
-        // Use the EARLIEST snapshot LSN across series fetches: CDC re-processes (deduped via
-        // lsn_gte + subscribed set) any market created during the multi-fetch window, so no
-        // market created mid-fetch is missed.
-        let mut snapshot_lsn: Option<String> = None;
-        let mut snapshot_time: Option<String> = None;
-
-        for series in matching {
-            match self.get_markets_by_series_with_snapshot(&series.ticker).await {
-                Ok(result) => {
-                    all_tickers.extend(result.tickers);
-                    if snapshot_lsn.is_none() {
-                        snapshot_lsn = Some(result.snapshot_lsn);
-                        snapshot_time = Some(result.snapshot_time);
-                    }
-                }
-                Err(e) => {
-                    warn!(series = %series.ticker, error = %e, "Failed to fetch series markets, continuing");
-                }
-            }
-        }
-
-        if all_tickers.is_empty() {
-            return Err(SecmasterError::NoMarketsFound(vec![format!("{category}*{suffix}")]));
-        }
-
-        let mut tickers: Vec<String> = all_tickers.into_iter().collect();
-        tickers.sort();
-
-        info!(
-            category = %category,
-            suffix = %suffix,
-            total_markets = tickers.len(),
-            "Combined active markets for series suffix"
-        );
-
-        Ok(MarketsWithSnapshot {
-            tickers,
-            snapshot_lsn: snapshot_lsn.unwrap_or_else(|| "0/0".to_string()),
-            snapshot_time: snapshot_time.unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-        })
+            .unwrap_or_else(|| SecmasterError::NoMarketsFound(vec![format!("{category}*{suffix}")])))
     }
 
     /// Fetch market tickers using series-based approach
