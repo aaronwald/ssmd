@@ -65,6 +65,10 @@ pub struct CdcConfig {
     pub feed: String,
     /// Category label for metrics (e.g. "crypto")
     pub category: String,
+    /// Optional series-suffix filter (e.g. "15M"). When set, markets are selected by
+    /// matching the series part of the ticker against this suffix instead of by an HTTP
+    /// category lookup — eliminating the per-market secmaster call (and its 429 risk).
+    pub series_suffix: Option<String>,
 }
 
 /// CDC consumer for dynamic market subscriptions
@@ -86,6 +90,19 @@ pub struct CdcSubscriptionConsumer {
     feed: String,
     /// Category label for metrics (e.g. "crypto")
     category: String,
+    /// Optional series-suffix filter (e.g. "15M") — see [`CdcConfig::series_suffix`].
+    series_suffix: Option<String>,
+}
+
+/// Match a market's event ticker against a series suffix.
+///
+/// The series ticker is the segment before the first `-` (e.g. `KXBTC15M` in
+/// `KXBTC15M-26JUN031400`). Returns true if that segment ends with `suffix`.
+fn series_matches_suffix(event_ticker: &str, suffix: &str) -> bool {
+    event_ticker
+        .split('-')
+        .next()
+        .map_or(false, |series| series.ends_with(suffix))
 }
 
 /// Decision for whether to subscribe to a market based on its event category.
@@ -264,6 +281,7 @@ impl CdcSubscriptionConsumer {
             event_category_cache: HashMap::new(),
             feed: config.feed.clone(),
             category: config.category.clone(),
+            series_suffix: config.series_suffix.clone(),
         })
     }
 
@@ -274,6 +292,16 @@ impl CdcSubscriptionConsumer {
     /// a not-yet-synced event (404) returns [`SubscribeDecision::Retry`] instead
     /// of silently dropping the market. The caller NAKs so JetStream redelivers.
     async fn resolve_decision(&mut self, event_ticker: &str) -> SubscribeDecision {
+        // Series-suffix mode: deterministic ticker-pattern match, NO HTTP lookup (and thus no
+        // 429/retry path). Subscribes any market whose series ends with the suffix.
+        if let Some(suffix) = &self.series_suffix {
+            return if series_matches_suffix(event_ticker, suffix) {
+                SubscribeDecision::Subscribe
+            } else {
+                SubscribeDecision::SkipCategory
+            };
+        }
+
         // No filter configured → subscribe to all, no lookup needed.
         if self.categories.is_empty() {
             return SubscribeDecision::Subscribe;
@@ -785,6 +813,27 @@ mod tests {
             decide_from_category(Some("Politics"), &filter),
             SubscribeDecision::SkipCategory
         );
+    }
+
+    #[test]
+    fn series_suffix_matches_15m_markets() {
+        assert!(series_matches_suffix("KXBTC15M-26JUN031400", "15M"));
+        assert!(series_matches_suffix("KXETH15M-26JUN031400-15", "15M"));
+        assert!(series_matches_suffix("KXNEWCOIN15M-26JUN0314", "15M"));
+    }
+
+    #[test]
+    fn series_suffix_rejects_non_15m_markets() {
+        // Hourly / daily crypto must not match the 15M suffix.
+        assert!(!series_matches_suffix("KXBTCD-26JUN0314", "15M"));
+        assert!(!series_matches_suffix("KXBTC-26JUN03", "15M"));
+        assert!(!series_matches_suffix("KXETHD-26JUN0314-T2750", "15M"));
+    }
+
+    #[test]
+    fn series_suffix_handles_malformed_ticker() {
+        assert!(!series_matches_suffix("", "15M"));
+        assert!(series_matches_suffix("KXBTC15M", "15M")); // no dash, whole string is series
     }
 
     #[test]
