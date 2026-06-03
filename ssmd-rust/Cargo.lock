@@ -4316,6 +4316,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssmd-settlement-snap"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "axum 0.7.9",
+ "bytes",
+ "chrono",
+ "dashmap",
+ "deadpool-postgres",
+ "futures-util",
+ "object_store",
+ "once_cell",
+ "prometheus",
+ "redis",
+ "serde",
+ "serde_json",
+ "ssmd-middleware",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ssmd-snap"
 version = "0.1.0"
 dependencies = [
