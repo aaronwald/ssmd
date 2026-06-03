@@ -8,6 +8,7 @@ use tracing::info;
 
 mod lifecycle;
 mod symbology;
+mod ticker;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
