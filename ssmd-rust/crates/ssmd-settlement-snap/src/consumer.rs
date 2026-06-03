@@ -21,6 +21,7 @@ use futures_util::StreamExt;
 use crate::config::Config;
 use crate::gcs::{GcsWriter, WriteOutcome};
 use crate::lifecycle::{self, is_settlement_trigger};
+use crate::metrics;
 use crate::reconcile;
 use crate::record::{SettlementRecord, SettlementTrigger, SnapSource};
 use crate::symbology::is_15m;
@@ -298,23 +299,30 @@ async fn run_lifecycle(
         match gcs.write_if_absent(&record).await {
             Ok(outcome) => {
                 consecutive_gcs_errors = 0;
-                match outcome {
+                let outcome_label = match outcome {
                     WriteOutcome::Written => {
                         progress.written.fetch_add(1, Ordering::Relaxed);
+                        metrics::OUTCOME_WRITTEN
                     }
                     WriteOutcome::Exists => {
                         progress.exists.fetch_add(1, Ordering::Relaxed);
+                        metrics::OUTCOME_EXISTS
                     }
-                }
-                match source {
+                };
+                metrics::inc_record_written(&record.coin, outcome_label);
+                let source_label = match source {
+                    SnapSource::Memory => metrics::SOURCE_MEMORY,
                     SnapSource::Redis => {
                         progress.redis_fallback.fetch_add(1, Ordering::Relaxed);
+                        metrics::SOURCE_REDIS
                     }
+                    SnapSource::Secmaster => metrics::SOURCE_SECMASTER,
                     SnapSource::Missing => {
                         progress.missing.fetch_add(1, Ordering::Relaxed);
+                        metrics::SOURCE_MISSING
                     }
-                    _ => {}
-                }
+                };
+                metrics::inc_lookup(source_label);
                 // Only ack AFTER a durable write/confirm.
                 ack(&msg).await?;
 
@@ -355,6 +363,45 @@ async fn ack(msg: &async_nats::jetstream::Message) -> Result<()> {
     msg.ack().await.map_err(|e| anyhow!("ack failed: {e}"))
 }
 
+/// Render the default global Prometheus registry as text for `GET /metrics`.
+async fn metrics_handler() -> (axum::http::StatusCode, [(&'static str, &'static str); 1], String) {
+    match metrics::encode_metrics() {
+        Ok(body) => (
+            axum::http::StatusCode::OK,
+            [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+            body,
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            [("content-type", "text/plain; charset=utf-8")],
+            format!("Failed to encode metrics: {e}"),
+        ),
+    }
+}
+
+/// Spawn the `/metrics` (+ `/healthz`) HTTP server on a background task. A bind
+/// failure is fatal — the process exits so K8s restarts it (we never want a
+/// silently unscrapeable pod).
+fn spawn_metrics_server(addr: String) {
+    tokio::spawn(async move {
+        let app = axum::Router::new()
+            .route("/metrics", axum::routing::get(metrics_handler))
+            .route("/healthz", axum::routing::get(|| async { "ok" }));
+        let listener = match tokio::net::TcpListener::bind(&addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!(addr = %addr, error = %e, "failed to bind metrics server");
+                std::process::exit(1);
+            }
+        };
+        tracing::info!(addr = %addr, "metrics server listening");
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!(error = %e, "metrics server exited");
+            std::process::exit(1);
+        }
+    });
+}
+
 /// Wire everything and run. Returns `Err` on any fatal condition; the binary
 /// exits non-zero on `Err` so K8s restarts the pod (crash-cascade policy).
 pub async fn run(config: Config) -> Result<()> {
@@ -367,6 +414,11 @@ pub async fn run(config: Config) -> Result<()> {
         database = config.database_url.is_some(),
         "settlement-snap run starting",
     );
+
+    // Pre-initialize metric series and spawn the Prometheus /metrics server so
+    // GMP can scrape (and discover the metric names) from the first moment.
+    metrics::init_metrics();
+    spawn_metrics_server(config.metrics_addr.clone());
 
     // NATS / JetStream.
     let nats_client = async_nats::connect(&config.nats_url)

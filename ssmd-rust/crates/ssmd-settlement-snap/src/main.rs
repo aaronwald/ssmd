@@ -12,6 +12,7 @@ mod config;
 mod consumer;
 mod gcs;
 mod lifecycle;
+mod metrics;
 mod reconcile;
 mod record;
 mod symbology;

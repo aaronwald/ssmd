@@ -27,6 +27,8 @@ pub struct Config {
     pub database_url: Option<String>,
     /// Durable consumer name for the lifecycle stream.
     pub consumer_name: String,
+    /// Bind address for the Prometheus `/metrics` (+ `/healthz`) HTTP server.
+    pub metrics_addr: String,
 }
 
 const DEFAULT_LIFECYCLE_STREAM: &str = "PROD_KALSHI_LIFECYCLE";
@@ -36,6 +38,7 @@ const DEFAULT_GCS_BUCKET: &str = "ssmd-data";
 const DEFAULT_GCS_PREFIX: &str = "settled/kalshi/crypto";
 const DEFAULT_SERIES_SUFFIX: &str = "15M";
 const DEFAULT_CONSUMER_NAME: &str = "settlement-snap-v1";
+const DEFAULT_METRICS_ADDR: &str = "0.0.0.0:8080";
 
 impl Config {
     /// Load configuration from the process environment.
@@ -61,6 +64,7 @@ impl Config {
             redis_url: optional_opt(&get, "REDIS_URL"),
             database_url: optional_opt(&get, "DATABASE_URL"),
             consumer_name: optional(&get, "CONSUMER_NAME", DEFAULT_CONSUMER_NAME),
+            metrics_addr: optional(&get, "METRICS_ADDR", DEFAULT_METRICS_ADDR),
         })
     }
 }
@@ -126,6 +130,7 @@ mod tests {
         assert_eq!(cfg.gcs_prefix, "settled/kalshi/crypto");
         assert_eq!(cfg.series_suffix, "15M");
         assert_eq!(cfg.consumer_name, "settlement-snap-v1");
+        assert_eq!(cfg.metrics_addr, "0.0.0.0:8080");
         assert!(cfg.redis_url.is_none());
         assert!(cfg.database_url.is_none());
     }
@@ -143,6 +148,7 @@ mod tests {
         m.insert("REDIS_URL", "redis://redis:6379");
         m.insert("DATABASE_URL", "postgres://u:p@db/ssmd");
         m.insert("CONSUMER_NAME", "snap-v2");
+        m.insert("METRICS_ADDR", "0.0.0.0:9090");
 
         let cfg = Config::from_getter(getter(m)).expect("should load");
         assert_eq!(
@@ -158,6 +164,7 @@ mod tests {
                 redis_url: Some("redis://redis:6379".to_string()),
                 database_url: Some("postgres://u:p@db/ssmd".to_string()),
                 consumer_name: "snap-v2".to_string(),
+                metrics_addr: "0.0.0.0:9090".to_string(),
             }
         );
     }
