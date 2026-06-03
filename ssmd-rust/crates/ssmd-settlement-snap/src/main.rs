@@ -7,6 +7,7 @@
 use tracing::info;
 
 mod lifecycle;
+mod record;
 mod symbology;
 mod ticker;
 
