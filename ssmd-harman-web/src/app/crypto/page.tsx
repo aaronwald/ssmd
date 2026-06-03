@@ -83,15 +83,24 @@ function snapAgeColor(snapAt: number | null): string {
   return "text-red";
 }
 
-/** Format a UTC date as human-readable EST time, e.g. "Mar 4 5pm EST" */
+/** Format a UTC date as human-readable EST time, e.g. "Mar 4 5pm EST" or "Mar 4 1:30pm EST" */
 function fmtEventTime(dateStr: string): string {
   const d = new Date(dateStr);
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    timeZone: "America/New_York",
-  }) + " EST";
+  if (Number.isNaN(d.getTime())) return dateStr;
+  // 15-minute markets close at :15/:30/:45 — render minutes when non-zero so they
+  // are distinguishable, while keeping hourly markets clean ("5pm", not "5:00pm").
+  const estMinute = Number(
+    d.toLocaleString("en-US", { minute: "numeric", timeZone: "America/New_York" }),
+  );
+  return (
+    d.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      ...(estMinute !== 0 ? { minute: "2-digit" } : {}),
+      timeZone: "America/New_York",
+    }) + " EST"
+  );
 }
 
 /** Live countdown hook — updates every second */
