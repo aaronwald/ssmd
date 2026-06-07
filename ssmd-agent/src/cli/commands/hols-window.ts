@@ -8,6 +8,14 @@
 
 export const DEFAULT_TRAILING_MINUTES = 600;
 
+/**
+ * Intraday mode is 1-minute-only by design — the trailing window is
+ * minute-floored. Callers force this interval regardless of --interval so the
+ * fetch resolution and the GCS filename (ohlcv-1m-binance.parquet) stay
+ * consistent.
+ */
+export const INTRADAY_INTERVAL = 1;
+
 export type HolsGenerateMode = "daily" | "intraday";
 
 export type Hols1mWindow = {
@@ -51,4 +59,28 @@ export function resolveBinance1mWindow(
   const dateStr = y.toISOString().slice(0, 10);
   const startMs = Date.parse(`${dateStr}T00:00:00Z`);
   return { dateStr, startMs, endMs: startMs + 86_400_000, partial: false };
+}
+
+/**
+ * Resolve the effective Binance bar interval (minutes) for a generation run.
+ *
+ * Intraday mode is always 1m — the trailing window is minute-floored, so a
+ * larger interval would write a mislabeled file (e.g. ohlcv-5m-binance.parquet)
+ * over a 1m-resolution window. This guard forces 1 regardless of `requested`.
+ * Daily mode returns the requested interval unchanged.
+ *
+ * Returns `{ interval, overridden }`; `overridden` is true only when intraday
+ * mode had to ignore a non-1 requested interval, so callers can warn.
+ */
+export function resolveBinanceInterval(
+  mode: HolsGenerateMode,
+  requested: number,
+): { interval: number; overridden: boolean } {
+  if (mode === "intraday") {
+    return {
+      interval: INTRADAY_INTERVAL,
+      overridden: requested !== INTRADAY_INTERVAL,
+    };
+  }
+  return { interval: requested, overridden: false };
 }

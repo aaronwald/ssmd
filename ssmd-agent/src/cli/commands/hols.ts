@@ -18,8 +18,14 @@ import {
   DEFAULT_TRAILING_MINUTES,
   type HolsGenerateMode,
   resolveBinance1mWindow,
+  resolveBinanceInterval,
 } from "./hols-window.ts";
-export { DEFAULT_TRAILING_MINUTES, resolveBinance1mWindow } from "./hols-window.ts";
+export {
+  DEFAULT_TRAILING_MINUTES,
+  INTRADAY_INTERVAL,
+  resolveBinance1mWindow,
+  resolveBinanceInterval,
+} from "./hols-window.ts";
 export type { Hols1mWindow, HolsGenerateMode } from "./hols-window.ts";
 
 // --- Kraken Spot REST OHLC ---
@@ -119,12 +125,25 @@ export async function runHolsGenerate(
     if (mode === "intraday") {
       // Intraday partial-day mode: TODAY, trailing window ending at current minute.
       // Ignores --date/--days (those are batch concepts). Uses the pure window helper.
+      //
+      // The window helper is 1-minute-specific by design (minute-floored trailing
+      // window). Forcing the interval to 1 keeps the fetch resolution and the GCS
+      // filename (ohlcv-1m-binance.parquet) consistent — otherwise an omitted or
+      // wrong --interval would write a 5m file over a 1m-resolution window.
+      const { interval: intradayInterval, overridden } = resolveBinanceInterval(mode, interval);
+      // Only warn when the user explicitly passed a non-1 --interval; the
+      // default (DEFAULT_INTERVAL) being silently forced to 1 is expected.
+      if (flags.interval && overridden) {
+        console.warn(
+          `[hols:generate] WARNING: --mode intraday only supports 1m bars; overriding --interval ${interval} to ${intradayInterval}`,
+        );
+      }
       const w = resolveBinance1mWindow(new Date(), { mode, trailingMinutes });
       await runHolsGenerateBinance(
         flags,
         startTime,
         dryRun,
-        interval,
+        intradayInterval,
         new Date(w.startMs),
         new Date(w.endMs),
         w.dateStr,
