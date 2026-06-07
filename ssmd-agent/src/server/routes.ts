@@ -71,6 +71,14 @@ import { listParquetFiles, generateSignedUrls, FEED_CONFIG, getCatalog } from ".
 import { logDataAccess } from "../lib/db/mod.ts";
 import { query as duckdbQuery } from "../lib/duckdb/mod.ts";
 import {
+  boundaryGapSeconds,
+  decidePartialCoverage,
+  DEFAULT_PARTIAL_EXPECTED_BARS,
+  FULL_DAY_BARS,
+  perTickerGaps,
+  type TickerBarRow,
+} from "./hols-validate.ts";
+import {
   buildTradeSQL,
   buildPriceSQL,
   buildEventVolumeSQL,
@@ -3469,6 +3477,16 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
     return json({ error: "date must be YYYY-MM-DD format" }, 400);
   }
 
+  // Partial-day awareness for the binance_1m section. When `partial=true`, the
+  // file is an intraday trailing window (see hols --mode intraday), so coverage
+  // is compared against `expected_bars` (default 600) rather than the full 1440.
+  const partial = url.searchParams.get("partial") === "true";
+  const expectedBarsParam = url.searchParams.get("expected_bars");
+  const parsedExpectedBars = expectedBarsParam !== null ? Number(expectedBarsParam) : NaN;
+  const expectedBars = Number.isFinite(parsedExpectedBars) && parsedExpectedBars > 0
+    ? Math.floor(parsedExpectedBars)
+    : (partial ? DEFAULT_PARTIAL_EXPECTED_BARS : FULL_DAY_BARS);
+
   const bucket = Deno.env.get("GCS_BUCKET");
   if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
 
@@ -3476,6 +3494,11 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
   const wsPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-1m-ssmd.parquet`;
   const binance5mPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-5m-binance.parquet`;
   const binance1mPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-1m-binance.parquet`;
+  // Previous day's binance 1m file, for the day-boundary contiguity check.
+  const prevDate = new Date(`${date}T00:00:00Z`);
+  prevDate.setUTCDate(prevDate.getUTCDate() - 1);
+  const prevDateStr = prevDate.toISOString().slice(0, 10);
+  const binance1mPrevPath = `s3://${bucket}/hols/crypto/daily/${prevDateStr}/ohlcv-1m-binance.parquet`;
 
   const results: Record<string, unknown> = { date };
 
@@ -3669,9 +3692,109 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         ) GROUP BY dt
       ) ORDER BY dt
     `);
-    results.binance_1m = { exists: true, expected_bars_per_ticker_per_day: 1440, ...binance1mResult.rows[0], daily_breakdown: binance1mDaily.rows };
+    // Per-ticker bars + interior 60s gaps. Pull (symbol, unix-second) pairs via
+    // DuckDB (the heavy scan stays in the engine) and let the pure helper count
+    // missing slots per symbol. The helper itself validates each row (skips
+    // non-finite unix, ignores missing symbols via Map keying) and tolerates an
+    // empty input, so a malformed/empty result degrades to {} rather than NaN.
+    const perTickerRows = await duckdbQuery(`
+      SELECT hols_ticker AS symbol, CAST(epoch(date) AS BIGINT) AS unix
+      FROM read_parquet('${binance1mPath}')
+    `);
+    const rawPerTicker = Array.isArray(perTickerRows.rows) ? perTickerRows.rows : [];
+    const perTicker = perTickerGaps(
+      rawPerTicker
+        .filter((r): r is Record<string, unknown> => r != null && typeof r === "object")
+        .map((r) => ({ symbol: String((r as Record<string, unknown>).symbol ?? ""), unix: Number((r as Record<string, unknown>).unix) }))
+        .filter((r) => r.symbol.length > 0 && Number.isFinite(r.unix)) as TickerBarRow[],
+    );
+
+    // Partial-day-aware coverage decision. minBarsPerTicker is the worst-covered
+    // symbol's bar count for the (single) day in this file. Guard against an
+    // empty daily_breakdown (defaults to 0 -> flagged short, which is correct).
+    const dailyRow0 = Array.isArray(binance1mDaily.rows) && binance1mDaily.rows.length > 0
+      ? (binance1mDaily.rows[0] as Record<string, unknown>)
+      : undefined;
+    const minBarsRaw = Number(dailyRow0?.min_bars_per_ticker);
+    const minBars = Number.isFinite(minBarsRaw) ? minBarsRaw : 0;
+    const coverage = decidePartialCoverage({
+      minBarsPerTicker: minBars,
+      partial,
+      expectedBars,
+    });
+
+    results.binance_1m = {
+      exists: true,
+      expected_bars_per_ticker_per_day: 1440,
+      partial,
+      expected_bars: coverage.expectedBars,
+      short: coverage.short,
+      ...binance1mResult.rows[0],
+      daily_breakdown: binance1mDaily.rows,
+      per_ticker: perTicker,
+    };
   } catch (err) {
     results.binance_1m = { exists: false, error: (err as Error).message };
+  }
+
+  // Day-boundary contiguity: last bar of date-1's binance 1m file must be
+  // exactly 60s before the first bar of `date`'s file, for a representative
+  // symbol (BTCUSDT). Per spec, an absent previous-day file is NOT an error —
+  // report checked:false. Only run when today's file actually exists.
+  if ((results.binance_1m as Record<string, unknown> | undefined)?.exists) {
+    const boundarySymbol = "BTCUSDT";
+    let prevLast: number | null = null;
+    let todayFirst: number | null = null;
+    let prevFileMissing = false;
+
+    // Today's first bar (today's file is known to exist here).
+    try {
+      const todayRes = await duckdbQuery(`
+        SELECT CAST(epoch(min(date)) AS BIGINT) AS today_first_unix
+        FROM read_parquet('${binance1mPath}')
+        WHERE hols_ticker = '${boundarySymbol}'
+      `);
+      const v = Array.isArray(todayRes.rows) && todayRes.rows.length > 0
+        ? (todayRes.rows[0] as Record<string, unknown>).today_first_unix
+        : null;
+      const n = v != null ? Number(v) : NaN;
+      todayFirst = Number.isFinite(n) ? n : null;
+    } catch (err) {
+      // Today's file exists but this query failed — propagate as an explicit
+      // error result rather than silently passing.
+      results.binance_1m_boundary = { checked: false, symbol: boundarySymbol, error: (err as Error).message };
+    }
+
+    // Previous day's last bar. Absent file is expected -> checked:false.
+    if (!("binance_1m_boundary" in results)) {
+      try {
+        const prevRes = await duckdbQuery(`
+          SELECT CAST(epoch(max(date)) AS BIGINT) AS prev_last_unix
+          FROM read_parquet('${binance1mPrevPath}')
+          WHERE hols_ticker = '${boundarySymbol}'
+        `);
+        const v = Array.isArray(prevRes.rows) && prevRes.rows.length > 0
+          ? (prevRes.rows[0] as Record<string, unknown>).prev_last_unix
+          : null;
+        const n = v != null ? Number(v) : NaN;
+        prevLast = Number.isFinite(n) ? n : null;
+      } catch {
+        // Previous day's file absent/unreadable — not an error condition.
+        prevFileMissing = true;
+      }
+
+      if (prevFileMissing || prevLast === null || todayFirst === null) {
+        results.binance_1m_boundary = { checked: false, symbol: boundarySymbol };
+      } else {
+        const gap = boundaryGapSeconds(prevLast, todayFirst);
+        results.binance_1m_boundary = {
+          checked: true,
+          symbol: boundarySymbol,
+          contiguous: gap.contiguous,
+          gapSeconds: gap.gapSeconds,
+        };
+      }
+    }
   }
 
   // Cross-source comparison (if both exist)
