@@ -11,6 +11,16 @@ import { listActiveSpotPairs, listHolsReference } from "../../lib/db/pairs.ts";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { Storage } from "@google-cloud/storage";
 import nodemailer from "nodemailer";
+// Intraday partial-day window resolution lives in a dependency-free module so
+// it can be unit-tested without --allow-ffi (DuckDB native binding). Re-exported
+// for callers that import from hols.ts.
+import {
+  DEFAULT_TRAILING_MINUTES,
+  type HolsGenerateMode,
+  resolveBinance1mWindow,
+} from "./hols-window.ts";
+export { DEFAULT_TRAILING_MINUTES, resolveBinance1mWindow } from "./hols-window.ts";
+export type { Hols1mWindow, HolsGenerateMode } from "./hols-window.ts";
 
 // --- Kraken Spot REST OHLC ---
 const KRAKEN_SPOT_OHLC_URL = "https://api.kraken.com/0/public/OHLC";
@@ -79,7 +89,7 @@ export async function handleHols(
     default:
       console.error(`Unknown hols subcommand: ${subcommand ?? "(none)"}`);
       console.log("Usage:");
-      console.log("  ssmd hols generate   [--date YYYY-MM-DD] [--days N] [--source kraken|binance] [--interval 1|5] [--dry-run]");
+      console.log("  ssmd hols generate   [--date YYYY-MM-DD] [--days N] [--source kraken|binance] [--interval 1|5] [--mode daily|intraday] [--trailing-minutes N] [--dry-run]");
       console.log("  ssmd hols aggregate  [--date YYYY-MM-DD] [--days N] [--dry-run]  # Aggregated WS trade data");
       console.log("  ssmd hols reference  [--date YYYY-MM-DD] [--dry-run]             # Tickers reference CSV");
       Deno.exit(1);
@@ -101,6 +111,31 @@ export async function runHolsGenerate(
 
   if (source === "binance") {
     const interval = flags.interval ? parseInt(flags.interval as string, 10) : DEFAULT_INTERVAL;
+    const mode: HolsGenerateMode = flags.mode === "intraday" ? "intraday" : "daily";
+    const trailingMinutes = flags["trailing-minutes"]
+      ? parseInt(flags["trailing-minutes"] as string, 10)
+      : DEFAULT_TRAILING_MINUTES;
+
+    if (mode === "intraday") {
+      // Intraday partial-day mode: TODAY, trailing window ending at current minute.
+      // Ignores --date/--days (those are batch concepts). Uses the pure window helper.
+      const w = resolveBinance1mWindow(new Date(), { mode, trailingMinutes });
+      await runHolsGenerateBinance(
+        flags,
+        startTime,
+        dryRun,
+        interval,
+        new Date(w.startMs),
+        new Date(w.endMs),
+        w.dateStr,
+        w.dateStr,
+        1,
+        { partial: w.partial, startMs: w.startMs, endMs: w.endMs },
+      );
+      return;
+    }
+
+    // Daily batch mode: preserve the existing --date/--days multi-day window.
     await runHolsGenerateBinance(flags, startTime, dryRun, interval, startDate, endDate, startDateStr, endDateStr, lookbackDays);
     return;
   }
@@ -211,8 +246,10 @@ async function runHolsGenerateBinance(
   startDateStr: string,
   endDateStr: string,
   lookbackDays: number,
+  windowOverride?: { partial: boolean; startMs: number; endMs: number },
 ): Promise<void> {
-  console.log(`[hols:generate] Binance Spot REST Klines (${interval}m) for ${startDateStr} to ${endDateStr} (${lookbackDays} days) dry-run=${dryRun}`);
+  const modeLabel = windowOverride?.partial ? " [intraday partial]" : "";
+  console.log(`[hols:generate] Binance Spot REST Klines (${interval}m) for ${startDateStr} to ${endDateStr} (${lookbackDays} days) dry-run=${dryRun}${modeLabel}`);
 
   // 1. Query secmaster for active Binance spot USDT pairs
   const db = getDb();
@@ -245,7 +282,7 @@ async function runHolsGenerateBinance(
   console.log(`[hols:generate] Fetching with concurrency=${BINANCE_CONCURRENCY}, rate=${BINANCE_RATE_LIMIT_MS}ms, interval=${interval}m`);
   let results: FetchResult[];
   try {
-    results = await fetchAllBinanceKlines(spotPairs, startDate, endDate, interval, writeRow);
+    results = await fetchAllBinanceKlines(spotPairs, startDate, endDate, interval, writeRow, windowOverride);
   } finally {
     ndjsonFile.close();
   }
@@ -313,6 +350,7 @@ async function fetchAllBinanceKlines(
   endDate: Date,
   interval: number,
   writeRow: (row: NdjsonRow) => Promise<void>,
+  windowOverride?: { partial: boolean; startMs: number; endMs: number },
 ): Promise<FetchResult[]> {
   const results: FetchResult[] = new Array(pairs.length);
   let completed = 0;
@@ -326,7 +364,7 @@ async function fetchAllBinanceKlines(
       const pair = pairs[idx];
       const symbol = pair.krakenPair; // Already stripped of exchange prefix by listActiveSpotPairs
       const result = await fetchBinanceKlinesWithPagination(
-        symbol, pair.base, pair.quote, startDate, endDate, interval, writeRow,
+        symbol, pair.base, pair.quote, startDate, endDate, interval, writeRow, windowOverride,
       );
       results[idx] = result;
       completed++;
@@ -354,9 +392,12 @@ async function fetchBinanceKlinesWithPagination(
   endDate: Date,
   interval: number,
   writeRow: (row: NdjsonRow) => Promise<void>,
+  windowOverride?: { partial: boolean; startMs: number; endMs: number },
 ): Promise<FetchResult> {
-  const startMs = startDate.getTime();
-  const endMs = endDate.getTime() + 86400000; // include full end date
+  // Daily batch: [startDate, endDate + 1 day) — full inclusive end day (unchanged).
+  // Intraday: exact [startMs, endMs) trailing window from the override (no extra day).
+  const startMs = windowOverride ? windowOverride.startMs : startDate.getTime();
+  const endMs = windowOverride ? windowOverride.endMs : endDate.getTime() + 86400000; // include full end date
   const intervalMs = interval * 60 * 1000;
   let startTime = startMs;
   let rowCount = 0;
