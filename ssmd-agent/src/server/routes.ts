@@ -19,7 +19,6 @@ import {
   listCurrentFees,
   getFeeStats,
   getApiKeyByPrefix,
-  getApiKeyByEmail,
   createApiKey,
   listApiKeysByUser,
   listAllApiKeys,
@@ -64,6 +63,7 @@ import {
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
+import { getEffectiveAuthByEmail } from "../lib/auth/effective-scopes.ts";
 import { getUsageForPrefix, getTokenUsage, trackTokenUsage } from "../lib/auth/ratelimit.ts";
 import { getGuardrailSettings, applyGuardrails, checkModelAllowed } from "../lib/guardrails/mod.ts";
 import { getRedis } from "../lib/redis/mod.ts";
@@ -911,12 +911,12 @@ route("GET", "/v1/auth/lookup", async (req, ctx) => {
     return json({ error: "email query parameter is required" }, 400);
   }
 
-  const key = await getApiKeyByEmail(ctx.db, email);
-  if (!key) {
+  const auth = await getEffectiveAuthByEmail(ctx.db, email);
+  if (!auth) {
     return json({ found: false });
   }
 
-  return json({ found: true, key_prefix: key.keyPrefix, scopes: key.scopes });
+  return json({ found: true, key_prefix: auth.keyPrefix, scopes: auth.scopes });
 }, true, "admin:read", "internal");
 
 // Settings endpoints
