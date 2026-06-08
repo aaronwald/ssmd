@@ -28,6 +28,9 @@ import type {
   SecmasterCondition,
   Pipeline,
   PipelineRun,
+  DayFilesResponse,
+  DataDownloadResponse,
+  DataCatalogResponse,
 } from "./types";
 
 // Dynamic instance routing — set via InstanceProvider
@@ -242,6 +245,20 @@ export const searchMonitorMarkets = async (q: string, type?: string, exchange?: 
   if (limit) params.set("limit", String(limit));
   return dataRequest<MonitorSearchResponse>(`/monitor/search?${params.toString()}`);
 };
+
+// Daily files — global data-ts endpoints (not instance-scoped).
+// NOTE: dataRequest prepends "/api/data" and the proxy prepends "/v1", so the
+// path here omits the "/v1" segment (e.g. "/data/day" -> "/v1/data/day").
+export const getDataCatalog = () =>
+  dataRequest<DataCatalogResponse>("/data/catalog");
+
+export const getDayFiles = (date: string) =>
+  dataRequest<DayFilesResponse>(`/data/day?date=${encodeURIComponent(date)}`);
+
+export const getDataDownload = (feed: string, date: string) =>
+  dataRequest<DataDownloadResponse>(
+    `/data/download?feed=${encodeURIComponent(feed)}&from=${encodeURIComponent(date)}&to=${encodeURIComponent(date)}`,
+  );
 
 // Admin users endpoint
 export const getAdminUsers = () =>

@@ -448,3 +448,54 @@ export interface PipelineStageResult {
   started_at: string | null;
   finished_at: string | null;
 }
+
+// Daily files (data-ts /v1/data/day + /v1/data/download)
+export interface DayFile {
+  name: string;
+  type: string;
+  hour: string;
+  bytes: number;
+}
+
+export interface DayFeed {
+  feed: string;
+  stream: string;
+  fileCount: number;
+  totalBytes: number;
+  files: DayFile[];
+}
+
+export interface DayFilesResponse {
+  date: string;
+  feeds: DayFeed[];
+}
+
+export interface SignedDataFile extends DayFile {
+  path: string;
+  signedUrl: string;
+  expiresAt: string;
+}
+
+export interface DataDownloadResponse {
+  feed: string;
+  from: string;
+  to: string;
+  type: string | null;
+  files: SignedDataFile[];
+  expiresIn: string;
+}
+
+export interface DataCatalogFeed {
+  feed: string;
+  stream: string;
+  messageTypes: string[];
+  dateMin: string;
+  dateMax: string;
+  totalFiles: number;
+  totalRows: number;
+}
+
+export interface DataCatalogResponse {
+  feeds: DataCatalogFeed[];
+  catalogGeneratedAt: string;
+}
