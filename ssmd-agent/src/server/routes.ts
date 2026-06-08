@@ -1593,6 +1593,47 @@ route("GET", "/v1/data/catalog", async (req) => {
   });
 }, true, "datasets:read", "public");
 
+// Data day endpoint — list all parquet files for a single date across feeds (metadata only, no signing)
+route("GET", "/v1/data/day", async (req) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+
+  const date = url.searchParams.get("date");
+  if (!date) {
+    return json({ error: "date query parameter is required" }, 400);
+  }
+
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(date)) {
+    return json({ error: "date must be YYYY-MM-DD format" }, 400);
+  }
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) {
+    return json({ error: "GCS_BUCKET not configured" }, 503);
+  }
+
+  // Only feeds this key is authorized for, intersected with known parquet feeds.
+  const feedNames = Object.keys(FEED_CONFIG).filter((f) => auth.allowedFeeds.includes(f));
+
+  const feeds = await Promise.all(
+    feedNames.map(async (feed) => {
+      const files = await listParquetFiles(bucket, feed, date, date);
+      files.sort((a, b) => a.name.localeCompare(b.name));
+      const totalBytes = files.reduce((sum, f) => sum + f.bytes, 0);
+      return {
+        feed,
+        stream: FEED_CONFIG[feed].stream,
+        fileCount: files.length,
+        totalBytes,
+        files: files.map((f) => ({ name: f.name, type: f.type, hour: f.hour, bytes: f.bytes })),
+      };
+    }),
+  );
+
+  return json({ date, feeds });
+}, true, "datasets:read", "public");
+
 // Schema versions endpoint — static JSON mirroring Rust MessageSchema::schema_version()
 route("GET", "/v1/data/schema-versions", async () => {
   const { default: schemaVersions } = await import("./schema-versions.json", { with: { type: "json" } });

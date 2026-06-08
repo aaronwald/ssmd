@@ -72,6 +72,7 @@ const AUTH_ENDPOINTS = [
   "GET /v1/data/volume",
   "GET /v1/data/freshness",
   "GET /v1/data/download?feed=kalshi&from=2026-01-01&to=2026-01-02",
+  "GET /v1/data/day?date=2026-01-01",
   "GET /v1/markets/lookup?ids=TICKER1",
   "GET /v1/events",
   "GET /v1/markets",
@@ -201,6 +202,31 @@ Deno.test("secmaster:read key cannot access datasets", async () => {
   const router = createTestRouter(mockAuth({ scopes: ["secmaster:read"] }));
   const req = makeReq("/v1/data/feeds");
   const res = await router(req);
+  assertEquals(res.status, 403);
+});
+
+// --- /v1/data/day validation tests ---
+
+Deno.test("GET /v1/data/day requires date param", async () => {
+  const router = createTestRouter();
+  const res = await router(makeReq("/v1/data/day"));
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertExists(body.error);
+  assertEquals(typeof body.error, "string");
+});
+
+Deno.test("GET /v1/data/day rejects malformed date", async () => {
+  const router = createTestRouter();
+  const res = await router(makeReq("/v1/data/day?date=2026-1-1"));
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertExists(body.error);
+});
+
+Deno.test("GET /v1/data/day rejects non-datasets scope", async () => {
+  const router = createTestRouter(mockAuth({ scopes: ["secmaster:read"] }));
+  const res = await router(makeReq("/v1/data/day?date=2026-01-01"));
   assertEquals(res.status, 403);
 });
 
