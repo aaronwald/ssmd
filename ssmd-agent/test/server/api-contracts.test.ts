@@ -240,6 +240,24 @@ Deno.test("GET /v1/data/day rejects date outside key range", async () => {
   assertExists(body.error);
 });
 
+Deno.test("GET /v1/data/day allows any date for '*' (wildcard) key", async () => {
+  const router = createTestRouter(
+    mockAuth({ allowedFeeds: ["*"], dateRangeStart: "1970-01-01", dateRangeEnd: "1970-01-01" }),
+  );
+  const res = await router(makeReq("/v1/data/day?date=2026-06-08"));
+  // '*' key bypasses date-range; with no GCS_BUCKET in tests it reaches the bucket guard (503, not 403).
+  assertEquals(res.status, 503);
+});
+
+Deno.test("GET /v1/data/download allows any feed/date for '*' (wildcard) key", async () => {
+  const router = createTestRouter(
+    mockAuth({ allowedFeeds: ["*"], dateRangeStart: "1970-01-01", dateRangeEnd: "1970-01-01" }),
+  );
+  const res = await router(makeReq("/v1/data/download?feed=kalshi&from=2026-06-08&to=2026-06-08"));
+  // '*' key bypasses feed-auth + date-range; with no GCS_BUCKET in tests it reaches the bucket guard (503, not 403).
+  assertEquals(res.status, 503);
+});
+
 Deno.test("admin:read implies billing:read", async () => {
   // admin:read should be able to access billing endpoints via billing:read implication
   const router = createTestRouter(mockAuth({ scopes: ["admin:read"] }));
@@ -543,12 +561,14 @@ Deno.test("POST /v1/billing/aggregate with invalid date returns 400", async () =
 
 // --- Feed authorization tests ---
 
-Deno.test("Key restricted to kalshi cannot query polymarket trades", async () => {
+Deno.test("Key restricted to kalshi cannot query kraken-futures trades", async () => {
   const router = createTestRouter(mockAuth({
     scopes: ["datasets:read"],
     allowedFeeds: ["kalshi"],
   }));
-  const req = makeReq("/v1/data/trades?feed=polymarket");
+  // Use a valid-but-unauthorized feed so this exercises feed authorization (403),
+  // not feed validity (polymarket was decommissioned and 400s as an unknown feed).
+  const req = makeReq("/v1/data/trades?feed=kraken-futures");
   const res = await router(req);
   assertEquals(res.status, 403);
   const body = await res.json();

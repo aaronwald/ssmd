@@ -1424,27 +1424,41 @@ route("GET", "/v1/data/download", async (req, ctx) => {
     return json({ error: "Maximum date range is 7 days" }, 400);
   }
 
+  // A '*' feed key is unrestricted (all feeds, all dates) — mirrors how '*' works for scopes.
+  const allFeeds = auth.allowedFeeds.includes("*");
+
   // Enforce key feed restrictions
-  if (!auth.allowedFeeds.includes(feed)) {
+  if (!allFeeds && !auth.allowedFeeds.includes(feed)) {
     return json({ error: `Key not authorized for feed: ${feed}` }, 403);
   }
 
-  // Enforce key date range restrictions (clamp to allowed range)
-  const keyStart = new Date(auth.dateRangeStart);
-  const keyEnd = new Date(auth.dateRangeEnd);
+  // Enforce key date range restrictions (clamp to allowed range; '*' keys skip this).
+  // from/to are already validated to YYYY-MM-DD above, so fromDate/toDate are valid Dates.
+  let effectiveFrom: string;
+  let effectiveTo: string;
+  if (allFeeds) {
+    effectiveFrom = fromDate.toISOString().slice(0, 10);
+    effectiveTo = toDate.toISOString().slice(0, 10);
+  } else {
+    const keyStart = new Date(auth.dateRangeStart);
+    const keyEnd = new Date(auth.dateRangeEnd);
+    if (isNaN(keyStart.getTime()) || isNaN(keyEnd.getTime())) {
+      return json({ error: "Key has invalid date range configuration" }, 500);
+    }
 
-  // Check for any overlap
-  if (toDate < keyStart || fromDate > keyEnd) {
-    return json({
-      error: `Key date range is ${auth.dateRangeStart} to ${auth.dateRangeEnd}. Requested range has no overlap.`,
-    }, 403);
+    // Check for any overlap
+    if (toDate < keyStart || fromDate > keyEnd) {
+      return json({
+        error: `Key date range is ${auth.dateRangeStart} to ${auth.dateRangeEnd}. Requested range has no overlap.`,
+      }, 403);
+    }
+
+    // Clamp to allowed range
+    const clampedFrom = fromDate < keyStart ? keyStart : fromDate;
+    const clampedTo = toDate > keyEnd ? keyEnd : toDate;
+    effectiveFrom = clampedFrom.toISOString().slice(0, 10);
+    effectiveTo = clampedTo.toISOString().slice(0, 10);
   }
-
-  // Clamp to allowed range
-  const clampedFrom = fromDate < keyStart ? keyStart : fromDate;
-  const clampedTo = toDate > keyEnd ? keyEnd : toDate;
-  const effectiveFrom = clampedFrom.toISOString().slice(0, 10);
-  const effectiveTo = clampedTo.toISOString().slice(0, 10);
 
   // Parse expires param (e.g., "12h", "6h")
   const expiresMatch = expiresParam.match(/^(\d+)h$/);
@@ -1608,9 +1622,12 @@ route("GET", "/v1/data/day", async (req) => {
     return json({ error: "date must be YYYY-MM-DD format" }, 400);
   }
 
-  // Enforce key date range (consistent with /v1/data/download, /trades, /prices).
+  // A '*' feed key is unrestricted (all feeds, all dates) — mirrors how '*' works for scopes.
+  const allFeeds = auth.allowedFeeds.includes("*");
+
+  // Enforce key date range (consistent with /v1/data/download, /trades, /prices); '*' keys skip this.
   // Dates are YYYY-MM-DD so lexical comparison is correct.
-  if (date < auth.dateRangeStart || date > auth.dateRangeEnd) {
+  if (!allFeeds && (date < auth.dateRangeStart || date > auth.dateRangeEnd)) {
     return json({
       error: `Date ${date} is outside key range ${auth.dateRangeStart} to ${auth.dateRangeEnd}`,
     }, 403);
@@ -1621,8 +1638,8 @@ route("GET", "/v1/data/day", async (req) => {
     return json({ error: "GCS_BUCKET not configured" }, 503);
   }
 
-  // Only feeds this key is authorized for, intersected with known parquet feeds.
-  const feedNames = Object.keys(FEED_CONFIG).filter((f) => auth.allowedFeeds.includes(f));
+  // Feeds this key is authorized for, intersected with known parquet feeds ('*' = all).
+  const feedNames = Object.keys(FEED_CONFIG).filter((f) => allFeeds || auth.allowedFeeds.includes(f));
 
   // Promise.all (not allSettled) is deliberate: a GCS list failure for any feed
   // should fail the whole request loudly rather than silently return partial data.
