@@ -130,6 +130,16 @@ export async function generateSignedUrls(
   const results: SignedFile[] = [];
 
   for (const file of files) {
+    // Prefix the downloaded filename with the date folder segment so multi-day
+    // downloads don't collide (e.g. "2026-06-08-ohlcv-1m-binance.parquet").
+    // file.path is a GCS object key like ".../{date}/{name}"; fall back to the
+    // bare name if the expected date segment isn't present.
+    const segments = file.path.split("/");
+    const dateSegment = segments.length >= 2 ? segments[segments.length - 2] : "";
+    const downloadName = /^\d{4}-\d{2}-\d{2}$/.test(dateSegment)
+      ? `${dateSegment}-${file.name}`
+      : file.name;
+
     const [signedUrl] = await storage
       .bucket(bucket)
       .file(file.path)
@@ -137,6 +147,7 @@ export async function generateSignedUrls(
         version: "v4",
         action: "read",
         expires: expiresAt,
+        responseDisposition: `attachment; filename="${downloadName}"`,
       });
 
     results.push({
