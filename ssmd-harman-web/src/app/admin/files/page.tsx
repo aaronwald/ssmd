@@ -36,9 +36,10 @@ function FilesContent() {
     [catalog],
   );
 
-  const [date, setDate] = useState<string>(todayUtc());
-  // Once the catalog loads, prefer its latest available date as the initial view.
-  const effectiveDate = date;
+  // Until the user picks a date, default to the catalog's latest available date
+  // (today's UTC date is usually empty — parquet-gen runs every 6h).
+  const [date, setDate] = useState<string | null>(null);
+  const effectiveDate = date ?? dateMax ?? todayUtc();
   const { data, error, isLoading } = useDayFiles(effectiveDate);
 
   // Lazy signing cache: feed -> signed files (+ shared expiry).
@@ -82,8 +83,9 @@ function FilesContent() {
   async function downloadAll(feed: string, fileCount: number) {
     const entry = await signFeed(feed);
     if (!entry) return;
-    if (fileCount > 10) {
-      // Too many for popup-based downloads — give the script instead.
+    if (fileCount > 3) {
+      // Browsers block programmatic multi-file downloads past the first few —
+      // give the script instead so nothing is silently dropped.
       await copyScript(feed);
       return;
     }

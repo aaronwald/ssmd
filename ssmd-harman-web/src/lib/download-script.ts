@@ -24,10 +24,10 @@ export function buildDownloadScript(
     "#!/usr/bin/env bash",
     `# ssmd daily files — ${feed} ${date}${expiresAt ? ` — URLs expire ${expiresAt}` : ""}`,
     "set -euo pipefail",
-    `mkdir -p ${feed}/${date}`,
+    `mkdir -p "${feed}/${date}"`,
   ];
   const commands = files.map(
-    (f) => `curl -fsSL -o ${feed}/${date}/${f.name} '${f.signedUrl}'`,
+    (f) => `curl -fsSL -o "${feed}/${date}/${f.name}" '${f.signedUrl}'`,
   );
   return [...header, ...commands].join("\n") + "\n";
 }
@@ -49,9 +49,9 @@ export function buildDayScript(
   const body: string[] = [];
   for (const { feed, files } of perFeed) {
     if (files.length === 0) continue;
-    body.push(`mkdir -p ${feed}/${date}`);
+    body.push(`mkdir -p "${feed}/${date}"`);
     for (const f of files) {
-      body.push(`curl -fsSL -o ${feed}/${date}/${f.name} '${f.signedUrl}'`);
+      body.push(`curl -fsSL -o "${feed}/${date}/${f.name}" '${f.signedUrl}'`);
     }
   }
   return [...header, ...body].join("\n") + "\n";
