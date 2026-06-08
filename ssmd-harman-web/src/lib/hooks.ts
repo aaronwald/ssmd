@@ -31,6 +31,8 @@ import {
   getPipeline,
   getPipelineRuns,
   getPipelineRunDetail,
+  getDayFiles,
+  getDataCatalog,
 } from "./api";
 const REFRESH_INTERVAL = 2500;
 const METADATA_REFRESH = 60000; // 60s for metadata (categories, series, events)
@@ -97,6 +99,22 @@ export function useSnapMap(feed: string, tickers: string[] | undefined) {
     tickerKey ? instanceKey(`snap-${feed}-${tickerKey}`) : null,
     () => getSnapMap(feed, tickers!),
     { refreshInterval: REFRESH_INTERVAL },
+  );
+}
+
+// Daily files — global market data (not instance-scoped). No polling: a day's
+// file list is effectively static once parquet-gen has run.
+export function useDataCatalog() {
+  return useSWR("data-catalog", getDataCatalog, {
+    revalidateOnFocus: false,
+  });
+}
+
+export function useDayFiles(date: string | null) {
+  return useSWR(
+    date ? `data-day-${date}` : null,
+    () => getDayFiles(date!),
+    { revalidateOnFocus: false },
   );
 }
 
