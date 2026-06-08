@@ -1608,6 +1608,14 @@ route("GET", "/v1/data/day", async (req) => {
     return json({ error: "date must be YYYY-MM-DD format" }, 400);
   }
 
+  // Enforce key date range (consistent with /v1/data/download, /trades, /prices).
+  // Dates are YYYY-MM-DD so lexical comparison is correct.
+  if (date < auth.dateRangeStart || date > auth.dateRangeEnd) {
+    return json({
+      error: `Date ${date} is outside key range ${auth.dateRangeStart} to ${auth.dateRangeEnd}`,
+    }, 403);
+  }
+
   const bucket = Deno.env.get("GCS_BUCKET");
   if (!bucket) {
     return json({ error: "GCS_BUCKET not configured" }, 503);
@@ -1616,6 +1624,8 @@ route("GET", "/v1/data/day", async (req) => {
   // Only feeds this key is authorized for, intersected with known parquet feeds.
   const feedNames = Object.keys(FEED_CONFIG).filter((f) => auth.allowedFeeds.includes(f));
 
+  // Promise.all (not allSettled) is deliberate: a GCS list failure for any feed
+  // should fail the whole request loudly rather than silently return partial data.
   const feeds = await Promise.all(
     feedNames.map(async (feed) => {
       const files = await listParquetFiles(bucket, feed, date, date);

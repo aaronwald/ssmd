@@ -230,6 +230,16 @@ Deno.test("GET /v1/data/day rejects non-datasets scope", async () => {
   assertEquals(res.status, 403);
 });
 
+Deno.test("GET /v1/data/day rejects date outside key range", async () => {
+  const router = createTestRouter(
+    mockAuth({ dateRangeStart: "2026-01-01", dateRangeEnd: "2026-01-31" }),
+  );
+  const res = await router(makeReq("/v1/data/day?date=2026-06-01"));
+  assertEquals(res.status, 403);
+  const body = await res.json();
+  assertExists(body.error);
+});
+
 Deno.test("admin:read implies billing:read", async () => {
   // admin:read should be able to access billing endpoints via billing:read implication
   const router = createTestRouter(mockAuth({ scopes: ["admin:read"] }));
