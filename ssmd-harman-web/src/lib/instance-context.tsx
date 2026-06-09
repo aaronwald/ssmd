@@ -46,14 +46,17 @@ export function InstanceProvider({ children }: { children: ReactNode }) {
         // Restore from sessionStorage if available and valid
         const saved = sessionStorage.getItem("harman-instance");
         if (saved && insts.some((i) => i.id === saved)) {
-          setInstanceState(saved);
+          // Set the module global before the state update so consumer
+          // re-renders never fire a fetcher against a stale/null instance
+          // (same ordering as setInstance below).
           setApiInstance(saved);
+          setInstanceState(saved);
         } else {
           // Auto-select first healthy instance
           const healthy = insts.filter((i) => i.healthy);
           if (healthy.length > 0) {
-            setInstanceState(healthy[0].id);
             setApiInstance(healthy[0].id);
+            setInstanceState(healthy[0].id);
             sessionStorage.setItem("harman-instance", healthy[0].id);
           }
         }

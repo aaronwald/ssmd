@@ -40,10 +40,6 @@ export function setApiInstance(instance: string) {
   _currentInstance = instance;
 }
 
-export function getApiInstance(): string | null {
-  return _currentInstance;
-}
-
 async function request<T>(
   path: string,
   options: RequestInit = {},

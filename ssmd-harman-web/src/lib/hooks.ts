@@ -18,7 +18,6 @@ import {
   getInfo,
   getMe,
   getAdminUsers,
-  getApiInstance,
   getHarmanSessions,
   getSessionOrders,
   getOrderTimeline,
@@ -34,14 +33,19 @@ import {
   getDayFiles,
   getDataCatalog,
 } from "./api";
+import { useInstance } from "./instance-context";
 const REFRESH_INTERVAL = 2500;
 const METADATA_REFRESH = 60000; // 60s for metadata (categories, series, events)
 const LIVE_REFRESH = 2500; // 2.5s for live prices (markets)
 
-/** Prefix SWR key with current instance. Returns null (pauses SWR) when no instance selected. */
-function instanceKey(key: string): string | null {
-  const inst = getApiInstance();
-  return inst ? `${inst}:${key}` : null;
+/**
+ * Reactive instance-scoped SWR key. Returns null (pauses SWR) until an
+ * instance is selected; re-renders consumers when InstanceProvider resolves,
+ * so first-paint-after-hard-refresh picks up the instance without navigation.
+ */
+function useInstanceKey(key: string): string | null {
+  const { instance } = useInstance();
+  return instance ? `${instance}:${key}` : null;
 }
 
 /** SWR mutate matcher: matches any instance-prefixed key ending with `:suffix` (or `:suffix-*`). */
@@ -50,53 +54,54 @@ export function matchInstanceKey(suffix: string): (key: string) => boolean {
 }
 
 export function useHealth() {
-  return useSWR(instanceKey("health"), getHealth, {
+  return useSWR(useInstanceKey("health"), getHealth, {
     refreshInterval: REFRESH_INTERVAL,
   });
 }
 
 export function useOrders(state?: string) {
   const key = state ? `orders-${state}` : "orders";
-  return useSWR(instanceKey(key), () => listOrders(state), {
+  return useSWR(useInstanceKey(key), () => listOrders(state), {
     refreshInterval: REFRESH_INTERVAL,
   });
 }
 
 export function useGroups(state?: string) {
   const key = state ? `groups-${state}` : "groups";
-  return useSWR(instanceKey(key), () => listGroups(state), {
+  return useSWR(useInstanceKey(key), () => listGroups(state), {
     refreshInterval: REFRESH_INTERVAL,
   });
 }
 
 export function useFills() {
-  return useSWR(instanceKey("fills"), listFills, {
+  return useSWR(useInstanceKey("fills"), listFills, {
     refreshInterval: REFRESH_INTERVAL,
   });
 }
 
 export function useAudit() {
-  return useSWR(instanceKey("audit"), listAudit, {
+  return useSWR(useInstanceKey("audit"), listAudit, {
     refreshInterval: REFRESH_INTERVAL,
   });
 }
 
 export function usePositions() {
-  return useSWR(instanceKey("positions"), getPositions, {
+  return useSWR(useInstanceKey("positions"), getPositions, {
     refreshInterval: REFRESH_INTERVAL,
   });
 }
 
 export function useRisk() {
-  return useSWR(instanceKey("risk"), getRisk, {
+  return useSWR(useInstanceKey("risk"), getRisk, {
     refreshInterval: REFRESH_INTERVAL,
   });
 }
 
 export function useSnapMap(feed: string, tickers: string[] | undefined) {
   const tickerKey = tickers && tickers.length > 0 ? tickers.sort().join(",") : null;
+  const key = useInstanceKey(`snap-${feed}-${tickerKey ?? ""}`);
   return useSWR(
-    tickerKey ? instanceKey(`snap-${feed}-${tickerKey}`) : null,
+    tickerKey ? key : null,
     () => getSnapMap(feed, tickers!),
     { refreshInterval: REFRESH_INTERVAL },
   );
@@ -150,11 +155,11 @@ export function useMarkets(event: string | null) {
 }
 
 export function useInfo() {
-  return useSWR(instanceKey("info"), getInfo, { revalidateOnFocus: false });
+  return useSWR(useInstanceKey("info"), getInfo, { revalidateOnFocus: false });
 }
 
 export function useMe() {
-  return useSWR(instanceKey("me"), getMe, { revalidateOnFocus: false });
+  return useSWR(useInstanceKey("me"), getMe, { revalidateOnFocus: false });
 }
 
 export function useEventSearch(q: string | null, exchange?: string) {
@@ -177,7 +182,7 @@ export function useOutcomeSearch(q: string | null, exchange?: string) {
 }
 
 export function useAdminUsers() {
-  return useSWR(instanceKey("admin-users"), getAdminUsers, {
+  return useSWR(useInstanceKey("admin-users"), getAdminUsers, {
     refreshInterval: METADATA_REFRESH,
   });
 }
