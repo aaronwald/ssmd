@@ -299,7 +299,7 @@ function AdminSection({ collapsed, pathname }: { collapsed: boolean; pathname: s
       <NavItem href="/admin/sessions" label="Sessions" icon={UsersIcon} active={pathname === "/admin/sessions"} collapsed={collapsed} />
       <NavItem href="/admin/keys" label="Keys" icon={KeyIcon} active={pathname === "/admin/keys"} collapsed={collapsed} />
       <NavItem href="/admin/audit" label="Audit" icon={ClipboardIcon} active={pathname === "/admin/audit"} collapsed={collapsed} />
-      <NavItem href="/admin/files" label="Files" icon={FileTextIcon} active={pathname === "/admin/files"} collapsed={collapsed} />
+      <NavItem href="/files" label="Files" icon={FileTextIcon} active={pathname === "/files"} collapsed={collapsed} />
       <NavItem href="/secmaster" label="Secmaster" icon={DatabaseIcon} active={pathname === "/secmaster"} collapsed={collapsed} />
       <NavItem href="/pipelines" label="Pipelines" icon={PipelineIcon} active={pathname === "/pipelines" || pathname.startsWith("/pipelines/")} collapsed={collapsed} />
     </>
@@ -324,7 +324,7 @@ function DataSection({ collapsed, pathname }: { collapsed: boolean; pathname: st
           <span className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">Data</span>
         )}
       </div>
-      <NavItem href="/admin/files" label="Files" icon={FileTextIcon} active={pathname === "/admin/files"} collapsed={collapsed} />
+      <NavItem href="/files" label="Files" icon={FileTextIcon} active={pathname === "/files"} collapsed={collapsed} />
     </>
   );
 }
