@@ -16,6 +16,21 @@ export interface EffectiveAuth {
 }
 
 /**
+ * Full resolved identity for a proxied user — includes everything needed to
+ * replace the service key's auth context in the request.
+ *
+ * allowedFeeds: UNION of allowedFeeds across all active keys.
+ * dateRangeStart/End: widest span (min start, max end) across all active keys.
+ */
+export interface EffectiveUser {
+  keyPrefix: string;
+  scopes: string[];
+  allowedFeeds: string[];
+  dateRangeStart: string;
+  dateRangeEnd: string;
+}
+
+/**
  * Given all active (non-revoked, non-disabled) API keys for one email,
  * compute the effective auth: the UNION of scopes across keys, plus a
  * deterministic key_prefix. Returns null if there are no keys.
@@ -75,4 +90,58 @@ export async function getEffectiveAuthByEmail(
       ),
     );
   return selectEffectiveAuth(rows);
+}
+
+/**
+ * Compute the full effective user identity from a set of active API keys.
+ *
+ * - scopes: UNION across all keys (same as selectEffectiveAuth)
+ * - keyPrefix: deterministic selection (same rank as selectEffectiveAuth)
+ * - allowedFeeds: UNION of all allowedFeeds, de-duplicated and sorted
+ * - dateRangeStart: earliest start date across all keys (widest span)
+ * - dateRangeEnd: latest end date across all keys (widest span)
+ *
+ * Returns null when there are no keys.
+ */
+export function selectEffectiveUser(keys: ApiKey[]): EffectiveUser | null {
+  const base = selectEffectiveAuth(keys);
+  if (!base) return null;
+
+  const allFeeds = [...new Set(keys.flatMap((k) => k.allowedFeeds))].sort();
+
+  // Widest date span: min start, max end. Dates are YYYY-MM-DD strings so
+  // lexicographic comparison is correct.
+  const starts = keys.map((k) => k.dateRangeStart).sort();
+  const ends = keys.map((k) => k.dateRangeEnd).sort();
+  const dateRangeStart = starts[0];
+  const dateRangeEnd = ends[ends.length - 1];
+
+  return {
+    keyPrefix: base.keyPrefix,
+    scopes: base.scopes,
+    allowedFeeds: allFeeds,
+    dateRangeStart,
+    dateRangeEnd,
+  };
+}
+
+/**
+ * Resolve an email to its full effective user identity across ALL active keys.
+ * Returns null when the email has no active keys.
+ */
+export async function resolveEffectiveUser(
+  db: Database,
+  email: string,
+): Promise<EffectiveUser | null> {
+  const rows = await db
+    .select()
+    .from(apiKeys)
+    .where(
+      and(
+        eq(apiKeys.userEmail, email),
+        isNull(apiKeys.revokedAt),
+        isNull(apiKeys.disabledAt),
+      ),
+    );
+  return selectEffectiveUser(rows);
 }
