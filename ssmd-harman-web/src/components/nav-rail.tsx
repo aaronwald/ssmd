@@ -306,6 +306,29 @@ function AdminSection({ collapsed, pathname }: { collapsed: boolean; pathname: s
   );
 }
 
+/** Shown to users with datasets:read scope who are NOT full admins. */
+function DataSection({ collapsed, pathname }: { collapsed: boolean; pathname: string }) {
+  const { data: me } = useMe();
+  if (!me) return null;
+  const hasAdmin = me.scopes.includes("harman:admin") || me.scopes.includes("*");
+  const canReadData = me.scopes.includes("datasets:read");
+  // Admins already see Files via AdminSection — don't double-show.
+  if (hasAdmin || !canReadData) return null;
+
+  return (
+    <>
+      <div className={`px-3 pt-4 pb-1 ${collapsed ? "text-center" : ""}`}>
+        {collapsed ? (
+          <span className="block w-full h-px bg-border" />
+        ) : (
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">Data</span>
+        )}
+      </div>
+      <NavItem href="/admin/files" label="Files" icon={FileTextIcon} active={pathname === "/admin/files"} collapsed={collapsed} />
+    </>
+  );
+}
+
 // --- NavRail ---
 
 export function NavRail() {
@@ -405,6 +428,11 @@ export function NavRail() {
         {/* Admin section (conditionally rendered) */}
         <Suspense fallback={null}>
           <AdminSection collapsed={navCollapsed} pathname={pathname} />
+        </Suspense>
+
+        {/* Data section — datasets:read users who are not admins */}
+        <Suspense fallback={null}>
+          <DataSection collapsed={navCollapsed} pathname={pathname} />
         </Suspense>
       </nav>
 
