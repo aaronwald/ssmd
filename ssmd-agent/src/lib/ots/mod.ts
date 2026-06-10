@@ -27,9 +27,13 @@ export async function createOneTimeSecret(secret: string, opts: OtsOptions): Pro
   try {
     const res = await fetch(`${base}/api/v1/share`, { method: "POST", headers, body, signal: ctrl.signal });
     if (!res.ok) throw new Error(`onetimesecret share failed: ${res.status}`);
-    const data = await res.json() as { secret_key?: string };
+    const data = await res.json() as { secret_key?: string; metadata_url?: string; receipt_url?: string };
     if (!data.secret_key) throw new Error("onetimesecret response missing secret_key");
-    return `${base}/secret/${data.secret_key}`;
+    // Anonymous shares may be routed to a regional store (e.g. eu.onetimesecret.com).
+    // The secret lives on the region host reported in the response, not the request base.
+    const regionUrl = data.metadata_url ?? data.receipt_url;
+    const origin = regionUrl ? new URL(regionUrl).origin : base;
+    return `${origin}/secret/${data.secret_key}`;
   } finally {
     clearTimeout(timer);
   }
