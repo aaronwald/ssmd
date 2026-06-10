@@ -26,6 +26,7 @@ import {
   disableApiKey,
   enableApiKey,
   updateApiKeyScopes,
+  rotateApiKeySecret,
   getAllSettings,
   upsertSetting,
   listSeries,
@@ -90,6 +91,8 @@ import {
 import { VALID_DATA_FEEDS, FEED_PATHS } from "../lib/duckdb/feed-config.ts";
 import postgres from "postgres";
 import { and, inArray, isNull, eq, gte, lt, lte, desc, sql, ilike, like } from "drizzle-orm";
+import { createOneTimeSecret } from "../lib/ots/mod.ts";
+import { sendWelcomeEmail } from "../lib/email/welcome.ts";
 
 const USAGE_CACHE_KEY = "cache:keys:usage";
 const USAGE_CACHE_TTL = 120; // 2 minutes
@@ -594,6 +597,31 @@ route("GET", "/v1/health/gaps", async (req, ctx) => {
   return json({ gaps });
 }, true, "secmaster:read", "public");
 
+// Welcome email delivery via anonymous OTS
+const OTS_TTL_DAYS = 7;
+
+async function deliverWelcome(
+  fullKey: string,
+  recipient: string,
+  apiKey: { allowedFeeds: string[]; dateRangeStart: string; dateRangeEnd: string },
+): Promise<void> {
+  if (!fullKey) throw new Error("deliverWelcome: fullKey is required");
+  if (!recipient) throw new Error("deliverWelcome: recipient is required");
+  if (!apiKey.allowedFeeds || apiKey.allowedFeeds.length === 0) throw new Error("deliverWelcome: allowedFeeds must not be empty");
+  if (!apiKey.dateRangeStart || !apiKey.dateRangeEnd) throw new Error("deliverWelcome: dateRangeStart and dateRangeEnd are required");
+  const link = await createOneTimeSecret(fullKey, { ttlSeconds: OTS_TTL_DAYS * 86400 });
+  if (!link) throw new Error("deliverWelcome: createOneTimeSecret returned empty link");
+  await sendWelcomeEmail({
+    recipient,
+    link,
+    apiBaseUrl: Deno.env.get("PUBLIC_API_BASE_URL") ?? "https://api.varshtat.com",
+    feeds: apiKey.allowedFeeds,
+    dateFrom: apiKey.dateRangeStart,
+    dateTo: apiKey.dateRangeEnd,
+    ttlDays: OTS_TTL_DAYS,
+  });
+}
+
 // Key management endpoints
 const VALID_SCOPES = [
   "secmaster:read", "datasets:read", "signals:read", "signals:write",
@@ -614,6 +642,8 @@ route("POST", "/v1/keys", async (req, ctx) => {
     dateRangeStart?: string;
     dateRangeEnd?: string;
     billable?: boolean;
+    sendWelcome?: boolean;
+    recipient?: string;
   };
 
   // Validate required fields
@@ -677,6 +707,17 @@ route("POST", "/v1/keys", async (req, ctx) => {
     billable: body.billable ?? true,
   });
 
+  // Optionally send welcome email with key via anonymous OTS link
+  let welcome: { sent: boolean; error?: string } | undefined;
+  if (body.sendWelcome) {
+    try {
+      await deliverWelcome(fullKey, body.recipient ?? body.userEmail ?? auth.userEmail, apiKey);
+      welcome = { sent: true };
+    } catch (e) {
+      welcome = { sent: false, error: e instanceof Error ? e.message : "welcome delivery failed" };
+    }
+  }
+
   // Return full key ONCE
   return json({
     key: fullKey,
@@ -689,6 +730,7 @@ route("POST", "/v1/keys", async (req, ctx) => {
     allowedFeeds: apiKey.allowedFeeds,
     dateRangeStart: apiKey.dateRangeStart,
     dateRangeEnd: apiKey.dateRangeEnd,
+    welcome,
   }, 201);
 }, true, "admin:write");
 
@@ -833,6 +875,31 @@ route("POST", "/v1/keys/:prefix/enable", async (req, ctx) => {
   }
 
   return json({ enabled });
+}, true, "admin:write");
+
+// Rotate a key secret and send a new welcome email via anonymous OTS link
+route("POST", "/v1/keys/:prefix/rotate-welcome", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const params = (req as Request & { params: Record<string, string> }).params;
+  const body = await req.json().catch(() => ({})) as { recipient?: string };
+
+  const existing = await getApiKeyByPrefix(ctx.db, params.prefix);
+  if (!existing) return json({ error: "Key not found" }, 404);
+
+  const { fullKey, prefix: newPrefix } = await rotateApiKeySecret(ctx.db, params.prefix, auth.userEmail);
+  const recipient = body.recipient ?? existing.userEmail;
+  let welcome: { sent: boolean; error?: string } = { sent: false };
+  try {
+    await deliverWelcome(fullKey, recipient, {
+      allowedFeeds: existing.allowedFeeds,
+      dateRangeStart: existing.dateRangeStart,
+      dateRangeEnd: existing.dateRangeEnd,
+    });
+    welcome = { sent: true };
+  } catch (e) {
+    welcome = { sent: false, error: e instanceof Error ? e.message : "welcome delivery failed" };
+  }
+  return json({ prefix: newPrefix, rotated: true, welcome }, 200);
 }, true, "admin:write");
 
 // Usage stats endpoint - get rate limit and token usage for all keys

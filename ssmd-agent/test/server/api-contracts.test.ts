@@ -382,6 +382,49 @@ Deno.test("admin:write implies billing:write", async () => {
   }
 });
 
+// --- Welcome route scope-gating tests ---
+
+Deno.test("datasets:read cannot access rotate-welcome", async () => {
+  const router = createTestRouter(mockAuth({ scopes: ["datasets:read"] }));
+  const req = makeReq("/v1/keys/sk_test_abc/rotate-welcome", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  const res = await router(req);
+  assertEquals(res.status, 403);
+  const body = await res.json();
+  assertExists(body.error);
+});
+
+Deno.test("secmaster:read cannot access rotate-welcome", async () => {
+  const router = createTestRouter(mockAuth({ scopes: ["secmaster:read"] }));
+  const req = makeReq("/v1/keys/sk_test_abc/rotate-welcome", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  const res = await router(req);
+  assertEquals(res.status, 403);
+  const body = await res.json();
+  assertExists(body.error);
+});
+
+Deno.test("admin:write can access rotate-welcome (scope passes, DB throws)", async () => {
+  const router = createTestRouter(mockAuth({ scopes: ["admin:write"] }));
+  const req = makeReq("/v1/keys/sk_test_abc/rotate-welcome", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  try {
+    const res = await router(req);
+    assert(res.status !== 403, `admin:write should pass scope check for rotate-welcome (got ${res.status})`);
+  } catch (_err) {
+    // Handler threw because mock DB can't query — scope check passed (good)
+  }
+});
+
 // --- Error shape tests ---
 
 Deno.test("404 returns { error: string } shape", async () => {
