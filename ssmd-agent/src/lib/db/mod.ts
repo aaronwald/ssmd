@@ -119,6 +119,7 @@ export {
   disableApiKey,
   enableApiKey,
   logKeyEvent,
+  rotateApiKeySecret,
 } from "./apikeys.ts";
 
 // Request log operations

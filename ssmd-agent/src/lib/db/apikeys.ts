@@ -4,6 +4,7 @@
 import { eq, isNull, and } from "drizzle-orm";
 import { apiKeys, apiKeyEvents, type ApiKey, type NewApiKey } from "./schema.ts";
 import type { Database } from "./client.ts";
+import { generateApiKey } from "../auth/keys.ts";
 
 /**
  * Get API key by prefix (for validation).
@@ -229,4 +230,25 @@ export async function logKeyEvent(
     // Best effort — don't fail the parent operation
     console.error("Failed to log key event:", err);
   }
+}
+
+/**
+ * Rotate a key's secret in place: generate a new secret/prefix/hash, update the
+ * existing (non-revoked) row, preserving scopes/feeds/email/dates/billable.
+ * Returns the new full key (shown once) and prefix. Throws if not found.
+ */
+export async function rotateApiKeySecret(
+  db: Database,
+  prefix: string,
+  actorEmail: string,
+): Promise<{ fullKey: string; prefix: string }> {
+  const { fullKey, prefix: newPrefix, hash } = await generateApiKey("live");
+  const [updated] = await db
+    .update(apiKeys)
+    .set({ keyPrefix: newPrefix, keyHash: hash })
+    .where(and(eq(apiKeys.keyPrefix, prefix), isNull(apiKeys.revokedAt)))
+    .returning();
+  if (!updated) throw new Error(`Key not found or revoked: ${prefix}`);
+  await logKeyEvent(db, newPrefix, "rotated", actorEmail, null, { oldPrefix: prefix });
+  return { fullKey, prefix: newPrefix };
 }
