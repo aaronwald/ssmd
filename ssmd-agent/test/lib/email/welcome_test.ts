@@ -16,6 +16,7 @@ Deno.test("composeWelcomeEmail includes the link and metadata, never the raw sec
   assertStringIncludes(text, "hols");
   assertStringIncludes(text, "api.varshtat.com");
   assertStringIncludes(text, "7 day");
+  assertStringIncludes(text, "https://harman.varshtat.com");
   assert(!text.includes("sk_live_SHOULD_NOT_APPEAR"), "raw secret must never be in the email");
   assertEquals(typeof subject, "string");
 });

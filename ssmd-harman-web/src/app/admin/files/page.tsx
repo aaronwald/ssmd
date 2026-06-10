@@ -12,13 +12,16 @@ function todayUtc(): string {
 
 export default function FilesPage() {
   const { data: me } = useMe();
-  const hasAdmin = me?.scopes.includes("harman:admin") || me?.scopes.includes("*");
+  const canReadData =
+    me?.scopes.includes("datasets:read") ||
+    me?.scopes.includes("harman:admin") ||
+    me?.scopes.includes("*");
 
   if (!me) return <div className="py-10 text-center text-fg-muted">Loading...</div>;
-  if (!hasAdmin) {
+  if (!canReadData) {
     return (
       <div className="py-10 text-center text-fg-muted">
-        Requires <code className="font-mono text-accent">harman:admin</code> scope.
+        Requires <code className="font-mono text-accent">datasets:read</code> scope.
       </div>
     );
   }
