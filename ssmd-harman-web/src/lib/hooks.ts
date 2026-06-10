@@ -1,6 +1,7 @@
 "use client";
 
-import useSWR from "swr";
+import { useCallback, useState } from "react";
+import useSWR, { useSWRConfig } from "swr";
 import {
   getHealth,
   listOrders,
@@ -32,7 +33,10 @@ import {
   getPipelineRunDetail,
   getDayFiles,
   getDataCatalog,
+  createKeyWelcome,
+  rotateWelcome,
 } from "./api";
+import type { CreateKeyRequest, CreateKeyResponse, RotateWelcomeResponse } from "./types";
 import { useInstance } from "./instance-context";
 const REFRESH_INTERVAL = 2500;
 const METADATA_REFRESH = 60000; // 60s for metadata (categories, series, events)
@@ -295,4 +299,113 @@ export function usePipelineRunDetail(runId: number | null) {
     () => getPipelineRunDetail(runId!),
     { refreshInterval: PIPELINE_REFRESH }
   );
+}
+
+// Key management mutation hooks (SWR — manual imperative mutations with cache invalidation)
+
+interface MutationState<T> {
+  data: T | null;
+  error: string | null;
+  loading: boolean;
+}
+
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string" && err.length > 0) return err;
+  return "Unknown error";
+}
+
+export function useCreateKey() {
+  const { mutate } = useSWRConfig();
+  const { instance } = useInstance();
+  const [state, setState] = useState<MutationState<CreateKeyResponse>>({
+    data: null,
+    error: null,
+    loading: false,
+  });
+
+  const trigger = useCallback(
+    async (payload: CreateKeyRequest): Promise<CreateKeyResponse> => {
+      if (!payload.name || typeof payload.name !== "string" || !payload.name.trim()) {
+        const msg = "name is required";
+        setState({ data: null, error: msg, loading: false });
+        throw new Error(msg);
+      }
+      if (!payload.userEmail || typeof payload.userEmail !== "string" || !payload.userEmail.trim()) {
+        const msg = "userEmail is required";
+        setState({ data: null, error: msg, loading: false });
+        throw new Error(msg);
+      }
+      setState({ data: null, error: null, loading: true });
+      try {
+        const result = await createKeyWelcome(payload);
+        setState({ data: result, error: null, loading: false });
+        // Invalidate admin-users cache for the current instance
+        if (instance && typeof instance === "string" && instance.length > 0) {
+          try {
+            await mutate(`${instance}:admin-users`);
+          } catch {
+            // Cache invalidation failure is non-fatal; user can refresh manually
+          }
+        }
+        return result;
+      } catch (err: unknown) {
+        const message = extractErrorMessage(err);
+        setState({ data: null, error: message, loading: false });
+        throw err;
+      }
+    },
+    [mutate, instance]
+  );
+
+  const reset = useCallback(() => {
+    setState({ data: null, error: null, loading: false });
+  }, []);
+
+  return { ...state, trigger, reset };
+}
+
+export function useRotateWelcome() {
+  const { mutate } = useSWRConfig();
+  const { instance } = useInstance();
+  const [state, setState] = useState<MutationState<RotateWelcomeResponse>>({
+    data: null,
+    error: null,
+    loading: false,
+  });
+
+  const trigger = useCallback(
+    async (prefix: string, recipient?: string): Promise<RotateWelcomeResponse> => {
+      if (!prefix || typeof prefix !== "string" || !prefix.trim()) {
+        const msg = "prefix is required";
+        setState({ data: null, error: msg, loading: false });
+        throw new Error(msg);
+      }
+      setState({ data: null, error: null, loading: true });
+      try {
+        const result = await rotateWelcome(prefix.trim(), recipient);
+        setState({ data: result, error: null, loading: false });
+        // Invalidate admin-users cache for the current instance
+        if (instance && typeof instance === "string" && instance.length > 0) {
+          try {
+            await mutate(`${instance}:admin-users`);
+          } catch {
+            // Cache invalidation failure is non-fatal; user can refresh manually
+          }
+        }
+        return result;
+      } catch (err: unknown) {
+        const message = extractErrorMessage(err);
+        setState({ data: null, error: message, loading: false });
+        throw err;
+      }
+    },
+    [mutate, instance]
+  );
+
+  const reset = useCallback(() => {
+    setState({ data: null, error: null, loading: false });
+  }, []);
+
+  return { ...state, trigger, reset };
 }

@@ -499,3 +499,26 @@ export interface DataCatalogResponse {
   feeds: DataCatalogFeed[];
   catalogGeneratedAt: string;
 }
+
+// Key management types
+export interface CreateKeyRequest {
+  name: string;
+  userEmail: string;
+  scopes: string[];
+  allowedFeeds: string[];
+  dateRangeStart: string;
+  dateRangeEnd: string;
+  sendWelcome?: boolean;
+  recipient?: string;
+}
+
+export interface CreateKeyResponse {
+  prefix: string;
+  welcome?: { sent: boolean; error?: string };
+}
+
+export interface RotateWelcomeResponse {
+  prefix: string;
+  rotated: boolean;
+  welcome: { sent: boolean; error?: string };
+}

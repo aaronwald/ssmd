@@ -31,6 +31,9 @@ import type {
   DayFilesResponse,
   DataDownloadResponse,
   DataCatalogResponse,
+  CreateKeyRequest,
+  CreateKeyResponse,
+  RotateWelcomeResponse,
 } from "./types";
 
 // Dynamic instance routing — set via InstanceProvider
@@ -365,3 +368,25 @@ export const getPipelineRuns = (id: number) =>
 
 export const getPipelineRunDetail = (runId: number) =>
   dataRequest<PipelineRun>(`/pipelines/runs/${runId}`);
+
+// Key management endpoints
+export const createKeyWelcome = (payload: CreateKeyRequest): Promise<CreateKeyResponse> => {
+  if (!payload.name || !payload.userEmail) {
+    return Promise.reject(new Error("name and userEmail are required"));
+  }
+  return request<CreateKeyResponse>("/v1/keys", { method: "POST", body: JSON.stringify(payload) });
+};
+
+export const rotateWelcome = (prefix: string, recipient?: string): Promise<RotateWelcomeResponse> => {
+  if (!prefix) {
+    return Promise.reject(new Error("prefix is required"));
+  }
+  const body: { recipient?: string } = {};
+  if (recipient && recipient.trim()) {
+    body.recipient = recipient.trim();
+  }
+  return request<RotateWelcomeResponse>(`/v1/keys/${encodeURIComponent(prefix)}/rotate-welcome`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+};
