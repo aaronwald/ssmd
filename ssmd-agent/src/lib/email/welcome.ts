@@ -1,4 +1,5 @@
 import nodemailer from "npm:nodemailer@6";
+import { feedDescription } from "../gcs/signed-urls.ts";
 
 export interface WelcomeMeta {
   recipient: string;
@@ -23,7 +24,11 @@ export function composeWelcomeEmail(m: WelcomeMeta): { subject: string; text: st
     `Once you open it, the key is shown ONCE — copy it somewhere safe.`,
     ``,
     `API base URL: ${m.apiBaseUrl}`,
-    `Allowed feeds: ${m.feeds.join(", ")}`,
+    `Allowed feeds:`,
+    ...m.feeds.map((f) => {
+      const desc = feedDescription(f);
+      return desc ? `  - ${f} — ${desc}` : `  - ${f}`;
+    }),
     `Date range: ${m.dateFrom} to ${m.dateTo}`,
     ``,
     `Or download via the website:`,
