@@ -162,8 +162,10 @@ export function useInfo() {
   return useSWR(useInstanceKey("info"), getInfo, { revalidateOnFocus: false });
 }
 
+// Global identity hook — uses a plain key (not instance-scoped) so it works for
+// researchers who have no OMS instance selected (e.g. when on /files).
 export function useMe() {
-  return useSWR(useInstanceKey("me"), getMe, { revalidateOnFocus: false });
+  return useSWR("me", getMe, { revalidateOnFocus: false });
 }
 
 export function useEventSearch(q: string | null, exchange?: string) {

@@ -1,17 +1,22 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { selectEffectiveAuth } from "../../../src/lib/auth/effective-scopes.ts";
+import { selectEffectiveAuth, selectEffectiveUser } from "../../../src/lib/auth/effective-scopes.ts";
 import type { ApiKey } from "../../../src/lib/db/schema.ts";
 
 /**
  * Build a minimal ApiKey-shaped fixture. Only the fields used by
- * selectEffectiveAuth are populated; the rest are cast away.
+ * selectEffectiveAuth / selectEffectiveUser are populated; the rest are cast away.
  */
 function makeKey(
   keyPrefix: string,
   scopes: string[],
   createdAt: Date = new Date("2026-01-01T00:00:00Z"),
+  allowedFeeds: string[] = ["kalshi"],
+  dateRangeStart = "2024-01-01",
+  dateRangeEnd = "2026-12-31",
 ): ApiKey {
-  return { keyPrefix, scopes, createdAt } as unknown as ApiKey;
+  // userId derived from keyPrefix so each fixture key has a distinct, predictable id.
+  const userId = `user-${keyPrefix}`;
+  return { userId, keyPrefix, scopes, createdAt, allowedFeeds, dateRangeStart, dateRangeEnd } as unknown as ApiKey;
 }
 
 Deno.test("selectEffectiveAuth returns null for empty array", () => {
@@ -62,6 +67,77 @@ Deno.test("selectEffectiveAuth de-duplicates scopes across keys", () => {
   ]);
 
   assertEquals(result?.scopes, ["admin:read", "datasets:read"]);
+});
+
+// ---- selectEffectiveUser tests ----
+
+Deno.test("selectEffectiveUser returns null for empty array", () => {
+  assertEquals(selectEffectiveUser([]), null);
+});
+
+Deno.test("selectEffectiveUser single key returns all fields", () => {
+  const result = selectEffectiveUser([
+    makeKey("sk_live_aaaaaaaa", ["datasets:read"], new Date("2026-01-01"), ["kalshi", "kraken-futures"], "2024-01-01", "2026-12-31"),
+  ]);
+  assertEquals(result, {
+    userId: "user-sk_live_aaaaaaaa",
+    keyPrefix: "sk_live_aaaaaaaa",
+    scopes: ["datasets:read"],
+    allowedFeeds: ["kalshi", "kraken-futures"],
+    dateRangeStart: "2024-01-01",
+    dateRangeEnd: "2026-12-31",
+  });
+});
+
+Deno.test("selectEffectiveUser userId comes from the chosen (keyPrefix) key", () => {
+  // Wildcard key wins keyPrefix selection; userId must match THAT key, not the others.
+  const result = selectEffectiveUser([
+    makeKey("sk_live_lowpriv0", ["datasets:read"], new Date("2025-01-01")),
+    makeKey("sk_live_wildcard", ["*"], new Date("2026-01-01")),
+    makeKey("sk_live_otherkey", ["harman:write"], new Date("2024-01-01")),
+  ]);
+  assertEquals(result?.keyPrefix, "sk_live_wildcard");
+  assertEquals(result?.userId, "user-sk_live_wildcard");
+});
+
+Deno.test("selectEffectiveUser unions allowedFeeds across keys", () => {
+  const result = selectEffectiveUser([
+    makeKey("sk_live_key1xxxx", ["datasets:read"], new Date("2026-01-01"), ["kalshi"], "2025-01-01", "2026-06-30"),
+    makeKey("sk_live_key2xxxx", ["datasets:read"], new Date("2026-02-01"), ["kraken-futures"], "2024-01-01", "2027-12-31"),
+  ]);
+  assertEquals(result?.allowedFeeds, ["kalshi", "kraken-futures"]);
+});
+
+Deno.test("selectEffectiveUser uses widest date span (min start, max end)", () => {
+  const result = selectEffectiveUser([
+    makeKey("sk_live_key1xxxx", ["datasets:read"], new Date("2026-01-01"), ["kalshi"], "2025-06-01", "2026-06-30"),
+    makeKey("sk_live_key2xxxx", ["datasets:read"], new Date("2026-02-01"), ["kalshi"], "2024-01-01", "2027-12-31"),
+    makeKey("sk_live_key3xxxx", ["datasets:read"], new Date("2026-03-01"), ["kalshi"], "2025-01-01", "2026-12-31"),
+  ]);
+  assertEquals(result?.dateRangeStart, "2024-01-01");
+  assertEquals(result?.dateRangeEnd, "2027-12-31");
+});
+
+Deno.test("selectEffectiveUser de-duplicates allowedFeeds", () => {
+  const result = selectEffectiveUser([
+    makeKey("sk_live_key1xxxx", ["datasets:read"], new Date("2026-01-01"), ["kalshi", "kraken-futures"]),
+    makeKey("sk_live_key2xxxx", ["datasets:read"], new Date("2026-02-01"), ["kalshi"]),
+  ]);
+  assertEquals(result?.allowedFeeds, ["kalshi", "kraken-futures"]);
+});
+
+Deno.test("selectEffectiveUser keyPrefix selection follows same rank as selectEffectiveAuth", () => {
+  const result = selectEffectiveUser([
+    makeKey("sk_live_wildcard", ["*"], new Date("2026-01-01"), ["kalshi"]),
+    makeKey("sk_live_lowpriv0", ["datasets:read"], new Date("2025-01-01"), ["kraken-futures"]),
+  ]);
+  assertEquals(result?.keyPrefix, "sk_live_wildcard");
+  // scopes union includes both
+  assertEquals(result?.scopes.includes("*"), true);
+  assertEquals(result?.scopes.includes("datasets:read"), true);
+  // feeds union across both keys
+  assertEquals(result?.allowedFeeds.includes("kalshi"), true);
+  assertEquals(result?.allowedFeeds.includes("kraken-futures"), true);
 });
 
 Deno.test("selectEffectiveAuth is deterministic regardless of input order", () => {

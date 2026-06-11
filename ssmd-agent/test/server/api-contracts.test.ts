@@ -661,3 +661,138 @@ Deno.test("Authenticated response includes rate limit headers", async () => {
 Deno.test("API_VERSION is 1.0.0", () => {
   assertEquals(API_VERSION, "1.0.0");
 });
+
+// ---- X-CF-User-Email override tests ----
+
+/**
+ * Build a router that:
+ *  - Validates the API key using authOverride (returns serviceAuth)
+ *  - Resolves the proxied user via resolveUserOverride (returns userAuth or null)
+ */
+function createEmailOverrideRouter(
+  serviceAuth: AuthResult,
+  resolvedUser: { userId: string; keyPrefix: string; scopes: string[]; allowedFeeds: string[]; dateRangeStart: string; dateRangeEnd: string } | null,
+) {
+  const mockDb = {} as Database;
+  const ctx: RouteContext = {
+    dataDir: "/tmp/test-data",
+    db: mockDb,
+    harmanPools: new Map(),
+    authOverride: (_apiKey, _db) => Promise.resolve(serviceAuth),
+    resolveUserOverride: (_email) => Promise.resolve(resolvedUser),
+  };
+  return createRouter(ctx);
+}
+
+Deno.test("X-CF-User-Email: service (admin:read) key + known user → resolves user's scopes/feeds", async () => {
+  const serviceAuth = mockAuth({ userId: "service-account", scopes: ["admin:read", "datasets:read", "*"], allowedFeeds: ["kalshi", "kraken-futures", "polymarket"] });
+  const userProfile = {
+    userId: "real-user-id",
+    keyPrefix: "sk_live_userxxxx",
+    scopes: ["datasets:read"],
+    allowedFeeds: ["kalshi"],
+    dateRangeStart: "2025-01-01",
+    dateRangeEnd: "2025-12-31",
+  };
+  const router = createEmailOverrideRouter(serviceAuth, userProfile);
+  const req = makeReq("/v1/data/whoami", { headers: { "X-CF-User-Email": "user@example.com" } });
+  const res = await router(req);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.email, "user@example.com");
+  assertEquals(body.scopes, ["datasets:read"]);
+  assertEquals(body.allowedFeeds, ["kalshi"]);
+  // userId must be replaced with the proxied user's id, NOT the service account's.
+  const attachedAuth = (req as Request & { auth?: { userId?: string } }).auth;
+  assertEquals(attachedAuth?.userId, "real-user-id");
+});
+
+Deno.test("X-CF-User-Email: service key + unknown email → 403", async () => {
+  const serviceAuth = mockAuth({ scopes: ["admin:read", "*"], allowedFeeds: ["kalshi"] });
+  const router = createEmailOverrideRouter(serviceAuth, null);
+  const req = makeReq("/v1/data/whoami", { headers: { "X-CF-User-Email": "unknown@example.com" } });
+  const res = await router(req);
+  assertEquals(res.status, 403);
+  const body = await res.json();
+  assertExists(body.error);
+});
+
+Deno.test("X-CF-User-Email: non-admin key + header → header ignored, own identity used", async () => {
+  const nonAdminAuth = mockAuth({
+    userId: "nonadmin-own-id",
+    scopes: ["datasets:read"],
+    userEmail: "service@example.com",
+    allowedFeeds: ["kalshi", "kraken-futures"],
+  });
+  // resolveUserOverride should NOT be called, but provide a different user to detect if it is
+  const spoofedUser = {
+    userId: "attacker-id",
+    keyPrefix: "sk_live_attacker",
+    scopes: ["admin:write"],
+    allowedFeeds: ["kalshi"],
+    dateRangeStart: "2020-01-01",
+    dateRangeEnd: "2030-12-31",
+  };
+  const router = createEmailOverrideRouter(nonAdminAuth, spoofedUser);
+  const req = makeReq("/v1/data/whoami", { headers: { "X-CF-User-Email": "admin@example.com" } });
+  const res = await router(req);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  // Must NOT see the spoofed user's scopes; must see the key's own identity
+  assertEquals(body.email, "service@example.com");
+  assertEquals(body.scopes, ["datasets:read"]);
+  assertEquals(body.allowedFeeds, ["kalshi", "kraken-futures"]);
+  // userId must remain the non-admin key's own id, NOT the spoofed attacker id.
+  const attachedAuth = (req as Request & { auth?: { userId?: string } }).auth;
+  assertEquals(attachedAuth?.userId, "nonadmin-own-id");
+});
+
+Deno.test("X-CF-User-Email: service key + no header → own identity unchanged", async () => {
+  const serviceAuth = mockAuth({
+    scopes: ["admin:read", "*"],
+    userEmail: "service@internal.com",
+    allowedFeeds: ["kalshi", "kraken-futures", "polymarket"],
+  });
+  const router = createEmailOverrideRouter(serviceAuth, null);
+  const req = makeReq("/v1/data/whoami");
+  const res = await router(req);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.email, "service@internal.com");
+  assertEquals(body.scopes, ["admin:read", "*"]);
+});
+
+// ---- /v1/data/whoami scope-gating tests ----
+
+Deno.test("GET /v1/data/whoami requires datasets:read scope", async () => {
+  const router = createTestRouter(mockAuth({ scopes: ["secmaster:read"] }));
+  const req = makeReq("/v1/data/whoami");
+  const res = await router(req);
+  assertEquals(res.status, 403);
+  const body = await res.json();
+  assertExists(body.error);
+});
+
+Deno.test("GET /v1/data/whoami returns 401 without API key", async () => {
+  const router = createTestRouter({ valid: false, status: 401, error: "Missing API key" });
+  const req = new Request("http://localhost/v1/data/whoami");
+  const res = await router(req);
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertExists(body.error);
+});
+
+Deno.test("GET /v1/data/whoami returns email, scopes, allowedFeeds for authenticated caller", async () => {
+  const router = createTestRouter(mockAuth({
+    scopes: ["datasets:read"],
+    userEmail: "test@test.com",
+    allowedFeeds: ["kalshi", "kraken-futures"],
+  }));
+  const req = makeReq("/v1/data/whoami");
+  const res = await router(req);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.email, "test@test.com");
+  assertEquals(body.scopes, ["datasets:read"]);
+  assertEquals(body.allowedFeeds, ["kalshi", "kraken-futures"]);
+});

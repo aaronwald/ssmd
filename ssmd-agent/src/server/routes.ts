@@ -64,7 +64,7 @@ import {
   type Database,
 } from "../lib/db/mod.ts";
 import { generateApiKey, invalidateKeyCache } from "../lib/auth/mod.ts";
-import { getEffectiveAuthByEmail } from "../lib/auth/effective-scopes.ts";
+import { getEffectiveAuthByEmail, resolveEffectiveUser, type EffectiveUser } from "../lib/auth/effective-scopes.ts";
 import { getUsageForPrefix, getTokenUsage, trackTokenUsage } from "../lib/auth/ratelimit.ts";
 import { getGuardrailSettings, applyGuardrails, checkModelAllowed } from "../lib/guardrails/mod.ts";
 import { getRedis } from "../lib/redis/mod.ts";
@@ -107,6 +107,8 @@ export interface RouteContext {
   db: Database;
   harmanPools: Map<string, ReturnType<typeof postgres>>;
   authOverride?: (apiKey: string | null, db: Database) => Promise<import("./auth.ts").AuthResult>;
+  /** Test-only: override the email → EffectiveUser lookup performed by the X-CF-User-Email path. */
+  resolveUserOverride?: (email: string) => Promise<EffectiveUser | null>;
 }
 
 function getHarmanPool(ctx: RouteContext, instance?: string | null): ReturnType<typeof postgres> | undefined {
@@ -1570,6 +1572,17 @@ route("GET", "/v1/data/download", async (req, ctx) => {
     files: signedFiles,
     expiresIn: `${expiresInHours}h`,
   });
+}, true, "datasets:read", "public");
+
+// Whoami endpoint — returns the resolved caller identity (email, scopes, allowedFeeds).
+// Useful for the harman-web proxy to confirm which user's permissions are in effect.
+route("GET", "/v1/data/whoami", (req, _ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  return Promise.resolve(json({
+    email: auth.userEmail ?? null,
+    scopes: auth.scopes ?? [],
+    allowedFeeds: auth.allowedFeeds ?? [],
+  }));
 }, true, "datasets:read", "public");
 
 // Data feeds listing endpoint — enriched from catalog when available
@@ -4320,7 +4333,38 @@ function buildHandler(
           );
         }
 
-        // Check scope
+        // X-CF-User-Email override: when a trusted admin/service key presents this
+        // header, resolve the named user and replace the auth context with theirs.
+        // SECURITY:
+        //   - Only admin/service keys (admin:read or wildcard "*") may trigger this.
+        //   - A non-admin key presenting the header is silently ignored (no impersonation).
+        //   - An unknown email is DENIED (403) — no fallback to the service key's scopes.
+        const cfUserEmail = req.headers.get("x-cf-user-email")?.trim() ?? null;
+        if (cfUserEmail && hasScope(authResult.scopes!, "admin:read")) {
+          const resolveUser = ctx.resolveUserOverride
+            ? (email: string) => ctx.resolveUserOverride!(email)
+            : (email: string) => resolveEffectiveUser(ctx.db, email);
+
+          const user = await resolveUser(cfUserEmail);
+          if (!user) {
+            return json({ error: "Forbidden: proxied user not found" }, 403);
+          }
+          // Replace auth context with the resolved user's identity. userId is
+          // included so admin routes keyed on auth.userId (e.g. GET /v1/keys →
+          // listApiKeysByUser) operate on the proxied user, not the service key.
+          authResult = {
+            ...authResult,
+            userId: user.userId,
+            userEmail: cfUserEmail,
+            scopes: user.scopes,
+            keyPrefix: user.keyPrefix,
+            allowedFeeds: user.allowedFeeds,
+            dateRangeStart: user.dateRangeStart,
+            dateRangeEnd: user.dateRangeEnd,
+          };
+        }
+
+        // Check scope (re-checked after potential email override)
         if (r.requiredScope && !hasScope(authResult.scopes!, r.requiredScope)) {
           return json({ error: "Insufficient permissions" }, 403);
         }

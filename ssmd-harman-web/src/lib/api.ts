@@ -18,6 +18,7 @@ import type {
   MonitorSearchResponse,
   InfoResponse,
   MeResponse,
+  WhoamiResponse,
   AdminUsersResponse,
   HarmanSession,
   ExchangeAuditEntry,
@@ -232,9 +233,34 @@ export const getMarkets = async (event: string): Promise<MonitorMarket[]> => {
 export const getInfo = () =>
   request<InfoResponse>("/v1/info");
 
-// Me endpoint — returns auth context for current user
-export const getMe = () =>
-  request<MeResponse>("/v1/me");
+// Me endpoint — resolves the caller's identity via the global data-ts whoami endpoint.
+// Uses dataRequest (no OMS instance required) so it works for researchers without a
+// harman session. Maps WhoamiResponse onto MeResponse: fields used by the app are
+// scopes and email; OMS-only fields (key_prefix, session_id, exchange, environment)
+// are provided as safe defaults since no OMS page displays them from this hook.
+export const getMe = async (): Promise<MeResponse> => {
+  // dataRequest propagates HTTP errors as thrown exceptions — not caught here so
+  // SWR receives the error and can surface it to consumers.
+  const whoami = await dataRequest<WhoamiResponse>("/data/whoami");
+  if (!whoami || typeof whoami !== "object") {
+    throw new Error("whoami: unexpected empty response from /v1/data/whoami");
+  }
+  if (!Array.isArray(whoami.scopes)) {
+    throw new Error("whoami: missing or invalid scopes field");
+  }
+  if (typeof whoami.email !== "string" || whoami.email.length === 0) {
+    throw new Error("whoami: missing or invalid email field");
+  }
+  return {
+    email: whoami.email,
+    scopes: whoami.scopes,
+    // OMS-only fields — not accessed by any component; safe defaults provided.
+    key_prefix: "",
+    session_id: 0,
+    exchange: "",
+    environment: "",
+  };
+};
 
 // Monitor search — search by series or outcomes
 export const searchMonitorMarkets = async (q: string, type?: string, exchange?: string, limit?: number): Promise<MonitorSearchResponse> => {

@@ -334,6 +334,21 @@ function DataSection({ collapsed, pathname }: { collapsed: boolean; pathname: st
 export function NavRail() {
   const { navCollapsed, toggleNav } = useLayout();
   const pathname = usePathname();
+  const { data: me } = useMe();
+
+  // Scope helpers — null means still loading.
+  // Guard: me.scopes must be an array of strings; filter out any malformed entries.
+  const scopes: string[] = Array.isArray(me?.scopes)
+    ? (me!.scopes as unknown[]).filter((s): s is string => typeof s === "string")
+    : [];
+  const hasOms: boolean | null = me == null
+    ? null
+    : scopes.includes("harman:read") ||
+      scopes.includes("harman:write") ||
+      scopes.includes("harman:admin") ||
+      scopes.includes("*");
+  // dataOnly is true only once identity is resolved (me != null) and user has no OMS scope.
+  const dataOnly = hasOms === false && scopes.includes("datasets:read");
 
   const coreLinks = [
     { href: "/", label: "Positions", icon: GridIcon },
@@ -351,81 +366,86 @@ export function NavRail() {
       className="shrink-0 flex flex-col h-full border-r border-border bg-bg-raised transition-[width] duration-200"
       style={{ width: navCollapsed ? "var(--width-nav-collapsed)" : "var(--width-nav-expanded)" }}
     >
-      {/* Brand */}
+      {/* Brand — data-only users navigate to /files; OMS users to / */}
       <Link
-        href="/"
+        href={dataOnly ? "/files" : "/"}
         className="flex items-center gap-2 px-3 py-3 border-b border-border hover:bg-bg-surface-hover transition-colors"
       >
         <span className="shrink-0 text-accent font-bold text-sm">H</span>
         {!navCollapsed && <span className="text-sm font-semibold text-fg tracking-tight">harman<span className="text-fg-muted">.oms</span></span>}
       </Link>
 
-      {/* Instance selector */}
-      <InstanceSelector collapsed={navCollapsed} />
+      {/* Instance selector — not relevant for data-only users */}
+      {!dataOnly && <InstanceSelector collapsed={navCollapsed} />}
 
       {/* Core nav */}
       <nav className="flex-1 flex flex-col gap-0.5 px-2 overflow-y-auto">
-        {coreLinks.map((link) => (
-          <NavItem
-            key={link.href}
-            href={link.href}
-            label={link.label}
-            icon={link.icon}
-            active={pathname === link.href}
-            collapsed={navCollapsed}
-          />
-        ))}
+        {/* OMS surfaces — hidden for data-only users */}
+        {!dataOnly && (
+          <>
+            {coreLinks.map((link) => (
+              <NavItem
+                key={link.href}
+                href={link.href}
+                label={link.label}
+                icon={link.icon}
+                active={pathname === link.href}
+                collapsed={navCollapsed}
+              />
+            ))}
 
-        {/* Trading section */}
-        <div className={`px-1 pt-4 pb-1 ${navCollapsed ? "text-center" : ""}`}>
-          {navCollapsed ? (
-            <span className="block w-full h-px bg-border" />
-          ) : (
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">Trading</span>
-          )}
-        </div>
-        {tradingLinks.map((link) => (
-          <NavItem
-            key={link.href}
-            href={link.href}
-            label={link.label}
-            icon={link.icon}
-            active={pathname === link.href}
-            collapsed={navCollapsed}
-          />
-        ))}
+            {/* Trading section */}
+            <div className={`px-1 pt-4 pb-1 ${navCollapsed ? "text-center" : ""}`}>
+              {navCollapsed ? (
+                <span className="block w-full h-px bg-border" />
+              ) : (
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">Trading</span>
+              )}
+            </div>
+            {tradingLinks.map((link) => (
+              <NavItem
+                key={link.href}
+                href={link.href}
+                label={link.label}
+                icon={link.icon}
+                active={pathname === link.href}
+                collapsed={navCollapsed}
+              />
+            ))}
 
-        {/* Markets section */}
-        <div className={`px-1 pt-4 pb-1 ${navCollapsed ? "text-center" : ""}`}>
-          {navCollapsed ? (
-            <span className="block w-full h-px bg-border" />
-          ) : (
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">Markets</span>
-          )}
-        </div>
-        <NavItem
-          href="/crypto"
-          label="Crypto"
-          icon={TrendingUpIcon}
-          active={pathname === "/crypto" || pathname.startsWith("/crypto/")}
-          collapsed={navCollapsed}
-        />
-        <NavItem
-          href="/15m"
-          label="15-Minute"
-          icon={ClockIcon}
-          active={pathname === "/15m"}
-          collapsed={navCollapsed}
-        />
-        <NavItem
-          href="/sports"
-          label="Sports"
-          icon={SportsIcon}
-          active={pathname === "/sports" || pathname.startsWith("/sports/")}
-          collapsed={navCollapsed}
-        />
+            {/* Markets section */}
+            <div className={`px-1 pt-4 pb-1 ${navCollapsed ? "text-center" : ""}`}>
+              {navCollapsed ? (
+                <span className="block w-full h-px bg-border" />
+              ) : (
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">Markets</span>
+              )}
+            </div>
+            <NavItem
+              href="/crypto"
+              label="Crypto"
+              icon={TrendingUpIcon}
+              active={pathname === "/crypto" || pathname.startsWith("/crypto/")}
+              collapsed={navCollapsed}
+            />
+            <NavItem
+              href="/15m"
+              label="15-Minute"
+              icon={ClockIcon}
+              active={pathname === "/15m"}
+              collapsed={navCollapsed}
+            />
+            <NavItem
+              href="/sports"
+              label="Sports"
+              icon={SportsIcon}
+              active={pathname === "/sports" || pathname.startsWith("/sports/")}
+              collapsed={navCollapsed}
+            />
+          </>
+        )}
 
-        {/* Admin section (conditionally rendered) */}
+        {/* Admin section (self-gated by AdminSection) */}
         <Suspense fallback={null}>
           <AdminSection collapsed={navCollapsed} pathname={pathname} />
         </Suspense>
