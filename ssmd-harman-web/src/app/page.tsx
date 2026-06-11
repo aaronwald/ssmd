@@ -1,12 +1,35 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { SnapAgeDot } from "@/components/snap-age-dot";
-import { usePositions, useSnapMap, useInfo } from "@/lib/hooks";
+import { usePositions, useSnapMap, useInfo, useMe } from "@/lib/hooks";
 import type { LocalPosition, NormalizedSnapshot } from "@/lib/types";
 
 export default function Dashboard() {
+  const router = useRouter();
+  const { data: me } = useMe();
+
+  // Redirect data-only users away from the OMS landing page to /files.
+  // Wait until identity is resolved (me != null) before redirecting to avoid
+  // flashing a redirect for OMS users whose session loads slowly.
+  // Guard: validate scopes is an array of strings before checking.
+  useEffect(() => {
+    if (me == null) return; // still loading — do nothing
+    const scopes: string[] = Array.isArray(me.scopes)
+      ? (me.scopes as unknown[]).filter((s): s is string => typeof s === "string")
+      : [];
+    const hasOms =
+      scopes.includes("harman:read") ||
+      scopes.includes("harman:write") ||
+      scopes.includes("harman:admin") ||
+      scopes.includes("*");
+    if (!hasOms && scopes.includes("datasets:read")) {
+      router.replace("/files");
+    }
+  }, [me, router]);
+
   const { data: positions } = usePositions();
   const { data: info } = useInfo();
   const feed = info?.exchange ?? "kalshi";
