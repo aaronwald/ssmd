@@ -28,9 +28,15 @@ fn is_discovery_event(event_type: &str) -> bool {
 /// `created` markets are pre-open: visible in the monitor but not yet tradable, so
 /// they land as `initialized` and the connector deliberately does NOT subscribe (a
 /// not-yet-open window emits no ticker data and would crash-loop the connector
-/// watchdog). `activated` markets are open for trading, so they become `active` and
-/// the connector subscribes. Returns `None` for any non-discovery event so callers
-/// fail loud rather than guessing a status. Mirrors [`is_discovery_event`].
+/// watchdog).
+///
+/// `activated` only fires when a *paused* (deactivated) market is re-enabled — it is
+/// NOT the ordinary window-open transition. Kalshi flips `initialized` → `active`
+/// time-based on `open_time` with **no** lifecycle event, so that path is handled by
+/// the periodic time-based sweep in [`crate::reconcile`], not here. When `activated`
+/// does arrive (a genuine re-enable), the market is open for trading again, so it
+/// becomes `active`. Returns `None` for any non-discovery event so callers fail loud
+/// rather than guessing a status. Mirrors [`is_discovery_event`].
 fn discovery_target_status(event_type: &str) -> Option<&'static str> {
     match event_type {
         "created" => Some("initialized"),
@@ -266,8 +272,11 @@ impl LifecycleConsumer {
                     //   `created`   → 'initialized' (pre-open; visible in monitor but the
                     //                 connector must NOT subscribe yet — no ticker data flows
                     //                 until the window opens, which would crash-loop the
-                    //                 connector watchdog).
-                    //   `activated` → 'active' (open for trading; connector subscribes).
+                    //                 connector watchdog). The ordinary initialized→active
+                    //                 window-open flip has no Kalshi event and is handled by
+                    //                 the time-based sweep in `crate::reconcile`.
+                    //   `activated` → 'active' (a *paused* market re-enabled — open for
+                    //                 trading again; connector subscribes).
                     // is_discovery_event() guarantees event_type is one of these two, but we
                     // fail loud (propagate a hard error, crashing after MAX_CONSECUTIVE_ERRORS)
                     // rather than silently defaulting if that invariant ever breaks.

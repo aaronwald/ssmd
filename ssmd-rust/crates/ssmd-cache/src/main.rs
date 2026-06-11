@@ -9,6 +9,7 @@ use ssmd_cache::{
     consumer::CdcConsumer,
     lifecycle::LifecycleConsumer,
     metrics::CacheMetrics,
+    reconcile::MarketActivator,
 };
 
 /// Prometheus metrics endpoint
@@ -59,11 +60,12 @@ async fn main() -> anyhow::Result<()> {
         axum::serve(listener, app).await.unwrap();
     });
 
-    // Create shared Postgres pool (max_size=4: warmer, CDC lookup, lifecycle writes, health check)
+    // Create shared Postgres pool (max_size=5: warmer, CDC lookup, lifecycle writes,
+    // health check, market activation reconcile)
     let pg_pool = {
         let mut cfg = deadpool_postgres::Config::new();
         cfg.url = Some(config.database_url.clone());
-        cfg.pool = Some(deadpool_postgres::PoolConfig { max_size: 4, ..Default::default() });
+        cfg.pool = Some(deadpool_postgres::PoolConfig { max_size: 5, ..Default::default() });
         cfg.create_pool(
             Some(deadpool_postgres::Runtime::Tokio1),
             tokio_postgres::NoTls,
@@ -89,6 +91,37 @@ async fn main() -> anyhow::Result<()> {
                 Ok(keys) => tracing::info!(keys, "Periodic monitor index refresh"),
                 Err(e) => {
                     tracing::error!(error = %e, "Monitor index refresh failed — exiting");
+                    std::process::exit(1);
+                }
+            }
+        }
+    });
+
+    // Spawn periodic market activation reconcile (every 10s).
+    // Kalshi flips markets initialized->active time-based on open_time with NO
+    // lifecycle event, so the cache must replicate that transition: promote any
+    // market whose window is open now (open_time <= now < close_time) but is still
+    // initialized. CDC captures the UPDATE -> connector subscribes. Without this,
+    // only the hourly secmaster sync activates the open window, so fast-rolling 15M
+    // markets that open at :15/:30/:45 never get subscribed. Crash on DB error
+    // (no limping — K8s restarts).
+    let activator = MarketActivator::new(pg_pool.clone());
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        // Skip (not burst) missed ticks: if the DB is slow and a tick overruns 10s,
+        // a single catch-up sweep covers the same open windows — bursting would only
+        // add pool contention. The activation is idempotent either way.
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            match activator.activate_open_windows().await {
+                Ok(0) => {} // quiet tick — no window just opened
+                Ok(promoted) => tracing::info!(
+                    promoted,
+                    "Activated open-window markets (initialized->active)"
+                ),
+                Err(e) => {
+                    tracing::error!(error = %e, "Market activation reconcile failed — exiting");
                     std::process::exit(1);
                 }
             }
