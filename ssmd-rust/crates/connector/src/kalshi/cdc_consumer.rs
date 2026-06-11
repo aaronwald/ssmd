@@ -423,6 +423,7 @@ impl CdcSubscriptionConsumer {
         let mut subscribed_update: u64 = 0;
         let mut skipped_delete: u64 = 0;
         let mut skipped_update_inactive: u64 = 0;
+        let mut skipped_insert_not_active: u64 = 0;
         let mut unsubscribed: u64 = 0;
         let mut retried: u64 = 0;
         let mut dropped_after_retries: u64 = 0;
@@ -611,6 +612,27 @@ impl CdcSubscriptionConsumer {
                 continue;
             }
 
+            // Only subscribe to genuinely-open markets. Kalshi bulk pre-creates 15-minute
+            // crypto windows hours ahead as status='initialized'; subscribing to those
+            // floods the connector with hundreds of not-yet-open windows that emit zero
+            // ticker data → watchdog crash loop. Pre-open inserts are acked WITHOUT
+            // subscribing; the CDC UPDATE->active path above subscribes them once Kalshi
+            // flips them to 'active'. We require an explicit "active" status (not just
+            // "not terminal") so an unexpected/missing status never silently subscribes.
+            if market_data.status.as_deref() != Some("active") {
+                skipped_insert_not_active += 1;
+                debug!(
+                    ticker = %market_data.ticker,
+                    event_ticker = %market_data.event_ticker,
+                    status = market_data.status.as_deref().unwrap_or("<none>"),
+                    "CDC: Pre-open insert (not active), skipping subscribe until activated"
+                );
+                if let Err(e) = msg.ack().await {
+                    warn!(error = %e, "Failed to ack message");
+                }
+                continue;
+            }
+
             // Check if market's event category matches our filter
             match self.resolve_decision(&market_data.event_ticker).await {
                 SubscribeDecision::Subscribe => {}
@@ -668,6 +690,7 @@ impl CdcSubscriptionConsumer {
                     skipped_duplicate,
                     skipped_delete,
                     skipped_update_inactive,
+                    skipped_insert_not_active,
                     subscribed,
                     subscribed_update,
                     unsubscribed,
@@ -685,6 +708,7 @@ impl CdcSubscriptionConsumer {
             skipped_duplicate,
             skipped_delete,
             skipped_update_inactive,
+            skipped_insert_not_active,
             subscribed,
             subscribed_update,
             unsubscribed,

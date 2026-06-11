@@ -23,6 +23,22 @@ fn is_discovery_event(event_type: &str) -> bool {
     matches!(event_type, "created" | "activated")
 }
 
+/// Map a discovery lifecycle event to the market status it should produce.
+///
+/// `created` markets are pre-open: visible in the monitor but not yet tradable, so
+/// they land as `initialized` and the connector deliberately does NOT subscribe (a
+/// not-yet-open window emits no ticker data and would crash-loop the connector
+/// watchdog). `activated` markets are open for trading, so they become `active` and
+/// the connector subscribes. Returns `None` for any non-discovery event so callers
+/// fail loud rather than guessing a status. Mirrors [`is_discovery_event`].
+fn discovery_target_status(event_type: &str) -> Option<&'static str> {
+    match event_type {
+        "created" => Some("initialized"),
+        "activated" => Some("active"),
+        _ => None,
+    }
+}
+
 /// Derive a Kalshi event_ticker from a market ticker by stripping the trailing
 /// strike segment, e.g. `KXXRP15M-26JUN110715-15` -> `KXXRP15M-26JUN110715`
 /// and `KXBTCD-26JAN2310-T105000` -> `KXBTCD-26JAN2310`. Returns None when the
@@ -246,6 +262,26 @@ impl LifecycleConsumer {
                     // valid for a freshly-discovered market with no close time yet.
                     let close_dt = epoch_to_datetime(m.close_ts);
 
+                    // Target market status is derived from the lifecycle event:
+                    //   `created`   → 'initialized' (pre-open; visible in monitor but the
+                    //                 connector must NOT subscribe yet — no ticker data flows
+                    //                 until the window opens, which would crash-loop the
+                    //                 connector watchdog).
+                    //   `activated` → 'active' (open for trading; connector subscribes).
+                    // is_discovery_event() guarantees event_type is one of these two, but we
+                    // fail loud (propagate a hard error, crashing after MAX_CONSECUTIVE_ERRORS)
+                    // rather than silently defaulting if that invariant ever breaks.
+                    let target_status: &str = match discovery_target_status(&m.event_type) {
+                        Some(s) => s,
+                        None => {
+                            return Err(Error::Database(format!(
+                                "discovery branch reached with unexpected event_type '{}' \
+                                 (expected 'created' or 'activated')",
+                                m.event_type
+                            )));
+                        }
+                    };
+
                     // The parent event must exist (markets.event_ticker FK). Insert a
                     // minimal placeholder; the hourly secmaster sync backfills full
                     // metadata (title/category). Never clobber existing event metadata.
@@ -255,20 +291,22 @@ impl LifecycleConsumer {
                         &[&event_ticker, &event_ticker],
                     ).await.map_err(|e| Error::Database(format!("Event upsert failed: {e}")))?;
 
-                    // Upsert the market as active. A fresh INSERT emits a CDC insert
-                    // (connector subscribes on series-suffix match); ON CONFLICT promotes
-                    // an existing pre-open row to active (the CDC update->active path also
-                    // subscribes). The status guard suppresses no-op writes so redelivered
-                    // lifecycle messages don't generate redundant CDC churn.
+                    // Upsert the market at its target status. A fresh INSERT emits a CDC
+                    // insert; the connector only subscribes when status='active', so a
+                    // 'created'→'initialized' insert is captured (monitor-visible) without
+                    // a subscription. An 'activated'→'active' ON CONFLICT promotes an existing
+                    // pre-open row to active (the CDC update->active path then subscribes).
+                    // The status guard suppresses no-op writes so redelivered lifecycle
+                    // messages don't generate redundant CDC churn.
                     let upserted = tx.execute(
                         "INSERT INTO markets (ticker, event_ticker, title, status, close_time)
-                         VALUES ($1, $2, $3, 'active', $4)
+                         VALUES ($1, $2, $3, $5, $4)
                          ON CONFLICT (ticker) DO UPDATE SET
-                             status = 'active',
+                             status = $5,
                              close_time = COALESCE(EXCLUDED.close_time, markets.close_time),
                              updated_at = NOW()
-                         WHERE markets.status IS DISTINCT FROM 'active'",
-                        &[&m.market_ticker, &event_ticker, &m.market_ticker, &close_dt],
+                         WHERE markets.status IS DISTINCT FROM $5",
+                        &[&m.market_ticker, &event_ticker, &m.market_ticker, &close_dt, &target_status],
                     ).await.map_err(|e| Error::Database(format!("Market discovery upsert failed: {e}")))?;
 
                     // upserted > 0 confirms the row was written/promoted (the DB-write
@@ -277,6 +315,7 @@ impl LifecycleConsumer {
                         tracing::info!(
                             ticker = %m.market_ticker,
                             event = %m.event_type,
+                            status = %target_status,
                             "Market discovered/activated via lifecycle"
                         );
                         self.metrics.lifecycle_status_updates.inc();
@@ -360,6 +399,36 @@ mod tests {
         assert!(!is_discovery_event("deactivated"));
         assert!(!is_discovery_event("close_date_updated"));
         assert!(!is_discovery_event("unknown_type"));
+    }
+
+    #[test]
+    fn test_discovery_target_status() {
+        // created markets are pre-open: visible in monitor, connector must not subscribe.
+        assert_eq!(discovery_target_status("created"), Some("initialized"));
+        // activated markets are open for trading: connector subscribes.
+        assert_eq!(discovery_target_status("activated"), Some("active"));
+        // Any non-discovery event yields None so the caller fails loud instead of
+        // guessing a status (must stay in lockstep with is_discovery_event).
+        assert_eq!(discovery_target_status("determined"), None);
+        assert_eq!(discovery_target_status("settled"), None);
+        assert_eq!(discovery_target_status("deactivated"), None);
+        assert_eq!(discovery_target_status("close_date_updated"), None);
+        assert_eq!(discovery_target_status(""), None);
+        assert_eq!(discovery_target_status("unknown_type"), None);
+    }
+
+    #[test]
+    fn test_discovery_target_status_agrees_with_is_discovery_event() {
+        // Every discovery event must map to a status, and every non-discovery event
+        // must map to None — the two predicates must never drift apart.
+        for ev in ["created", "activated", "determined", "settled", "deactivated",
+                   "close_date_updated", "", "garbage"] {
+            assert_eq!(
+                is_discovery_event(ev),
+                discovery_target_status(ev).is_some(),
+                "mismatch for event_type '{ev}'"
+            );
+        }
     }
 
     #[test]
