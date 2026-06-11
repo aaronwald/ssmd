@@ -14,6 +14,7 @@ Deno.test("composeWelcomeEmail includes the link and metadata, never the raw sec
   });
   assertStringIncludes(text, "https://onetimesecret.com/secret/abc");
   assertStringIncludes(text, "hols");
+  assertStringIncludes(text, "Crypto OHLCV bars");
   assertStringIncludes(text, "api.varshtat.com");
   assertStringIncludes(text, "7 day");
   assertStringIncludes(text, "https://harman.varshtat.com");

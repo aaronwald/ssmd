@@ -6,17 +6,48 @@ import { Storage } from "@google-cloud/storage";
 
 /** Feed → GCS path mapping (matches parquet-gen CronJob layout) */
 export const FEED_CONFIG: Record<string, FeedInfo> = {
-  "kalshi": { prefix: "kalshi", stream: "crypto", messageTypes: ["ticker", "trade", "market_lifecycle_v2"] },
-  "kraken-futures": { prefix: "kraken-futures", stream: "futures", messageTypes: ["ticker", "trade"] },
-  "kraken-spot": { prefix: "kraken-spot", stream: "spot", messageTypes: ["ticker", "trade"] },
-  "polymarket": { prefix: "polymarket", stream: "markets", messageTypes: ["book", "last_trade_price", "price_change", "best_bid_ask"] },
-  "hols": { prefix: "hols", stream: "crypto/daily", messageTypes: ["ohlcv"] },
+  "kalshi": {
+    prefix: "kalshi",
+    stream: "crypto",
+    messageTypes: ["ticker", "trade", "market_lifecycle_v2"],
+    description: "Kalshi crypto markets — ticker & trade events, incl. the 15-minute KX…15M contracts.",
+  },
+  "kraken-futures": {
+    prefix: "kraken-futures",
+    stream: "futures",
+    messageTypes: ["ticker", "trade"],
+    description: "Kraken Futures — perpetual/futures ticker & trade tick data.",
+  },
+  "kraken-spot": {
+    prefix: "kraken-spot",
+    stream: "spot",
+    messageTypes: ["ticker", "trade"],
+    description: "Kraken Spot — spot-market ticker & trade tick data.",
+  },
+  "polymarket": {
+    prefix: "polymarket",
+    stream: "markets",
+    messageTypes: ["book", "last_trade_price", "price_change", "best_bid_ask"],
+    description: "Polymarket — CLOB order book, trades, and price changes.",
+  },
+  "hols": {
+    prefix: "hols",
+    stream: "crypto/daily",
+    messageTypes: ["ohlcv"],
+    description: "Crypto OHLCV bars — 1-minute & 5-minute candlesticks (open/high/low/close/volume) from Binance & Kraken, daily Parquet. (v14 model inputs.)",
+  },
 };
 
 export interface FeedInfo {
   prefix: string;
   stream: string;
   messageTypes: string[];
+  description: string;
+}
+
+/** Returns the human-friendly description for a feed, or an empty string if unknown. */
+export function feedDescription(feed: string): string {
+  return FEED_CONFIG[feed]?.description ?? "";
 }
 
 export interface ParquetFile {

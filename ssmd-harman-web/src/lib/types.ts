@@ -467,6 +467,7 @@ export interface DayFile {
 export interface DayFeed {
   feed: string;
   stream: string;
+  description?: string;
   fileCount: number;
   totalBytes: number;
   files: DayFile[];

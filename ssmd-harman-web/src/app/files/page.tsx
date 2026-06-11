@@ -141,7 +141,10 @@ function FilesContent() {
       {data && data.feeds.map((feed) => (
         <div key={feed.feed} className="bg-bg-raised border border-border rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-border flex items-center gap-3 flex-wrap">
-            <span className="text-sm font-medium text-fg">{feed.feed}</span>
+            <div className="flex flex-col min-w-0">
+              <span className="text-sm font-medium text-fg">{feed.feed}</span>
+              {feed.description && <span className="text-xs text-fg-muted">{feed.description}</span>}
+            </div>
             <span className="text-xs text-fg-muted">{feed.stream}</span>
             <span className="text-xs text-fg-muted">{feed.fileCount} file{feed.fileCount !== 1 ? "s" : ""} · {formatBytes(feed.totalBytes)}</span>
             {feed.fileCount > 0 && (

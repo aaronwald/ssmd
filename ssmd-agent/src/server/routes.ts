@@ -68,7 +68,7 @@ import { getEffectiveAuthByEmail, resolveEffectiveUser, type EffectiveUser } fro
 import { getUsageForPrefix, getTokenUsage, trackTokenUsage } from "../lib/auth/ratelimit.ts";
 import { getGuardrailSettings, applyGuardrails, checkModelAllowed } from "../lib/guardrails/mod.ts";
 import { getRedis } from "../lib/redis/mod.ts";
-import { listParquetFiles, generateSignedUrls, FEED_CONFIG, getCatalog } from "../lib/gcs/mod.ts";
+import { listParquetFiles, generateSignedUrls, FEED_CONFIG, feedDescription, getCatalog } from "../lib/gcs/mod.ts";
 import { logDataAccess } from "../lib/db/mod.ts";
 import { query as duckdbQuery } from "../lib/duckdb/mod.ts";
 import {
@@ -1613,6 +1613,7 @@ route("GET", "/v1/data/feeds", async () => {
     prefix: info.prefix,
     stream: info.stream,
     messageTypes: info.messageTypes,
+    description: info.description,
   }));
   return json({ feeds });
 }, true, "datasets:read", "public");
@@ -1731,6 +1732,7 @@ route("GET", "/v1/data/day", async (req) => {
       return {
         feed,
         stream: FEED_CONFIG[feed].stream,
+        description: feedDescription(feed),
         fileCount: files.length,
         totalBytes,
         files: files.map((f) => ({ name: f.name, type: f.type, hour: f.hour, bytes: f.bytes })),

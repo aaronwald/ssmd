@@ -5,6 +5,7 @@ export {
   listParquetFiles,
   generateSignedUrls,
   FEED_CONFIG,
+  feedDescription,
   type ParquetFile,
   type SignedFile,
   type FeedInfo,
