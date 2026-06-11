@@ -31,11 +31,11 @@ interface GcsFeedConfig {
   natsStream: string;
 }
 
+// Kalshi-crypto-only mode: kraken (#8) and sports/games (#12) feeds were
+// decommissioned. Their NATS streams (PROD_KRAKEN_*, PROD_KALSHI_SPORTS) are
+// idle leftovers, so we no longer score them — they only produced false RED.
 const GCS_FEEDS: GcsFeedConfig[] = [
   { feed: "kalshi-crypto", prefix: "kalshi", stream: "crypto", natsStream: "PROD_KALSHI_CRYPTO" },
-  { feed: "kraken-futures", prefix: "kraken-futures", stream: "futures", natsStream: "PROD_KRAKEN_FUTURES" },
-  { feed: "kraken-spot", prefix: "kraken-spot", stream: "spot", natsStream: "PROD_KRAKEN_SPOT" },
-  { feed: "kalshi-sports", prefix: "kalshi", stream: "sports", natsStream: "PROD_KALSHI_SPORTS" },
 ];
 
 // --- GCS Utility Functions ---
@@ -838,7 +838,7 @@ async function scoreConnectorFeed(
   };
 }
 
-const ARCHIVE_FEEDS = ["kalshi", "kalshi-sports", "kraken-futures", "kraken-spot"];
+const ARCHIVE_FEEDS = ["kalshi"];
 
 async function scoreArchiveSync(): Promise<{ score: number; details: Record<string, unknown> }> {
   // Check GCS archive freshness via data-ts /v1/data/freshness endpoint.
@@ -1092,10 +1092,6 @@ async function scoreParquetQuality(
 function getExpectedMsgTypes(feed: string): string[] {
   switch (feed) {
     case "kalshi-crypto":
-    case "kalshi-sports":
-      return ["ticker", "trade"];
-    case "kraken-futures":
-    case "kraken-spot":
       return ["ticker", "trade"];
     default:
       return [];
@@ -1190,12 +1186,10 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
   const sql = getRawSql();
 
   try {
-    // Phase 1: Score connector feeds in parallel
-    const [kalshi, kalshiSports, kraken, krakenSpot, archive] = await Promise.all([
+    // Phase 1: Score connector feeds in parallel.
+    // Kalshi-crypto-only mode — kraken (#8) and sports (#12) feeds decommissioned.
+    const [kalshi, archive] = await Promise.all([
       scoreConnectorFeed("kalshi-crypto", "PROD_KALSHI_CRYPTO", nc),
-      scoreConnectorFeed("kalshi-sports", "PROD_KALSHI_SPORTS", nc),
-      scoreConnectorFeed("kraken-futures", "PROD_KRAKEN_FUTURES", nc),
-      scoreConnectorFeed("kraken-spot", "PROD_KRAKEN_SPOT", nc),
       scoreArchiveSync(),
     ]);
 
@@ -1246,35 +1240,26 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     const hasPhase2 = gcloudAvailable && Object.keys(completenessScores).length > 0;
     let composite: number;
     if (hasPhase2) {
+      // Single connector (kalshi-crypto) now carries the Phase 1 connector weight.
       composite = Math.round(
-        kalshi.score * 0.20 +
-        kalshiSports.score * 0.10 +
-        kraken.score * 0.15 +
-        krakenSpot.score * 0.15 +
-        archive.score * 0.05 +
-        completenessAvg * 0.15 +
+        kalshi.score * 0.50 +
+        archive.score * 0.10 +
+        completenessAvg * 0.20 +
         parquetAvg * 0.10 +
         slaAvg * 0.10
       );
     } else {
       // Fallback to Phase 1 weights when gcloud not available
       composite = Math.round(
-        kalshi.score * 0.30 +
-        kalshiSports.score * 0.10 +
-        kraken.score * 0.20 +
-        krakenSpot.score * 0.20 +
-        archive.score * 0.20
+        kalshi.score * 0.70 +
+        archive.score * 0.30
       );
     }
 
     // Check hard RED overrides
     const issues: string[] = [];
     if (!kalshi.details.streamHasData) issues.push("Kalshi stream has no data");
-    if (!kraken.details.streamHasData) issues.push("Kraken Futures stream has no data");
-    if (!krakenSpot.details.streamHasData) issues.push("Kraken Spot stream has no data");
     if (kalshi.score === 0) issues.push("Kalshi connector score is zero");
-    if (kraken.score === 0) issues.push("Kraken Futures connector score is zero");
-    if (krakenSpot.score === 0) issues.push("Kraken Spot connector score is zero");
     if (archive.score === 0) issues.push("No DQ scores found — GCS archive may not be syncing");
 
     // Phase 2 RED overrides
@@ -1297,9 +1282,6 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       date: today,
       feeds: {
         "kalshi-crypto": { score: kalshi.score, ...kalshi.details },
-        "kraken-futures": { score: kraken.score, ...kraken.details },
-        "kraken-spot": { score: krakenSpot.score, ...krakenSpot.details },
-        "kalshi-sports": { score: kalshiSports.score, ...kalshiSports.details },
         "archive-sync": { score: archive.score, ...archive.details },
         ...(hasPhase2 ? {
           "completeness": { score: completenessAvg, ...Object.fromEntries(
@@ -1332,9 +1314,6 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
         actualMessages?: number;
       }[] = [
         { feed: "kalshi-crypto", score: kalshi.score, details: kalshi.details },
-        { feed: "kraken-futures", score: kraken.score, details: kraken.details },
-        { feed: "kraken-spot", score: krakenSpot.score, details: krakenSpot.details },
-        { feed: "kalshi-sports", score: kalshiSports.score, details: kalshiSports.details },
         { feed: "archive-sync", score: archive.score, details: archive.details },
       ];
 
@@ -1405,11 +1384,7 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       // Phase 1: Connector health
       console.log("  Connector Health:");
       const k = kalshi.details;
-      const kr = kraken.details;
-      const ks = kalshiSports.details;
       console.log(`    Kalshi Crypto:    ${String(kalshi.score).padStart(3)}/100 (${fmtNum(k.messageCount as number)} msgs, fresh: ${k.freshnessScore ?? 0})`);
-      console.log(`    Kalshi Sports:    ${String(kalshiSports.score).padStart(3)}/100 (${fmtNum(ks.messageCount as number)} msgs, fresh: ${ks.freshnessScore ?? 0})`);
-      console.log(`    Kraken Futures:   ${String(kraken.score).padStart(3)}/100 (${fmtNum(kr.messageCount as number)} msgs, fresh: ${kr.freshnessScore ?? 0})`);
       const archDetails = archive.details as Record<string, { score: number; lastScoreAge: number | null }>;
       const archParts = Object.entries(archDetails)
         .map(([n, d]) => `${n}: ${d.lastScoreAge != null ? d.lastScoreAge + "h" : "never"}`)
