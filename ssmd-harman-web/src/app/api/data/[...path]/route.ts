@@ -3,6 +3,11 @@ import { type NextRequest, NextResponse } from "next/server";
 const DATA_TS_URL = process.env.DATA_TS_URL || "";
 const DATA_TS_API_KEY = process.env.DATA_TS_API_KEY || "";
 
+/** Basic email sanity check — rejects obviously invalid values before forwarding. */
+function isValidEmail(value: string): boolean {
+  return value.length > 0 && value.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
 const ALLOWED_PATH_PREFIXES = [
   "/v1/monitor/",
   "/v1/data/",
@@ -41,6 +46,9 @@ async function proxy(
   const url = `${DATA_TS_URL}${targetPath}${req.nextUrl.search}`;
   const hasBody = method === "POST" || method === "PUT";
 
+  const rawEmail = req.headers.get("cf-access-authenticated-user-email");
+  const cfUserEmail = rawEmail !== null && isValidEmail(rawEmail) ? rawEmail : null;
+
   try {
     const res = await fetch(url, {
       method,
@@ -48,6 +56,7 @@ async function proxy(
         Authorization: `Bearer ${DATA_TS_API_KEY}`,
         ...(hasBody ? { "Content-Type": "application/json" } : {}),
         Accept: "application/json",
+        ...(cfUserEmail ? { "X-CF-User-Email": cfUserEmail } : {}),
       },
       ...(hasBody ? { body: await req.arrayBuffer() } : {}),
       signal: AbortSignal.timeout(30000),

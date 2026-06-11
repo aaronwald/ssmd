@@ -240,6 +240,13 @@ export interface MeResponse {
   email: string | null;
 }
 
+/** Response shape from GET /v1/data/whoami (datasets:read scope, global — no OMS instance needed). */
+export interface WhoamiResponse {
+  email: string;
+  scopes: string[];
+  allowedFeeds: string[];
+}
+
 export interface MonitorSearchResult {
   ticker: string;
   title?: string;
