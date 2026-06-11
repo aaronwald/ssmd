@@ -14,7 +14,9 @@ function makeKey(
   dateRangeStart = "2024-01-01",
   dateRangeEnd = "2026-12-31",
 ): ApiKey {
-  return { keyPrefix, scopes, createdAt, allowedFeeds, dateRangeStart, dateRangeEnd } as unknown as ApiKey;
+  // userId derived from keyPrefix so each fixture key has a distinct, predictable id.
+  const userId = `user-${keyPrefix}`;
+  return { userId, keyPrefix, scopes, createdAt, allowedFeeds, dateRangeStart, dateRangeEnd } as unknown as ApiKey;
 }
 
 Deno.test("selectEffectiveAuth returns null for empty array", () => {
@@ -78,12 +80,24 @@ Deno.test("selectEffectiveUser single key returns all fields", () => {
     makeKey("sk_live_aaaaaaaa", ["datasets:read"], new Date("2026-01-01"), ["kalshi", "kraken-futures"], "2024-01-01", "2026-12-31"),
   ]);
   assertEquals(result, {
+    userId: "user-sk_live_aaaaaaaa",
     keyPrefix: "sk_live_aaaaaaaa",
     scopes: ["datasets:read"],
     allowedFeeds: ["kalshi", "kraken-futures"],
     dateRangeStart: "2024-01-01",
     dateRangeEnd: "2026-12-31",
   });
+});
+
+Deno.test("selectEffectiveUser userId comes from the chosen (keyPrefix) key", () => {
+  // Wildcard key wins keyPrefix selection; userId must match THAT key, not the others.
+  const result = selectEffectiveUser([
+    makeKey("sk_live_lowpriv0", ["datasets:read"], new Date("2025-01-01")),
+    makeKey("sk_live_wildcard", ["*"], new Date("2026-01-01")),
+    makeKey("sk_live_otherkey", ["harman:write"], new Date("2024-01-01")),
+  ]);
+  assertEquals(result?.keyPrefix, "sk_live_wildcard");
+  assertEquals(result?.userId, "user-sk_live_wildcard");
 });
 
 Deno.test("selectEffectiveUser unions allowedFeeds across keys", () => {

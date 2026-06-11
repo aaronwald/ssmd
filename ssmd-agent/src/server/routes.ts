@@ -4349,9 +4349,12 @@ function buildHandler(
           if (!user) {
             return json({ error: "Forbidden: proxied user not found" }, 403);
           }
-          // Replace auth context with the resolved user's identity.
+          // Replace auth context with the resolved user's identity. userId is
+          // included so admin routes keyed on auth.userId (e.g. GET /v1/keys →
+          // listApiKeysByUser) operate on the proxied user, not the service key.
           authResult = {
             ...authResult,
+            userId: user.userId,
             userEmail: cfUserEmail,
             scopes: user.scopes,
             keyPrefix: user.keyPrefix,

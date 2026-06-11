@@ -23,6 +23,7 @@ export interface EffectiveAuth {
  * dateRangeStart/End: widest span (min start, max end) across all active keys.
  */
 export interface EffectiveUser {
+  userId: string;
   keyPrefix: string;
   scopes: string[];
   allowedFeeds: string[];
@@ -107,6 +108,16 @@ export function selectEffectiveUser(keys: ApiKey[]): EffectiveUser | null {
   const base = selectEffectiveAuth(keys);
   if (!base) return null;
 
+  // userId comes from the SAME key that keyPrefix was derived from, so the
+  // proxied identity's keyPrefix and userId stay consistent. base.keyPrefix is
+  // always one of the input keys' prefixes; fail loud if that invariant breaks.
+  const chosen = keys.find((k) => k.keyPrefix === base.keyPrefix);
+  if (!chosen) {
+    throw new Error(
+      `selectEffectiveUser: chosen keyPrefix ${base.keyPrefix} not found in input keys`,
+    );
+  }
+
   const allFeeds = [...new Set(keys.flatMap((k) => k.allowedFeeds))].sort();
 
   // Widest date span: min start, max end. Dates are YYYY-MM-DD strings so
@@ -117,6 +128,7 @@ export function selectEffectiveUser(keys: ApiKey[]): EffectiveUser | null {
   const dateRangeEnd = ends[ends.length - 1];
 
   return {
+    userId: chosen.userId,
     keyPrefix: base.keyPrefix,
     scopes: base.scopes,
     allowedFeeds: allFeeds,

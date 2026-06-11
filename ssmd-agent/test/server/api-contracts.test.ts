@@ -671,7 +671,7 @@ Deno.test("API_VERSION is 1.0.0", () => {
  */
 function createEmailOverrideRouter(
   serviceAuth: AuthResult,
-  resolvedUser: { keyPrefix: string; scopes: string[]; allowedFeeds: string[]; dateRangeStart: string; dateRangeEnd: string } | null,
+  resolvedUser: { userId: string; keyPrefix: string; scopes: string[]; allowedFeeds: string[]; dateRangeStart: string; dateRangeEnd: string } | null,
 ) {
   const mockDb = {} as Database;
   const ctx: RouteContext = {
@@ -685,8 +685,9 @@ function createEmailOverrideRouter(
 }
 
 Deno.test("X-CF-User-Email: service (admin:read) key + known user → resolves user's scopes/feeds", async () => {
-  const serviceAuth = mockAuth({ scopes: ["admin:read", "datasets:read", "*"], allowedFeeds: ["kalshi", "kraken-futures", "polymarket"] });
+  const serviceAuth = mockAuth({ userId: "service-account", scopes: ["admin:read", "datasets:read", "*"], allowedFeeds: ["kalshi", "kraken-futures", "polymarket"] });
   const userProfile = {
+    userId: "real-user-id",
     keyPrefix: "sk_live_userxxxx",
     scopes: ["datasets:read"],
     allowedFeeds: ["kalshi"],
@@ -701,6 +702,9 @@ Deno.test("X-CF-User-Email: service (admin:read) key + known user → resolves u
   assertEquals(body.email, "user@example.com");
   assertEquals(body.scopes, ["datasets:read"]);
   assertEquals(body.allowedFeeds, ["kalshi"]);
+  // userId must be replaced with the proxied user's id, NOT the service account's.
+  const attachedAuth = (req as Request & { auth?: { userId?: string } }).auth;
+  assertEquals(attachedAuth?.userId, "real-user-id");
 });
 
 Deno.test("X-CF-User-Email: service key + unknown email → 403", async () => {
@@ -715,12 +719,14 @@ Deno.test("X-CF-User-Email: service key + unknown email → 403", async () => {
 
 Deno.test("X-CF-User-Email: non-admin key + header → header ignored, own identity used", async () => {
   const nonAdminAuth = mockAuth({
+    userId: "nonadmin-own-id",
     scopes: ["datasets:read"],
     userEmail: "service@example.com",
     allowedFeeds: ["kalshi", "kraken-futures"],
   });
   // resolveUserOverride should NOT be called, but provide a different user to detect if it is
   const spoofedUser = {
+    userId: "attacker-id",
     keyPrefix: "sk_live_attacker",
     scopes: ["admin:write"],
     allowedFeeds: ["kalshi"],
@@ -736,6 +742,9 @@ Deno.test("X-CF-User-Email: non-admin key + header → header ignored, own ident
   assertEquals(body.email, "service@example.com");
   assertEquals(body.scopes, ["datasets:read"]);
   assertEquals(body.allowedFeeds, ["kalshi", "kraken-futures"]);
+  // userId must remain the non-admin key's own id, NOT the spoofed attacker id.
+  const attachedAuth = (req as Request & { auth?: { userId?: string } }).auth;
+  assertEquals(attachedAuth?.userId, "nonadmin-own-id");
 });
 
 Deno.test("X-CF-User-Email: service key + no header → own identity unchanged", async () => {
