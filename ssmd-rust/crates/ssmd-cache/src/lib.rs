@@ -4,6 +4,7 @@ pub mod consumer;
 pub mod error;
 pub mod lifecycle;
 pub mod metrics;
+pub mod reconcile;
 pub mod warmer;
 
 pub use error::Error;
