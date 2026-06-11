@@ -15,6 +15,27 @@ fn is_terminal_event(event_type: &str) -> bool {
     TERMINAL_EVENTS.contains(&event_type)
 }
 
+/// Non-terminal events that mean a market exists and should be captured.
+/// `created`/`activated` drive real-time market discovery (upsert into the
+/// `markets` table → CDC fires → connector subscribes) so we no longer depend
+/// on the hourly secmaster REST sync to discover fast-rolling markets.
+fn is_discovery_event(event_type: &str) -> bool {
+    matches!(event_type, "created" | "activated")
+}
+
+/// Derive a Kalshi event_ticker from a market ticker by stripping the trailing
+/// strike segment, e.g. `KXXRP15M-26JUN110715-15` -> `KXXRP15M-26JUN110715`
+/// and `KXBTCD-26JAN2310-T105000` -> `KXBTCD-26JAN2310`. Returns None when the
+/// ticker has no `-` separator or the derived event_ticker would be empty — in
+/// either case we cannot satisfy the markets.event_ticker FK, so the caller
+/// skips the discovery upsert rather than writing a malformed row.
+fn derive_event_ticker(market_ticker: &str) -> Option<&str> {
+    market_ticker
+        .rsplit_once('-')
+        .map(|(event_ticker, _strike)| event_ticker)
+        .filter(|event_ticker| !event_ticker.is_empty())
+}
+
 fn epoch_to_datetime(epoch: Option<i64>) -> Option<DateTime<Utc>> {
     epoch.and_then(|ts| DateTime::from_timestamp(ts, 0))
 }
@@ -213,6 +234,61 @@ impl LifecycleConsumer {
                     &[&close_dt, &m.market_ticker],
                 ).await.map_err(|e| Error::Database(format!("Close time UPDATE failed: {e}")))?;
             }
+        } else if is_discovery_event(&m.event_type) {
+            // Real-time market discovery: upsert the market so CDC fires and the
+            // connector subscribes immediately, instead of waiting for the hourly
+            // secmaster REST sync (which leaves fast-rolling 15M markets undiscovered
+            // between syncs — the original purpose of lifecycle-driven discovery).
+            // m.market_ticker is already validated non-empty above (line ~161).
+            match derive_event_ticker(&m.market_ticker) {
+                Some(event_ticker) => {
+                    // close_time is a nullable column; None binds as SQL NULL, which is
+                    // valid for a freshly-discovered market with no close time yet.
+                    let close_dt = epoch_to_datetime(m.close_ts);
+
+                    // The parent event must exist (markets.event_ticker FK). Insert a
+                    // minimal placeholder; the hourly secmaster sync backfills full
+                    // metadata (title/category). Never clobber existing event metadata.
+                    tx.execute(
+                        "INSERT INTO events (event_ticker, title) VALUES ($1, $2)
+                         ON CONFLICT (event_ticker) DO NOTHING",
+                        &[&event_ticker, &event_ticker],
+                    ).await.map_err(|e| Error::Database(format!("Event upsert failed: {e}")))?;
+
+                    // Upsert the market as active. A fresh INSERT emits a CDC insert
+                    // (connector subscribes on series-suffix match); ON CONFLICT promotes
+                    // an existing pre-open row to active (the CDC update->active path also
+                    // subscribes). The status guard suppresses no-op writes so redelivered
+                    // lifecycle messages don't generate redundant CDC churn.
+                    let upserted = tx.execute(
+                        "INSERT INTO markets (ticker, event_ticker, title, status, close_time)
+                         VALUES ($1, $2, $3, 'active', $4)
+                         ON CONFLICT (ticker) DO UPDATE SET
+                             status = 'active',
+                             close_time = COALESCE(EXCLUDED.close_time, markets.close_time),
+                             updated_at = NOW()
+                         WHERE markets.status IS DISTINCT FROM 'active'",
+                        &[&m.market_ticker, &event_ticker, &m.market_ticker, &close_dt],
+                    ).await.map_err(|e| Error::Database(format!("Market discovery upsert failed: {e}")))?;
+
+                    // upserted > 0 confirms the row was written/promoted (the DB-write
+                    // boundary we can verify here; CDC delivery is asserted downstream).
+                    if upserted > 0 {
+                        tracing::info!(
+                            ticker = %m.market_ticker,
+                            event = %m.event_type,
+                            "Market discovered/activated via lifecycle"
+                        );
+                        self.metrics.lifecycle_status_updates.inc();
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        ticker = %m.market_ticker,
+                        "Cannot derive event_ticker (no '-' separator); skipping market discovery upsert"
+                    );
+                }
+            }
         }
 
         tx.commit().await
@@ -272,6 +348,40 @@ mod tests {
         assert!(!is_terminal_event("activated"));
         assert!(!is_terminal_event("close_date_updated"));
         assert!(!is_terminal_event("unknown_type"));
+    }
+
+    #[test]
+    fn test_is_discovery_event() {
+        assert!(is_discovery_event("created"));
+        assert!(is_discovery_event("activated"));
+        // Terminal and other events must NOT trigger a discovery upsert.
+        assert!(!is_discovery_event("determined"));
+        assert!(!is_discovery_event("settled"));
+        assert!(!is_discovery_event("deactivated"));
+        assert!(!is_discovery_event("close_date_updated"));
+        assert!(!is_discovery_event("unknown_type"));
+    }
+
+    #[test]
+    fn test_derive_event_ticker() {
+        // 15-minute crypto market: strip the trailing strike segment.
+        assert_eq!(
+            derive_event_ticker("KXXRP15M-26JUN110715-15"),
+            Some("KXXRP15M-26JUN110715")
+        );
+        // Standard hourly market with a price-strike segment.
+        assert_eq!(
+            derive_event_ticker("KXBTCD-26JAN2310-T105000"),
+            Some("KXBTCD-26JAN2310")
+        );
+        // No separator → cannot derive an event_ticker.
+        assert_eq!(derive_event_ticker("KXBTCD"), None);
+        // Empty derived event_ticker (leading '-') is rejected, not returned as "".
+        assert_eq!(derive_event_ticker("-15"), None);
+        // Derived first segment carries the series suffix the connector matches on.
+        assert!(derive_event_ticker("KXETH15M-26JUN110730-30")
+            .and_then(|et| et.split('-').next())
+            .is_some_and(|series| series.ends_with("15M")));
     }
 
     #[test]
