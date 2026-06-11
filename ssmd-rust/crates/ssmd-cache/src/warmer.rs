@@ -57,7 +57,7 @@ impl CacheWarmer {
                       AND EXISTS (
                         SELECT 1 FROM markets m
                         WHERE m.event_ticker = e.event_ticker
-                          AND m.status = 'active'
+                          AND m.status IN ('active','initialized')
                           AND m.close_time > NOW()
                       )
                     GROUP BY e.category
@@ -97,11 +97,11 @@ impl CacheWarmer {
                       AND EXISTS (
                         SELECT 1 FROM markets m2
                         WHERE m2.event_ticker = e.event_ticker
-                          AND m2.status = 'active'
+                          AND m2.status IN ('active','initialized')
                           AND m2.close_time > NOW()
                       )
                     LEFT JOIN markets m ON m.event_ticker = e.event_ticker
-                      AND m.status = 'active' AND m.close_time > NOW()
+                      AND m.status IN ('active','initialized') AND m.close_time > NOW()
                     WHERE e.category IS NOT NULL
                     GROUP BY e.category, s.ticker, s.title
                     "#,
@@ -144,7 +144,7 @@ impl CacheWarmer {
                            MIN(m.expected_expiration_time)::text AS expected_expiration_time
                     FROM events e
                     JOIN markets m ON m.event_ticker = e.event_ticker
-                      AND m.status = 'active' AND m.close_time > NOW()
+                      AND m.status IN ('active','initialized') AND m.close_time > NOW()
                     WHERE e.status = 'active'
                     GROUP BY e.series_ticker, e.event_ticker, e.title, e.status, e.strike_date
                     "#,
@@ -188,7 +188,7 @@ impl CacheWarmer {
                     SELECT m.event_ticker, m.ticker, m.title, m.status, m.close_time::text,
                            m.expected_expiration_time::text
                     FROM markets m
-                    WHERE m.status = 'active'
+                    WHERE m.status IN ('active','initialized')
                       AND m.close_time > NOW()
                     "#,
                     &[] as &[&str],
@@ -230,7 +230,7 @@ impl CacheWarmer {
                            mle.metadata::text
                     FROM market_lifecycle_events mle
                     JOIN markets m ON m.ticker = mle.market_ticker
-                    WHERE m.status = 'active'
+                    WHERE m.status IN ('active','initialized')
                       AND m.close_time > NOW()
                     ORDER BY mle.market_ticker, mle.received_at
                     "#,

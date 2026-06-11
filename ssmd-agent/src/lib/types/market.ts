@@ -12,7 +12,7 @@ export const MarketSchema = z.object({
   /** Market title/question */
   title: z.string(),
   /** Market status */
-  status: z.enum(["active", "closed", "settled"]).default("active"),
+  status: z.enum(["active", "closed", "settled", "initialized"]).default("active"),
   /** When the market closes for trading */
   close_time: z.string().nullable().optional(),
   /** Current yes bid price (dollars, 0.00-1.00) */
@@ -133,14 +133,19 @@ function resolvePrice(dollars: string | undefined, cents: number | undefined): n
 
 /**
  * Map Kalshi API market status to our status enum.
- * Markets have 8 statuses. `initialized` = pre-open (visible for monitoring).
- * Only genuinely terminal statuses map to settled.
+ * Markets have 8 statuses. `initialized` is its own pre-open status: the market
+ * exists and is visible in the monitor UI, but is not yet open for trading, so the
+ * connector must NOT subscribe to it (doing so floods the connector with hundreds
+ * of not-yet-open windows that emit zero ticker data → watchdog crash loop).
+ * A market becomes `active` only when Kalshi reports it open / sends the
+ * `activated` lifecycle event. Only genuinely terminal statuses map to settled.
  */
-function mapMarketStatus(status: string | undefined): "active" | "closed" | "settled" {
+function mapMarketStatus(status: string | undefined): "active" | "closed" | "settled" | "initialized" {
   switch (status) {
+    case "initialized":
+      return "initialized";
     case "open":
     case "active":
-    case "initialized":
       return "active";
     case "closed":
     case "inactive":
