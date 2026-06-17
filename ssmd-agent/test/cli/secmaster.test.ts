@@ -1,5 +1,10 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { type SyncOptions, printSyncSummary, type SyncResult } from "../../src/cli/commands/secmaster.ts";
+import {
+  normalizePreOpenPages,
+  printSyncSummary,
+  type SyncOptions,
+  type SyncResult,
+} from "../../src/cli/commands/secmaster.ts";
 
 Deno.test("SyncOptions types correctly", () => {
   const options: SyncOptions = {
@@ -18,6 +23,35 @@ Deno.test("SyncOptions defaults to empty object", () => {
 
   assertEquals(options.eventsOnly, undefined);
   assertEquals(options.marketsOnly, undefined);
+});
+
+Deno.test("normalizePreOpenPages: undefined defaults to 1 (original single-page behavior)", () => {
+  assertEquals(normalizePreOpenPages(undefined, "KXBTCD"), 1);
+});
+
+Deno.test("normalizePreOpenPages: valid values pass through", () => {
+  assertEquals(normalizePreOpenPages(1, "KXBTC15M"), 1);
+  assertEquals(normalizePreOpenPages(8, "KXBTC15M"), 8);
+});
+
+Deno.test("normalizePreOpenPages: non-integers floor down", () => {
+  assertEquals(normalizePreOpenPages(8.9, "KXBTC15M"), 8);
+});
+
+Deno.test("normalizePreOpenPages: invalid values fall back to 1, never 0 or negative", () => {
+  assertEquals(normalizePreOpenPages(0, "KXBTC15M"), 1);
+  assertEquals(normalizePreOpenPages(-5, "KXBTC15M"), 1);
+  assertEquals(normalizePreOpenPages(NaN, "KXBTC15M"), 1);
+  assertEquals(normalizePreOpenPages(Infinity, "KXBTC15M"), 1);
+});
+
+Deno.test("normalizePreOpenPages: clamps to the safety cap so a bad flag can't crawl history", () => {
+  assertEquals(normalizePreOpenPages(9999, "KXBTC15M"), 50);
+});
+
+Deno.test("SyncOptions accepts preOpenPages", () => {
+  const options: SyncOptions = { bySeries: true, seriesSuffix: "15M", preOpenPages: 8 };
+  assertEquals(options.preOpenPages, 8);
 });
 
 Deno.test("SyncResult structure is correct", () => {
