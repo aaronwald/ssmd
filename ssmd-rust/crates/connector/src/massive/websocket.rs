@@ -12,7 +12,7 @@ use tokio_tungstenite::{
     tungstenite::{protocol::WebSocketConfig, Message},
     MaybeTlsStream, WebSocketStream,
 };
-use tracing::{info, warn};
+use tracing::info;
 
 use ssmd_middleware::now_tsc;
 
@@ -27,14 +27,19 @@ pub enum MassiveWsError {
     Ws(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("auth failed: {0}")]
     Auth(String),
+    #[error("subscribe error: {0}")]
+    Subscribe(String),
 }
 
 /// Build the auth JSON frame for the Polygon.io auth handshake.
 ///
 /// Polygon authenticates by sending this frame as the first text message after
 /// connect, then waits for `{"ev":"status","status":"auth_success"}`.
+///
+/// Uses `serde_json` to build the frame so that special characters in `api_key`
+/// (e.g. `"` or `\`) are properly escaped and cannot inject malformed JSON.
 pub(crate) fn auth_frame(api_key: &str) -> String {
-    format!(r#"{{"action":"auth","params":"{api_key}"}}"#)
+    serde_json::json!({"action": "auth", "params": api_key}).to_string()
 }
 
 /// Build the subscribe JSON frame for trade + quote channels.
@@ -44,13 +49,16 @@ pub(crate) fn auth_frame(api_key: &str) -> String {
 ///
 /// Example for `["AAPL", "SPY"]`:
 /// `{"action":"subscribe","params":"T.AAPL,Q.AAPL,T.SPY,Q.SPY"}`
+///
+/// Uses `serde_json` to build the frame so that special characters in symbol
+/// names are properly escaped and cannot inject malformed JSON.
 pub(crate) fn subscribe_frame(symbols: &[String]) -> String {
     let params = symbols
         .iter()
         .flat_map(|s| [format!("T.{s}"), format!("Q.{s}")])
         .collect::<Vec<_>>()
         .join(",");
-    format!(r#"{{"action":"subscribe","params":"{params}"}}"#)
+    serde_json::json!({"action": "subscribe", "params": params}).to_string()
 }
 
 /// Polygon.io WebSocket client for the delayed equities cluster.
@@ -133,11 +141,11 @@ impl MassiveWebSocket {
 
     /// Subscribe to `T.<sym>` and `Q.<sym>` channels for each symbol.
     ///
-    /// Returns `Err` if `symbols` is empty (nothing to subscribe to).
+    /// Returns `Err(MassiveWsError::Subscribe)` if `symbols` is empty.
     pub async fn subscribe(&mut self, symbols: &[String]) -> Result<(), MassiveWsError> {
         if symbols.is_empty() {
-            return Err(MassiveWsError::Auth(
-                "subscribe: symbols list must not be empty".into(),
+            return Err(MassiveWsError::Subscribe(
+                "symbols list must not be empty".into(),
             ));
         }
         self.ws
@@ -148,24 +156,28 @@ impl MassiveWebSocket {
 
     /// Receive the next market data frame.
     ///
-    /// Returns `Some((tsc_timestamp, raw_bytes))` for text/binary frames, or
-    /// `None` on a clean close. WebSocket errors are logged and cause `None`
-    /// to be returned so the caller can reconnect. Ping/pong frames are skipped.
-    pub async fn recv(&mut self) -> Option<(u64, Vec<u8>)> {
+    /// Returns:
+    /// - `Ok(Some((tsc, bytes)))` — a text or binary data frame arrived.
+    /// - `Ok(None)` — the server sent a clean `Close` frame, or the stream
+    ///   ended; the caller should shut down gracefully.
+    /// - `Err(MassiveWsError::Ws(e))` — a WebSocket protocol error occurred.
+    ///   The caller's run loop **must propagate this error and crash the pod**;
+    ///   K8s will restart it. Do NOT attempt to reconnect-and-hope.
+    ///
+    /// Ping/Pong control frames are handled internally and do not surface to
+    /// the caller.
+    pub async fn recv(&mut self) -> Result<Option<(u64, Vec<u8>)>, MassiveWsError> {
         while let Some(frame) = self.ws.next().await {
             match frame {
-                Ok(Message::Text(t)) => return Some((now_tsc(), t.into_bytes())),
-                Ok(Message::Binary(b)) => return Some((now_tsc(), b)),
+                Ok(Message::Text(t)) => return Ok(Some((now_tsc(), t.into_bytes()))),
+                Ok(Message::Binary(b)) => return Ok(Some((now_tsc(), b))),
                 Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
-                Ok(Message::Close(_)) => return None,
+                Ok(Message::Close(_)) => return Ok(None),
                 Ok(_) => continue,
-                Err(e) => {
-                    warn!(error = %e, "Massive WebSocket recv error");
-                    return None;
-                }
+                Err(e) => return Err(MassiveWsError::Ws(e)),
             }
         }
-        None
+        Ok(None)
     }
 }
 
