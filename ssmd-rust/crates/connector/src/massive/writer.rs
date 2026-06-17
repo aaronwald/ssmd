@@ -37,22 +37,34 @@ impl MassiveSubjects {
         }
     }
 
-    /// Build the trade subject for a symbol.
-    pub fn trade(&self, sym: &str) -> String {
-        format!(
-            "{}.json.trade.{}",
-            self.prefix,
-            sanitize_subject_token(sym)
-        )
+    /// Build the trade subject for an already-sanitized token.
+    ///
+    /// The caller is responsible for sanitizing the token via
+    /// [`sanitize_subject_token`] before passing it here.
+    /// In debug builds a `debug_assert!` verifies the token is non-empty and
+    /// unchanged by a second sanitization pass.
+    pub fn trade(&self, token: &str) -> String {
+        debug_assert!(
+            !token.is_empty() && sanitize_subject_token(token) == token,
+            "token must be pre-sanitized: {:?}",
+            token
+        );
+        format!("{}.json.trade.{}", self.prefix, token)
     }
 
-    /// Build the quote subject for a symbol.
-    pub fn quote(&self, sym: &str) -> String {
-        format!(
-            "{}.json.quote.{}",
-            self.prefix,
-            sanitize_subject_token(sym)
-        )
+    /// Build the quote subject for an already-sanitized token.
+    ///
+    /// The caller is responsible for sanitizing the token via
+    /// [`sanitize_subject_token`] before passing it here.
+    /// In debug builds a `debug_assert!` verifies the token is non-empty and
+    /// unchanged by a second sanitization pass.
+    pub fn quote(&self, token: &str) -> String {
+        debug_assert!(
+            !token.is_empty() && sanitize_subject_token(token) == token,
+            "token must be pre-sanitized: {:?}",
+            token
+        );
+        format!("{}.json.quote.{}", self.prefix, token)
     }
 }
 
@@ -102,7 +114,7 @@ impl Writer for MassiveNatsWriter {
                         warn!(sym = %t.sym, "Empty sanitized symbol for trade, skipping");
                         continue;
                     }
-                    self.subjects.trade(&t.sym)
+                    self.subjects.trade(&sanitized)
                 }
                 MassiveMessage::Quote(ref q) => {
                     let sanitized = sanitize_subject_token(&q.sym);
@@ -110,11 +122,15 @@ impl Writer for MassiveNatsWriter {
                         warn!(sym = %q.sym, "Empty sanitized symbol for quote, skipping");
                         continue;
                     }
-                    self.subjects.quote(&q.sym)
+                    self.subjects.quote(&sanitized)
                 }
                 // Status and Other are control messages — skip silently.
-                MassiveMessage::Status(_) | MassiveMessage::Other => {
-                    trace!("Skipping non-market Polygon event");
+                MassiveMessage::Status(ref s) => {
+                    trace!(status = %s.status, "Skipping Polygon Status event");
+                    continue;
+                }
+                MassiveMessage::Other => {
+                    trace!("Skipping unknown Polygon event type");
                     continue;
                 }
             };
@@ -230,12 +246,12 @@ mod tests {
         let mut writer =
             MassiveNatsWriter::with_prefix(transport.clone(), "prod.massive", "PROD_MASSIVE");
 
-        // Subscribe to both subjects
-        let _sub_trade = transport
+        // Subscribe to both subjects before publishing
+        let mut sub_trade = transport
             .subscribe("prod.massive.json.trade.AAPL")
             .await
             .unwrap();
-        let _sub_quote = transport
+        let mut sub_quote = transport
             .subscribe("prod.massive.json.quote.SPY")
             .await
             .unwrap();
@@ -248,5 +264,12 @@ mod tests {
 
         // status is skipped, trade + quote = 2 published
         assert_eq!(writer.message_count(), 2);
+
+        // Verify the published subjects are correct
+        let trade_msg = sub_trade.next().await.unwrap();
+        assert_eq!(trade_msg.subject, "prod.massive.json.trade.AAPL");
+
+        let quote_msg = sub_quote.next().await.unwrap();
+        assert_eq!(quote_msg.subject, "prod.massive.json.quote.SPY");
     }
 }
