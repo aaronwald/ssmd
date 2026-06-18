@@ -524,18 +524,27 @@ impl SecmasterClient {
                             .collect();
                         tickers.sort();
 
+                        // A *successful* query that matches zero markets is normal and transient
+                        // for bounded series-suffix universes: e.g. 15M crypto at a rollover, where
+                        // every current window settles a few seconds before the next windows
+                        // activate. Return an empty set with the (valid) snapshot rather than
+                        // erroring — the caller starts an empty headroom shard and CDC subscribes
+                        // markets as they go active. Returning NoMarketsFound here crash-looped the
+                        // connector at every (re)start that landed in a rollover gap.
                         if tickers.is_empty() {
-                            return Err(SecmasterError::NoMarketsFound(vec![format!(
-                                "{category}*{suffix}"
-                            )]));
+                            warn!(
+                                category = %category,
+                                suffix = %suffix,
+                                "Series-suffix query matched zero active markets — returning empty set (CDC will populate as markets activate)"
+                            );
+                        } else {
+                            info!(
+                                category = %category,
+                                suffix = %suffix,
+                                total_markets = tickers.len(),
+                                "Filtered active markets by series suffix"
+                            );
                         }
-
-                        info!(
-                            category = %category,
-                            suffix = %suffix,
-                            total_markets = tickers.len(),
-                            "Filtered active markets by series suffix"
-                        );
                         return Ok(MarketsWithSnapshot { tickers, snapshot_lsn, snapshot_time });
                     } else {
                         let status = response.status().as_u16();
