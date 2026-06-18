@@ -14,6 +14,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_connector_lib::{
     kalshi::{KalshiConfig, KalshiConnector, KalshiCredentials},
+    massive::{MassiveConnector, MassiveNatsWriter},
     EnvResolver, KeyResolver, NatsWriter, Runner, ServerState, WebSocketConnector,
 };
 use ssmd_metadata::{Environment, Feed, FeedType, KeyType, TransportType};
@@ -84,6 +85,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "polymarket" => {
             run_polymarket_connector(&feed, &env_config, health_addr, shutdown_rx).await
+        }
+        "massive" => {
+            run_massive_connector(&feed, &env_config, health_addr, shutdown_rx).await
         }
         _ => {
             run_generic_connector(&feed, &env_config, health_addr, shutdown_rx).await
@@ -644,6 +648,107 @@ where
             error!(error = %e, "Connector error");
             std::process::exit(1);
         }
+    }
+}
+
+/// Parse a comma-separated symbol list from an env var value.
+///
+/// Trims whitespace around each token and drops empty tokens so that
+/// `"AAPL, SPY ,QQQ"` → `["AAPL", "SPY", "QQQ"]` and `""` → `[]`.
+fn parse_massive_symbols(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Create a `MassiveNatsWriter` using the subject prefix and stream from env
+/// config, falling back to `{env_name}.{feed_name}` if not set.
+fn create_massive_nats_writer(
+    transport: Arc<dyn ssmd_middleware::Transport>,
+    env_config: &Environment,
+    feed: &Feed,
+) -> MassiveNatsWriter {
+    if let (Some(ref prefix), Some(ref stream)) = (
+        &env_config.transport.subject_prefix,
+        &env_config.transport.stream,
+    ) {
+        info!(
+            subject_prefix = %prefix,
+            stream = %stream,
+            "Using custom subject prefix for massive writer"
+        );
+        MassiveNatsWriter::with_prefix(transport, prefix.clone(), stream.clone())
+    } else {
+        let prefix = format!("{}.{}", env_config.name, feed.name);
+        info!(subject_prefix = %prefix, "Using default subject prefix for massive writer");
+        // `with_prefix` is the only constructor; derive prefix from env+feed.
+        MassiveNatsWriter::with_prefix(transport, prefix, String::new())
+    }
+}
+
+/// Run the Polygon.io ("massive") delayed-cluster US-equities connector.
+///
+/// Reads `MASSIVE_API_KEY` and `MASSIVE_SYMBOLS` from the environment.
+/// Fails loud (bail!) if either is missing or if `MASSIVE_SYMBOLS` is empty —
+/// per CLAUDE.md "crash on unrecoverable errors".
+async fn run_massive_connector(
+    feed: &Feed,
+    env_config: &Environment,
+    health_addr: SocketAddr,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let api_key = std::env::var("MASSIVE_API_KEY")
+        .map_err(|_| anyhow::anyhow!("MASSIVE_API_KEY not set"))?;
+
+    let raw_symbols = std::env::var("MASSIVE_SYMBOLS")
+        .map_err(|_| anyhow::anyhow!("MASSIVE_SYMBOLS not set"))?;
+    let symbols = parse_massive_symbols(&raw_symbols);
+    if symbols.is_empty() {
+        return Err(
+            anyhow::anyhow!("MASSIVE_SYMBOLS empty — refusing to start with no subscriptions")
+                .into(),
+        );
+    }
+
+    // Extract optional WebSocket URL override from feed config.
+    let ws_url = feed
+        .get_latest_version()
+        .map(|v| v.endpoint.clone())
+        .filter(|url| !url.contains("MISSING_FEED_CONFIGMAP"));
+
+    info!(symbols = ?symbols, count = symbols.len(), ?ws_url, "Creating Massive connector");
+
+    let connector = MassiveConnector::new(api_key, symbols, ws_url);
+
+    match env_config.transport.transport_type {
+        TransportType::Nats => {
+            info!(transport = "nats", "Using Massive NATS writer");
+            let transport =
+                MiddlewareFactory::create_nats_transport_validated(env_config).await?;
+            let writer = create_massive_nats_writer(transport, env_config, feed);
+            run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
+        }
+        _ => {
+            error!("Only NATS transport is supported for Massive connector");
+            Err("Only NATS transport is supported".into())
+        }
+    }
+}
+
+#[cfg(test)]
+mod massive_tests {
+    use super::parse_massive_symbols;
+
+    #[test]
+    fn splits_and_trims_symbols() {
+        assert_eq!(parse_massive_symbols("AAPL, SPY ,QQQ"), vec!["AAPL", "SPY", "QQQ"]);
+    }
+
+    #[test]
+    fn empty_is_empty() {
+        assert!(parse_massive_symbols("").is_empty());
     }
 }
 

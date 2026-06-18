@@ -12,6 +12,7 @@ path = "src/main.rs"
 ssmd-metadata = { path = "../metadata" }
 ssmd-middleware = { path = "../middleware" }
 ssmd-connector-lib = { path = "../connector" }
+anyhow = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
