@@ -24,7 +24,7 @@ impl MassiveTradeSchema {
             Field::new("symbol", DataType::Utf8, false),
             Field::new("price", DataType::Float64, false),
             Field::new("size", DataType::Float64, false),
-            Field::new("sequence", DataType::Int64, false),
+            Field::new("sequence", DataType::Int64, true),
             Field::new("exchange_ts_ms", DataType::Int64, false),
             Field::new("_nats_seq", DataType::UInt64, false),
             Field::new("_received_at", ts_type(), false),
@@ -97,13 +97,14 @@ impl MessageSchema for MassiveTradeSchema {
                     continue;
                 }
             };
-            let q = match json.get("q").and_then(|v| v.as_i64()) {
-                Some(v) => v,
-                None => {
-                    error!("massive trade: missing q, skipping");
-                    continue;
-                }
-            };
+            // q (sequence) is optional metadata — a trade missing only q is still a valid
+            // trade and must be archived (Complete Data Archive pillar). Archive with null
+            // sequence rather than dropping the row. sym/p/s/t are required for a trade
+            // to be meaningful; a missing one of those still skips the row.
+            let q = json.get("q").and_then(|v| v.as_i64());
+            if q.is_none() {
+                error!("massive trade: missing q, archiving with null sequence");
+            }
             let t = match json.get("t").and_then(|v| v.as_i64()) {
                 Some(v) => v,
                 None => {
@@ -115,7 +116,10 @@ impl MessageSchema for MassiveTradeSchema {
             symbol.append_value(sym);
             price.append_value(p);
             size.append_value(s);
-            sequence.append_value(q);
+            match q {
+                Some(v) => sequence.append_value(v),
+                None => sequence.append_null(),
+            };
             exchange_ts_ms.append_value(t);
             nats_seq.append_value(*seq);
             received_at.append_value(*recv_at);
@@ -320,6 +324,7 @@ mod tests {
         assert_eq!(size.value(0), 100.0);
 
         let sequence = batch.column(3).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert!(sequence.is_valid(0), "sequence should be non-null when q is present");
         assert_eq!(sequence.value(0), 987);
 
         let ts = batch.column(4).as_any().downcast_ref::<Int64Array>().unwrap();
@@ -418,5 +423,57 @@ mod tests {
         let nats = batch.column(5).as_any().downcast_ref::<UInt64Array>().unwrap();
         assert_eq!(nats.value(0), 10);
         assert_eq!(nats.value(1), 11);
+    }
+
+    /// Regression test: a trade missing the q (sequence) field must NOT be dropped.
+    /// The row is archived with a null sequence; all other required fields are preserved.
+    /// This ensures the Complete Data Archive pillar is upheld — q is optional metadata,
+    /// unlike sym/p/s/t which are required for a trade to be meaningful.
+    #[test]
+    fn trade_missing_q_archived_with_null_sequence() {
+        let schema = MassiveTradeSchema;
+
+        // msg_no_q: valid trade, q field absent — must produce one row with null sequence
+        let msg_no_q = br#"{"ev":"T","sym":"GOOG","p":175.50,"s":200,"t":1718658002000}"#;
+        // msg_with_q: normal trade with q — must produce one row with non-null sequence
+        let msg_with_q = br#"{"ev":"T","sym":"TSLA","p":250.00,"s":50,"t":1718658003000,"q":555}"#;
+
+        let batch = schema
+            .parse_batch(&[
+                (msg_no_q.to_vec(), 20, 3000),
+                (msg_with_q.to_vec(), 21, 4000),
+            ])
+            .unwrap();
+
+        // Both rows are present — no silent drop
+        assert_eq!(batch.num_rows(), 2, "trade missing q must not be dropped");
+        assert_eq!(batch.num_columns(), 7);
+
+        let sym = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(sym.value(0), "GOOG");
+        assert_eq!(sym.value(1), "TSLA");
+
+        let price = batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
+        assert_eq!(price.value(0), 175.50);
+        assert_eq!(price.value(1), 250.00);
+
+        let size = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+        assert_eq!(size.value(0), 200.0);
+        assert_eq!(size.value(1), 50.0);
+
+        let sequence = batch.column(3).as_any().downcast_ref::<Int64Array>().unwrap();
+        // Row 0 (no q): sequence must be null
+        assert!(sequence.is_null(0), "sequence must be null when q is absent");
+        // Row 1 (has q): sequence must be the provided value
+        assert!(sequence.is_valid(1), "sequence must be non-null when q is present");
+        assert_eq!(sequence.value(1), 555);
+
+        let ts = batch.column(4).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(ts.value(0), 1718658002000);
+        assert_eq!(ts.value(1), 1718658003000);
+
+        let nats = batch.column(5).as_any().downcast_ref::<UInt64Array>().unwrap();
+        assert_eq!(nats.value(0), 20);
+        assert_eq!(nats.value(1), 21);
     }
 }
