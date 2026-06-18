@@ -354,11 +354,20 @@ impl KalshiConnector {
                 .map_err(|e| ConnectorError::ConnectionFailed(format!("secmaster query: {}", e)))?
         };
 
+        // An empty active set is normal and transient in this CDC-snapshot path — e.g. at 15M
+        // contract rollovers every current window settles (`determined`) a few seconds before the
+        // next windows activate, so a startup that lands in that gap legitimately sees zero markets.
+        // Do NOT fail loud here: the downstream connect() creates an empty headroom shard whenever
+        // `cdc_enabled && shards.is_empty()`, and CDC subscribes markets as they go active. Crashing
+        // would loop the pod at every rollover that coincides with a (re)start. Proceed with an empty
+        // set and let CDC populate it. (Non-CDC mode uses fetch_filtered_markets, which still treats
+        // an empty set as fatal — correct there, since nothing would ever populate it.)
         if result.tickers.is_empty() {
-            return Err(ConnectorError::ConnectionFailed(format!(
-                "No markets found for categories: {:?}",
-                secmaster.categories
-            )));
+            warn!(
+                categories = ?secmaster.categories,
+                series_suffix = ?std::env::var("KALSHI_SERIES_SUFFIX").ok(),
+                "No active markets at startup — proceeding with empty subscription; CDC will subscribe markets as they activate"
+            );
         }
 
         // Log market list at debug level
