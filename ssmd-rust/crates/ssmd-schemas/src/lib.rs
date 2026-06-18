@@ -8,6 +8,7 @@ use arrow::record_batch::RecordBatch;
 pub mod kalshi;
 pub mod kraken;
 pub mod kraken_futures;
+pub mod massive;
 pub mod polymarket;
 
 /// Trait for converting raw JSON messages to Arrow RecordBatches.
@@ -86,6 +87,10 @@ impl SchemaRegistry {
                     Box::new(polymarket::PolymarketBestBidAskSchema),
                 );
             }
+            "massive" => {
+                schemas.insert("trade".to_string(), Box::new(massive::MassiveTradeSchema));
+                schemas.insert("quote".to_string(), Box::new(massive::MassiveQuoteSchema));
+            }
             _ => {}
         }
 
@@ -133,6 +138,14 @@ pub fn detect_message_type(feed: &str, json: &serde_json::Value) -> Option<Strin
         "polymarket" => {
             // Polymarket uses "event_type" field
             json.get("event_type")?.as_str().map(String::from)
+        }
+        "massive" => {
+            // Polygon.io uses "ev" field: "T" for trade, "Q" for quote
+            match json.get("ev")?.as_str()? {
+                "T" => Some("trade".to_string()),
+                "Q" => Some("quote".to_string()),
+                _ => None,
+            }
         }
         _ => None,
     }
