@@ -81,6 +81,31 @@ pub struct MassiveNatsWriter {
 }
 
 impl MassiveNatsWriter {
+    /// Create a new `MassiveNatsWriter` with default subject prefix derived
+    /// from `env_name` and `feed_name`.
+    ///
+    /// Follows the same naming convention as the Kraken/Polymarket peers:
+    /// - subject prefix: `{env_name}.{feed_name}`
+    /// - NATS stream name: `{ENV_NAME}_{FEED_NAME}` (uppercased, `_`-joined)
+    ///
+    /// # Panics
+    /// Panics if `env_name` or `feed_name` are empty — an empty name would
+    /// produce an invalid NATS subject prefix or stream name, which is an
+    /// unrecoverable misconfiguration (crash loud, per architectural rules).
+    pub fn new(
+        transport: Arc<dyn Transport>,
+        env_name: impl AsRef<str>,
+        feed_name: impl AsRef<str>,
+    ) -> Self {
+        let env = env_name.as_ref();
+        let feed = feed_name.as_ref();
+        assert!(!env.is_empty(), "env_name must not be empty");
+        assert!(!feed.is_empty(), "feed_name must not be empty");
+        let prefix = format!("{}.{}", env, feed);
+        let stream = format!("{}_{}", env.to_uppercase(), feed.to_uppercase());
+        Self::with_prefix(transport, prefix, stream)
+    }
+
     /// Create a new `MassiveNatsWriter` with an explicit subject prefix and
     /// NATS stream name.
     pub fn with_prefix(
@@ -164,6 +189,33 @@ mod tests {
         let subjects = MassiveSubjects::new("prod.massive");
         assert_eq!(subjects.trade("AAPL"), "prod.massive.json.trade.AAPL");
         assert_eq!(subjects.quote("SPY"), "prod.massive.json.quote.SPY");
+    }
+
+    /// Verify that `MassiveNatsWriter::new` derives the same subject prefix as
+    /// the Kraken peer: `{env}.{feed}` → subjects routed under that prefix.
+    /// The stream derivation (`{ENV}_{FEED}`) is used by NATS JetStream publish
+    /// but is not observable through `InMemoryTransport`, so we verify routing
+    /// directly.
+    #[tokio::test]
+    async fn new_derives_prefix_from_env_and_feed() {
+        let transport = Arc::new(InMemoryTransport::new());
+        // Mirrors KrakenNatsWriter::new(transport, "prod", "massive") convention.
+        let mut writer = MassiveNatsWriter::new(transport.clone(), "prod", "massive");
+
+        let mut sub = transport
+            .subscribe("prod.massive.json.trade.AAPL")
+            .await
+            .unwrap();
+
+        let frame = br#"[{"ev":"T","sym":"AAPL","p":189.42,"s":100,"t":1718658000123,"q":987}]"#;
+        let msg = Message::new("massive", frame.to_vec());
+
+        writer.write(&msg).await.unwrap();
+
+        let received = sub.next().await.unwrap();
+        // Subject prefix must be "prod.massive" (not empty or wrong)
+        assert_eq!(received.subject, "prod.massive.json.trade.AAPL");
+        assert_eq!(writer.message_count(), 1);
     }
 
     // ── writer integration ───────────────────────────────────────────────────

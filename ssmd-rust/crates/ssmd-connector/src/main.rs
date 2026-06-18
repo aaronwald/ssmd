@@ -664,7 +664,7 @@ fn parse_massive_symbols(raw: &str) -> Vec<String> {
 }
 
 /// Create a `MassiveNatsWriter` using the subject prefix and stream from env
-/// config, falling back to `{env_name}.{feed_name}` if not set.
+/// config, falling back to `{env_name}.{feed_name}` / `{ENV}_{FEED}` if not set.
 fn create_massive_nats_writer(
     transport: Arc<dyn ssmd_middleware::Transport>,
     env_config: &Environment,
@@ -677,14 +677,15 @@ fn create_massive_nats_writer(
         info!(
             subject_prefix = %prefix,
             stream = %stream,
-            "Using custom subject prefix for massive writer"
+            "Using custom subject prefix"
         );
         MassiveNatsWriter::with_prefix(transport, prefix.clone(), stream.clone())
     } else {
-        let prefix = format!("{}.{}", env_config.name, feed.name);
-        info!(subject_prefix = %prefix, "Using default subject prefix for massive writer");
-        // `with_prefix` is the only constructor; derive prefix from env+feed.
-        MassiveNatsWriter::with_prefix(transport, prefix, String::new())
+        info!(
+            subject_prefix = format!("{}.{}", env_config.name, feed.name),
+            "Using default subject prefix"
+        );
+        MassiveNatsWriter::new(transport, env_config.name.as_str(), feed.name.as_str())
     }
 }
 
