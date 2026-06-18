@@ -19,6 +19,7 @@ ON CONFLICT (pair_id) DO UPDATE
       ws_name     = EXCLUDED.ws_name,
       market_type = EXCLUDED.market_type,
       status      = 'active',
+      deleted_at  = NULL,
       updated_at  = NOW();
 
 -- migrate:down
