@@ -116,9 +116,9 @@ impl Connector for MassiveConnector {
                         }
                     }
                     Ok(None) => {
-                        // Clean server-side Close frame — graceful shutdown.
-                        info!("Massive WebSocket closed cleanly, stopping receiver task");
-                        break;
+                        // Server sent a Close frame — unexpected during operation, fail loud.
+                        error!("Massive WebSocket closed by server — crashing for restart");
+                        std::process::exit(1);
                     }
                     Err(e) => {
                         // Protocol error — fail loud so K8s restarts the pod.
