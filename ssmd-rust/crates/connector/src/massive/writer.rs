@@ -16,7 +16,7 @@ use ssmd_middleware::{sanitize_subject_token, Transport};
 
 use crate::error::WriterError;
 use crate::message::Message;
-use crate::massive::messages::{parse_frame, MassiveMessage};
+use crate::massive::messages::{split_frame_events, EventKind};
 use crate::traits::Writer;
 
 /// Subject builder for Polygon.io equity data.
@@ -68,12 +68,14 @@ impl MassiveSubjects {
     }
 }
 
-/// Writer that publishes raw Polygon.io JSON messages to NATS.
+/// Writer that publishes Polygon.io JSON events to NATS, one message per event.
 ///
-/// Each Polygon WS frame is a JSON array of events. This writer parses the
-/// array and publishes **the entire original frame bytes** once per matched
-/// trade or quote event — consistent with how other connectors (Kraken) pass
-/// through the raw payload without transformation.
+/// Each Polygon WS frame is a JSON array of events. This writer splits the
+/// frame via [`split_frame_events`] and publishes **each individual event as
+/// its own single-object JSON NATS message** (`{"ev":"T",...}` — NOT the whole
+/// array). This preserves the pipeline contract: archiver injects
+/// `_nats_seq`/`_received_at` once per NATS message, and `parse_batch`
+/// deserialises each payload as exactly one JSON object → one parquet row.
 pub struct MassiveNatsWriter {
     transport: Arc<dyn Transport>,
     subjects: MassiveSubjects,
@@ -129,39 +131,32 @@ impl MassiveNatsWriter {
 #[async_trait]
 impl Writer for MassiveNatsWriter {
     async fn write(&mut self, msg: &Message) -> Result<(), WriterError> {
-        let events = parse_frame(&msg.data);
+        // split_frame_events parses, sanitizes symbols, and drops empty-symbol
+        // or malformed elements — never returns an event with an empty symbol.
+        let events = split_frame_events(&msg.data);
 
         for event in events {
-            let subject = match event {
-                MassiveMessage::Trade(ref t) => {
-                    let sanitized = sanitize_subject_token(&t.sym);
-                    if sanitized.is_empty() {
-                        warn!(sym = %t.sym, "Empty sanitized symbol for trade, skipping");
-                        continue;
-                    }
-                    self.subjects.trade(&sanitized)
-                }
-                MassiveMessage::Quote(ref q) => {
-                    let sanitized = sanitize_subject_token(&q.sym);
-                    if sanitized.is_empty() {
-                        warn!(sym = %q.sym, "Empty sanitized symbol for quote, skipping");
-                        continue;
-                    }
-                    self.subjects.quote(&sanitized)
-                }
-                // Status and Other are control messages — skip silently.
-                MassiveMessage::Status(ref s) => {
-                    trace!(status = %s.status, "Skipping Polygon Status event");
-                    continue;
-                }
-                MassiveMessage::Other => {
-                    trace!("Skipping unknown Polygon event type");
-                    continue;
-                }
+            // Defensive: split_frame_events guarantees non-empty symbols, but
+            // guard here too so a future refactor can't produce a broken subject.
+            if event.symbol.is_empty() {
+                warn!("split_frame_events returned an event with an empty symbol — skipping");
+                continue;
+            }
+            // Defensive: payload must be a valid non-empty NATS message.
+            if event.payload.is_empty() {
+                warn!(sym = %event.symbol, "split_frame_events returned an empty payload — skipping");
+                continue;
+            }
+
+            let subject = match event.kind {
+                EventKind::Trade => self.subjects.trade(&event.symbol),
+                EventKind::Quote => self.subjects.quote(&event.symbol),
             };
 
+            trace!(subject = %subject, "Publishing Polygon event");
+
             self.transport
-                .publish(&subject, msg.data.clone())
+                .publish(&subject, event.payload.into())
                 .await
                 .map_err(|e| WriterError::WriteFailed(format!("NATS publish failed: {}", e)))?;
 
@@ -239,7 +234,15 @@ mod tests {
 
         let received = sub.next().await.unwrap();
         assert_eq!(received.subject, "prod.massive.json.trade.AAPL");
-        assert_eq!(received.payload.as_ref(), frame);
+        // Payload must be a single JSON object (not the whole array)
+        assert!(
+            received.payload.starts_with(b"{"),
+            "trade payload must be a JSON object, got: {:?}",
+            std::str::from_utf8(&received.payload)
+        );
+        let payload_str = std::str::from_utf8(&received.payload).unwrap();
+        assert!(payload_str.contains("\"ev\":\"T\""));
+        assert!(payload_str.contains("\"sym\":\"AAPL\""));
         assert_eq!(writer.message_count(), 1);
     }
 
@@ -262,7 +265,15 @@ mod tests {
 
         let received = sub.next().await.unwrap();
         assert_eq!(received.subject, "prod.massive.json.quote.SPY");
-        assert_eq!(received.payload.as_ref(), frame);
+        // Payload must be a single JSON object (not the whole array)
+        assert!(
+            received.payload.starts_with(b"{"),
+            "quote payload must be a JSON object, got: {:?}",
+            std::str::from_utf8(&received.payload)
+        );
+        let payload_str = std::str::from_utf8(&received.payload).unwrap();
+        assert!(payload_str.contains("\"ev\":\"Q\""));
+        assert!(payload_str.contains("\"sym\":\"SPY\""));
         assert_eq!(writer.message_count(), 1);
     }
 
@@ -308,20 +319,46 @@ mod tests {
             .await
             .unwrap();
 
-        // Frame with status (skipped) + trade + quote
+        // Frame with status (skipped) + trade + quote — mixed frame, the bug scenario
         let frame = br#"[{"ev":"status","status":"connected","message":"Connected successfully"},{"ev":"T","sym":"AAPL","p":189.42,"s":100,"t":1718658000123,"q":987},{"ev":"Q","sym":"SPY","bp":543.10,"bs":2,"ap":543.12,"as":3,"t":1718658000456}]"#;
         let msg = Message::new("massive", frame.to_vec());
 
         writer.write(&msg).await.unwrap();
 
-        // status is skipped, trade + quote = 2 published
+        // status is skipped, trade + quote = exactly 2 published (not 3)
         assert_eq!(writer.message_count(), 2);
 
-        // Verify the published subjects are correct
+        // Trade message: subject correct AND payload is the single trade object only
         let trade_msg = sub_trade.next().await.unwrap();
         assert_eq!(trade_msg.subject, "prod.massive.json.trade.AAPL");
+        // Payload must be single object, not array
+        assert!(
+            trade_msg.payload.starts_with(b"{"),
+            "trade payload must start with '{{', not '['"
+        );
+        let trade_str = std::str::from_utf8(&trade_msg.payload).unwrap();
+        assert!(trade_str.contains("\"ev\":\"T\""), "trade payload must contain ev:T");
+        assert!(trade_str.contains("\"sym\":\"AAPL\""), "trade payload must contain AAPL");
+        // Must NOT contain the quote's symbol — proves no cross-contamination
+        assert!(
+            !trade_str.contains("\"sym\":\"SPY\""),
+            "trade payload must not contain SPY — frame must be split"
+        );
 
+        // Quote message: subject correct AND payload is the single quote object only
         let quote_msg = sub_quote.next().await.unwrap();
         assert_eq!(quote_msg.subject, "prod.massive.json.quote.SPY");
+        assert!(
+            quote_msg.payload.starts_with(b"{"),
+            "quote payload must start with '{{', not '['"
+        );
+        let quote_str = std::str::from_utf8(&quote_msg.payload).unwrap();
+        assert!(quote_str.contains("\"ev\":\"Q\""), "quote payload must contain ev:Q");
+        assert!(quote_str.contains("\"sym\":\"SPY\""), "quote payload must contain SPY");
+        // Must NOT contain the trade's symbol
+        assert!(
+            !quote_str.contains("\"sym\":\"AAPL\""),
+            "quote payload must not contain AAPL — frame must be split"
+        );
     }
 }
