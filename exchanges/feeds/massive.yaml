@@ -1,0 +1,31 @@
+name: massive
+display_name: Massive (Polygon.io) US Equities
+type: websocket
+status: active
+versions:
+  - version: v1
+    effective_from: "2026-06-17"
+    protocol:
+      transport: wss
+      message: json
+    endpoint: wss://delayed.polygon.io/stocks
+    auth_method: api_key
+
+# Message types received from Polygon.io delayed stock cluster.
+# Trades carry a per-symbol monotonic sequence number (field q).
+# Quotes do not carry sequence numbers.
+message_types:
+  trade:
+    identifier_field: symbol
+    timestamp_field: exchange_ts_ms
+    timestamp_format: epoch_millis
+    sequenced: true
+    sequence_field: sequence
+    sequence_scope: per_symbol
+    fanout: true
+  quote:
+    identifier_field: symbol
+    timestamp_field: exchange_ts_ms
+    timestamp_format: epoch_millis
+    sequenced: false
+    fanout: true
