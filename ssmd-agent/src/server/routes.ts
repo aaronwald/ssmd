@@ -4232,37 +4232,106 @@ route("GET", "/v1/internal/edc-memories", async (req) => {
 
 // Create a GitHub issue for EDC-detected breaking changes
 route("POST", "/v1/internal/edc-issue", async (req) => {
-  const { exchange, title, body: issueBody, labels } = await req.json();
+  let payload: {
+    exchange?: unknown;
+    title?: unknown;
+    body?: unknown;
+    labels?: unknown;
+  };
+  try {
+    payload = await req.json();
+  } catch {
+    return json({ error: "Invalid JSON body" }, 400);
+  }
+
+  // Length caps: GitHub rejects titles/bodies past its own limits, and an
+  // unbounded LLM-derived string is both a memory and an injection-amplification
+  // risk (the title flows into the de-dup search query below).
+  const MAX_TITLE = 256;
+  const MAX_BODY = 60_000;
+  const exchange = typeof payload.exchange === "string" ? payload.exchange.trim() : "";
+  const title = typeof payload.title === "string" ? payload.title.trim().slice(0, MAX_TITLE) : "";
+  const issueBody = typeof payload.body === "string" ? payload.body.trim().slice(0, MAX_BODY) : "";
 
   if (!exchange || !title || !issueBody) {
-    return json({ error: "Required: exchange, title, body" }, 400);
+    return json({ error: "Required (non-empty strings): exchange, title, body" }, 400);
   }
+
+  // Labels: accept a string[] of non-empty strings within GitHub's 50-char limit,
+  // else fall back to a safe default derived server-side.
+  const labels = Array.isArray(payload.labels)
+    ? payload.labels.filter(
+      (l): l is string => typeof l === "string" && l.trim().length > 0 && l.trim().length <= 50,
+    ).map((l) => l.trim())
+    : null;
+  const issueLabels = labels && labels.length > 0 ? labels : ["edc", exchange.slice(0, 50)];
 
   const token = Deno.env.get("GITHUB_TOKEN");
   if (!token) {
     return json({ error: "GITHUB_TOKEN not configured" }, 503);
   }
 
-  const resp = await fetch("https://api.github.com/repos/aaronwald/ssmd/issues", {
+  // Target repo is REQUIRED (fail-closed): EDC analysis names internal components,
+  // so we never want a missing/typo'd env to default this sink to a public repo.
+  // Prod sets EDC_ISSUE_REPO=aaronwald/899bushwick (private, next to the vault).
+  const repo = (Deno.env.get("EDC_ISSUE_REPO") ?? "").trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+    return json({ error: "EDC_ISSUE_REPO not configured (expected owner/repo)" }, 503);
+  }
+
+  const fullTitle = `[EDC] ${exchange}: ${title}`;
+  const ghHeaders = {
+    "Authorization": `Bearer ${token}`,
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "ssmd-data-ts",
+  };
+
+  // De-dup: the EDC pipelines run on a schedule, so an unresolved changelog
+  // could re-file the same item. If an issue (open OR closed) with the same exact
+  // title already exists, return it instead of creating a duplicate — closing an
+  // EDC issue is a triage decision we honor rather than re-surface weekly.
+  // SECURITY: `fullTitle` embeds LLM-derived text. Strip quote/newline chars that
+  // could break out of the quoted search phrase and inject extra `qualifier:`
+  // terms (e.g. a second `repo:`), and only ever return an EXACT title match.
+  try {
+    const searchPhrase = fullTitle.replace(/["\r\n]+/g, " ");
+    const q = new URLSearchParams({
+      q: `repo:${repo} is:issue in:title "${searchPhrase}"`,
+      per_page: "20",
+    });
+    const searchResp = await fetch(`https://api.github.com/search/issues?${q}`, {
+      headers: ghHeaders,
+    });
+    if (searchResp.ok) {
+      const search = await searchResp.json();
+      const existing = Array.isArray(search?.items)
+        ? search.items.find((i: { title?: string }) => i.title === fullTitle)
+        : undefined;
+      if (existing) {
+        return json({ url: existing.html_url, number: existing.number, deduped: true }, 200);
+      }
+    }
+    // A failed search is non-fatal — fall through and attempt to create. A
+    // duplicate is a lesser evil than dropping a genuine finding.
+  } catch {
+    // Network hiccup on the de-dup probe: proceed to create rather than drop.
+  }
+
+  const resp = await fetch(`https://api.github.com/repos/${repo}/issues`, {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Accept": "application/vnd.github+json",
-      "User-Agent": "ssmd-data-ts",
-    },
-    body: JSON.stringify({
-      title: `[EDC] ${exchange}: ${title}`,
-      body: issueBody,
-      labels: labels ?? ["edc", "breaking-change"],
-    }),
+    headers: ghHeaders,
+    body: JSON.stringify({ title: fullTitle, body: issueBody, labels: issueLabels }),
   });
 
   const issue = await resp.json();
   if (!resp.ok) {
-    return json({ error: "GitHub API error", details: issue }, resp.status);
+    // Log the full GitHub error server-side; return a generic message so the
+    // caller doesn't receive token-scope / repo-visibility signals.
+    console.error(`[edc-issue] GitHub API ${resp.status} creating issue in ${repo}:`, issue);
+    return json({ error: "GitHub API error", status: resp.status }, resp.status);
   }
 
-  return json({ url: issue.html_url, number: issue.number }, 201);
+  return json({ url: issue.html_url, number: issue.number, deduped: false }, 201);
 }, true, "admin:write");
 
 // Helper to create JSON response
