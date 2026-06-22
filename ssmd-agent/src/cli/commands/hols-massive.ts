@@ -24,12 +24,28 @@ export function massiveDailyGcsPath(endDateStr: string): string {
  * glob), writes ZSTD parquet to `parquetPath`. Inputs are not user-supplied;
  * DuckDB COPY/read_parquet file paths must be SQL literals (not bindable), so
  * the paths are interpolated exactly as the sibling aggregate jobs do.
+ *
+ * IMPORTANT — Polygon's delayed feed emits multiple CUMULATIVE `AM` snapshots
+ * for the same minute (e.g. an intermediate bar then the final bar with the full
+ * minute's volume), so the raw archive holds several rows per (symbol, minute).
+ * Summing them directly double-counts volume (verified ~+42% on AAPL) and makes
+ * close ambiguous. We first collapse to the FINAL bar per (symbol, start_ts_ms)
+ * — the snapshot with the largest cumulative volume (tie-break latest end_ts_ms)
+ * — which matches Polygon's REST 1m bar exactly, then aggregate to daily.
  */
 export function buildMassiveDailySQL(inputGlob: string, parquetPath: string): string {
   if (!inputGlob) throw new Error("buildMassiveDailySQL: inputGlob is required");
   if (!parquetPath) throw new Error("buildMassiveDailySQL: parquetPath is required");
   return `
     COPY (
+      WITH final_bars AS (
+        SELECT *
+        FROM read_parquet('${inputGlob}')
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY symbol, start_ts_ms
+          ORDER BY volume DESC, end_ts_ms DESC
+        ) = 1
+      )
       SELECT
         symbol::VARCHAR as symbol,
         DATE_TRUNC('day', to_timestamp(start_ts_ms / 1000.0))::DATE as date,
@@ -43,7 +59,7 @@ export function buildMassiveDailySQL(inputGlob: string, parquetPath: string): st
         COUNT(*)::BIGINT as bar_count,
         MIN(start_ts_ms)::BIGINT as first_bar_ts_ms,
         MAX(end_ts_ms)::BIGINT as last_bar_ts_ms
-      FROM read_parquet('${inputGlob}')
+      FROM final_bars
       GROUP BY symbol, DATE_TRUNC('day', to_timestamp(start_ts_ms / 1000.0))
       ORDER BY symbol, date
     ) TO '${parquetPath}' (FORMAT PARQUET, COMPRESSION ZSTD)

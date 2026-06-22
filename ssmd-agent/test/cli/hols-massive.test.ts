@@ -39,6 +39,18 @@ Deno.test("buildMassiveDailySQL aggregates to one daily row per (symbol, date)",
   assertStringIncludes(sql, "NULLIF(SUM(volume), 0)");
 });
 
+Deno.test("buildMassiveDailySQL dedupes to the final bar per minute before summing", () => {
+  // Polygon emits multiple cumulative AM snapshots per minute; summing them
+  // double-counts volume (~+42% observed). The SQL must collapse to the final
+  // (largest-volume, latest end_ts_ms) bar per (symbol, start_ts_ms) first.
+  const sql = buildMassiveDailySQL("/tmp/bars/*.parquet", "/tmp/out.parquet");
+  assertStringIncludes(sql, "PARTITION BY symbol, start_ts_ms");
+  assertStringIncludes(sql, "ORDER BY volume DESC, end_ts_ms DESC");
+  assertStringIncludes(sql, "= 1");
+  // Aggregation reads from the deduped CTE, not the raw parquet.
+  assertStringIncludes(sql, "FROM final_bars");
+});
+
 Deno.test("buildMassiveDailySQL validates required arguments", () => {
   assertThrows(() => buildMassiveDailySQL("", "/tmp/out.parquet"), Error, "inputGlob is required");
   assertThrows(() => buildMassiveDailySQL("/tmp/bars/*.parquet", ""), Error, "parquetPath is required");
