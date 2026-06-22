@@ -1,7 +1,8 @@
 //! Polygon.io ("massive") WebSocket transport layer
 //!
 //! Handles connection to the delayed Polygon cluster, authentication via
-//! auth frame, subscribe to trade+quote channels, and recv loop.
+//! auth frame, subscribe to OHLCV aggregate channels (`A.`/`AM.`), and recv
+//! loop. The Starter plan authorizes aggregate channels but not `T.`/`Q.`.
 
 use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
@@ -42,20 +43,22 @@ pub(crate) fn auth_frame(api_key: &str) -> String {
     serde_json::json!({"action": "auth", "params": api_key}).to_string()
 }
 
-/// Build the subscribe JSON frame for trade + quote channels.
+/// Build the subscribe JSON frame for OHLCV aggregate channels.
 ///
-/// Each symbol produces two channels: `T.<sym>` (trades) and `Q.<sym>` (quotes).
-/// Channels are joined as a comma-separated params list.
+/// Each symbol produces two channels: `A.<sym>` (per-second aggregates) and
+/// `AM.<sym>` (per-minute aggregates). Channels are joined as a comma-separated
+/// params list. These are the channels the Starter plan authorizes — `T.`/`Q.`
+/// return "not authorized".
 ///
 /// Example for `["AAPL", "SPY"]`:
-/// `{"action":"subscribe","params":"T.AAPL,Q.AAPL,T.SPY,Q.SPY"}`
+/// `{"action":"subscribe","params":"A.AAPL,AM.AAPL,A.SPY,AM.SPY"}`
 ///
 /// Uses `serde_json` to build the frame so that special characters in symbol
 /// names are properly escaped and cannot inject malformed JSON.
 pub(crate) fn subscribe_frame(symbols: &[String]) -> String {
     let params = symbols
         .iter()
-        .flat_map(|s| [format!("T.{s}"), format!("Q.{s}")])
+        .flat_map(|s| [format!("A.{s}"), format!("AM.{s}")])
         .collect::<Vec<_>>()
         .join(",");
     serde_json::json!({"action": "subscribe", "params": params}).to_string()
@@ -139,7 +142,7 @@ impl MassiveWebSocket {
         }
     }
 
-    /// Subscribe to `T.<sym>` and `Q.<sym>` channels for each symbol.
+    /// Subscribe to `A.<sym>` and `AM.<sym>` aggregate channels for each symbol.
     ///
     /// Returns `Err(MassiveWsError::Subscribe)` if `symbols` is empty.
     pub async fn subscribe(&mut self, symbols: &[String]) -> Result<(), MassiveWsError> {
@@ -194,6 +197,6 @@ mod tests {
     #[test]
     fn subscribe_frame_lists_trade_and_quote_channels() {
         let f = subscribe_frame(&["AAPL".to_string(), "SPY".to_string()]);
-        assert_eq!(f, r#"{"action":"subscribe","params":"T.AAPL,Q.AAPL,T.SPY,Q.SPY"}"#);
+        assert_eq!(f, r#"{"action":"subscribe","params":"A.AAPL,AM.AAPL,A.SPY,AM.SPY"}"#);
     }
 }

@@ -1,11 +1,11 @@
 //! Polygon.io ("massive") NATS writer
 //!
-//! Routes parsed Polygon trade and quote events to NATS subjects:
-//!   Trade  → `{prefix}.json.trade.{sym}`
-//!   Quote  → `{prefix}.json.quote.{sym}`
+//! Routes parsed Polygon OHLCV aggregate events to NATS subjects:
+//!   Per-second aggregate (`"ev":"A"`)  → `{prefix}.json.ohlcv_1s.{sym}`
+//!   Per-minute aggregate (`"ev":"AM"`) → `{prefix}.json.ohlcv_1m.{sym}`
 //!
-//! Status and other event types are silently skipped — they are control
-//! messages, not market data.
+//! Status and other event types (including `T`/`Q`, which are not authorized on
+//! the Starter plan) are silently skipped — they are not aggregate market data.
 
 use std::sync::Arc;
 
@@ -22,58 +22,58 @@ use crate::traits::Writer;
 /// Subject builder for Polygon.io equity data.
 ///
 /// Produces:
-/// - `{prefix}.json.trade.{sym}` for trades
-/// - `{prefix}.json.quote.{sym}` for quotes
+/// - `{prefix}.json.ohlcv_1s.{sym}` for per-second aggregates
+/// - `{prefix}.json.ohlcv_1m.{sym}` for per-minute aggregates
 pub struct MassiveSubjects {
     prefix: String,
 }
 
 impl MassiveSubjects {
     /// Create a new `MassiveSubjects` with the given subject prefix
-    /// (e.g. `"prod.massive"` → `"prod.massive.json.trade.AAPL"`).
+    /// (e.g. `"prod.massive"` → `"prod.massive.json.ohlcv_1s.AAPL"`).
     pub fn new(prefix: &str) -> Self {
         Self {
             prefix: prefix.to_string(),
         }
     }
 
-    /// Build the trade subject for an already-sanitized token.
+    /// Build the per-second OHLCV subject for an already-sanitized token.
     ///
     /// The caller is responsible for sanitizing the token via
     /// [`sanitize_subject_token`] before passing it here.
     /// In debug builds a `debug_assert!` verifies the token is non-empty and
     /// unchanged by a second sanitization pass.
-    pub fn trade(&self, token: &str) -> String {
+    pub fn ohlcv_1s(&self, token: &str) -> String {
         debug_assert!(
             !token.is_empty() && sanitize_subject_token(token) == token,
             "token must be pre-sanitized: {:?}",
             token
         );
-        format!("{}.json.trade.{}", self.prefix, token)
+        format!("{}.json.ohlcv_1s.{}", self.prefix, token)
     }
 
-    /// Build the quote subject for an already-sanitized token.
+    /// Build the per-minute OHLCV subject for an already-sanitized token.
     ///
     /// The caller is responsible for sanitizing the token via
     /// [`sanitize_subject_token`] before passing it here.
     /// In debug builds a `debug_assert!` verifies the token is non-empty and
     /// unchanged by a second sanitization pass.
-    pub fn quote(&self, token: &str) -> String {
+    pub fn ohlcv_1m(&self, token: &str) -> String {
         debug_assert!(
             !token.is_empty() && sanitize_subject_token(token) == token,
             "token must be pre-sanitized: {:?}",
             token
         );
-        format!("{}.json.quote.{}", self.prefix, token)
+        format!("{}.json.ohlcv_1m.{}", self.prefix, token)
     }
 }
 
 /// Writer that publishes Polygon.io JSON events to NATS, one message per event.
 ///
 /// Each Polygon WS frame is a JSON array of events. This writer splits the
-/// frame via [`split_frame_events`] and publishes **each individual event as
-/// its own single-object JSON NATS message** (`{"ev":"T",...}` — NOT the whole
-/// array). This preserves the pipeline contract: archiver injects
+/// frame via [`split_frame_events`] and publishes **each individual aggregate
+/// event as its own single-object JSON NATS message** (`{"ev":"A",...}` — NOT
+/// the whole array). This preserves the pipeline contract: archiver injects
 /// `_nats_seq`/`_received_at` once per NATS message, and `parse_batch`
 /// deserialises each payload as exactly one JSON object → one parquet row.
 pub struct MassiveNatsWriter {
@@ -149,11 +149,20 @@ impl Writer for MassiveNatsWriter {
             }
 
             let subject = match event.kind {
-                EventKind::Trade => self.subjects.trade(&event.symbol),
-                EventKind::Quote => self.subjects.quote(&event.symbol),
+                EventKind::AggSecond => self.subjects.ohlcv_1s(&event.symbol),
+                EventKind::AggMinute => self.subjects.ohlcv_1m(&event.symbol),
+                // T/Q no longer flow from split_frame_events on the Starter plan,
+                // but guard the arms so a future refactor can't route them silently.
+                EventKind::Trade | EventKind::Quote => {
+                    warn!(
+                        sym = %event.symbol,
+                        "split_frame_events emitted a Trade/Quote event on the aggregate-only path — skipping"
+                    );
+                    continue;
+                }
             };
 
-            trace!(subject = %subject, "Publishing Polygon event");
+            trace!(subject = %subject, "Publishing Polygon aggregate event");
 
             self.transport
                 .publish(&subject, event.payload.into())
@@ -180,10 +189,10 @@ mod tests {
     // ── subject routing ──────────────────────────────────────────────────────
 
     #[test]
-    fn subject_for_trade_and_quote() {
+    fn subject_for_ohlcv_1s_and_1m() {
         let subjects = MassiveSubjects::new("prod.massive");
-        assert_eq!(subjects.trade("AAPL"), "prod.massive.json.trade.AAPL");
-        assert_eq!(subjects.quote("SPY"), "prod.massive.json.quote.SPY");
+        assert_eq!(subjects.ohlcv_1s("AAPL"), "prod.massive.json.ohlcv_1s.AAPL");
+        assert_eq!(subjects.ohlcv_1m("SPY"), "prod.massive.json.ohlcv_1m.SPY");
     }
 
     /// Verify that `MassiveNatsWriter::new` derives the same subject prefix as
@@ -198,81 +207,81 @@ mod tests {
         let mut writer = MassiveNatsWriter::new(transport.clone(), "prod", "massive");
 
         let mut sub = transport
-            .subscribe("prod.massive.json.trade.AAPL")
+            .subscribe("prod.massive.json.ohlcv_1s.AAPL")
             .await
             .unwrap();
 
-        let frame = br#"[{"ev":"T","sym":"AAPL","p":189.42,"s":100,"t":1718658000123,"q":987}]"#;
+        let frame = br#"[{"ev":"A","sym":"AAPL","o":296.32,"c":296.32,"h":296.32,"l":296.32,"v":80,"vw":296.32,"s":1782124955000,"e":1782124956000}]"#;
         let msg = Message::new("massive", frame.to_vec());
 
         writer.write(&msg).await.unwrap();
 
         let received = sub.next().await.unwrap();
         // Subject prefix must be "prod.massive" (not empty or wrong)
-        assert_eq!(received.subject, "prod.massive.json.trade.AAPL");
+        assert_eq!(received.subject, "prod.massive.json.ohlcv_1s.AAPL");
         assert_eq!(writer.message_count(), 1);
     }
 
     // ── writer integration ───────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn publishes_trade_event() {
+    async fn publishes_ohlcv_1s_event() {
         let transport = Arc::new(InMemoryTransport::new());
         let mut writer =
             MassiveNatsWriter::with_prefix(transport.clone(), "prod.massive", "PROD_MASSIVE");
 
         let mut sub = transport
-            .subscribe("prod.massive.json.trade.AAPL")
+            .subscribe("prod.massive.json.ohlcv_1s.AAPL")
             .await
             .unwrap();
 
         let frame =
-            br#"[{"ev":"T","sym":"AAPL","p":189.42,"s":100,"t":1718658000123,"q":987}]"#;
+            br#"[{"ev":"A","sym":"AAPL","o":296.32,"c":296.32,"h":296.32,"l":296.32,"v":80,"vw":296.32,"s":1782124955000,"e":1782124956000}]"#;
         let msg = Message::new("massive", frame.to_vec());
 
         writer.write(&msg).await.unwrap();
 
         let received = sub.next().await.unwrap();
-        assert_eq!(received.subject, "prod.massive.json.trade.AAPL");
+        assert_eq!(received.subject, "prod.massive.json.ohlcv_1s.AAPL");
         // Payload must be a single JSON object (not the whole array)
         assert!(
             received.payload.starts_with(b"{"),
-            "trade payload must be a JSON object, got: {:?}",
+            "agg payload must be a JSON object, got: {:?}",
             std::str::from_utf8(&received.payload)
         );
         let payload_str = std::str::from_utf8(&received.payload).unwrap();
-        assert!(payload_str.contains("\"ev\":\"T\""));
+        assert!(payload_str.contains("\"ev\":\"A\""));
         assert!(payload_str.contains("\"sym\":\"AAPL\""));
         assert_eq!(writer.message_count(), 1);
     }
 
     #[tokio::test]
-    async fn publishes_quote_event() {
+    async fn publishes_ohlcv_1m_event() {
         let transport = Arc::new(InMemoryTransport::new());
         let mut writer =
             MassiveNatsWriter::with_prefix(transport.clone(), "prod.massive", "PROD_MASSIVE");
 
         let mut sub = transport
-            .subscribe("prod.massive.json.quote.SPY")
+            .subscribe("prod.massive.json.ohlcv_1m.SPY")
             .await
             .unwrap();
 
         let frame =
-            br#"[{"ev":"Q","sym":"SPY","bp":543.10,"bs":2,"ap":543.12,"as":3,"t":1718658000456}]"#;
+            br#"[{"ev":"AM","sym":"SPY","o":543.10,"c":543.12,"h":543.20,"l":543.00,"v":2000,"vw":543.11,"s":1782124920000,"e":1782124980000}]"#;
         let msg = Message::new("massive", frame.to_vec());
 
         writer.write(&msg).await.unwrap();
 
         let received = sub.next().await.unwrap();
-        assert_eq!(received.subject, "prod.massive.json.quote.SPY");
+        assert_eq!(received.subject, "prod.massive.json.ohlcv_1m.SPY");
         // Payload must be a single JSON object (not the whole array)
         assert!(
             received.payload.starts_with(b"{"),
-            "quote payload must be a JSON object, got: {:?}",
+            "agg payload must be a JSON object, got: {:?}",
             std::str::from_utf8(&received.payload)
         );
         let payload_str = std::str::from_utf8(&received.payload).unwrap();
-        assert!(payload_str.contains("\"ev\":\"Q\""));
+        assert!(payload_str.contains("\"ev\":\"AM\""));
         assert!(payload_str.contains("\"sym\":\"SPY\""));
         assert_eq!(writer.message_count(), 1);
     }
@@ -291,12 +300,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skips_other_events() {
+    async fn skips_trade_and_quote_events() {
+        // T/Q are not authorized on the Starter plan and must not be published.
         let transport = Arc::new(InMemoryTransport::new());
         let mut writer =
             MassiveNatsWriter::with_prefix(transport.clone(), "prod.massive", "PROD_MASSIVE");
 
-        let frame = br#"[{"ev":"AM","sym":"AAPL","o":1.0,"c":2.0}]"#;
+        let frame = br#"[{"ev":"T","sym":"AAPL","p":189.42,"s":100,"t":1718658000123,"q":987},{"ev":"Q","sym":"SPY","bp":543.10,"bs":2,"ap":543.12,"as":3,"t":1718658000456}]"#;
         let msg = Message::new("massive", frame.to_vec());
 
         writer.write(&msg).await.unwrap();
@@ -310,55 +320,55 @@ mod tests {
             MassiveNatsWriter::with_prefix(transport.clone(), "prod.massive", "PROD_MASSIVE");
 
         // Subscribe to both subjects before publishing
-        let mut sub_trade = transport
-            .subscribe("prod.massive.json.trade.AAPL")
+        let mut sub_1s = transport
+            .subscribe("prod.massive.json.ohlcv_1s.AAPL")
             .await
             .unwrap();
-        let mut sub_quote = transport
-            .subscribe("prod.massive.json.quote.SPY")
+        let mut sub_1m = transport
+            .subscribe("prod.massive.json.ohlcv_1m.SPY")
             .await
             .unwrap();
 
-        // Frame with status (skipped) + trade + quote — mixed frame, the bug scenario
-        let frame = br#"[{"ev":"status","status":"connected","message":"Connected successfully"},{"ev":"T","sym":"AAPL","p":189.42,"s":100,"t":1718658000123,"q":987},{"ev":"Q","sym":"SPY","bp":543.10,"bs":2,"ap":543.12,"as":3,"t":1718658000456}]"#;
+        // Frame with status (skipped) + per-second agg + per-minute agg — mixed frame
+        let frame = br#"[{"ev":"status","status":"connected","message":"Connected successfully"},{"ev":"A","sym":"AAPL","o":296.32,"c":296.32,"h":296.32,"l":296.32,"v":80,"vw":296.32,"s":1782124955000,"e":1782124956000},{"ev":"AM","sym":"SPY","o":543.10,"c":543.12,"h":543.20,"l":543.00,"v":2000,"vw":543.11,"s":1782124920000,"e":1782124980000}]"#;
         let msg = Message::new("massive", frame.to_vec());
 
         writer.write(&msg).await.unwrap();
 
-        // status is skipped, trade + quote = exactly 2 published (not 3)
+        // status is skipped, A + AM = exactly 2 published (not 3)
         assert_eq!(writer.message_count(), 2);
 
-        // Trade message: subject correct AND payload is the single trade object only
-        let trade_msg = sub_trade.next().await.unwrap();
-        assert_eq!(trade_msg.subject, "prod.massive.json.trade.AAPL");
+        // Per-second message: subject correct AND payload is the single object only
+        let s_msg = sub_1s.next().await.unwrap();
+        assert_eq!(s_msg.subject, "prod.massive.json.ohlcv_1s.AAPL");
         // Payload must be single object, not array
         assert!(
-            trade_msg.payload.starts_with(b"{"),
-            "trade payload must start with '{{', not '['"
+            s_msg.payload.starts_with(b"{"),
+            "agg payload must start with '{{', not '['"
         );
-        let trade_str = std::str::from_utf8(&trade_msg.payload).unwrap();
-        assert!(trade_str.contains("\"ev\":\"T\""), "trade payload must contain ev:T");
-        assert!(trade_str.contains("\"sym\":\"AAPL\""), "trade payload must contain AAPL");
-        // Must NOT contain the quote's symbol — proves no cross-contamination
+        let s_str = std::str::from_utf8(&s_msg.payload).unwrap();
+        assert!(s_str.contains("\"ev\":\"A\""), "1s payload must contain ev:A");
+        assert!(s_str.contains("\"sym\":\"AAPL\""), "1s payload must contain AAPL");
+        // Must NOT contain the other symbol — proves no cross-contamination
         assert!(
-            !trade_str.contains("\"sym\":\"SPY\""),
-            "trade payload must not contain SPY — frame must be split"
+            !s_str.contains("\"sym\":\"SPY\""),
+            "1s payload must not contain SPY — frame must be split"
         );
 
-        // Quote message: subject correct AND payload is the single quote object only
-        let quote_msg = sub_quote.next().await.unwrap();
-        assert_eq!(quote_msg.subject, "prod.massive.json.quote.SPY");
+        // Per-minute message: subject correct AND payload is the single object only
+        let m_msg = sub_1m.next().await.unwrap();
+        assert_eq!(m_msg.subject, "prod.massive.json.ohlcv_1m.SPY");
         assert!(
-            quote_msg.payload.starts_with(b"{"),
-            "quote payload must start with '{{', not '['"
+            m_msg.payload.starts_with(b"{"),
+            "agg payload must start with '{{', not '['"
         );
-        let quote_str = std::str::from_utf8(&quote_msg.payload).unwrap();
-        assert!(quote_str.contains("\"ev\":\"Q\""), "quote payload must contain ev:Q");
-        assert!(quote_str.contains("\"sym\":\"SPY\""), "quote payload must contain SPY");
-        // Must NOT contain the trade's symbol
+        let m_str = std::str::from_utf8(&m_msg.payload).unwrap();
+        assert!(m_str.contains("\"ev\":\"AM\""), "1m payload must contain ev:AM");
+        assert!(m_str.contains("\"sym\":\"SPY\""), "1m payload must contain SPY");
+        // Must NOT contain the other symbol
         assert!(
-            !quote_str.contains("\"sym\":\"AAPL\""),
-            "quote payload must not contain AAPL — frame must be split"
+            !m_str.contains("\"sym\":\"AAPL\""),
+            "1m payload must not contain AAPL — frame must be split"
         );
     }
 }

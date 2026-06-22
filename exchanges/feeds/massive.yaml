@@ -12,20 +12,20 @@ versions:
     auth_method: api_key
 
 # Message types received from Polygon.io delayed stock cluster.
-# Trades carry a per-symbol monotonic sequence number (field q).
-# Quotes do not carry sequence numbers.
+# The account is on the Starter plan, which authorizes aggregate channels
+# (A. = per-second OHLCV bars, AM. = per-minute OHLCV bars) but NOT trades (T.)
+# or quotes (Q.). Aggregates carry no sequence number; ordering is by window
+# start timestamp (field s, epoch millis).
 message_types:
-  trade:
+  ohlcv_1s:
     identifier_field: symbol
-    timestamp_field: exchange_ts_ms
+    timestamp_field: start_ts_ms
     timestamp_format: epoch_millis
-    sequenced: true
-    sequence_field: sequence
-    sequence_scope: per_symbol
+    sequenced: false
     fanout: true
-  quote:
+  ohlcv_1m:
     identifier_field: symbol
-    timestamp_field: exchange_ts_ms
+    timestamp_field: start_ts_ms
     timestamp_format: epoch_millis
     sequenced: false
     fanout: true

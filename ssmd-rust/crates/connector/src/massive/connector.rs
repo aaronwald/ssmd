@@ -32,7 +32,8 @@ impl MassiveConnector {
     /// Create a new connector.
     ///
     /// * `api_key`  — Polygon.io API key (from `MASSIVE_API_KEY` env var)
-    /// * `symbols`  — list of equity tickers to subscribe (T.* and Q.* channels)
+    /// * `symbols`  — list of equity tickers to subscribe (A.* (1s) and AM.* (1m)
+    ///   aggregate channels)
     /// * `url`      — optional WebSocket URL override (for tests / staging)
     pub fn new(api_key: String, symbols: Vec<String>, url: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel(10_000);
@@ -87,7 +88,7 @@ impl Connector for MassiveConnector {
         info!(
             symbols = ?self.symbols,
             count = self.symbols.len(),
-            "Subscribing to Massive (Polygon.io) T.* and Q.* channels"
+            "Subscribing to Massive (Polygon.io) A.* (1s) and AM.* (1m) aggregate channels"
         );
 
         ws.subscribe(&self.symbols)
