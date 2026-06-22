@@ -1,3 +1,4 @@
+mod agg;
 mod config;
 
 use config::Config;
@@ -30,7 +31,9 @@ async fn main() {
         "ssmd-bar-cache starting"
     );
 
-    // TODO Tasks 2-4: 1m aggregation core, NATS JetStream consumers (massive +
-    // kraken), and a Redis writer for the rolling 1-hour ring, plus the
-    // health/metrics HTTP server. No aggregation or NATS/Redis I/O yet.
+    // TODO Tasks 3-4: NATS JetStream consumers (massive + kraken) feeding the
+    // MinuteAggregator, and a Redis writer for the rolling 1-hour ring, plus the
+    // health/metrics HTTP server. Connection verification (NATS reachable,
+    // Redis PING, redis_health watchdog) is wired here in Task 3 — NOT in this
+    // skeleton. No NATS/Redis I/O yet.
 }
