@@ -90,6 +90,14 @@ impl SchemaRegistry {
             "massive" => {
                 schemas.insert("trade".to_string(), Box::new(massive::MassiveTradeSchema));
                 schemas.insert("quote".to_string(), Box::new(massive::MassiveQuoteSchema));
+                schemas.insert(
+                    "ohlcv_1s".to_string(),
+                    Box::new(massive::MassiveOhlcv1sSchema),
+                );
+                schemas.insert(
+                    "ohlcv_1m".to_string(),
+                    Box::new(massive::MassiveOhlcv1mSchema),
+                );
             }
             _ => {}
         }
@@ -140,8 +148,12 @@ pub fn detect_message_type(feed: &str, json: &serde_json::Value) -> Option<Strin
             json.get("event_type")?.as_str().map(String::from)
         }
         "massive" => {
-            // Polygon.io uses "ev" field: "T" for trade, "Q" for quote
+            // Polygon.io uses "ev" field. On the Starter plan only aggregate
+            // channels flow: "A" (per-second OHLCV), "AM" (per-minute OHLCV).
+            // "T"/"Q" are retained for forward-compatibility but no longer arrive.
             match json.get("ev")?.as_str()? {
+                "A" => Some("ohlcv_1s".to_string()),
+                "AM" => Some("ohlcv_1m".to_string()),
                 "T" => Some("trade".to_string()),
                 "Q" => Some("quote".to_string()),
                 _ => None,
@@ -217,6 +229,38 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(r#"{"event":"subscribed","feed":"ticker"}"#).unwrap();
         assert_eq!(detect_message_type("kraken-futures", &json), None);
+    }
+
+    #[test]
+    fn test_registry_massive() {
+        let reg = SchemaRegistry::for_feed("massive");
+        // Aggregate schemas (Starter plan) plus retained trade/quote.
+        assert!(reg.get("ohlcv_1s").is_some());
+        assert!(reg.get("ohlcv_1m").is_some());
+        assert!(reg.get("trade").is_some());
+        assert!(reg.get("quote").is_some());
+        assert!(reg.get("status").is_none());
+    }
+
+    #[test]
+    fn test_detect_massive_aggregate_second() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"ev":"A","sym":"AAPL","o":1.0,"c":2.0,"s":1,"e":2}"#).unwrap();
+        assert_eq!(detect_message_type("massive", &json), Some("ohlcv_1s".into()));
+    }
+
+    #[test]
+    fn test_detect_massive_aggregate_minute() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"ev":"AM","sym":"AAPL","o":1.0,"c":2.0,"s":1,"e":2}"#).unwrap();
+        assert_eq!(detect_message_type("massive", &json), Some("ohlcv_1m".into()));
+    }
+
+    #[test]
+    fn test_detect_massive_status_skipped() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"ev":"status","status":"auth_success"}"#).unwrap();
+        assert_eq!(detect_message_type("massive", &json), None);
     }
 
     #[test]
