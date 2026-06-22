@@ -10,7 +10,7 @@ import {
 import { VOLUME_UNITS } from "../../../src/lib/duckdb/queries.ts";
 
 Deno.test("FEED_PATHS registers massive with the archiver double-nested prefix", () => {
-  assertEquals(FEED_PATHS["massive"], "massive/massive/equities");
+  assertEquals(FEED_PATHS["massive"], "massive/massive/massive");
 });
 
 Deno.test("VALID_DATA_FEEDS auto-includes massive via FEED_PATHS", () => {
@@ -41,6 +41,6 @@ Deno.test("VOLUME_UNITS massive is shares", () => {
 Deno.test("gcsParquetPath builds massive 1m glob from the nested prefix", () => {
   assertEquals(
     gcsParquetPath("ssmd-data", "massive", "2026-06-20", "ohlcv_1m"),
-    "s3://ssmd-data/massive/massive/equities/2026-06-20/ohlcv_1m_*.parquet",
+    "s3://ssmd-data/massive/massive/massive/2026-06-20/ohlcv_1m_*.parquet",
   );
 });

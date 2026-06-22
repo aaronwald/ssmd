@@ -9,7 +9,7 @@ export const FEED_PATHS: Record<string, string> = {
   "kraken-futures": "kraken-futures/kraken-futures/futures",
   "kraken-spot": "kraken-spot/kraken-spot/spot",
   "kalshi-sports": "kalshi/kalshi/sports",
-  "massive": "massive/massive/equities",
+  "massive": "massive/massive/massive",
 };
 
 export const VALID_DATA_FEEDS = Object.keys(FEED_PATHS);

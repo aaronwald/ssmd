@@ -40,10 +40,11 @@ export const FEED_CONFIG: Record<string, FeedInfo> = {
   },
   "massive": {
     prefix: "massive",
-    stream: "equities",
+    stream: "massive",
     messageTypes: ["ohlcv_1s", "ohlcv_1m", "ohlcv_1d"],
-    // Raw 1s/1m bars use the archiver double-nested layout
-    // (massive/massive/equities/{date}/{type}_{HHMM}.parquet).
+    // Raw 1s/1m bars use the archiver double-nested layout. The archiver's third
+    // path segment is the feed name (not a category), so the real prefix is
+    // massive/massive/massive/{date}/{type}_{HHMM}.parquet.
     // The daily aggregate (ohlcv_1d) is written by `hols aggregate --source massive`
     // to a flat path (massive/equities/daily/{date}/ohlcv-1d-massive.parquet).
     flatMessageTypes: ["ohlcv_1d"],

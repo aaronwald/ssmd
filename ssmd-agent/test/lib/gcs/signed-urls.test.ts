@@ -15,7 +15,7 @@ const kraken = FEED_CONFIG["kraken-spot"];
 
 Deno.test("FEED_CONFIG registers massive with all three message types", () => {
   assertEquals(massive.prefix, "massive");
-  assertEquals(massive.stream, "equities");
+  assertEquals(massive.stream, "massive");
   assertEquals(massive.messageTypes, ["ohlcv_1s", "ohlcv_1m", "ohlcv_1d"]);
   assertEquals(massive.flatMessageTypes, ["ohlcv_1d"]);
   assertEquals(massive.flatStream, "equities/daily");
@@ -57,7 +57,7 @@ Deno.test("gcsDirPrefix: massive ohlcv_1d resolves to flat daily path", () => {
 Deno.test("gcsDirPrefix: massive raw types resolve to nested archiver path", () => {
   assertEquals(
     gcsDirPrefix(massive, "2026-06-20", false),
-    "massive/massive/equities/2026-06-20/",
+    "massive/massive/massive/2026-06-20/",
   );
 });
 
