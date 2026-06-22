@@ -40,12 +40,10 @@ impl Config {
         let nats_url = require_env("NATS_URL");
         let redis_url = require_env("REDIS_URL");
 
-        let massive_subject =
-            env_or("BAR_CACHE_MASSIVE_SUBJECT", "prod.massive.json.ohlcv_1s.>");
+        let massive_subject = env_or("BAR_CACHE_MASSIVE_SUBJECT", "prod.massive.json.ohlcv_1s.>");
         let massive_stream = env_or("BAR_CACHE_MASSIVE_STREAM", "PROD_MASSIVE");
 
-        let kraken_subject =
-            env_or("BAR_CACHE_KRAKEN_SUBJECT", "prod.kraken-spot.json.trade.>");
+        let kraken_subject = env_or("BAR_CACHE_KRAKEN_SUBJECT", "prod.kraken-spot.json.trade.>");
         let kraken_stream = env_or("BAR_CACHE_KRAKEN_STREAM", "PROD_KRAKEN_SPOT");
 
         let ring = parse_env("BAR_CACHE_RING", 60usize);
