@@ -34,7 +34,21 @@ export const FEED_CONFIG: Record<string, FeedInfo> = {
     prefix: "hols",
     stream: "crypto/daily",
     messageTypes: ["ohlcv"],
+    // HOLS is daily-aggregated: every message type uses the flat layout.
+    flat: true,
     description: "Crypto OHLCV bars — 1-minute & 5-minute candlesticks (open/high/low/close/volume) from Binance & Kraken, daily Parquet. (v14 model inputs.)",
+  },
+  "massive": {
+    prefix: "massive",
+    stream: "equities",
+    messageTypes: ["ohlcv_1s", "ohlcv_1m", "ohlcv_1d"],
+    // Raw 1s/1m bars use the archiver double-nested layout
+    // (massive/massive/equities/{date}/{type}_{HHMM}.parquet).
+    // The daily aggregate (ohlcv_1d) is written by `hols aggregate --source massive`
+    // to a flat path (massive/equities/daily/{date}/ohlcv-1d-massive.parquet).
+    flatMessageTypes: ["ohlcv_1d"],
+    flatStream: "equities/daily",
+    description: "Massive (Polygon.io) US equities OHLCV bars — 1-second & 1-minute raw bars plus a daily (1d) aggregate.",
   },
 };
 
@@ -43,6 +57,75 @@ export interface FeedInfo {
   stream: string;
   messageTypes: string[];
   description: string;
+  /** When true, ALL message types use the flat layout: {prefix}/{stream}/{date}/{type}.parquet */
+  flat?: boolean;
+  /** Message types that use the flat layout while the rest use the nested archiver layout. */
+  flatMessageTypes?: string[];
+  /** Stream segment to use for flat-layout files (defaults to `stream` when omitted). */
+  flatStream?: string;
+}
+
+/** True when files of the given message type use the flat (non-archiver) GCS layout. */
+export function usesFlatLayout(config: FeedInfo, msgType?: string): boolean {
+  if (config.flat) return true;
+  if (msgType && config.flatMessageTypes?.includes(msgType)) return true;
+  return false;
+}
+
+/**
+ * Resolve the GCS directory prefix for a feed's files on a given date.
+ * Flat layout:   {prefix}/{flatStream ?? stream}/{date}/
+ * Nested layout: {prefix}/{prefix}/{stream}/{date}/   (archiver double-nesting)
+ */
+export function gcsDirPrefix(config: FeedInfo, dateStr: string, flat: boolean): string {
+  // Path segments are required; a misconfigured feed must fail loudly rather
+  // than produce a wrong (and silently empty) GCS prefix.
+  if (!config.prefix) throw new Error("Feed config missing prefix");
+  if (flat) {
+    const stream = config.flatStream ?? config.stream;
+    if (!stream) throw new Error(`Feed ${config.prefix} missing flat stream`);
+    return `${config.prefix}/${stream}/${dateStr}/`;
+  }
+  if (!config.stream) throw new Error(`Feed ${config.prefix} missing stream`);
+  return `${config.prefix}/${config.prefix}/${config.stream}/${dateStr}/`;
+}
+
+/**
+ * Whether a feed has any files in the given layout (flat vs nested), used to
+ * decide which directories to scan when no specific msgType is requested.
+ */
+export function scanLayout(config: FeedInfo, flat: boolean): boolean {
+  if (flat) {
+    return config.flat === true || (config.flatMessageTypes?.length ?? 0) > 0;
+  }
+  // Nested layout applies when the feed is not fully flat and at least one
+  // message type is not in the flat set.
+  if (config.flat === true) return false;
+  const flatTypes = config.flatMessageTypes ?? [];
+  return config.messageTypes.some((t) => !flatTypes.includes(t));
+}
+
+/**
+ * Parse a parquet/csv basename into its message type and time-slot ("hour").
+ * Flat layout files have no time-slot suffix (e.g. "ohlcv-1d-massive"); their
+ * type is the whole basename and the hour is the date. Nested archiver files
+ * are "{type}_{HHMM}". Returns null for nested files without an underscore so
+ * malformed names are skipped (preserves prior behavior).
+ */
+export function parseFileType(
+  baseName: string,
+  flat: boolean,
+  dateStr: string,
+): { fileType: string; hour: string } | null {
+  if (flat) {
+    return { fileType: baseName, hour: dateStr };
+  }
+  const lastUnderscore = baseName.lastIndexOf("_");
+  if (lastUnderscore === -1) return null;
+  return {
+    fileType: baseName.substring(0, lastUnderscore),
+    hour: baseName.substring(lastUnderscore + 1),
+  };
 }
 
 /** Returns the human-friendly description for a feed, or an empty string if unknown. */
@@ -92,53 +175,48 @@ export async function listParquetFiles(
   const from = new Date(dateFrom);
   const to = new Date(dateTo);
 
-  // HOLS uses a flat layout: {prefix}/{stream}/{date}/ohlcv.parquet
-  // Archiver uses double-nesting: {prefix}/{prefix}/{stream}/{date}/{type}_{HHMM}.parquet
-  const isFlat = config.prefix === "hols";
+  // A feed may mix layouts (e.g. massive: raw 1s/1m bars use the archiver
+  // double-nested layout, the daily ohlcv_1d aggregate is flat). When a msgType
+  // is requested, scan only the layout that type uses; otherwise scan whichever
+  // layouts the feed actually populates. The two layouts live under distinct
+  // prefixes, so no dedupe is needed. gcsDirPrefix/parseFileType (defined above)
+  // validate the feed config and fail loudly on a misconfigured feed.
+  const layoutsToScan: boolean[] = msgType
+    ? [usesFlatLayout(config, msgType)]
+    : [true, false].filter((flat) => scanLayout(config, flat));
 
   for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
     const dateStr = d.toISOString().slice(0, 10);
-    const gcsPrefix = isFlat
-      ? `${config.prefix}/${config.stream}/${dateStr}/`
-      : `${config.prefix}/${config.prefix}/${config.stream}/${dateStr}/`;
 
-    const [gcsFiles] = await storage.bucket(bucket).getFiles({ prefix: gcsPrefix });
+    for (const flat of layoutsToScan) {
+      const gcsPrefix = gcsDirPrefix(config, dateStr, flat);
+      const [gcsFiles] = await storage.bucket(bucket).getFiles({ prefix: gcsPrefix });
 
-    for (const gcsFile of gcsFiles) {
-      if (!gcsFile.name.endsWith(".parquet") && !gcsFile.name.endsWith(".csv")) continue;
+      for (const gcsFile of gcsFiles) {
+        if (!gcsFile.name.endsWith(".parquet") && !gcsFile.name.endsWith(".csv")) continue;
 
-      const fileName = gcsFile.name.split("/").pop() ?? "";
-      const ext = fileName.endsWith(".csv") ? ".csv" : ".parquet";
-      const baseName = fileName.replace(ext, "");
+        const fileName = gcsFile.name.split("/").pop() ?? "";
+        const ext = fileName.endsWith(".csv") ? ".csv" : ".parquet";
+        const baseName = fileName.replace(ext, "");
 
-      let fileType: string;
-      let hour: string;
+        const parsed = parseFileType(baseName, flat, dateStr);
+        if (!parsed) continue; // malformed nested name (no time-slot) — skip
+        const { fileType, hour } = parsed;
 
-      if (isFlat) {
-        // Flat layout: ohlcv.parquet (no hour suffix)
-        fileType = baseName;
-        hour = dateStr;
-      } else {
-        // Archiver layout: ticker_0000.parquet
-        const lastUnderscore = baseName.lastIndexOf("_");
-        if (lastUnderscore === -1) continue;
-        fileType = baseName.substring(0, lastUnderscore);
-        hour = baseName.substring(lastUnderscore + 1);
+        // Filter by message type if specified
+        if (msgType && fileType !== msgType) continue;
+
+        const metadata = gcsFile.metadata;
+        const bytes = Number(metadata.size ?? 0);
+
+        files.push({
+          path: gcsFile.name,
+          name: fileName,
+          type: fileType,
+          hour,
+          bytes,
+        });
       }
-
-      // Filter by message type if specified
-      if (msgType && fileType !== msgType) continue;
-
-      const metadata = gcsFile.metadata;
-      const bytes = Number(metadata.size ?? 0);
-
-      files.push({
-        path: gcsFile.name,
-        name: fileName,
-        type: fileType,
-        hour,
-        bytes,
-      });
     }
   }
 

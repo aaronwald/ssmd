@@ -27,6 +27,10 @@ export {
   resolveBinanceInterval,
 } from "./hols-window.ts";
 export type { Hols1mWindow, HolsGenerateMode } from "./hols-window.ts";
+// Pure helpers for the massive daily generator live in a dependency-free module
+// (no DuckDB import) so they can be unit-tested without --allow-ffi.
+import { buildMassiveDailySQL, massiveDailyGcsPath } from "./hols-massive.ts";
+export { buildMassiveDailySQL, massiveDailyGcsPath } from "./hols-massive.ts";
 
 // --- Kraken Spot REST OHLC ---
 const KRAKEN_SPOT_OHLC_URL = "https://api.kraken.com/0/public/OHLC";
@@ -96,7 +100,7 @@ export async function handleHols(
       console.error(`Unknown hols subcommand: ${subcommand ?? "(none)"}`);
       console.log("Usage:");
       console.log("  ssmd hols generate   [--date YYYY-MM-DD] [--days N] [--source kraken|binance] [--interval 1|5] [--mode daily|intraday] [--trailing-minutes N] [--dry-run]");
-      console.log("  ssmd hols aggregate  [--date YYYY-MM-DD] [--days N] [--dry-run]  # Aggregated WS trade data");
+      console.log("  ssmd hols aggregate  [--date YYYY-MM-DD] [--days N] [--source kraken|massive] [--dry-run]  # Aggregated WS trade data (kraken) or daily equity OHLCV (massive)");
       console.log("  ssmd hols reference  [--date YYYY-MM-DD] [--dry-run]             # Tickers reference CSV");
       Deno.exit(1);
   }
@@ -637,6 +641,12 @@ async function fetchSpotOhlcPage(
 export async function runHolsAggregate(
   flags: Record<string, unknown>,
 ): Promise<void> {
+  const source = (flags.source as string) ?? "kraken";
+  if (source === "massive") {
+    await runHolsAggregateMassive(flags);
+    return;
+  }
+
   const startTime = Date.now();
   const dryRun = !!flags["dry-run"];
 
@@ -1077,4 +1087,161 @@ async function runHolsReference(
   } finally {
     await closeDb();
   }
+}
+
+// ============================================================
+// Job 2b: Aggregate massive 1m equity bars into a daily OHLCV file
+//   ssmd hols aggregate --source massive [--date YYYY-MM-DD] [--days N] [--dry-run]
+// ============================================================
+
+/** GCS layout for massive raw 1m bars (archiver double-nested). */
+const MASSIVE_1M_PREFIX = "massive/massive/equities";
+
+export async function runHolsAggregateMassive(
+  flags: Record<string, unknown>,
+): Promise<void> {
+  const startTime = Date.now();
+  const dryRun = !!flags["dry-run"];
+
+  const { startDate, endDate, startDateStr, endDateStr, lookbackDays } = parseDateRange(flags);
+
+  console.log(`[hols:aggregate:massive] Daily OHLCV from 1m equity bars for ${startDateStr} to ${endDateStr} (${lookbackDays} days) dry-run=${dryRun}`);
+
+  // 1. Download massive 1m parquet files from GCS
+  const barsDir = await downloadMassive1mBars(startDate, endDate);
+  if (!barsDir) {
+    // Early days may simply have no captured data. Fail with a clear, non-zero
+    // exit rather than writing an empty daily file (do NOT upload a stub).
+    console.error(
+      `[hols:aggregate:massive] No massive 1m parquet files found in gs://${GCS_BUCKET}/${MASSIVE_1M_PREFIX}/ for ${startDateStr}..${endDateStr}. Nothing to aggregate.`,
+    );
+    Deno.exit(1);
+  }
+
+  // 2. Aggregate 1m bars into a daily OHLCV file via DuckDB
+  const parquetPath = `/tmp/hols-massive-daily-${endDateStr}.parquet`;
+  const { rowCount, symbolCount } = await aggregateMassive1mToDaily(barsDir, parquetPath);
+
+  // Output assertion: confirm the COPY actually produced a non-empty file.
+  const parquetStat = await Deno.stat(parquetPath);
+  if (!parquetStat.isFile || (parquetStat.size ?? 0) === 0) {
+    console.error(`[hols:aggregate:massive] Aggregation did not write a non-empty parquet at ${parquetPath}. Aborting.`);
+    try { await Deno.remove(barsDir, { recursive: true }); } catch { /* best-effort */ }
+    Deno.exit(1);
+  }
+  const fileSizeKB = Math.round((parquetStat.size ?? 0) / 1024);
+  console.log(`[hols:aggregate:massive] Parquet written: ${parquetPath} (${fileSizeKB} KB, ${rowCount} rows, ${symbolCount} symbols)`);
+
+  if (rowCount === 0) {
+    // Source files existed but produced no rows — a real data problem, not an
+    // empty day. Fail loudly and do not upload an empty file.
+    console.error("[hols:aggregate:massive] Source parquet present but aggregation produced 0 rows. Aborting (not uploading empty file).");
+    try { await Deno.remove(parquetPath); } catch { /* best-effort */ }
+    try { await Deno.remove(barsDir, { recursive: true }); } catch { /* best-effort */ }
+    Deno.exit(1);
+  }
+
+  // 3. Upload to GCS (flat daily layout — matches FEED_CONFIG ohlcv_1d)
+  const gcsPath = massiveDailyGcsPath(endDateStr);
+  if (dryRun) {
+    console.log(`[hols:aggregate:massive] DRY RUN: would upload to gs://${GCS_BUCKET}/${gcsPath}`);
+  } else {
+    await uploadToGCS(parquetPath, gcsPath);
+    console.log(`[hols:aggregate:massive] Uploaded to gs://${GCS_BUCKET}/${gcsPath}`);
+  }
+
+  // 4. Send email report (reuses HOLS_EMAIL_ON_FAILURE_ONLY gate inside sendReport)
+  const durationSec = Math.round((Date.now() - startTime) / 1000);
+  if (!dryRun) {
+    await sendReport({
+      job: "aggregate",
+      jobLabel: "Massive Daily OHLCV",
+      dateStr: `${startDateStr} to ${endDateStr}`,
+      symbolCount,
+      successCount: symbolCount,
+      failCount: 0,
+      totalRows: rowCount,
+      fileSizeKB,
+      durationSec,
+      failures: [],
+    });
+  }
+
+  // 5. Cleanup /tmp
+  try { await Deno.remove(parquetPath); } catch { /* best-effort */ }
+  try { await Deno.remove(barsDir, { recursive: true }); } catch { /* best-effort */ }
+
+  console.log(`[hols:aggregate:massive] Done in ${Math.round((Date.now() - startTime) / 1000)}s`);
+}
+
+/**
+ * Download massive 1m parquet files from GCS for the given date range.
+ * GCS layout: massive/massive/equities/YYYY-MM-DD/ohlcv_1m_HHMM.parquet
+ * Mirrors downloadSpotTrades: per-day errors are logged (one bad day must not
+ * abort a multi-day backfill); a total of zero files returns null so the caller
+ * fails loudly.
+ */
+async function downloadMassive1mBars(
+  startDate: Date,
+  endDate: Date,
+): Promise<string | null> {
+  const localDir = "/tmp/massive-1m-bars";
+  try { await Deno.mkdir(localDir, { recursive: true }); } catch { /* exists */ }
+
+  const storage = new Storage();
+  const bucket = storage.bucket(GCS_BUCKET);
+  let fileCount = 0;
+
+  const current = new Date(startDate);
+  const end = new Date(endDate);
+  end.setUTCDate(end.getUTCDate() + 1);
+
+  while (current < end) {
+    const dateStr = current.toISOString().slice(0, 10);
+    const prefix = `${MASSIVE_1M_PREFIX}/${dateStr}/`;
+
+    try {
+      const [files] = await bucket.getFiles({ prefix });
+      for (const file of files) {
+        const filename = file.name.split("/").pop() ?? "";
+        if (!filename.startsWith("ohlcv_1m_") || !filename.endsWith(".parquet")) continue;
+        const localPath = `${localDir}/${dateStr}-${filename}`;
+        await file.download({ destination: localPath });
+        fileCount++;
+      }
+    } catch (e) {
+      console.log(`[hols:aggregate:massive] 1m bar download for ${dateStr}: ${(e as Error).message}`);
+    }
+
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+
+  if (fileCount === 0) {
+    console.log("[hols:aggregate:massive] No massive 1m parquet files found in GCS");
+    return null;
+  }
+
+  console.log(`[hols:aggregate:massive] Downloaded ${fileCount} massive 1m parquet files to ${localDir}`);
+  return localDir;
+}
+
+async function aggregateMassive1mToDaily(
+  barsDir: string,
+  parquetPath: string,
+): Promise<{ rowCount: number; symbolCount: number }> {
+  const instance = await DuckDBInstance.create();
+  const conn = await instance.connect();
+
+  const inputGlob = `${barsDir}/*.parquet`;
+  await conn.run(buildMassiveDailySQL(inputGlob, parquetPath));
+
+  const result = await conn.run(`
+    SELECT COUNT(*) as cnt, COUNT(DISTINCT symbol) as symbols
+    FROM read_parquet('${parquetPath}')
+  `);
+  const rows = await result.getRows();
+  const rowCount = rows.length > 0 ? Number(rows[0][0]) : 0;
+  const symbolCount = rows.length > 0 ? Number(rows[0][1]) : 0;
+
+  return { rowCount, symbolCount };
 }
