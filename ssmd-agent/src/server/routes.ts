@@ -109,6 +109,8 @@ export interface RouteContext {
   authOverride?: (apiKey: string | null, db: Database) => Promise<import("./auth.ts").AuthResult>;
   /** Test-only: override the email → EffectiveUser lookup performed by the X-CF-User-Email path. */
   resolveUserOverride?: (email: string) => Promise<EffectiveUser | null>;
+  /** Test-only: override the Redis client used by cache-backed read endpoints. */
+  redisOverride?: { get(key: string): Promise<string | null> };
 }
 
 function getHarmanPool(ctx: RouteContext, instance?: string | null): ReturnType<typeof postgres> | undefined {
@@ -2376,6 +2378,78 @@ route("GET", "/v1/data/snap", async (req) => {
     feed,
     snapshots,
     count: snapshots.length,
+  });
+}, true, "datasets:read", "public");
+
+// 1-minute OHLCV bars from Redis (populated by ssmd-bar-cache).
+// Key layout: `ohlcv_1m:{feed}:{sym}` → JSON array of the last ~60 bars, oldest→newest.
+const BAR_CACHE_FEEDS = ["massive", "kraken-spot"] as const;
+const MAX_BARS = 60;
+
+route("GET", "/v1/data/ohlcv/1m", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+
+  const feed = url.searchParams.get("feed");
+  if (!feed || !(BAR_CACHE_FEEDS as readonly string[]).includes(feed)) {
+    return json({ error: `Invalid or missing feed. Valid: ${BAR_CACHE_FEEDS.join(", ")}` }, 400);
+  }
+
+  const sym = url.searchParams.get("sym");
+  if (!sym) {
+    return json({ error: "sym query parameter is required" }, 400);
+  }
+
+  // Feed-access check (mirror /v1/data/snap, honoring wildcard).
+  if (!auth.allowedFeeds.includes("*") && !auth.allowedFeeds.includes(feed)) {
+    return json({ error: `Key not authorized for feed: ${feed}` }, 403);
+  }
+
+  // Optional limit, clamped to [1, MAX_BARS]. Default = all available bars.
+  let limit = MAX_BARS;
+  const limitParam = url.searchParams.get("limit");
+  if (limitParam !== null) {
+    const parsed = Number(limitParam);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return json({ error: "limit must be a positive integer" }, 400);
+    }
+    limit = Math.min(parsed, MAX_BARS);
+  }
+
+  let raw: string | null;
+  try {
+    const redis = ctx.redisOverride ?? (await getRedis());
+    raw = await redis.get(`ohlcv_1m:${feed}:${sym}`);
+  } catch (err) {
+    console.error(`[routes] ohlcv/1m redis error for ${feed}:${sym}:`, err);
+    return json({ error: "cache unavailable" }, 503);
+  }
+
+  if (raw === null) {
+    return json({ error: "no cached bars" }, 404);
+  }
+
+  let bars: unknown;
+  try {
+    bars = JSON.parse(raw);
+  } catch {
+    console.error(`[routes] ohlcv/1m unparseable cache value for ${feed}:${sym}`);
+    return json({ error: "cache unavailable" }, 503);
+  }
+
+  if (!Array.isArray(bars)) {
+    console.error(`[routes] ohlcv/1m cache value not an array for ${feed}:${sym}`);
+    return json({ error: "cache unavailable" }, 503);
+  }
+
+  // Return the last `limit` bars (cache stores oldest→newest).
+  const sliced = bars.slice(-limit);
+
+  return json({
+    feed,
+    sym,
+    bars: sliced,
+    served_at: new Date().toISOString(),
   });
 }, true, "datasets:read", "public");
 
