@@ -1095,7 +1095,7 @@ async function runHolsReference(
 // ============================================================
 
 /** GCS layout for massive raw 1m bars (archiver double-nested). */
-const MASSIVE_1M_PREFIX = "massive/massive/equities";
+const MASSIVE_1M_PREFIX = "massive/massive/massive";
 
 export async function runHolsAggregateMassive(
   flags: Record<string, unknown>,
@@ -1176,7 +1176,7 @@ export async function runHolsAggregateMassive(
 
 /**
  * Download massive 1m parquet files from GCS for the given date range.
- * GCS layout: massive/massive/equities/YYYY-MM-DD/ohlcv_1m_HHMM.parquet
+ * GCS layout: massive/massive/massive/YYYY-MM-DD/ohlcv_1m_HHMM.parquet
  * Mirrors downloadSpotTrades: per-day errors are logged (one bad day must not
  * abort a multi-day backfill); a total of zero files returns null so the caller
  * fails loudly.
