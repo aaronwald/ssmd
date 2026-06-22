@@ -4036,6 +4036,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssmd-bar-cache"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "axum 0.7.9",
+ "chrono",
+ "futures-util",
+ "prometheus",
+ "redis",
+ "serde",
+ "serde_json",
+ "ssmd-middleware",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ssmd-cache"
 version = "0.1.0"
 dependencies = [
