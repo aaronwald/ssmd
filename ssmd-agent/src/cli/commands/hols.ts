@@ -30,7 +30,7 @@ export type { Hols1mWindow, HolsGenerateMode } from "./hols-window.ts";
 // Pure helpers for the massive daily generator live in a dependency-free module
 // (no DuckDB import) so they can be unit-tested without --allow-ffi.
 import { buildMassiveDailySQL, massiveDailyGcsPath } from "./hols-massive.ts";
-export { buildMassiveDailySQL, massiveDailyGcsPath } from "./hols-massive.ts";
+export { buildMassiveDailySQL, massiveDailyGcsPath };
 
 // --- Kraken Spot REST OHLC ---
 const KRAKEN_SPOT_OHLC_URL = "https://api.kraken.com/0/public/OHLC";
