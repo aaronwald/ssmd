@@ -1,8 +1,3 @@
-// The aggregation API is fully exercised by unit tests but not yet wired into
-// `main` — the NATS consumers and Redis writer that drive it land in Tasks 3-4.
-// Allow dead_code until then so the skeleton compiles clean under -D warnings.
-#![allow(dead_code)]
-
 //! Pure, side-effect-free 1-minute OHLCV aggregation.
 //!
 //! Inputs arrive as either massive 1-second OHLCV aggregates or kraken-spot
@@ -19,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 /// Milliseconds in one minute.
@@ -31,7 +26,9 @@ pub fn minute_floor(ts_ms: i64) -> i64 {
 }
 
 /// A finalized or in-progress 1-minute OHLCV bar for one symbol.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Serialized as JSON for the Redis ring (see [`crate::store`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bar {
     pub sym: String,
     pub o: f64,
@@ -328,7 +325,11 @@ impl MinuteAggregator {
 
     /// Finalize and remove the current open bar for `sym`, if any.
     ///
-    /// Used at shutdown / explicit flush to emit a still-open minute.
+    /// Retained for a future shutdown / explicit flush to emit a still-open
+    /// minute; the consumer loop does not call it yet (the forming minute is
+    /// written to Redis on every ingest, so an unclean stop loses at most the
+    /// in-flight minute, which is recoverable from the source on restart).
+    #[allow(dead_code)]
     pub fn flush(&mut self, sym: &str) -> Option<Bar> {
         self.states.remove(sym).and_then(|s| s.to_bar(sym))
     }
@@ -411,14 +412,9 @@ mod tests {
     fn parse_kraken_malformed_is_none() {
         assert!(parse_kraken_trade(b"{bad").is_none());
         // Bad timestamp.
-        assert!(parse_kraken_trade(&kraken(
-            "BTC/USD",
-            1.0,
-            1.0,
-            "not-a-timestamp",
-            "uuid-x"
-        ))
-        .is_none());
+        assert!(
+            parse_kraken_trade(&kraken("BTC/USD", 1.0, 1.0, "not-a-timestamp", "uuid-x")).is_none()
+        );
     }
 
     #[test]
@@ -435,9 +431,7 @@ mod tests {
             let c = (i + 11) as f64;
             let h = if i == 30 { 1000.0 } else { c };
             let l = if i == 40 { 1.0 } else { o };
-            let res = agg.ingest(
-                parse_massive_1s(&massive("AAPL", sec, o, h, l, c, 2.0)).unwrap(),
-            );
+            let res = agg.ingest(parse_massive_1s(&massive("AAPL", sec, o, h, l, c, 2.0)).unwrap());
             assert!(res.finalized.is_none());
             last_current = Some(res.current);
         }
@@ -497,12 +491,24 @@ mod tests {
     fn duplicate_kraken_trade_id_does_not_double_count() {
         let mut agg = MinuteAggregator::new();
         agg.ingest(
-            parse_kraken_trade(&kraken("BTC/USD", 100.0, 1.0, "2026-01-01T00:00:05Z", "dup"))
-                .unwrap(),
+            parse_kraken_trade(&kraken(
+                "BTC/USD",
+                100.0,
+                1.0,
+                "2026-01-01T00:00:05Z",
+                "dup",
+            ))
+            .unwrap(),
         );
         let res = agg.ingest(
-            parse_kraken_trade(&kraken("BTC/USD", 100.0, 1.0, "2026-01-01T00:00:05Z", "dup"))
-                .unwrap(),
+            parse_kraken_trade(&kraken(
+                "BTC/USD",
+                100.0,
+                1.0,
+                "2026-01-01T00:00:05Z",
+                "dup",
+            ))
+            .unwrap(),
         );
         assert_eq!(res.current.v, 1.0, "replayed trade id ignored");
     }
@@ -512,13 +518,13 @@ mod tests {
         let mut agg = MinuteAggregator::new();
         // Minute 0.
         agg.ingest(parse_massive_1s(&massive("AAPL", 0, 5.0, 5.0, 5.0, 5.0, 4.0)).unwrap());
-        let res =
-            agg.ingest(parse_massive_1s(&massive("AAPL", 30_000, 6.0, 6.0, 6.0, 6.0, 2.0)).unwrap());
+        let res = agg
+            .ingest(parse_massive_1s(&massive("AAPL", 30_000, 6.0, 6.0, 6.0, 6.0, 2.0)).unwrap());
         assert!(res.finalized.is_none(), "still minute 0");
 
         // First input in minute 1 finalizes minute 0.
-        let res =
-            agg.ingest(parse_massive_1s(&massive("AAPL", 60_000, 7.0, 7.0, 7.0, 7.0, 1.0)).unwrap());
+        let res = agg
+            .ingest(parse_massive_1s(&massive("AAPL", 60_000, 7.0, 7.0, 7.0, 7.0, 1.0)).unwrap());
         let finalized = res.finalized.expect("minute 0 should finalize");
         assert_eq!(finalized.start_ts_ms, 0);
         assert_eq!(finalized.end_ts_ms, 60_000);
