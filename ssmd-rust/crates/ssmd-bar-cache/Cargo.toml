@@ -1,0 +1,25 @@
+[package]
+name = "ssmd-bar-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "NATS aggregate/trade stream to Redis 1-minute OHLCV bar cache for SSMD"
+
+[[bin]]
+name = "ssmd-bar-cache"
+path = "src/main.rs"
+
+[dependencies]
+ssmd-middleware = { path = "../middleware", features = ["redis-health"] }
+tokio = { workspace = true }
+async-nats = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+futures-util = { workspace = true }
+chrono = { workspace = true }
+axum = { workspace = true }
+prometheus = { workspace = true }
