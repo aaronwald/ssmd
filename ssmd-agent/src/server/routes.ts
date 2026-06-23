@@ -4241,6 +4241,154 @@ route("GET", "/v1/internal/changelog-fetch", async (req, _ctx) => {
   });
 }, true, "admin:read");
 
+// OHLCV REST bars: fetch + normalize external REST OHLCV server-side.
+// Returns the normalized shape the ohlcv-bar-freshness pipeline function expects:
+//   { sym, bars: [{ o, h, l, c, v, start_ts_ms }] }  (oldest→newest)
+interface NormalizedBar {
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+  start_ts_ms: number;
+}
+
+// Reject bars with any non-finite field (NaN/Infinity from bad coercion) or a
+// non-positive timestamp, so the normalized output never carries garbage.
+function isFiniteBar(b: NormalizedBar): boolean {
+  return (
+    Number.isFinite(b.o) &&
+    Number.isFinite(b.h) &&
+    Number.isFinite(b.l) &&
+    Number.isFinite(b.c) &&
+    Number.isFinite(b.v) &&
+    Number.isFinite(b.start_ts_ms) &&
+    b.start_ts_ms > 0
+  );
+}
+
+route("GET", "/v1/internal/ohlcv-rest-bars", async (req, _ctx) => {
+  const url = new URL(req.url);
+  const source = url.searchParams.get("source");
+  const sym = url.searchParams.get("sym");
+  const date = url.searchParams.get("date");
+
+  if (source !== "polygon" && source !== "kraken") {
+    return json({ error: "source must be one of: polygon, kraken" }, 400);
+  }
+  if (!sym) {
+    return json({ error: "sym query parameter is required" }, 400);
+  }
+  // date is required for polygon (it is the range day); optional for kraken.
+  if (source === "polygon" && !date) {
+    return json({ error: "date query parameter is required for polygon (YYYY-MM-DD)" }, 400);
+  }
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return json({ error: "date must be YYYY-MM-DD format" }, 400);
+  }
+
+  if (source === "polygon") {
+    // Validate the key is present and non-empty before using it (empty string
+    // is falsy, so this also rejects ""). Guarantees a non-empty Bearer token.
+    const apiKey = Deno.env.get("MASSIVE_API_KEY");
+    if (!apiKey) {
+      return json({ error: "MASSIVE_API_KEY not configured" }, 500);
+    }
+    const polyUrl = `https://api.polygon.io/v2/aggs/ticker/${encodeURIComponent(sym)}/range/1/minute/${date}/${date}` +
+      `?adjusted=true&sort=asc&limit=50000`;
+    let data: { results?: Array<{ t: number; o: number; h: number; l: number; c: number; v: number }> };
+    try {
+      // Key as a Bearer header (not in the URL) so it can never leak into an
+      // error/response that echoes the request URL.
+      const resp = await fetch(polyUrl, {
+        signal: AbortSignal.timeout(30_000),
+        headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+      });
+      if (!resp.ok) {
+        return json({ error: `Polygon fetch failed: ${resp.status} ${resp.statusText}` }, 502);
+      }
+      data = await resp.json();
+    } catch (e) {
+      return json({ error: `Polygon fetch error: ${e instanceof Error ? e.message : String(e)}` }, 502);
+    }
+
+    // Missing/empty results (e.g. non-trading day) → empty bars, not an error.
+    if (!data.results || data.results.length === 0) {
+      return json({ sym, bars: [] });
+    }
+    const bars: NormalizedBar[] = data.results
+      .map((r) => ({
+        o: r.o,
+        h: r.h,
+        l: r.l,
+        c: r.c,
+        v: r.v,
+        start_ts_ms: r.t,
+      }))
+      .filter(isFiniteBar);
+    bars.sort((a, b) => a.start_ts_ms - b.start_ts_ms);
+    return json({ sym, bars });
+  }
+
+  // source === "kraken"
+  let krakenUrl = `https://api.kraken.com/0/public/OHLC?pair=${encodeURIComponent(sym)}&interval=1`;
+  const since = url.searchParams.get("since");
+  if (since !== null) {
+    // since is a Unix-timestamp cursor; reject non-integer input with a 400
+    // rather than forwarding garbage to Kraken.
+    if (!/^\d+$/.test(since)) {
+      return json({ error: "since must be a positive integer (unix timestamp)" }, 400);
+    }
+    krakenUrl += `&since=${since}`;
+  }
+  let data: { error?: string[]; result?: Record<string, unknown> };
+  try {
+    const resp = await fetch(krakenUrl, {
+      signal: AbortSignal.timeout(30_000),
+      headers: { Accept: "application/json" },
+    });
+    if (!resp.ok) {
+      return json({ error: `Kraken fetch failed: ${resp.status} ${resp.statusText}` }, 502);
+    }
+    data = await resp.json();
+  } catch (e) {
+    return json({ error: `Kraken fetch error: ${e instanceof Error ? e.message : String(e)}` }, 502);
+  }
+
+  if (data.error && data.error.length > 0) {
+    return json({ error: `Kraken API error: ${data.error.join(", ")}` }, 502);
+  }
+
+  // Result key may differ from the requested pair (Kraken normalizes pair names).
+  // Take the first non-"last" key whose value is an array of candle arrays.
+  let candles: unknown[][] = [];
+  const result = data.result ?? {};
+  for (const key of Object.keys(result)) {
+    if (key === "last") continue;
+    const val = result[key];
+    if (Array.isArray(val)) {
+      candles = val as unknown[][];
+      break;
+    }
+  }
+
+  // Kraken OHLC array: [time, open, high, low, close, vwap, volume, count].
+  // Coerce strings → numbers and drop any candle that yields a non-finite
+  // value (malformed/short arrays) rather than emitting NaN → JSON null.
+  const bars: NormalizedBar[] = candles
+    .map((c) => ({
+      o: Number(c[1]),
+      h: Number(c[2]),
+      l: Number(c[3]),
+      c: Number(c[4]),
+      v: Number(c[6]),
+      start_ts_ms: Number(c[0]) * 1000,
+    }))
+    .filter(isFiniteBar);
+  bars.sort((a, b) => a.start_ts_ms - b.start_ts_ms);
+  return json({ sym, bars });
+}, true, "admin:read");
+
 // Internal email endpoint (used by pipeline worker)
 route("POST", "/v1/internal/email", async (req, _ctx) => {
   const { to, subject, html } = await req.json();

@@ -326,3 +326,230 @@ Deno.test("GET /v1/data/ohlcv/1m returns 401 without API key", async () => {
   const res = await router(req);
   assertEquals(res.status, 401);
 });
+
+// --- GET /v1/internal/ohlcv-rest-bars (external REST OHLCV normalizer) ---
+
+// Build a router whose auth always succeeds with admin:read scope. The route
+// hits external REST APIs, so each test stubs globalThis.fetch.
+function createRestBarsRouter() {
+  const ctx: RouteContext = {
+    dataDir: "/tmp/test-data",
+    db: mockDb,
+    harmanPools: new Map(),
+    authOverride: () =>
+      Promise.resolve({
+        valid: true,
+        userId: "u1",
+        userEmail: "test@example.com",
+        scopes: ["admin:read"],
+        keyPrefix: "test_pref",
+        allowedFeeds: ["*"],
+        billable: false,
+      }),
+  };
+  return createRouter(ctx);
+}
+
+// Stub globalThis.fetch with a function, run fn, then restore.
+async function withStubbedFetch(
+  stub: (input: string | URL | Request) => Promise<Response>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const original = globalThis.fetch;
+  globalThis.fetch = ((input: string | URL | Request) =>
+    stub(input)) as typeof fetch;
+  try {
+    await fn();
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+Deno.test("GET /v1/internal/ohlcv-rest-bars polygon maps results to normalized bars", async () => {
+  const polygonBody = {
+    results: [
+      { t: 1_700_000_000_000, o: 1, h: 2, l: 0.5, c: 1.5, v: 100 },
+      { t: 1_700_000_060_000, o: 1.5, h: 2.5, l: 1, c: 2, v: 200 },
+    ],
+  };
+  await withStubbedFetch(
+    (input) => {
+      const u = input.toString();
+      assertEquals(u.includes("api.polygon.io"), true);
+      assertEquals(u.includes("/AAPL/"), true);
+      return Promise.resolve(
+        new Response(JSON.stringify(polygonBody), { status: 200 }),
+      );
+    },
+    async () => {
+      const router = createRestBarsRouter();
+      const req = new Request(
+        "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=2023-11-14",
+        { headers: { "X-API-Key": "test_pref.secret" } },
+      );
+      // Ensure MASSIVE_API_KEY is set so the route does not 500.
+      Deno.env.set("MASSIVE_API_KEY", "test-massive-key");
+      const res = await router(req);
+      assertEquals(res.status, 200);
+      const body = await res.json();
+      assertEquals(body.sym, "AAPL");
+      assertEquals(body.bars.length, 2);
+      assertEquals(body.bars[0], {
+        o: 1,
+        h: 2,
+        l: 0.5,
+        c: 1.5,
+        v: 100,
+        start_ts_ms: 1_700_000_000_000,
+      });
+      assertEquals(body.bars[1].start_ts_ms, 1_700_000_060_000);
+    },
+  );
+});
+
+Deno.test("GET /v1/internal/ohlcv-rest-bars polygon returns empty bars when results missing", async () => {
+  await withStubbedFetch(
+    () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ status: "OK" }), { status: 200 }),
+      ),
+    async () => {
+      const router = createRestBarsRouter();
+      Deno.env.set("MASSIVE_API_KEY", "test-massive-key");
+      const req = new Request(
+        "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=2023-11-14",
+        { headers: { "X-API-Key": "test_pref.secret" } },
+      );
+      const res = await router(req);
+      assertEquals(res.status, 200);
+      const body = await res.json();
+      assertEquals(body.sym, "AAPL");
+      assertEquals(body.bars, []);
+    },
+  );
+});
+
+Deno.test("GET /v1/internal/ohlcv-rest-bars kraken maps candle arrays, coercing strings and seconds", async () => {
+  const krakenBody = {
+    error: [],
+    result: {
+      XXBTZUSD: [
+        ["1700000000", "1.0", "2.0", "0.5", "1.5", "1.4", "10.0", 5],
+        ["1700000060", "1.5", "2.5", "1.0", "2.0", "1.9", "20.0", 8],
+      ],
+      last: 1700000060,
+    },
+  };
+  await withStubbedFetch(
+    (input) => {
+      const u = input.toString();
+      assertEquals(u.includes("api.kraken.com"), true);
+      assertEquals(u.includes("pair=XBTUSD"), true);
+      return Promise.resolve(
+        new Response(JSON.stringify(krakenBody), { status: 200 }),
+      );
+    },
+    async () => {
+      const router = createRestBarsRouter();
+      const req = new Request(
+        "http://localhost/v1/internal/ohlcv-rest-bars?source=kraken&sym=XBTUSD",
+        { headers: { "X-API-Key": "test_pref.secret" } },
+      );
+      const res = await router(req);
+      assertEquals(res.status, 200);
+      const body = await res.json();
+      assertEquals(body.sym, "XBTUSD");
+      assertEquals(body.bars.length, 2);
+      assertEquals(body.bars[0], {
+        o: 1.0,
+        h: 2.0,
+        l: 0.5,
+        c: 1.5,
+        v: 10.0,
+        start_ts_ms: 1_700_000_000_000,
+      });
+      assertEquals(body.bars[1].start_ts_ms, 1_700_000_060_000);
+      assertEquals(typeof body.bars[0].o, "number");
+    },
+  );
+});
+
+Deno.test("GET /v1/internal/ohlcv-rest-bars kraken returns 502 on kraken error", async () => {
+  await withStubbedFetch(
+    () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ error: ["EQuery:Unknown asset pair"], result: {} }),
+          { status: 200 },
+        ),
+      ),
+    async () => {
+      const router = createRestBarsRouter();
+      const req = new Request(
+        "http://localhost/v1/internal/ohlcv-rest-bars?source=kraken&sym=NOPE",
+        { headers: { "X-API-Key": "test_pref.secret" } },
+      );
+      const res = await router(req);
+      assertEquals(res.status, 502);
+      const body = await res.json();
+      assertEquals(body.error.includes("EQuery:Unknown asset pair"), true);
+    },
+  );
+});
+
+Deno.test("GET /v1/internal/ohlcv-rest-bars returns 400 for unknown source", async () => {
+  const router = createRestBarsRouter();
+  const req = new Request(
+    "http://localhost/v1/internal/ohlcv-rest-bars?source=bogus&sym=AAPL&date=2023-11-14",
+    { headers: { "X-API-Key": "test_pref.secret" } },
+  );
+  const res = await router(req);
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.error.includes("source"), true);
+});
+
+Deno.test("GET /v1/internal/ohlcv-rest-bars returns 400 when sym is missing", async () => {
+  const router = createRestBarsRouter();
+  const req = new Request(
+    "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&date=2023-11-14",
+    { headers: { "X-API-Key": "test_pref.secret" } },
+  );
+  const res = await router(req);
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.error.includes("sym"), true);
+});
+
+Deno.test("GET /v1/internal/ohlcv-rest-bars returns 400 when polygon date is missing", async () => {
+  const router = createRestBarsRouter();
+  const req = new Request(
+    "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL",
+    { headers: { "X-API-Key": "test_pref.secret" } },
+  );
+  const res = await router(req);
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.error.includes("date"), true);
+});
+
+Deno.test("GET /v1/internal/ohlcv-rest-bars returns 400 when date is malformed", async () => {
+  const router = createRestBarsRouter();
+  const req = new Request(
+    "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=11-14-2023",
+    { headers: { "X-API-Key": "test_pref.secret" } },
+  );
+  const res = await router(req);
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.error.includes("date"), true);
+});
+
+Deno.test("GET /v1/internal/ohlcv-rest-bars returns 401 without API key", async () => {
+  const router = createTestRouter();
+  const req = new Request(
+    "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=2023-11-14",
+  );
+  const res = await router(req);
+  assertEquals(res.status, 401);
+});
