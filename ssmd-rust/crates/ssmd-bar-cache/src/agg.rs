@@ -128,8 +128,11 @@ struct KrakenTradeRaw {
     qty: f64,
     /// ISO-8601 timestamp string.
     timestamp: String,
-    /// Trade id (string); used for de-duplication.
-    trade_id: Option<String>,
+    /// Trade id, used for de-duplication. Kraken v2 sends this as an INTEGER on
+    /// the wire (the connector's test fixture's string form is not what prod
+    /// emits), so accept any JSON scalar and stringify it for the dedup key.
+    #[serde(default)]
+    trade_id: Option<serde_json::Value>,
 }
 
 /// Parse a kraken-spot v2 trade envelope into zero or more [`Input`]s.
@@ -166,9 +169,12 @@ pub fn parse_kraken_trade(payload: &[u8]) -> Vec<Input> {
         };
 
         // Prefer the trade id for dedup; fall back to ts+price+qty if absent.
-        let dedup_key = raw
-            .trade_id
-            .unwrap_or_else(|| format!("{ts_ms}:{}:{}", raw.price, raw.qty));
+        // trade_id may be a JSON string or integer — normalize to a string key.
+        let dedup_key = match raw.trade_id {
+            Some(serde_json::Value::String(s)) => s,
+            Some(other) => other.to_string(),
+            None => format!("{ts_ms}:{}:{}", raw.price, raw.qty),
+        };
 
         inputs.push(Input {
             sym: raw.symbol,
@@ -487,6 +493,20 @@ mod tests {
         // Timestamps decode in order.
         assert!(inputs[0].ts_ms < inputs[1].ts_ms);
         assert!(inputs[1].ts_ms < inputs[2].ts_ms);
+    }
+
+    #[test]
+    fn parse_kraken_integer_trade_id_is_accepted() {
+        // Regression: real kraken v2 sends trade_id as an INTEGER (not the string
+        // in the connector's test fixture). A typed String field made the whole
+        // envelope fail to deserialize, dropping every trade in prod.
+        let raw = br#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USDT","side":"buy","price":97000.0,"qty":0.5,"ord_type":"market","trade_id":3784369,"timestamp":"2026-01-01T00:00:10Z"}]}"#;
+        let inputs = parse_kraken_trade(raw);
+        assert_eq!(inputs.len(), 1, "integer trade_id must not drop the trade");
+        assert_eq!(inputs[0].sym, "BTC/USDT");
+        assert_eq!(inputs[0].o, 97000.0);
+        assert_eq!(inputs[0].v, 0.5);
+        assert_eq!(inputs[0].dedup_key, "3784369");
     }
 
     #[test]
