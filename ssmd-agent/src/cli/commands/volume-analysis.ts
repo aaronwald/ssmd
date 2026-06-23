@@ -19,7 +19,7 @@ const VOLUME_MODEL = "anthropic/claude-sonnet-4.6";
 // clusters/gke-prod/apps/ssmd/cronjobs/volume-daily.yaml
 
 const VOLUME_SYSTEM_PROMPT = `You are an ssmd market data volume analyst. Given daily trade volume data \
-across Kalshi (crypto + sports) and Kraken (futures + spot) feeds, produce a volume analysis.
+across Kalshi (crypto) and Kraken (spot) feeds, produce a volume analysis.
 
 You receive:
 - volume: Cross-feed volume summary (trade counts, total volume, active tickers per feed)
@@ -102,9 +102,8 @@ async function runVolumeAnalysis(flags: VolumeFlags): Promise<void> {
   const volume = await apiGet(`${apiUrl}/v1/data/volume?date=${today}`, apiKey);
 
   if (!jsonOutput) console.log("Fetching per-feed trade details...");
-  const [kalshiTrades, krakenTrades, krakenSpotTrades] = await Promise.all([
+  const [kalshiTrades, krakenSpotTrades] = await Promise.all([
     apiGet(`${apiUrl}/v1/data/trades?feed=kalshi&date=${today}&limit=20`, apiKey),
-    apiGet(`${apiUrl}/v1/data/trades?feed=kraken-futures&date=${today}&limit=20`, apiKey),
     apiGet(`${apiUrl}/v1/data/trades?feed=kraken-spot&date=${today}&limit=20`, apiKey),
   ]);
 
@@ -115,7 +114,7 @@ async function runVolumeAnalysis(flags: VolumeFlags): Promise<void> {
   if (!jsonOutput) console.log("Requesting AI volume analysis...");
   const analysis = await callClaude(apiUrl, apiKey, VOLUME_SYSTEM_PROMPT, {
     volume,
-    trades: { kalshi_crypto: kalshiTrades, kraken_futures: krakenTrades, kraken_spot: krakenSpotTrades },
+    trades: { kalshi_crypto: kalshiTrades, kraken_spot: krakenSpotTrades },
     events: { kalshi: kalshiEvents },
   });
 
