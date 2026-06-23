@@ -4287,6 +4287,22 @@ route("GET", "/v1/internal/ohlcv-rest-bars", async (req, _ctx) => {
     return json({ error: "date must be YYYY-MM-DD format" }, 400);
   }
 
+  // Return only the most recent `limit` bars (default 120). The validation
+  // consumer only needs the latest cached minute + a small lookup window, and a
+  // full trading day of 1m bars exceeds the pipeline-worker's 64KB body cap
+  // (which truncates → unparseable JSON). Clamp to [1, 1500].
+  const DEFAULT_BARS = 120;
+  const MAX_REST_BARS = 1500;
+  let limit = DEFAULT_BARS;
+  const limitParam = url.searchParams.get("limit");
+  if (limitParam !== null) {
+    const parsed = Number(limitParam);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return json({ error: "limit must be a positive integer" }, 400);
+    }
+    limit = Math.min(parsed, MAX_REST_BARS);
+  }
+
   if (source === "polygon") {
     // Validate the key is present and non-empty before using it (empty string
     // is falsy, so this also rejects ""). Guarantees a non-empty Bearer token.
@@ -4327,7 +4343,7 @@ route("GET", "/v1/internal/ohlcv-rest-bars", async (req, _ctx) => {
       }))
       .filter(isFiniteBar);
     bars.sort((a, b) => a.start_ts_ms - b.start_ts_ms);
-    return json({ sym, bars });
+    return json({ sym, bars: bars.slice(-limit) });
   }
 
   // source === "kraken"
@@ -4386,7 +4402,8 @@ route("GET", "/v1/internal/ohlcv-rest-bars", async (req, _ctx) => {
     }))
     .filter(isFiniteBar);
   bars.sort((a, b) => a.start_ts_ms - b.start_ts_ms);
-  return json({ sym, bars });
+  // `limit` is the validated, clamped positive integer parsed above (default 120).
+  return json({ sym, bars: bars.slice(-limit) });
 }, true, "admin:read");
 
 // Internal email endpoint (used by pipeline worker)

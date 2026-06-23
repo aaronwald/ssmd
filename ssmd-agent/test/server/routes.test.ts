@@ -553,3 +553,63 @@ Deno.test("GET /v1/internal/ohlcv-rest-bars returns 401 without API key", async 
   const res = await router(req);
   assertEquals(res.status, 401);
 });
+
+Deno.test("GET /v1/internal/ohlcv-rest-bars returns only the most recent `limit` bars (default 120)", async () => {
+  // 200 minute bars; default limit (120) must return the newest 120, in order.
+  const results = Array.from({ length: 200 }, (_, i) => ({
+    t: 1_700_000_000_000 + i * 60_000,
+    o: i,
+    h: i,
+    l: i,
+    c: i,
+    v: i + 1,
+  }));
+  await withStubbedFetch(
+    () => Promise.resolve(new Response(JSON.stringify({ results }), { status: 200 })),
+    async () => {
+      const router = createRestBarsRouter();
+      Deno.env.set("MASSIVE_API_KEY", "test-massive-key");
+
+      const dfltRes = await router(
+        new Request(
+          "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=2023-11-14",
+          { headers: { "X-API-Key": "test_pref.secret" } },
+        ),
+      );
+      assertEquals(dfltRes.status, 200);
+      const dflt = await dfltRes.json();
+      assertEquals(Array.isArray(dflt.bars), true);
+      assertEquals(dflt.bars.length, 120);
+      assertEquals(
+        dflt.bars[dflt.bars.length - 1].start_ts_ms,
+        1_700_000_000_000 + 199 * 60_000,
+      );
+      assertEquals(dflt.bars[0].start_ts_ms, 1_700_000_000_000 + 80 * 60_000);
+
+      const fiveRes = await router(
+        new Request(
+          "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=2023-11-14&limit=5",
+          { headers: { "X-API-Key": "test_pref.secret" } },
+        ),
+      );
+      assertEquals(fiveRes.status, 200);
+      const five = await fiveRes.json();
+      assertEquals(Array.isArray(five.bars), true);
+      assertEquals(five.bars.length, 5);
+      assertEquals(five.bars[0].start_ts_ms, 1_700_000_000_000 + 195 * 60_000);
+    },
+  );
+});
+
+Deno.test("GET /v1/internal/ohlcv-rest-bars returns 400 for non-integer limit", async () => {
+  const router = createRestBarsRouter();
+  const res = await router(
+    new Request(
+      "http://localhost/v1/internal/ohlcv-rest-bars?source=kraken&sym=BTC/USDT&limit=abc",
+      { headers: { "X-API-Key": "test_pref.secret" } },
+    ),
+  );
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(typeof body.error === "string" && body.error.includes("limit"), true);
+});
