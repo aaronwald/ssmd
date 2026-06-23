@@ -102,9 +102,8 @@ async function runVolumeAnalysis(flags: VolumeFlags): Promise<void> {
   const volume = await apiGet(`${apiUrl}/v1/data/volume?date=${today}`, apiKey);
 
   if (!jsonOutput) console.log("Fetching per-feed trade details...");
-  const [kalshiTrades, kalshiSportsTrades, krakenTrades, krakenSpotTrades] = await Promise.all([
+  const [kalshiTrades, krakenTrades, krakenSpotTrades] = await Promise.all([
     apiGet(`${apiUrl}/v1/data/trades?feed=kalshi&date=${today}&limit=20`, apiKey),
-    apiGet(`${apiUrl}/v1/data/trades?feed=kalshi-sports&date=${today}&limit=20`, apiKey),
     apiGet(`${apiUrl}/v1/data/trades?feed=kraken-futures&date=${today}&limit=20`, apiKey),
     apiGet(`${apiUrl}/v1/data/trades?feed=kraken-spot&date=${today}&limit=20`, apiKey),
   ]);
@@ -116,7 +115,7 @@ async function runVolumeAnalysis(flags: VolumeFlags): Promise<void> {
   if (!jsonOutput) console.log("Requesting AI volume analysis...");
   const analysis = await callClaude(apiUrl, apiKey, VOLUME_SYSTEM_PROMPT, {
     volume,
-    trades: { kalshi_crypto: kalshiTrades, kalshi_sports: kalshiSportsTrades, kraken_futures: krakenTrades, kraken_spot: krakenSpotTrades },
+    trades: { kalshi_crypto: kalshiTrades, kraken_futures: krakenTrades, kraken_spot: krakenSpotTrades },
     events: { kalshi: kalshiEvents },
   });
 
