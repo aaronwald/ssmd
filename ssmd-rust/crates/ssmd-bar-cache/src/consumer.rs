@@ -18,8 +18,11 @@ use crate::agg::{Bar, Input, MinuteAggregator};
 use crate::metrics::Metrics;
 use crate::store::upsert_bar;
 
-/// Parser for a subscription's wire format → normalized [`Input`].
-type Parser = fn(&[u8]) -> Option<Input>;
+/// Parser for a subscription's wire format → zero or more normalized [`Input`]s.
+///
+/// Massive 1s aggregates yield 0 or 1 input per message; the kraken-spot v2
+/// trade envelope wraps a `data[]` array and yields 0..N.
+type Parser = fn(&[u8]) -> Vec<Input>;
 
 /// A single JetStream subscription: which stream/subject to read, how to parse
 /// it, and the feed label it writes under.
@@ -152,36 +155,41 @@ async fn run_inner(
 
         metrics.messages_received.with_label_values(&[feed]).inc();
 
-        // Route by the subscription's own parser. Malformed messages are
-        // skipped (the parser already logs) — never crash the consumer over one
-        // bad payload.
-        let input = match (sub.parse)(&msg.payload) {
-            Some(i) => i,
-            None => {
-                metrics.errors.with_label_values(&[feed, "parse"]).inc();
-                continue;
-            }
-        };
-
-        // Aggregate. A rollover finalizes the prior minute; always write the
-        // current (forming) minute too so consumers see live updates.
-        let result = {
-            let mut guard = agg.lock().await;
-            guard.ingest(input)
-        };
-
-        if let Some(finalized) = result.finalized {
-            write_bar(redis_conn, feed, ring_len, ttl_secs, finalized, metrics).await;
+        // Route by the subscription's own parser. One message yields zero or
+        // more inputs (a kraken envelope carries a `data[]` array of trades; a
+        // massive aggregate is a single object). An empty result is a parse
+        // "miss": either a malformed payload (the parser logged) or a non-trade
+        // kraken control frame (heartbeat/ticker/ack). Count it and move on —
+        // never crash the consumer over one payload.
+        let inputs = (sub.parse)(&msg.payload);
+        if inputs.is_empty() {
+            metrics.errors.with_label_values(&[feed, "parse"]).inc();
+            continue;
         }
-        write_bar(
-            redis_conn,
-            feed,
-            ring_len,
-            ttl_secs,
-            result.current,
-            metrics,
-        )
-        .await;
+
+        // Aggregate each input. A rollover finalizes the prior minute; always
+        // write the current (forming) minute too so consumers see live updates.
+        // The per-input rollover + current-write logic is unchanged from the
+        // single-input path.
+        for input in inputs {
+            let result = {
+                let mut guard = agg.lock().await;
+                guard.ingest(input)
+            };
+
+            if let Some(finalized) = result.finalized {
+                write_bar(redis_conn, feed, ring_len, ttl_secs, finalized, metrics).await;
+            }
+            write_bar(
+                redis_conn,
+                feed,
+                ring_len,
+                ttl_secs,
+                result.current,
+                metrics,
+            )
+            .await;
+        }
     }
 
     Ok(())

@@ -82,20 +82,22 @@ struct MassiveRaw {
     e: i64,
 }
 
-/// Parse a massive 1s OHLCV aggregate payload into an [`Input`].
+/// Parse a massive 1s OHLCV aggregate payload into zero or one [`Input`].
 ///
-/// Returns `None` (logging a warning) on malformed JSON or missing fields,
-/// rather than panicking — a bad message must never take down the consumer.
-pub fn parse_massive_1s(payload: &[u8]) -> Option<Input> {
+/// Returns an empty `Vec` (logging a warning) on malformed JSON or missing
+/// fields, rather than panicking — a bad message must never take down the
+/// consumer. The `Vec` return mirrors [`parse_kraken_trade`] so both feeds share
+/// one parser contract; massive payloads are always a single flat object.
+pub fn parse_massive_1s(payload: &[u8]) -> Vec<Input> {
     let raw: MassiveRaw = match serde_json::from_slice(payload) {
         Ok(r) => r,
         Err(err) => {
             warn!(error = %err, "skipping malformed massive 1s aggregate");
-            return None;
+            return Vec::new();
         }
     };
 
-    Some(Input {
+    vec![Input {
         sym: raw.sym,
         o: raw.o,
         h: raw.h,
@@ -105,10 +107,20 @@ pub fn parse_massive_1s(payload: &[u8]) -> Option<Input> {
         ts_ms: raw.s,
         // The 1-second start uniquely identifies this contribution in a minute.
         dedup_key: raw.s.to_string(),
-    })
+    }]
 }
 
-/// Raw kraken-spot v2 trade.
+/// The kraken-spot v2 envelope: a `channel`/`type` header wrapping a `data[]`
+/// array. Only `channel == "trade"` carries trades; other channels (heartbeat,
+/// ticker, subscribe acks) have no `data` we consume.
+#[derive(Debug, Deserialize)]
+struct KrakenEnvelope {
+    channel: String,
+    #[serde(default)]
+    data: Vec<KrakenTradeRaw>,
+}
+
+/// One trade element inside a kraken-spot v2 `trade` envelope's `data[]` array.
 #[derive(Debug, Deserialize)]
 struct KrakenTradeRaw {
     symbol: String,
@@ -116,46 +128,61 @@ struct KrakenTradeRaw {
     qty: f64,
     /// ISO-8601 timestamp string.
     timestamp: String,
-    /// Trade UUID; used for de-duplication.
+    /// Trade id (string); used for de-duplication.
     trade_id: Option<String>,
 }
 
-/// Parse a kraken-spot trade payload into an [`Input`].
+/// Parse a kraken-spot v2 trade envelope into zero or more [`Input`]s.
 ///
-/// The ISO-8601 `timestamp` is parsed to epoch ms via `chrono`. Malformed JSON
-/// or an unparseable timestamp yields `None` (logged), never a panic.
-pub fn parse_kraken_trade(payload: &[u8]) -> Option<Input> {
-    let raw: KrakenTradeRaw = match serde_json::from_slice(payload) {
-        Ok(r) => r,
+/// The connector publishes the Kraken v2 wire envelope verbatim:
+/// `{"channel":"trade","type":"update","data":[{...},{...}]}`. Each element of
+/// `data[]` becomes one [`Input`]; a single message can therefore yield many
+/// trades. Non-trade channels (heartbeat, ticker, subscribe acks) yield an empty
+/// `Vec`. Malformed JSON yields an empty `Vec` (logged). Within a `trade`
+/// envelope, an element with an unparseable timestamp is skipped (logged) while
+/// its siblings still parse — one bad element never drops the whole message.
+pub fn parse_kraken_trade(payload: &[u8]) -> Vec<Input> {
+    let env: KrakenEnvelope = match serde_json::from_slice(payload) {
+        Ok(e) => e,
         Err(err) => {
-            warn!(error = %err, "skipping malformed kraken trade");
-            return None;
+            warn!(error = %err, "skipping malformed kraken envelope");
+            return Vec::new();
         }
     };
 
-    let ts_ms = match parse_iso8601_ms(&raw.timestamp) {
-        Some(ms) => ms,
-        None => {
-            warn!(ts = %raw.timestamp, "skipping kraken trade with unparseable timestamp");
-            return None;
-        }
-    };
+    if env.channel != "trade" {
+        // Heartbeat / ticker / subscribe ack — nothing to aggregate.
+        return Vec::new();
+    }
 
-    // Prefer the trade UUID for dedup; fall back to ts+price+qty if absent.
-    let dedup_key = raw
-        .trade_id
-        .unwrap_or_else(|| format!("{ts_ms}:{}:{}", raw.price, raw.qty));
+    let mut inputs = Vec::with_capacity(env.data.len());
+    for raw in env.data {
+        let ts_ms = match parse_iso8601_ms(&raw.timestamp) {
+            Some(ms) => ms,
+            None => {
+                warn!(ts = %raw.timestamp, "skipping kraken trade with unparseable timestamp");
+                continue;
+            }
+        };
 
-    Some(Input {
-        sym: raw.symbol,
-        o: raw.price,
-        h: raw.price,
-        l: raw.price,
-        c: raw.price,
-        v: raw.qty,
-        ts_ms,
-        dedup_key,
-    })
+        // Prefer the trade id for dedup; fall back to ts+price+qty if absent.
+        let dedup_key = raw
+            .trade_id
+            .unwrap_or_else(|| format!("{ts_ms}:{}:{}", raw.price, raw.qty));
+
+        inputs.push(Input {
+            sym: raw.symbol,
+            o: raw.price,
+            h: raw.price,
+            l: raw.price,
+            c: raw.price,
+            v: raw.qty,
+            ts_ms,
+            dedup_key,
+        });
+    }
+
+    inputs
 }
 
 /// Parse an ISO-8601 / RFC-3339 timestamp string to epoch milliseconds.
@@ -347,11 +374,36 @@ mod tests {
         .into_bytes()
     }
 
+    /// A kraken v2 `trade` envelope wrapping a single trade in `data[]`.
     fn kraken(sym: &str, price: f64, qty: f64, ts: &str, trade_id: &str) -> Vec<u8> {
         format!(
-            r#"{{"symbol":"{sym}","price":{price},"qty":{qty},"side":"buy","ord_type":"market","trade_id":"{trade_id}","timestamp":"{ts}"}}"#
+            r#"{{"channel":"trade","type":"update","data":[{{"symbol":"{sym}","price":{price},"qty":{qty},"side":"buy","ord_type":"market","trade_id":"{trade_id}","timestamp":"{ts}"}}]}}"#
         )
         .into_bytes()
+    }
+
+    /// Build a kraken v2 `trade` envelope from N (sym, price, qty, ts, id) trades.
+    fn kraken_envelope(trades: &[(&str, f64, f64, &str, &str)]) -> Vec<u8> {
+        let elems: Vec<String> = trades
+            .iter()
+            .map(|(sym, price, qty, ts, id)| {
+                format!(
+                    r#"{{"symbol":"{sym}","price":{price},"qty":{qty},"side":"buy","ord_type":"market","trade_id":"{id}","timestamp":"{ts}"}}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"channel":"trade","type":"update","data":[{}]}}"#,
+            elems.join(",")
+        )
+        .into_bytes()
+    }
+
+    /// Parse a single-input payload (massive, or single-trade kraken) and assert
+    /// exactly one [`Input`] came back, returning it.
+    fn one(inputs: Vec<Input>) -> Input {
+        assert_eq!(inputs.len(), 1, "expected exactly one input");
+        inputs.into_iter().next().unwrap()
     }
 
     #[test]
@@ -365,8 +417,9 @@ mod tests {
 
     #[test]
     fn parse_massive_ok() {
-        let input = parse_massive_1s(&massive("AAPL", 60_000, 10.0, 12.0, 9.0, 11.0, 100.0))
-            .expect("should parse");
+        let input = one(parse_massive_1s(&massive(
+            "AAPL", 60_000, 10.0, 12.0, 9.0, 11.0, 100.0,
+        )));
         assert_eq!(input.sym, "AAPL");
         assert_eq!(input.o, 10.0);
         assert_eq!(input.h, 12.0);
@@ -378,22 +431,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_massive_malformed_is_none() {
-        assert!(parse_massive_1s(b"not json").is_none());
+    fn parse_massive_malformed_is_empty() {
+        assert!(parse_massive_1s(b"not json").is_empty());
         // Missing required fields.
-        assert!(parse_massive_1s(br#"{"sym":"AAPL"}"#).is_none());
+        assert!(parse_massive_1s(br#"{"sym":"AAPL"}"#).is_empty());
     }
 
     #[test]
     fn parse_kraken_ok() {
-        let input = parse_kraken_trade(&kraken(
+        let input = one(parse_kraken_trade(&kraken(
             "BTC/USD",
             50000.5,
             0.25,
             "2026-01-01T00:00:30.500Z",
             "uuid-1",
-        ))
-        .expect("should parse");
+        )));
         assert_eq!(input.sym, "BTC/USD");
         assert_eq!(input.o, 50000.5);
         assert_eq!(input.h, 50000.5);
@@ -409,12 +461,66 @@ mod tests {
     }
 
     #[test]
-    fn parse_kraken_malformed_is_none() {
-        assert!(parse_kraken_trade(b"{bad").is_none());
-        // Bad timestamp.
-        assert!(
-            parse_kraken_trade(&kraken("BTC/USD", 1.0, 1.0, "not-a-timestamp", "uuid-x")).is_none()
-        );
+    fn parse_kraken_envelope_with_three_trades() {
+        // The real connector publishes an envelope with a `data[]` array; one
+        // message can carry many trades.
+        let inputs = parse_kraken_trade(&kraken_envelope(&[
+            ("BTC/USD", 100.0, 1.0, "2026-01-01T00:00:05Z", "t1"),
+            ("BTC/USD", 110.0, 2.0, "2026-01-01T00:00:25Z", "t2"),
+            ("BTC/USD", 90.0, 3.0, "2026-01-01T00:00:45Z", "t3"),
+        ]));
+        assert_eq!(inputs.len(), 3);
+
+        assert_eq!(inputs[0].sym, "BTC/USD");
+        assert_eq!(inputs[0].o, 100.0);
+        assert_eq!(inputs[0].v, 1.0);
+        assert_eq!(inputs[0].dedup_key, "t1");
+
+        assert_eq!(inputs[1].o, 110.0);
+        assert_eq!(inputs[1].v, 2.0);
+        assert_eq!(inputs[1].dedup_key, "t2");
+
+        assert_eq!(inputs[2].o, 90.0);
+        assert_eq!(inputs[2].v, 3.0);
+        assert_eq!(inputs[2].dedup_key, "t3");
+
+        // Timestamps decode in order.
+        assert!(inputs[0].ts_ms < inputs[1].ts_ms);
+        assert!(inputs[1].ts_ms < inputs[2].ts_ms);
+    }
+
+    #[test]
+    fn parse_kraken_non_trade_channels_are_empty() {
+        // Heartbeat, ticker, and subscribe acks must yield no inputs — not a
+        // crash, not a phantom trade.
+        let heartbeat = br#"{"channel":"heartbeat","type":"update"}"#;
+        let ticker = br#"{"channel":"ticker","type":"update","data":[{"symbol":"BTC/USD","bid":97000.0,"ask":97000.1,"last":97000.0}]}"#;
+        let ack = br#"{"method":"subscribe","result":{"channel":"trade","symbol":"BTC/USD"},"success":true}"#;
+        assert!(parse_kraken_trade(heartbeat).is_empty());
+        assert!(parse_kraken_trade(ticker).is_empty());
+        assert!(parse_kraken_trade(ack).is_empty());
+    }
+
+    #[test]
+    fn parse_kraken_malformed_element_skips_only_that_element() {
+        // A trade with an unparseable timestamp is dropped, but its good
+        // siblings in the same envelope still parse.
+        let inputs = parse_kraken_trade(&kraken_envelope(&[
+            ("BTC/USD", 100.0, 1.0, "2026-01-01T00:00:05Z", "good-1"),
+            ("BTC/USD", 110.0, 2.0, "not-a-timestamp", "bad"),
+            ("BTC/USD", 90.0, 3.0, "2026-01-01T00:00:45Z", "good-2"),
+        ]));
+        assert_eq!(inputs.len(), 2, "only the two good trades survive");
+        assert_eq!(inputs[0].dedup_key, "good-1");
+        assert_eq!(inputs[1].dedup_key, "good-2");
+    }
+
+    #[test]
+    fn parse_kraken_malformed_envelope_is_empty() {
+        assert!(parse_kraken_trade(b"{bad").is_empty());
+        // Bad timestamp on the sole element → empty.
+        assert!(parse_kraken_trade(&kraken("BTC/USD", 1.0, 1.0, "not-a-timestamp", "uuid-x"))
+            .is_empty());
     }
 
     #[test]
@@ -431,7 +537,7 @@ mod tests {
             let c = (i + 11) as f64;
             let h = if i == 30 { 1000.0 } else { c };
             let l = if i == 40 { 1.0 } else { o };
-            let res = agg.ingest(parse_massive_1s(&massive("AAPL", sec, o, h, l, c, 2.0)).unwrap());
+            let res = agg.ingest(one(parse_massive_1s(&massive("AAPL", sec, o, h, l, c, 2.0))));
             assert!(res.finalized.is_none());
             last_current = Some(res.current);
         }
@@ -450,19 +556,28 @@ mod tests {
     #[test]
     fn kraken_trades_make_correct_ohlcv() {
         let mut agg = MinuteAggregator::new();
-        // Three trades in the same minute (00:00).
-        agg.ingest(
-            parse_kraken_trade(&kraken("BTC/USD", 100.0, 1.0, "2026-01-01T00:00:05Z", "t1"))
-                .unwrap(),
-        );
-        agg.ingest(
-            parse_kraken_trade(&kraken("BTC/USD", 110.0, 2.0, "2026-01-01T00:00:25Z", "t2"))
-                .unwrap(),
-        );
-        let res = agg.ingest(
-            parse_kraken_trade(&kraken("BTC/USD", 90.0, 3.0, "2026-01-01T00:00:45Z", "t3"))
-                .unwrap(),
-        );
+        // Three trades in the same minute (00:00), one per single-trade envelope.
+        agg.ingest(one(parse_kraken_trade(&kraken(
+            "BTC/USD",
+            100.0,
+            1.0,
+            "2026-01-01T00:00:05Z",
+            "t1",
+        ))));
+        agg.ingest(one(parse_kraken_trade(&kraken(
+            "BTC/USD",
+            110.0,
+            2.0,
+            "2026-01-01T00:00:25Z",
+            "t2",
+        ))));
+        let res = agg.ingest(one(parse_kraken_trade(&kraken(
+            "BTC/USD",
+            90.0,
+            3.0,
+            "2026-01-01T00:00:45Z",
+            "t3",
+        ))));
 
         let bar = res.current;
         assert_eq!(bar.o, 100.0); // first trade
@@ -473,43 +588,74 @@ mod tests {
     }
 
     #[test]
+    fn multi_trade_envelope_aggregates_one_minute() {
+        // A single envelope carrying 3 trades in the same minute aggregates to
+        // one bar: sum of qty, OHLC from the prices in timestamp order. The
+        // `one`/`kraken_envelope` helpers are defined at the top of this module.
+        let mut agg = MinuteAggregator::new();
+        let inputs = parse_kraken_trade(&kraken_envelope(&[
+            ("BTC/USD", 100.0, 1.0, "2026-01-01T00:00:05Z", "t1"),
+            ("BTC/USD", 110.0, 2.0, "2026-01-01T00:00:25Z", "t2"),
+            ("BTC/USD", 90.0, 3.0, "2026-01-01T00:00:45Z", "t3"),
+        ]));
+        assert_eq!(inputs.len(), 3, "envelope must yield all three trades");
+
+        let mut last = None;
+        for input in inputs {
+            let res = agg.ingest(input);
+            assert!(res.finalized.is_none(), "all in minute 0");
+            last = Some(res.current);
+        }
+        let bar = last.expect("at least one ingest produced a current bar");
+        assert_eq!(bar.o, 100.0); // first trade
+        assert_eq!(bar.h, 110.0); // max price
+        assert_eq!(bar.l, 90.0); // min price
+        assert_eq!(bar.c, 90.0); // last trade
+        assert_eq!(bar.v, 6.0); // 1+2+3
+        // All three trades fall in the same minute, so the bar's start is that
+        // minute's floor (the 2026-01-01T00:00 minute, not epoch 0).
+        let minute = minute_floor(
+            chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:05Z")
+                .unwrap()
+                .timestamp_millis(),
+        );
+        assert_eq!(bar.start_ts_ms, minute);
+    }
+
+    #[test]
     fn duplicate_massive_second_does_not_double_count() {
         let mut agg = MinuteAggregator::new();
-        agg.ingest(parse_massive_1s(&massive("AAPL", 0, 1.0, 1.0, 1.0, 1.0, 5.0)).unwrap());
+        agg.ingest(one(parse_massive_1s(&massive("AAPL", 0, 1.0, 1.0, 1.0, 1.0, 5.0))));
         // Resend the same 1s start with a revised volume — must replace, not add.
-        let res =
-            agg.ingest(parse_massive_1s(&massive("AAPL", 0, 1.0, 1.0, 1.0, 1.0, 7.0)).unwrap());
+        let res = agg.ingest(one(parse_massive_1s(&massive(
+            "AAPL", 0, 1.0, 1.0, 1.0, 1.0, 7.0,
+        ))));
         assert_eq!(res.current.v, 7.0, "resent second replaces, not adds");
 
         // Add a distinct second.
-        let res2 =
-            agg.ingest(parse_massive_1s(&massive("AAPL", 1000, 1.0, 1.0, 1.0, 1.0, 3.0)).unwrap());
+        let res2 = agg.ingest(one(parse_massive_1s(&massive(
+            "AAPL", 1000, 1.0, 1.0, 1.0, 1.0, 3.0,
+        ))));
         assert_eq!(res2.current.v, 10.0, "7 (latest of sec0) + 3 (sec1)");
     }
 
     #[test]
     fn duplicate_kraken_trade_id_does_not_double_count() {
         let mut agg = MinuteAggregator::new();
-        agg.ingest(
-            parse_kraken_trade(&kraken(
-                "BTC/USD",
-                100.0,
-                1.0,
-                "2026-01-01T00:00:05Z",
-                "dup",
-            ))
-            .unwrap(),
-        );
-        let res = agg.ingest(
-            parse_kraken_trade(&kraken(
-                "BTC/USD",
-                100.0,
-                1.0,
-                "2026-01-01T00:00:05Z",
-                "dup",
-            ))
-            .unwrap(),
-        );
+        agg.ingest(one(parse_kraken_trade(&kraken(
+            "BTC/USD",
+            100.0,
+            1.0,
+            "2026-01-01T00:00:05Z",
+            "dup",
+        ))));
+        let res = agg.ingest(one(parse_kraken_trade(&kraken(
+            "BTC/USD",
+            100.0,
+            1.0,
+            "2026-01-01T00:00:05Z",
+            "dup",
+        ))));
         assert_eq!(res.current.v, 1.0, "replayed trade id ignored");
     }
 
@@ -517,14 +663,16 @@ mod tests {
     fn minute_rollover_emits_prior_minute() {
         let mut agg = MinuteAggregator::new();
         // Minute 0.
-        agg.ingest(parse_massive_1s(&massive("AAPL", 0, 5.0, 5.0, 5.0, 5.0, 4.0)).unwrap());
-        let res = agg
-            .ingest(parse_massive_1s(&massive("AAPL", 30_000, 6.0, 6.0, 6.0, 6.0, 2.0)).unwrap());
+        agg.ingest(one(parse_massive_1s(&massive("AAPL", 0, 5.0, 5.0, 5.0, 5.0, 4.0))));
+        let res = agg.ingest(one(parse_massive_1s(&massive(
+            "AAPL", 30_000, 6.0, 6.0, 6.0, 6.0, 2.0,
+        ))));
         assert!(res.finalized.is_none(), "still minute 0");
 
         // First input in minute 1 finalizes minute 0.
-        let res = agg
-            .ingest(parse_massive_1s(&massive("AAPL", 60_000, 7.0, 7.0, 7.0, 7.0, 1.0)).unwrap());
+        let res = agg.ingest(one(parse_massive_1s(&massive(
+            "AAPL", 60_000, 7.0, 7.0, 7.0, 7.0, 1.0,
+        ))));
         let finalized = res.finalized.expect("minute 0 should finalize");
         assert_eq!(finalized.start_ts_ms, 0);
         assert_eq!(finalized.end_ts_ms, 60_000);
@@ -541,10 +689,13 @@ mod tests {
     #[test]
     fn late_input_for_finalized_minute_is_dropped() {
         let mut agg = MinuteAggregator::new();
-        agg.ingest(parse_massive_1s(&massive("AAPL", 60_000, 7.0, 7.0, 7.0, 7.0, 1.0)).unwrap());
+        agg.ingest(one(parse_massive_1s(&massive(
+            "AAPL", 60_000, 7.0, 7.0, 7.0, 7.0, 1.0,
+        ))));
         // A straggler from minute 0 arrives after we moved to minute 1.
-        let res =
-            agg.ingest(parse_massive_1s(&massive("AAPL", 0, 5.0, 5.0, 5.0, 5.0, 9.0)).unwrap());
+        let res = agg.ingest(one(parse_massive_1s(&massive(
+            "AAPL", 0, 5.0, 5.0, 5.0, 5.0, 9.0,
+        ))));
         assert!(res.finalized.is_none());
         // Current stays the minute-1 bar, unaffected by the straggler.
         assert_eq!(res.current.start_ts_ms, 60_000);
@@ -554,9 +705,10 @@ mod tests {
     #[test]
     fn separate_symbols_are_independent() {
         let mut agg = MinuteAggregator::new();
-        agg.ingest(parse_massive_1s(&massive("AAPL", 0, 1.0, 1.0, 1.0, 1.0, 1.0)).unwrap());
-        let res =
-            agg.ingest(parse_massive_1s(&massive("MSFT", 0, 2.0, 2.0, 2.0, 2.0, 5.0)).unwrap());
+        agg.ingest(one(parse_massive_1s(&massive("AAPL", 0, 1.0, 1.0, 1.0, 1.0, 1.0))));
+        let res = agg.ingest(one(parse_massive_1s(&massive(
+            "MSFT", 0, 2.0, 2.0, 2.0, 2.0, 5.0,
+        ))));
         assert_eq!(res.current.sym, "MSFT");
         assert_eq!(res.current.v, 5.0);
     }
@@ -564,7 +716,8 @@ mod tests {
     #[test]
     fn flush_emits_open_bar() {
         let mut agg = MinuteAggregator::new();
-        agg.ingest(parse_massive_1s(&massive("AAPL", 0, 1.0, 1.0, 1.0, 1.0, 3.0)).unwrap());
+        // `one()` asserts exactly one parsed input (fail-loud, like the old unwrap).
+        agg.ingest(one(parse_massive_1s(&massive("AAPL", 0, 1.0, 1.0, 1.0, 1.0, 3.0))));
         let bar = agg.flush("AAPL").expect("open bar");
         assert_eq!(bar.v, 3.0);
         // Flushed symbol is gone.
