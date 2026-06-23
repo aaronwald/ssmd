@@ -8,7 +8,6 @@ export const FEED_PATHS: Record<string, string> = {
   "kalshi": "kalshi/kalshi/crypto",
   "kraken-futures": "kraken-futures/kraken-futures/futures",
   "kraken-spot": "kraken-spot/kraken-spot/spot",
-  "kalshi-sports": "kalshi/kalshi/sports",
   "massive": "massive/massive/massive",
 };
 
@@ -45,13 +44,6 @@ export const TRADE_CONFIG: Record<string, TradeConfig> = {
     qtyCol: "qty",
     priceDivisor: 1,
   },
-  "kalshi-sports": {
-    fileType: "trade",
-    tickerCol: "market_ticker",
-    priceCol: "price",
-    qtyCol: "count",
-    priceDivisor: 100,
-  },
   "massive": {
     // Massive has no raw trade feed in parquet; the 1m OHLCV bars are the
     // closest queryable surface. close is the bar close price, volume the
@@ -69,7 +61,6 @@ export const PRICE_CONFIG: Record<string, { fileType: string; orderCol: string }
   "kalshi": { fileType: "ticker", orderCol: "ts" },
   "kraken-futures": { fileType: "ticker", orderCol: "_received_at" },
   "kraken-spot": { fileType: "ticker", orderCol: "_received_at" },
-  "kalshi-sports": { fileType: "ticker", orderCol: "ts" },
   "massive": { fileType: "ohlcv_1m", orderCol: "start_ts_ms" },
 };
 
@@ -78,7 +69,6 @@ export const FEED_TYPES: Record<string, string[]> = {
   "kalshi": ["trade", "ticker"],
   "kraken-futures": ["trade", "ticker"],
   "kraken-spot": ["trade", "ticker"],
-  "kalshi-sports": ["trade", "ticker"],
   "massive": ["ohlcv_1s", "ohlcv_1m"],
 };
 
