@@ -691,20 +691,31 @@ export default function DocsPage() {
           />
           <Endpoint
             method="GET"
-            path="/v1/search"
-            scope="harman:read"
-            description="Search markets by text query."
+            path="/v1/data/ohlcv/1m"
+            scope="datasets:read"
+            description="Latest 1-minute OHLCV bars from a rolling ~60-minute cache, updated continuously. Served by the public data API at https://api.varshtat.com with an X-API-Key (not the harman token). Feeds: massive (US equities/ETFs) and kraken-spot (crypto)."
             queryParams={[
-              { name: "q", description: "Search query string" },
-              { name: "limit", description: "Max results to return (default: 20)" },
+              { name: "feed", description: "massive or kraken-spot (required)" },
+              { name: "sym", description: "Symbol, e.g. AAPL or SPY (massive); BTC/USDT or ETH/USDT (kraken-spot) (required)" },
+              { name: "limit", description: "Most-recent bars to return, 1-60 (default 60)" },
             ]}
             response={`{
-  "results": [
-    { "ticker": "KXBTCD-26MAR28-B50000", "title": "BTC above $50,000", "category": "Crypto" }
-  ]
+  "feed": "massive",
+  "sym": "AAPL",
+  "bars": [
+    {
+      "sym": "AAPL",
+      "o": 296.4, "h": 297.75, "l": 295.25, "c": 297.1,
+      "v": 13590.99,
+      "start_ts_ms": 1782115200000,
+      "end_ts_ms": 1782115260000
+    }
+  ],
+  "served_at": "2026-06-23T17:04:49.492Z"
 }`}
-            curl={`curl "$HARMAN_URL/v1/search?q=bitcoin&limit=10" \\
-  -H "Authorization: Bearer $HARMAN_TOKEN"`}
+            curl={`curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=massive&sym=AAPL&limit=5" \\
+  -H "X-API-Key: $API_KEY"`}
+            notes="Bars are ordered oldest to newest; start_ts_ms/end_ts_ms are minute boundaries in epoch ms (UTC). kraken-spot is near-real-time; massive is ~15 minutes delayed on the current data plan. Returns 404 if no bars are cached for the symbol yet."
           />
         </Section>
 
