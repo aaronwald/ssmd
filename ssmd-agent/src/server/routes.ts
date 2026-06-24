@@ -3856,10 +3856,15 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         min_bars_per_ticker,
         max_bars_per_ticker,
         288 as expected_bars_per_ticker,
-        ROUND(min_bars_per_ticker * 100.0 / 288, 1) as min_coverage_pct
+        ROUND(min_bars_per_ticker * 100.0 / 288, 1) as min_coverage_pct,
+        -- p10: the 10th-percentile ticker's coverage. Robust to a few part-time
+        -- tickers (e.g. tokenized equities that only trade US market hours) while
+        -- still catching systemic drops.
+        ROUND(p10_bars * 100.0 / 288, 1) as p10_coverage_pct
       FROM (
         SELECT dt, count(DISTINCT hols_ticker) as tickers,
-          min(ticker_bars) as min_bars_per_ticker, max(ticker_bars) as max_bars_per_ticker
+          min(ticker_bars) as min_bars_per_ticker, max(ticker_bars) as max_bars_per_ticker,
+          quantile_cont(ticker_bars, 0.1) as p10_bars
         FROM (
           SELECT date::DATE as dt, hols_ticker, count(*) as ticker_bars
           FROM read_parquet('${binance5mPath}')
@@ -3905,10 +3910,15 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         min_bars_per_ticker,
         max_bars_per_ticker,
         1440 as expected_bars_per_ticker,
-        ROUND(min_bars_per_ticker * 100.0 / 1440, 1) as min_coverage_pct
+        ROUND(min_bars_per_ticker * 100.0 / 1440, 1) as min_coverage_pct,
+        -- p10: the 10th-percentile ticker's coverage. Robust to a few part-time
+        -- tickers (e.g. tokenized equities that only trade US market hours) while
+        -- still catching systemic drops.
+        ROUND(p10_bars * 100.0 / 1440, 1) as p10_coverage_pct
       FROM (
         SELECT dt, count(DISTINCT hols_ticker) as tickers,
-          min(ticker_bars) as min_bars_per_ticker, max(ticker_bars) as max_bars_per_ticker
+          min(ticker_bars) as min_bars_per_ticker, max(ticker_bars) as max_bars_per_ticker,
+          quantile_cont(ticker_bars, 0.1) as p10_bars
         FROM (
           SELECT date::DATE as dt, hols_ticker, count(*) as ticker_bars
           FROM read_parquet('${binance1mPath}')
