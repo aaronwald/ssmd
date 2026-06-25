@@ -35,6 +35,10 @@ import type {
   CreateKeyRequest,
   CreateKeyResponse,
   RotateWelcomeResponse,
+  KeyUsage,
+  KeyUsageResponse,
+  KeyRequestCounts,
+  KeyRequestsResponse,
 } from "./types";
 
 // Dynamic instance routing — set via InstanceProvider
@@ -288,6 +292,24 @@ export const getDataDownload = (feed: string, date: string) =>
 // Admin users endpoint
 export const getAdminUsers = () =>
   request<AdminUsersResponse>("/v1/admin/users");
+
+// API-key usage stats (via data-ts, read-only, admin scope).
+// The data proxy strips the "/v1" segment, so paths omit it here.
+export const getKeyUsage = async (): Promise<KeyUsage[]> => {
+  const res = await dataRequest<KeyUsageResponse>("/keys/usage");
+  if (!res || !Array.isArray(res.usage)) {
+    throw new Error("keys/usage: missing or invalid usage array");
+  }
+  return res.usage;
+};
+
+export const getKeyRequests = async (): Promise<KeyRequestCounts[]> => {
+  const res = await dataRequest<KeyRequestsResponse>("/keys/requests");
+  if (!res || !Array.isArray(res.keys)) {
+    throw new Error("keys/requests: missing or invalid keys array");
+  }
+  return res.keys;
+};
 
 // Harman admin endpoints (via data-ts)
 export const getHarmanSessions = async (): Promise<HarmanSession[]> => {

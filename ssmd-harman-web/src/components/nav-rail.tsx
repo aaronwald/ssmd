@@ -298,6 +298,7 @@ function AdminSection({ collapsed, pathname }: { collapsed: boolean; pathname: s
       </div>
       <NavItem href="/admin/sessions" label="Sessions" icon={UsersIcon} active={pathname === "/admin/sessions"} collapsed={collapsed} />
       <NavItem href="/admin/keys" label="Keys" icon={KeyIcon} active={pathname === "/admin/keys"} collapsed={collapsed} />
+      <NavItem href="/admin/usage" label="Usage" icon={TrendingUpIcon} active={pathname === "/admin/usage"} collapsed={collapsed} />
       <NavItem href="/admin/audit" label="Audit" icon={ClipboardIcon} active={pathname === "/admin/audit"} collapsed={collapsed} />
       <NavItem href="/files" label="Files" icon={FileTextIcon} active={pathname === "/files"} collapsed={collapsed} />
       <NavItem href="/secmaster" label="Secmaster" icon={DatabaseIcon} active={pathname === "/secmaster"} collapsed={collapsed} />

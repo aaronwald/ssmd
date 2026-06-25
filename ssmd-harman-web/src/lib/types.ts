@@ -291,6 +291,34 @@ export interface AdminUsersResponse {
   sessions: AdminSession[];
 }
 
+// Per-key rate-limit usage from data-ts GET /v1/keys/usage.
+// Token fields exist in the payload but are unused by the lean activity view.
+export interface KeyUsage {
+  keyPrefix: string;
+  requestsInWindow: number;
+  rateLimitHits: number;
+  windowSeconds: number;
+  limit: number;
+  tier: string;
+}
+
+export interface KeyUsageResponse {
+  usage: KeyUsage[];
+}
+
+// Per-key request counts from data-ts GET /v1/keys/requests.
+// Counts are from an in-memory Prometheus counter — they reset on pod restart.
+export interface KeyRequestCounts {
+  keyPrefix: string;
+  totalRequests: number;
+  endpoints: { endpoint: string; count: number }[];
+}
+
+export interface KeyRequestsResponse {
+  sincePodStart: boolean;
+  keys: KeyRequestCounts[];
+}
+
 /** Harman admin types */
 export interface HarmanSession {
   id: number;
