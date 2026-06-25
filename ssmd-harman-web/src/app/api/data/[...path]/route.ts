@@ -21,6 +21,11 @@ const ALLOWED_PATH_PREFIXES = [
   "/v1/harman/",
   "/v1/health/",
   "/v1/pipelines",
+  // Read-only API-key usage stats only. Deliberately NOT "/v1/keys" — that
+  // prefix would also expose key creation/rotation (POST/PUT/DELETE) through
+  // this shared-service-token proxy. These two sub-paths are GET-only.
+  "/v1/keys/usage",
+  "/v1/keys/requests",
 ];
 
 function isPathAllowed(path: string): boolean {

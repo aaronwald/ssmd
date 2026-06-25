@@ -35,6 +35,8 @@ import {
   getDataCatalog,
   createKeyWelcome,
   rotateWelcome,
+  getKeyUsage,
+  getKeyRequests,
 } from "./api";
 import type { CreateKeyRequest, CreateKeyResponse, RotateWelcomeResponse } from "./types";
 import { useInstance } from "./instance-context";
@@ -225,6 +227,19 @@ export function useExchangeAudit(sessionId: number | null, instance?: string) {
     () => getExchangeAudit(sessionId!, instance),
     { refreshInterval: ORDER_REFRESH }
   );
+}
+
+// API-key usage hooks (via data-ts — not instance-scoped)
+export function useKeyUsage() {
+  return useSWR("data-keys-usage", getKeyUsage, {
+    refreshInterval: ADMIN_REFRESH,
+  });
+}
+
+export function useKeyRequests() {
+  return useSWR("data-keys-requests", getKeyRequests, {
+    refreshInterval: ADMIN_REFRESH,
+  });
 }
 
 // Secmaster hooks (via data-ts — not instance-scoped)
