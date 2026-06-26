@@ -460,16 +460,7 @@ export function NavRail() {
       {/* Bottom: varshtat + collapse toggle */}
       <div className="border-t border-border">
         <NavItem href="/docs" label="Docs" icon={BookIcon} active={pathname === "/docs"} collapsed={navCollapsed} />
-        <a
-          href="https://md.varshtat.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 px-3 py-2 text-fg-muted hover:text-accent transition-colors"
-          title="varshtat market data"
-        >
-          <VarshtatIcon />
-          {!navCollapsed && <span className="text-xs">varshtat</span>}
-        </a>
+        <NavItem href="/landing" label="varshtat" icon={VarshtatIcon} active={pathname === "/landing"} collapsed={navCollapsed} />
 
         <button
           onClick={toggleNav}
