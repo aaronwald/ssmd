@@ -1,5 +1,6 @@
 import { Endpoint, Section, TypeTable } from "./_components";
 import { DataApiSections } from "./_data-api";
+import { FeedsProtocolsSections } from "./_feeds";
 
 // ---------------------------------------------------------------------------
 // Shared UI primitives (Endpoint, Section, TypeTable, etc.) live in
@@ -35,6 +36,12 @@ const tocGroups = [
       { id: "download-guide", label: "Download Guide" },
       { id: "monitor", label: "Monitor" },
       { id: "mcp", label: "MCP Setup" },
+    ],
+  },
+  {
+    label: "Feeds & Protocols",
+    sections: [
+      { id: "feeds-protocols", label: "Feeds & Protocols" },
     ],
   },
 ];
@@ -872,6 +879,11 @@ export default function DocsPage() {
         {/* MARKET DATA API (api.varshtat.com) */}
         {/* ============================================================= */}
         <DataApiSections />
+
+        {/* ============================================================= */}
+        {/* FEEDS & PROTOCOLS */}
+        {/* ============================================================= */}
+        <FeedsProtocolsSections />
       </main>
     </div>
   );
