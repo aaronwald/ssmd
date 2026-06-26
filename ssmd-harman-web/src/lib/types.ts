@@ -291,6 +291,25 @@ export interface AdminUsersResponse {
   sessions: AdminSession[];
 }
 
+// API key list item from data-ts GET /v1/keys (camelCase, admin:read).
+// This is the source of truth for email + last-used (the OMS admin/users
+// endpoint does not populate those).
+export interface ApiKeyListItem {
+  prefix: string;
+  name: string;
+  userEmail?: string | null;
+  scopes: string[];
+  rateLimitTier?: string | null;
+  lastUsedAt?: string | null;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+  allowedFeeds?: string[] | null;
+}
+
+export interface ApiKeyListResponse {
+  keys: ApiKeyListItem[];
+}
+
 // Per-key rate-limit usage from data-ts GET /v1/keys/usage.
 // Token fields exist in the payload but are unused by the lean activity view.
 export interface KeyUsage {

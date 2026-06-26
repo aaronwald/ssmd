@@ -39,6 +39,8 @@ import type {
   KeyUsageResponse,
   KeyRequestCounts,
   KeyRequestsResponse,
+  ApiKeyListItem,
+  ApiKeyListResponse,
 } from "./types";
 
 // Dynamic instance routing — set via InstanceProvider
@@ -292,6 +294,17 @@ export const getDataDownload = (feed: string, date: string) =>
 // Admin users endpoint
 export const getAdminUsers = () =>
   request<AdminUsersResponse>("/v1/admin/users");
+
+// API-key list (via data-ts, read-only, admin scope). Source of truth for
+// email + last-used. Excludes revoked keys. The data proxy strips the "/v1"
+// segment, so paths omit it here.
+export const getKeysList = async (): Promise<ApiKeyListItem[]> => {
+  const res = await dataRequest<ApiKeyListResponse>("/keys");
+  if (!res || !Array.isArray(res.keys)) {
+    throw new Error("keys: missing or invalid keys array");
+  }
+  return res.keys.filter((k) => !k.revokedAt);
+};
 
 // API-key usage stats (via data-ts, read-only, admin scope).
 // The data proxy strips the "/v1" segment, so paths omit it here.

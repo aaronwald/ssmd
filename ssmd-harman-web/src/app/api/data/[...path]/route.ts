@@ -21,15 +21,23 @@ const ALLOWED_PATH_PREFIXES = [
   "/v1/harman/",
   "/v1/health/",
   "/v1/pipelines",
-  // Read-only API-key usage stats only. Deliberately NOT "/v1/keys" — that
-  // prefix would also expose key creation/rotation (POST/PUT/DELETE) through
-  // this shared-service-token proxy. These two sub-paths are GET-only.
-  "/v1/keys/usage",
-  "/v1/keys/requests",
+  // API-key read endpoints (list + usage + request counts). Key paths are
+  // GET-only through this proxy (enforced by isMethodAllowed) so key
+  // create/rotate/delete cannot be reached via the shared service token —
+  // those mutations go through the OMS instance proxy instead.
+  "/v1/keys",
 ];
 
 function isPathAllowed(path: string): boolean {
   return ALLOWED_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
+/** Key endpoints are read-only through this proxy — mutations go through the OMS. */
+function isMethodAllowed(method: string, path: string): boolean {
+  if (path === "/v1/keys" || path.startsWith("/v1/keys/")) {
+    return method === "GET";
+  }
+  return true;
 }
 
 async function proxy(
@@ -46,6 +54,10 @@ async function proxy(
 
   if (!isPathAllowed(targetPath)) {
     return NextResponse.json({ error: "Path not allowed" }, { status: 403 });
+  }
+
+  if (!isMethodAllowed(method, targetPath)) {
+    return NextResponse.json({ error: "Method not allowed" }, { status: 405 });
   }
 
   const url = `${DATA_TS_URL}${targetPath}${req.nextUrl.search}`;

@@ -35,6 +35,7 @@ import {
   getDataCatalog,
   createKeyWelcome,
   rotateWelcome,
+  getKeysList,
   getKeyUsage,
   getKeyRequests,
 } from "./api";
@@ -230,6 +231,12 @@ export function useExchangeAudit(sessionId: number | null, instance?: string) {
 }
 
 // API-key usage hooks (via data-ts — not instance-scoped)
+export function useKeysList() {
+  return useSWR("data-keys-list", getKeysList, {
+    refreshInterval: ADMIN_REFRESH,
+  });
+}
+
 export function useKeyUsage() {
   return useSWR("data-keys-usage", getKeyUsage, {
     refreshInterval: ADMIN_REFRESH,

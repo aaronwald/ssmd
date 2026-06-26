@@ -1,7 +1,7 @@
 "use client";
 
-import { useMe, useAdminUsers, useKeyUsage, useKeyRequests } from "@/lib/hooks";
-import type { AdminKey, KeyUsage, KeyRequestCounts } from "@/lib/types";
+import { useMe, useKeysList, useKeyUsage, useKeyRequests } from "@/lib/hooks";
+import type { ApiKeyListItem, KeyUsage, KeyRequestCounts } from "@/lib/types";
 
 export default function UsagePage() {
   const { data: me } = useMe();
@@ -40,10 +40,10 @@ function relativeTime(iso: string | null | undefined): string {
   return `${day}d ago`;
 }
 
-/** Sort by last_used_at descending; keys never used sort to the bottom. */
-function byLastUsedDesc(a: AdminKey, b: AdminKey): number {
-  const ta = a.last_used_at ? new Date(a.last_used_at).getTime() : -Infinity;
-  const tb = b.last_used_at ? new Date(b.last_used_at).getTime() : -Infinity;
+/** Sort by lastUsedAt descending; keys never used sort to the bottom. */
+function byLastUsedDesc(a: ApiKeyListItem, b: ApiKeyListItem): number {
+  const ta = a.lastUsedAt ? new Date(a.lastUsedAt).getTime() : -Infinity;
+  const tb = b.lastUsedAt ? new Date(b.lastUsedAt).getTime() : -Infinity;
   return tb - ta;
 }
 
@@ -52,13 +52,13 @@ function byLastUsedDesc(a: AdminKey, b: AdminKey): number {
 // ──────────────────────────────────────────────────────────────────────────────
 
 function UsageContent() {
-  const { data: users, error: usersError } = useAdminUsers();
+  const { data: keyList, error: keysError } = useKeysList();
   const { data: usage, error: usageError } = useKeyUsage();
   const { data: requests, error: requestsError } = useKeyRequests();
 
   // The key list is the spine of the table; usage/requests are best-effort joins.
-  if (usersError) return <p className="text-sm text-red">Error loading keys: {usersError.message}</p>;
-  if (!users) return <p className="text-sm text-fg-muted">Loading...</p>;
+  if (keysError) return <p className="text-sm text-red">Error loading keys: {keysError.message}</p>;
+  if (!keyList) return <p className="text-sm text-fg-muted">Loading...</p>;
 
   const usageByPrefix = new Map<string, KeyUsage>();
   for (const u of usage ?? []) usageByPrefix.set(u.keyPrefix, u);
@@ -66,7 +66,7 @@ function UsageContent() {
   const requestsByPrefix = new Map<string, KeyRequestCounts>();
   for (const r of requests ?? []) requestsByPrefix.set(r.keyPrefix, r);
 
-  const keys = [...users.keys].sort(byLastUsedDesc);
+  const keys = [...keyList].sort(byLastUsedDesc);
   const windowSeconds = (usage ?? [])[0]?.windowSeconds;
   const windowLabel = windowSeconds ? `${Math.round(windowSeconds / 60)}m` : "window";
 
@@ -106,11 +106,11 @@ function UsageContent() {
                     <div className="font-mono text-fg">{key.prefix}…</div>
                     {key.name && <div className="text-fg-muted">{key.name}</div>}
                   </td>
-                  <td className="px-4 py-2 text-fg-muted">{key.email || "—"}</td>
+                  <td className="px-4 py-2 text-fg-muted">{key.userEmail || "—"}</td>
                   <td className="px-4 py-2">
-                    {key.last_used_at ? (
-                      <span className="text-fg" title={new Date(key.last_used_at).toLocaleString()}>
-                        {relativeTime(key.last_used_at)}
+                    {key.lastUsedAt ? (
+                      <span className="text-fg" title={new Date(key.lastUsedAt).toLocaleString()}>
+                        {relativeTime(key.lastUsedAt)}
                       </span>
                     ) : (
                       <span className="text-fg-subtle">never</span>
