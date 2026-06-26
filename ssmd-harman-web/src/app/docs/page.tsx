@@ -1,174 +1,45 @@
-"use client";
-
-import { useState } from "react";
-
-// ---------------------------------------------------------------------------
-// Copy button
-// ---------------------------------------------------------------------------
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={() => {
-        navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }}
-      className="absolute top-2 right-2 text-xs px-2 py-1 rounded bg-bg-surface text-fg-muted hover:text-fg transition-colors"
-      title="Copy to clipboard"
-    >
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
+import { Endpoint, Section, TypeTable } from "./_components";
+import { DataApiSections } from "./_data-api";
 
 // ---------------------------------------------------------------------------
-// Method badge
+// Shared UI primitives (Endpoint, Section, TypeTable, etc.) live in
+// ./_components.tsx so this page and ./_data-api.tsx render identically.
 // ---------------------------------------------------------------------------
-
-const methodColors: Record<string, string> = {
-  GET: "bg-green-900/50 text-green-400",
-  POST: "bg-blue-900/50 text-blue-400",
-  PUT: "bg-amber-900/50 text-amber-400",
-  DELETE: "bg-red-900/50 text-red-400",
-};
-
-function MethodBadge({ method }: { method: string }) {
-  return (
-    <span
-      className={`inline-block text-xs font-mono font-bold px-2 py-0.5 rounded ${methodColors[method] ?? "bg-bg-surface text-fg-muted"}`}
-    >
-      {method}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Curl block
-// ---------------------------------------------------------------------------
-
-function CurlBlock({ curl }: { curl: string }) {
-  return (
-    <div className="relative mt-2">
-      <CopyButton text={curl} />
-      <pre className="bg-bg font-mono text-xs text-fg-muted p-3 rounded border border-border overflow-x-auto whitespace-pre-wrap">
-        {curl}
-      </pre>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// JSON block
-// ---------------------------------------------------------------------------
-
-function JsonBlock({ label, json }: { label: string; json: string }) {
-  return (
-    <div className="mt-2">
-      <p className="text-xs text-fg-muted mb-1">{label}</p>
-      <pre className="bg-bg font-mono text-xs text-fg-muted p-3 rounded border border-border overflow-x-auto whitespace-pre-wrap">
-        {json}
-      </pre>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Endpoint
-// ---------------------------------------------------------------------------
-
-interface EndpointProps {
-  method: string;
-  path: string;
-  scope?: string;
-  description: string;
-  queryParams?: { name: string; description: string }[];
-  body?: string;
-  response: string;
-  curl: string;
-  notes?: string;
-}
-
-function Endpoint({
-  method,
-  path,
-  scope,
-  description,
-  queryParams,
-  body,
-  response,
-  curl,
-  notes,
-}: EndpointProps) {
-  const id = `${method.toLowerCase()}-${path.replace(/[/:]/g, "-").replace(/^-+|-+$/g, "")}`;
-  return (
-    <div id={id} className="border border-border rounded-lg p-4 bg-bg-raised scroll-mt-20">
-      <div className="flex items-center gap-3 flex-wrap">
-        <MethodBadge method={method} />
-        <code className="font-mono text-sm text-fg">{path}</code>
-        {scope && (
-          <span className="text-xs text-fg-subtle font-mono">({scope})</span>
-        )}
-      </div>
-      <p className="text-sm text-fg-muted mt-2">{description}</p>
-      {notes && <p className="text-xs text-fg-subtle mt-1">{notes}</p>}
-      {queryParams && queryParams.length > 0 && (
-        <div className="mt-3">
-          <p className="text-xs font-semibold text-fg-muted mb-1">Query Parameters</p>
-          <div className="space-y-1">
-            {queryParams.map((qp) => (
-              <div key={qp.name} className="text-xs text-fg-muted">
-                <code className="font-mono text-accent">{qp.name}</code> &mdash; {qp.description}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      {body && <JsonBlock label="Request Body" json={body} />}
-      <JsonBlock label="Response" json={response} />
-      <CurlBlock curl={curl} />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Section
-// ---------------------------------------------------------------------------
-
-function Section({
-  id,
-  title,
-  children,
-}: {
-  id: string;
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <details id={id} open className="scroll-mt-20">
-      <summary className="text-lg font-bold text-fg cursor-pointer select-none py-2 border-b border-border mb-4">
-        {title}
-      </summary>
-      <div className="space-y-4 pb-8">{children}</div>
-    </details>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // TOC
 // ---------------------------------------------------------------------------
 
-const tocSections = [
-  { id: "authentication", label: "Authentication" },
-  { id: "orders", label: "Orders" },
-  { id: "order-groups", label: "Order Groups" },
-  { id: "fills-audit", label: "Fills & Audit" },
-  { id: "market-data", label: "Market Data" },
-  { id: "account", label: "Account" },
-  { id: "admin", label: "Admin" },
-  { id: "types", label: "Types" },
+const tocGroups = [
+  {
+    label: "Harman OMS API",
+    sections: [
+      { id: "authentication", label: "Authentication" },
+      { id: "orders", label: "Orders" },
+      { id: "order-groups", label: "Order Groups" },
+      { id: "fills-audit", label: "Fills & Audit" },
+      { id: "oms-market-data", label: "Market Data" },
+      { id: "account", label: "Account" },
+      { id: "admin", label: "Admin" },
+      { id: "types", label: "Types" },
+    ],
+  },
+  {
+    label: "Market Data API",
+    sections: [
+      { id: "market-data-api", label: "Overview" },
+      { id: "secmaster", label: "Secmaster" },
+      { id: "kraken-pairs", label: "Kraken Pairs" },
+      { id: "fees", label: "Fees" },
+      { id: "data-endpoints", label: "Data" },
+      { id: "download-guide", label: "Download Guide" },
+      { id: "monitor", label: "Monitor" },
+      { id: "mcp", label: "MCP Setup" },
+    ],
+  },
 ];
+
+const tocSectionsFlat = tocGroups.flatMap((g) => g.sections);
 
 // ---------------------------------------------------------------------------
 // Page
@@ -182,31 +53,43 @@ export default function DocsPage() {
         <p className="text-xs font-semibold text-fg-muted uppercase tracking-wider mb-3">
           Contents
         </p>
-        <ul className="space-y-1.5">
-          {tocSections.map((s) => (
-            <li key={s.id}>
-              <a
-                href={`#${s.id}`}
-                className="text-sm text-fg-muted hover:text-accent transition-colors"
-              >
-                {s.label}
-              </a>
-            </li>
+        <div className="space-y-4">
+          {tocGroups.map((g) => (
+            <div key={g.label}>
+              <p className="text-[11px] font-semibold text-fg-subtle uppercase tracking-wider mb-1.5">
+                {g.label}
+              </p>
+              <ul className="space-y-1.5">
+                {g.sections.map((s) => (
+                  <li key={s.id}>
+                    <a
+                      href={`#${s.id}`}
+                      className="text-sm text-fg-muted hover:text-accent transition-colors"
+                    >
+                      {s.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ))}
-        </ul>
+        </div>
       </nav>
 
       <main className="min-w-0 flex-1">
         <h1 className="text-2xl font-bold text-fg mb-1">API Reference</h1>
         <p className="text-sm text-fg-muted mb-6">
-          Harman OMS REST API. All prices are in dollars as decimal strings (e.g.{" "}
-          <code className="font-mono text-accent">&quot;0.42&quot;</code> = 42 cents). Quantities
-          are decimal strings. Base URL depends on deployment.
+          Two APIs are documented here. The <strong className="text-fg">Harman OMS API</strong>{" "}
+          (base URL depends on deployment, bearer-token auth) covers order management. The{" "}
+          <strong className="text-fg">Market Data API</strong> at{" "}
+          <code className="font-mono text-accent">https://api.varshtat.com</code> (X-API-Key auth)
+          covers market metadata and the data archive. OMS prices and quantities are decimal strings
+          (e.g. <code className="font-mono text-accent">&quot;0.42&quot;</code> = 42 cents).
         </p>
 
         {/* Mobile TOC */}
         <div className="lg:hidden mb-6 flex flex-wrap gap-2">
-          {tocSections.map((s) => (
+          {tocSectionsFlat.map((s) => (
             <a
               key={s.id}
               href={`#${s.id}`}
@@ -222,7 +105,10 @@ export default function DocsPage() {
         {/* ============================================================= */}
         <Section id="authentication" title="Authentication">
           <div className="text-sm text-fg-muted space-y-3">
-            <p>The API supports four authentication methods. Include credentials on every request.</p>
+            <p>
+              The Harman OMS API supports four authentication methods. Include credentials on every
+              request. (The Market Data API below uses a separate X-API-Key — see its overview.)
+            </p>
             <div className="space-y-4">
               <div className="border border-border rounded p-3 bg-bg">
                 <p className="font-semibold text-fg text-sm">1. Cloudflare JWT (browser sessions)</p>
@@ -574,9 +460,9 @@ export default function DocsPage() {
         </Section>
 
         {/* ============================================================= */}
-        {/* MARKET DATA */}
+        {/* OMS MARKET DATA */}
         {/* ============================================================= */}
-        <Section id="market-data" title="Market Data">
+        <Section id="oms-market-data" title="Market Data">
           <Endpoint
             method="GET"
             path="/v1/tickers"
@@ -689,34 +575,11 @@ export default function DocsPage() {
             curl={`curl "$HARMAN_URL/v1/monitor/markets?event=KXBTCD-26MAR28" \\
   -H "Authorization: Bearer $HARMAN_TOKEN"`}
           />
-          <Endpoint
-            method="GET"
-            path="/v1/data/ohlcv/1m"
-            scope="datasets:read"
-            description="Latest 1-minute OHLCV bars from a rolling ~60-minute cache, updated continuously. Served by the public data API at https://api.varshtat.com with an X-API-Key (not the harman token). Feeds: massive (US equities/ETFs) and kraken-spot (crypto)."
-            queryParams={[
-              { name: "feed", description: "massive or kraken-spot (required)" },
-              { name: "sym", description: "Symbol, e.g. AAPL or SPY (massive); BTC/USDT or ETH/USDT (kraken-spot) (required)" },
-              { name: "limit", description: "Most-recent bars to return, 1-60 (default 60)" },
-            ]}
-            response={`{
-  "feed": "massive",
-  "sym": "AAPL",
-  "bars": [
-    {
-      "sym": "AAPL",
-      "o": 296.4, "h": 297.75, "l": 295.25, "c": 297.1,
-      "v": 13590.99,
-      "start_ts_ms": 1782115200000,
-      "end_ts_ms": 1782115260000
-    }
-  ],
-  "served_at": "2026-06-23T17:04:49.492Z"
-}`}
-            curl={`curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=massive&sym=AAPL&limit=5" \\
-  -H "X-API-Key: $API_KEY"`}
-            notes="Bars are ordered oldest to newest; start_ts_ms/end_ts_ms are minute boundaries in epoch ms (UTC). kraken-spot is near-real-time; massive is ~15 minutes delayed on the current data plan. Returns 404 if no bars are cached for the symbol yet."
-          />
+          <div className="text-xs text-fg-subtle">
+            Looking for 1-minute OHLCV bars or the parquet data archive? Those are served by the
+            Market Data API — see{" "}
+            <a href="#data-endpoints" className="text-accent hover:underline">Data</a>.
+          </div>
         </Section>
 
         {/* ============================================================= */}
@@ -1004,41 +867,12 @@ export default function DocsPage() {
             />
           </div>
         </Section>
+
+        {/* ============================================================= */}
+        {/* MARKET DATA API (api.varshtat.com) */}
+        {/* ============================================================= */}
+        <DataApiSections />
       </main>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Type table helper
-// ---------------------------------------------------------------------------
-
-function TypeTable({
-  name,
-  values,
-}: {
-  name: string;
-  values: { value: string; description: string }[];
-}) {
-  return (
-    <div className="border border-border rounded-lg p-4 bg-bg-raised">
-      <p className="text-sm font-semibold text-fg mb-2">{name}</p>
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="text-left text-fg-muted border-b border-border">
-            <th className="pb-1 pr-4 font-medium">Value</th>
-            <th className="pb-1 font-medium">Description</th>
-          </tr>
-        </thead>
-        <tbody>
-          {values.map((v) => (
-            <tr key={v.value} className="border-b border-border last:border-0">
-              <td className="py-1.5 pr-4 font-mono text-accent">{v.value}</td>
-              <td className="py-1.5 text-fg-muted">{v.description}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }
