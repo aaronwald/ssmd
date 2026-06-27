@@ -567,9 +567,32 @@ export function DataApiSections() {
   ],
   "served_at": "2026-06-23T17:04:49.492Z"
 }`}
-          curl={`curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=massive&sym=AAPL&limit=5" \\
+          curl={`# US equities/ETFs (massive)
+curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=massive&sym=AAPL&limit=5" \\
+  -H "X-API-Key: $API_KEY"
+
+# Crypto (kraken-spot) — URL-encode the slash in the pair (BTC/USDT -> BTC%2FUSDT)
+curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=kraken-spot&sym=BTC%2FUSDT&limit=5" \\
   -H "X-API-Key: $API_KEY"`}
-          notes="Bars are ordered oldest to newest; start_ts_ms/end_ts_ms are minute boundaries in epoch ms (UTC). kraken-spot is near-real-time; massive is ~15 minutes delayed. 404 if no bars cached for the symbol yet."
+          notes="Bars are ordered oldest to newest; start_ts_ms/end_ts_ms are minute boundaries in epoch ms (UTC). kraken-spot is near-real-time; massive is ~15 minutes delayed. kraken-spot symbols are pairs like BTC/USDT — URL-encode the slash as %2F. Use /v1/data/ohlcv/1m/symbols to list which symbols have bars. 404 if no bars cached for the symbol yet."
+        />
+        <Endpoint
+          method="GET"
+          path="/v1/data/ohlcv/1m/symbols"
+          scope="datasets:read"
+          description="List the symbols that currently have a 1-minute OHLCV ring cached, for a given feed."
+          queryParams={[
+            { name: "feed", description: "massive (US equities/ETFs) or kraken-spot (crypto) (required)" },
+          ]}
+          response={`{
+  "feed": "kraken-spot",
+  "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"],
+  "count": 26,
+  "served_at": "2026-06-27T02:27:13.836Z"
+}`}
+          curl={`curl "https://api.varshtat.com/v1/data/ohlcv/1m/symbols?feed=kraken-spot" \\
+  -H "X-API-Key: $API_KEY"`}
+          notes="Symbols are sorted ascending and capped at 500. Use one of these as the sym for /v1/data/ohlcv/1m (URL-encode any slash). A symbol appears here only once it has bars in the rolling ~60-minute cache."
         />
         <Endpoint
           method="GET"
