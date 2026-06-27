@@ -1,6 +1,7 @@
 import { Endpoint, Section, TypeTable } from "./_components";
 import { DataApiSections } from "./_data-api";
 import { FeedsProtocolsSections } from "./_feeds";
+import { ExamplesSections } from "./_examples";
 
 // ---------------------------------------------------------------------------
 // Shared UI primitives (Endpoint, Section, TypeTable, etc.) live in
@@ -42,6 +43,12 @@ const tocGroups = [
     label: "Feeds & Protocols",
     sections: [
       { id: "feeds-protocols", label: "Feeds & Protocols" },
+    ],
+  },
+  {
+    label: "Examples",
+    sections: [
+      { id: "examples", label: "Python: symbols & 1m" },
     ],
   },
 ];
@@ -884,6 +891,11 @@ export default function DocsPage() {
         {/* FEEDS & PROTOCOLS */}
         {/* ============================================================= */}
         <FeedsProtocolsSections />
+
+        {/* ============================================================= */}
+        {/* EXAMPLES */}
+        {/* ============================================================= */}
+        <ExamplesSections />
       </main>
     </div>
   );
