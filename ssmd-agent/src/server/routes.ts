@@ -4132,6 +4132,23 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
     }
   }
 
+  // Attach explicit provenance to each source section so the DQ output clearly
+  // states exchange + method + interval (additive; section keys unchanged for
+  // backward compat). rest = Kraken REST OHLC (5m), ws = Kraken WS trade
+  // aggregate (1m), binance_5m/binance_1m = Binance REST klines.
+  const VALIDATE_PROVENANCE: Record<string, { exchange: string; method: string; interval: string; label: string }> = {
+    rest: { exchange: "kraken", method: "rest", interval: "5m", label: "kraken·rest·5m" },
+    ws: { exchange: "kraken", method: "ws", interval: "1m", label: "kraken·ws·1m" },
+    binance_5m: { exchange: "binance", method: "rest", interval: "5m", label: "binance·rest·5m" },
+    binance_1m: { exchange: "binance", method: "rest", interval: "1m", label: "binance·rest·1m" },
+  };
+  for (const [key, provenance] of Object.entries(VALIDATE_PROVENANCE)) {
+    const section = results[key];
+    if (section && typeof section === "object") {
+      results[key] = { provenance, ...(section as Record<string, unknown>) };
+    }
+  }
+
   return json(results);
 }, true, "admin:read", "internal");
 
