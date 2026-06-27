@@ -300,11 +300,14 @@ export function FeedsProtocolsSections() {
         messageTypes={[
           {
             name: "ohlcv",
-            note: "Derived daily dataset (no exchange schema version). source identifies the upstream, e.g. kraken_spot_trades or binance_spot.",
+            note: "Derived daily dataset (no exchange schema version). Provenance is explicit: exchange + method + interval. source values: kraken_spot = Kraken REST OHLC (5m), kraken_spot_trades = Kraken WS trades aggregated (1m), binance_spot = Binance REST klines (1m/5m). There is no Binance WS feed.",
             fields: [
               { value: "hols_ticker: Utf8", description: "Normalized ticker, e.g. BTCUSDT" },
               { value: "symbol: Utf8", description: "Upstream pair symbol" },
-              { value: "source: Utf8", description: "Origin of the bar, e.g. binance_spot, kraken_spot, kraken_spot_trades" },
+              { value: "source: Utf8", description: "Origin of the bar: binance_spot, kraken_spot, or kraken_spot_trades" },
+              { value: "exchange: Utf8", description: "Source exchange: binance or kraken" },
+              { value: "method: Utf8", description: "How the bar was sourced: rest (polled OHLC/klines) or ws (aggregated WebSocket trades)" },
+              { value: "interval: Utf8", description: "Bar interval, e.g. 1m or 5m" },
               { value: "date / date_close: Timestamp", description: "Bar open / close minute boundary" },
               { value: "open / high / low / close: Double", description: "Candle OHLC" },
               { value: "volume: Double", description: "Base-asset volume" },
