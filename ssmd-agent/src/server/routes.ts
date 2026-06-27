@@ -110,7 +110,10 @@ export interface RouteContext {
   /** Test-only: override the email → EffectiveUser lookup performed by the X-CF-User-Email path. */
   resolveUserOverride?: (email: string) => Promise<EffectiveUser | null>;
   /** Test-only: override the Redis client used by cache-backed read endpoints. */
-  redisOverride?: { get(key: string): Promise<string | null> };
+  redisOverride?: {
+    get(key: string): Promise<string | null>;
+    scan(cursor: number, opts: { pattern: string; count: number }): Promise<[string, string[]]>;
+  };
 }
 
 function getHarmanPool(ctx: RouteContext, instance?: string | null): ReturnType<typeof postgres> | undefined {
@@ -2449,6 +2452,53 @@ route("GET", "/v1/data/ohlcv/1m", async (req, ctx) => {
     feed,
     sym,
     bars: sliced,
+    served_at: new Date().toISOString(),
+  });
+}, true, "datasets:read", "public");
+
+// Symbols that currently have a 1-minute OHLCV ring cached, per feed.
+// SCANs `ohlcv_1m:{feed}:*` (mirrors the snap SCAN pattern) and strips the
+// prefix. Capped at 500 symbols to bound SCAN cost on large key sets.
+const SYMBOLS_SCAN_CAP = 500;
+
+route("GET", "/v1/data/ohlcv/1m/symbols", async (req, ctx) => {
+  const auth = (req as Request & { auth: AuthInfo }).auth;
+  const url = new URL(req.url);
+
+  const feed = url.searchParams.get("feed");
+  if (!feed || !(BAR_CACHE_FEEDS as readonly string[]).includes(feed)) {
+    return json({ error: `Invalid or missing feed. Valid: ${BAR_CACHE_FEEDS.join(", ")}` }, 400);
+  }
+
+  if (!auth.allowedFeeds.includes("*") && !auth.allowedFeeds.includes(feed)) {
+    return json({ error: `Key not authorized for feed: ${feed}` }, 403);
+  }
+
+  const pattern = `ohlcv_1m:${feed}:*`;
+  const prefix = `ohlcv_1m:${feed}:`;
+  const seen = new Set<string>();
+
+  try {
+    const redis = ctx.redisOverride ?? (await getRedis());
+    let cursor = 0;
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, { pattern, count: 100 });
+      cursor = typeof nextCursor === "string" ? parseInt(nextCursor, 10) : nextCursor;
+      for (const key of keys) {
+        if (seen.size >= SYMBOLS_SCAN_CAP) break;
+        seen.add(key.slice(prefix.length));
+      }
+    } while (cursor !== 0 && seen.size < SYMBOLS_SCAN_CAP);
+  } catch (err) {
+    console.error(`[routes] ohlcv/1m/symbols redis error for ${feed}:`, err);
+    return json({ error: "cache unavailable" }, 503);
+  }
+
+  const symbols = [...seen].sort();
+  return json({
+    feed,
+    symbols,
+    count: symbols.length,
     served_at: new Date().toISOString(),
   });
 }, true, "datasets:read", "public");

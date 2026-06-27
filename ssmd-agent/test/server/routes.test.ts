@@ -166,6 +166,11 @@ function createBarCacheRouter(
       }),
     redisOverride: {
       get: (key: string) => Promise.resolve(key in store ? store[key] : null),
+      scan: (_cursor: number, opts: { pattern: string; count: number }) => {
+        const prefix = opts.pattern.endsWith("*") ? opts.pattern.slice(0, -1) : opts.pattern;
+        const keys = Object.keys(store).filter((k) => k.startsWith(prefix));
+        return Promise.resolve(["0", keys] as [string, string[]]);
+      },
     },
   };
   return createRouter(ctx);
@@ -322,6 +327,84 @@ Deno.test("GET /v1/data/ohlcv/1m returns 401 without API key", async () => {
   const router = createTestRouter();
   const req = new Request(
     "http://localhost/v1/data/ohlcv/1m?feed=massive&sym=AAPL",
+  );
+  const res = await router(req);
+  assertEquals(res.status, 401);
+});
+
+// --- GET /v1/data/ohlcv/1m/symbols (bar-cache symbol listing via Redis SCAN) ---
+
+Deno.test("GET /v1/data/ohlcv/1m/symbols lists symbols for kraken-spot", async () => {
+  const router = createBarCacheRouter(["kraken-spot"], {
+    "ohlcv_1m:kraken-spot:ETH/USD": "[]",
+    "ohlcv_1m:kraken-spot:BTC/USD": "[]",
+  });
+
+  const req = new Request(
+    "http://localhost/v1/data/ohlcv/1m/symbols?feed=kraken-spot",
+    { headers: { "X-API-Key": "test_pref.secret" } },
+  );
+  const res = await router(req);
+
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.feed, "kraken-spot");
+  assertEquals(body.symbols, ["BTC/USD", "ETH/USD"]);
+  assertEquals(body.count, 2);
+  assertEquals(typeof body.served_at, "string");
+  assertEquals(Number.isNaN(Date.parse(body.served_at)), false);
+});
+
+Deno.test("GET /v1/data/ohlcv/1m/symbols returns 400 for an invalid feed", async () => {
+  const router = createBarCacheRouter(["*"], {});
+
+  const req = new Request(
+    "http://localhost/v1/data/ohlcv/1m/symbols?feed=kalshi",
+    { headers: { "X-API-Key": "test_pref.secret" } },
+  );
+  const res = await router(req);
+
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.error.includes("massive"), true);
+  assertEquals(body.error.includes("kraken-spot"), true);
+});
+
+Deno.test("GET /v1/data/ohlcv/1m/symbols returns 403 when feed is not authorized", async () => {
+  const router = createBarCacheRouter(["massive"], {
+    "ohlcv_1m:kraken-spot:BTC/USD": "[]",
+  });
+
+  const req = new Request(
+    "http://localhost/v1/data/ohlcv/1m/symbols?feed=kraken-spot",
+    { headers: { "X-API-Key": "test_pref.secret" } },
+  );
+  const res = await router(req);
+
+  assertEquals(res.status, 403);
+  const body = await res.json();
+  assertEquals(body.error, "Key not authorized for feed: kraken-spot");
+});
+
+Deno.test("GET /v1/data/ohlcv/1m/symbols returns empty list when no keys match", async () => {
+  const router = createBarCacheRouter(["kraken-spot"], {});
+
+  const req = new Request(
+    "http://localhost/v1/data/ohlcv/1m/symbols?feed=kraken-spot",
+    { headers: { "X-API-Key": "test_pref.secret" } },
+  );
+  const res = await router(req);
+
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.symbols, []);
+  assertEquals(body.count, 0);
+});
+
+Deno.test("GET /v1/data/ohlcv/1m/symbols returns 401 without API key", async () => {
+  const router = createTestRouter();
+  const req = new Request(
+    "http://localhost/v1/data/ohlcv/1m/symbols?feed=kraken-spot",
   );
   const res = await router(req);
   assertEquals(res.status, 401);
