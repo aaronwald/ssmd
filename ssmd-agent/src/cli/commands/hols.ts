@@ -58,6 +58,9 @@ interface NdjsonRow {
   symbol: string;
   hols_ticker: string;
   source: string;
+  method: string;
+  exchange: string;
+  interval: string;
   date: string;
   date_close: string;
   unix: number;
@@ -439,6 +442,9 @@ async function fetchBinanceKlinesWithPagination(
           symbol: symbol,
           hols_ticker: holsTicker,
           source: "binance_spot",
+          method: "rest",
+          exchange: "binance",
+          interval: `${interval}m`,
           date: new Date(openTimeMs).toISOString(),
           date_close: new Date(closeTimeMs + 1).toISOString(),
           unix: Math.floor(openTimeMs / 1000),
@@ -574,6 +580,9 @@ async function fetchSpotOhlcWithPagination(
           symbol: pair.wsName,
           hols_ticker: holsTicker,
           source: "kraken_spot",
+          method: "rest",
+          exchange: "kraken",
+          interval: `${DEFAULT_INTERVAL}m`,
           date: new Date(timeSec * 1000).toISOString(),
           date_close: new Date((timeSec + DEFAULT_INTERVAL * 60) * 1000).toISOString(),
           unix: timeSec,
@@ -705,7 +714,7 @@ export async function runHolsAggregate(
   console.log(`[hols:aggregate] Done in ${Math.round((Date.now() - startTime) / 1000)}s`);
 }
 
-async function aggregateTradesToOhlcv(
+export async function aggregateTradesToOhlcv(
   spotTradesDir: string,
   parquetPath: string,
   startDate: Date,
@@ -784,6 +793,9 @@ async function aggregateTradesToOhlcv(
         symbol::VARCHAR as symbol,
         hols_ticker::VARCHAR as hols_ticker,
         'kraken_spot_trades'::VARCHAR as source,
+        'ws'::VARCHAR as method,
+        'kraken'::VARCHAR as exchange,
+        '1m'::VARCHAR as interval,
         minute::TIMESTAMP as date,
         (minute + INTERVAL '1 minute')::TIMESTAMP as date_close,
         EPOCH(minute)::BIGINT as unix,
@@ -842,7 +854,7 @@ function parseDateRange(flags: Record<string, unknown>): {
   return { startDate, endDate, startDateStr, endDateStr, lookbackDays };
 }
 
-async function convertNdjsonToParquet(
+export async function convertNdjsonToParquet(
   ndjsonPath: string,
   parquetPath: string,
 ): Promise<void> {
@@ -855,6 +867,9 @@ async function convertNdjsonToParquet(
         symbol::VARCHAR as symbol,
         hols_ticker::VARCHAR as hols_ticker,
         source::VARCHAR as source,
+        method::VARCHAR as method,
+        exchange::VARCHAR as exchange,
+        interval::VARCHAR as interval,
         date::TIMESTAMP as date,
         date_close::TIMESTAMP as date_close,
         unix::BIGINT as unix,

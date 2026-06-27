@@ -7,7 +7,7 @@
     "cli": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run --allow-sys src/cli/main.ts",
     "server": "deno run --allow-net --allow-env --allow-sys src/server/main.ts",
     "check": "deno check src/cli/main.ts src/server/main.ts src/cli/commands/status.ts",
-    "test": "deno test --allow-read --allow-write --allow-net --allow-env test/"
+    "test": "deno test --allow-read --allow-write --allow-net --allow-env --allow-ffi --allow-sys --allow-run test/"
   },
   "imports": {
     "nats": "npm:nats@^2.29.3",
