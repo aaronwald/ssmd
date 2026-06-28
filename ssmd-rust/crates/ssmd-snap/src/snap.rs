@@ -93,7 +93,8 @@ async fn run_snap_inner(
                     return Err(format!(
                         "{}: {} consecutive receive errors, reconnecting: {}",
                         feed, consecutive_receive_errors, e
-                    ).into());
+                    )
+                    .into());
                 }
                 continue;
             }
@@ -126,8 +127,7 @@ async fn run_snap_inner(
                 .unwrap_or(None);
 
             if let Some(existing_bytes) = existing {
-                merge_trade_into_snap(&existing_bytes, &enriched)
-                    .unwrap_or(enriched)
+                merge_trade_into_snap(&existing_bytes, &enriched).unwrap_or(enriched)
             } else {
                 enriched
             }
@@ -227,6 +227,22 @@ fn extract_and_enrich(payload: &[u8]) -> Option<(String, Vec<u8>)> {
         }
     }
 
+    // Check inside "data[0]" (Kraken v2 spot publishes the raw envelope
+    // {"channel":"ticker","data":[{"symbol":"BTC/USDT",...}]} — the connector
+    // writes raw bytes, so the instrument id is `symbol`, nested one level deep).
+    if ticker.is_none() {
+        if let Some(item) = obj
+            .get("data")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_object())
+        {
+            if let Some(val) = item.get("symbol").and_then(|v| v.as_str()) {
+                ticker = Some(val.to_string());
+            }
+        }
+    }
+
     let ticker = ticker?;
 
     // Inject _snap_at timestamp (epoch millis) for staleness detection
@@ -253,7 +269,10 @@ mod tests {
     #[test]
     fn test_extract_kalshi_ticker() {
         let payload = br#"{"market_ticker":"KXBTCD-26FEB21-T100250","yes_bid":50}"#;
-        assert_eq!(extract_ticker(payload), Some("KXBTCD-26FEB21-T100250".into()));
+        assert_eq!(
+            extract_ticker(payload),
+            Some("KXBTCD-26FEB21-T100250".into())
+        );
     }
 
     #[test]
@@ -263,15 +282,53 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_kraken_spot_ticker_nested_data() {
+        // Kraken v2 spot publishes the raw envelope with the instrument id as
+        // `symbol`, nested inside data[0].
+        let payload = br#"{"channel":"ticker","type":"update","data":[{"symbol":"BTC/USDT","bid":59976.7,"ask":59976.8,"last":59976.7}]}"#;
+        assert_eq!(extract_ticker(payload), Some("BTC/USDT".into()));
+    }
+
+    #[test]
+    fn test_extract_kraken_spot_trade_nested_data() {
+        let payload = br#"{"channel":"trade","type":"update","data":[{"symbol":"ETH/USDT","side":"buy","price":1573.0,"qty":0.5}]}"#;
+        assert_eq!(extract_ticker(payload), Some("ETH/USDT".into()));
+    }
+
+    #[test]
+    fn test_enrich_kraken_spot_injects_snap_at() {
+        let payload = br#"{"channel":"ticker","type":"update","data":[{"symbol":"BTC/USDT","bid":59976.7,"ask":59976.8}]}"#;
+        let (ticker, enriched) = extract_and_enrich(payload).unwrap();
+        assert_eq!(ticker, "BTC/USDT");
+        let v: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert!(v.get("_snap_at").unwrap().is_u64());
+        // Envelope is preserved so consumers can read bid/ask from data[0].
+        assert_eq!(
+            v.get("data").unwrap().as_array().unwrap()[0]
+                .get("symbol")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "BTC/USDT"
+        );
+    }
+
+    #[test]
     fn test_extract_polymarket_ticker() {
         let payload = br#"{"market":"0x713e73c0e77492732924655dea2ad9ac12f47c0635ae013712b3da250583992e","event_type":"price_change"}"#;
-        assert_eq!(extract_ticker(payload), Some("0x713e73c0e77492732924655dea2ad9ac12f47c0635ae013712b3da250583992e".into()));
+        assert_eq!(
+            extract_ticker(payload),
+            Some("0x713e73c0e77492732924655dea2ad9ac12f47c0635ae013712b3da250583992e".into())
+        );
     }
 
     #[test]
     fn test_extract_kalshi_nested_msg() {
         let payload = br#"{"type":"ticker","sid":1,"msg":{"market_ticker":"KXBTCD-26FEB21-T100250","yes_bid":50}}"#;
-        assert_eq!(extract_ticker(payload), Some("KXBTCD-26FEB21-T100250".into()));
+        assert_eq!(
+            extract_ticker(payload),
+            Some("KXBTCD-26FEB21-T100250".into())
+        );
     }
 
     #[test]
@@ -287,7 +344,10 @@ mod tests {
         assert_eq!(ticker, "KXBTCD-26FEB21-T100250");
         let v: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
         assert!(v.get("_snap_at").unwrap().is_u64());
-        assert_eq!(v.get("market_ticker").unwrap().as_str().unwrap(), "KXBTCD-26FEB21-T100250");
+        assert_eq!(
+            v.get("market_ticker").unwrap().as_str().unwrap(),
+            "KXBTCD-26FEB21-T100250"
+        );
         assert_eq!(v.get("yes_bid").unwrap().as_i64().unwrap(), 50);
     }
 
@@ -322,7 +382,8 @@ mod tests {
     fn test_merge_flat_trade_into_ticker() {
         // Kraken-style flat format
         let ticker = br#"{"product_id":"PF_XBTUSD","bid":63990.0,"ask":63991.0,"last":63990.5,"_snap_at":1000}"#;
-        let trade = br#"{"product_id":"PF_XBTUSD","price":63991.5,"qty":1.5,"side":"buy","_snap_at":2000}"#;
+        let trade =
+            br#"{"product_id":"PF_XBTUSD","price":63991.5,"qty":1.5,"side":"buy","_snap_at":2000}"#;
 
         let merged = merge_trade_into_snap(ticker, trade).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&merged).unwrap();
