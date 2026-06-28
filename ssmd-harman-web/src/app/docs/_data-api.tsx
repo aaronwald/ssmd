@@ -66,13 +66,16 @@ export function DataApiSections() {
           <div className="border border-border rounded p-3 bg-bg">
             <p className="font-semibold text-fg text-sm">Feeds</p>
             <p className="text-xs text-fg-muted mt-1">
-              Live: <code className="font-mono text-accent">kalshi</code> (crypto markets),{" "}
+              Raw-archive catalog feeds (<code className="font-mono text-accent">/v1/data/feeds</code>):{" "}
+              <code className="font-mono text-accent">kalshi</code> (crypto markets),{" "}
               <code className="font-mono text-accent">kraken-spot</code> (crypto),{" "}
-              <code className="font-mono text-accent">massive</code> (US equities, ~15-min delayed),{" "}
-              <code className="font-mono text-accent">hols</code> (daily crypto OHLCV). Archived only:{" "}
-              <code className="font-mono text-accent">kraken-futures</code> and{" "}
-              <code className="font-mono text-accent">polymarket</code> (decommissioned — historical
-              data only). DuckDB query endpoints (trades/prices/events/volume/freshness/snap) accept{" "}
+              <code className="font-mono text-accent">massive</code> (US equities, ~15-min delayed), and{" "}
+              <code className="font-mono text-accent">kraken-futures</code> (archived — decommissioned
+              2026-06-03, historical data only). The derived{" "}
+              <code className="font-mono text-accent">hols</code> daily crypto OHLCV dataset is not in
+              that catalog — fetch it via{" "}
+              <code className="font-mono text-accent">/v1/data/download?feed=hols</code>. DuckDB query
+              endpoints (trades/prices/events/volume/freshness/snap) accept{" "}
               <code className="font-mono text-accent">kalshi</code>,{" "}
               <code className="font-mono text-accent">kraken-spot</code>,{" "}
               <code className="font-mono text-accent">massive</code> only.
@@ -347,21 +350,21 @@ export function DataApiSections() {
           method="GET"
           path="/v1/data/feeds"
           scope="datasets:read"
-          description="List available data feeds with date coverage and row counts (from the GCS catalog)."
+          description="List available raw-archive data feeds with date coverage and row counts (from the GCS catalog). Returns kalshi, kraken-futures, kraken-spot, and massive. The derived hols daily-OHLCV dataset is not a catalog feed — fetch it via /v1/data/download?feed=hols."
           response={`{
   "feeds": [
     {
-      "name": "hols",
-      "prefix": "hols",
-      "stream": "crypto/daily",
-      "messageTypes": ["ohlcv"],
-      "dateMin": "2025-09-01",
-      "dateMax": "2026-06-26",
-      "totalFiles": 600,
-      "totalRows": 12500000
+      "name": "kalshi",
+      "prefix": "kalshi",
+      "stream": "crypto",
+      "messageTypes": ["ticker", "trade"],
+      "dateMin": "2026-02-17",
+      "dateMax": "2026-06-28",
+      "totalFiles": 3023,
+      "totalRows": 123739764
     }
   ],
-  "catalogGeneratedAt": "2026-06-26T06:00:00.000Z"
+  "catalogGeneratedAt": "2026-06-28T12:30:47.000Z"
 }`}
           curl={`curl "https://api.varshtat.com/v1/data/feeds" \\
   -H "X-API-Key: $API_KEY"`}
@@ -632,11 +635,23 @@ curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=kraken-spot&sym=BTC%2FUSDT&
           method="GET"
           path="/v1/data/schema-versions"
           scope="datasets:read"
-          description="Current schema version per message type (mirrors the Rust MessageSchema versions). Useful for detecting breaking parquet schema changes."
+          description="Current schema version per feed and message type (mirrors the Rust MessageSchema versions). Useful for detecting breaking parquet schema changes."
           response={`{
-  "kalshi_ticker": { "version": 3 },
-  "kalshi_trade": { "version": 2 },
-  "kraken_ticker": { "version": 1 }
+  "kalshi": {
+    "ticker": { "version": "1.3.0", "notes": "cents integers or dollar strings (WS v2)" },
+    "trade": { "version": "1.3.0", "notes": "cents integers or dollar strings (WS v2)" },
+    "market_lifecycle_v2": { "version": "1.0.0" }
+  },
+  "kraken-spot": {
+    "ticker": { "version": "1.0.0" },
+    "trade": { "version": "1.0.0" }
+  },
+  "massive": {
+    "trade": { "version": "1.0.0" },
+    "quote": { "version": "1.0.0" },
+    "ohlcv_1s": { "version": "1.0.0" },
+    "ohlcv_1m": { "version": "1.0.0" }
+  }
 }`}
           curl={`curl "https://api.varshtat.com/v1/data/schema-versions" \\
   -H "X-API-Key: $API_KEY"`}
