@@ -1,8 +1,8 @@
 //! Pure, side-effect-free 1-minute OHLCV aggregation.
 //!
-//! Inputs arrive as either massive 1-second OHLCV aggregates or kraken-spot
-//! trades. Both are normalized into [`Input`] and folded into a per-symbol
-//! current-minute [`Bar`] by [`MinuteAggregator`]. The aggregator is
+//! Inputs arrive as massive 1-second OHLCV aggregates, kraken-spot trades, or
+//! binance spot trades. All are normalized into [`Input`] and folded into a
+//! per-symbol current-minute [`Bar`] by [`MinuteAggregator`]. The aggregator is
 //! deterministic and does no I/O — Redis/NATS wiring lives in the binary.
 //!
 //! ## Idempotency
@@ -11,6 +11,7 @@
 //! - massive 1s bars: keyed by their 1-second start (`s`), so a resent second
 //!   replaces (not re-adds) its OHLCV — volume never double-counts.
 //! - kraken trades: keyed by `trade_id`, so a replayed trade is ignored.
+//! - binance trades: keyed by the Binance trade id (`t`), same as kraken.
 
 use std::collections::HashMap;
 
@@ -196,6 +197,110 @@ fn parse_iso8601_ms(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|dt| dt.timestamp_millis())
+}
+
+/// The Binance combined-stream frame: a `{stream, data}` envelope. The connector
+/// publishes this verbatim (Phase 3), so the trade payload lives NESTED under
+/// `data`. This is deliberately NOT a thin variant of [`parse_kraken_trade`]:
+/// Binance uses different raw keys (`s`/`p`/`q`/`T`/`t`), prices/quantities are
+/// decimal STRINGS, the timestamp is an epoch-millis INTEGER (not iso8601), and
+/// each frame carries exactly ONE trade (no `data[]` array).
+#[derive(Debug, Deserialize)]
+struct BinanceFrame {
+    /// Absent on non-trade control frames (e.g. a subscribe response); `None`
+    /// then yields no inputs.
+    data: Option<BinanceTradeRaw>,
+}
+
+/// The inner Binance `@trade` payload (under `data`).
+#[derive(Debug, Deserialize)]
+struct BinanceTradeRaw {
+    /// Event type; only `"trade"` is aggregated.
+    #[serde(rename = "e")]
+    event: String,
+    /// Symbol, e.g. `"BTCUSDT"` (already upper-case on the wire; normalized
+    /// anyway so the Redis ring key is stable).
+    #[serde(rename = "s")]
+    symbol: String,
+    /// Price as a decimal STRING (e.g. `"67000.50"`).
+    #[serde(rename = "p")]
+    price: String,
+    /// Quantity as a decimal STRING.
+    #[serde(rename = "q")]
+    qty: String,
+    /// Trade time, epoch MILLIS (integer).
+    #[serde(rename = "T")]
+    trade_time_ms: i64,
+    /// Trade id, used for de-duplication. Binance sends this as an INTEGER on the
+    /// wire, so accept any JSON scalar and stringify it for the dedup key.
+    #[serde(rename = "t", default)]
+    trade_id: Option<serde_json::Value>,
+}
+
+/// Parse a Binance combined-stream `@trade` frame into zero or one [`Input`].
+///
+/// The connector publishes the whole frame verbatim:
+/// `{"stream":"btcusdt@trade","data":{"e":"trade","s":"BTCUSDT","p":"<price>",
+/// "q":"<qty>","T":<ms>,"t":<id>, ...}}`. The trade is read from the nested
+/// `data` object. Returns an empty `Vec` (count-and-skip, never panics) on:
+/// malformed/empty JSON, a frame without a `data` payload, a non-trade event
+/// (`data.e != "trade"`), or an unparseable price/qty string. Always at most one
+/// input — a Binance `@trade` frame carries exactly one trade.
+pub fn parse_binance_trade(payload: &[u8]) -> Vec<Input> {
+    let frame: BinanceFrame = match serde_json::from_slice(payload) {
+        Ok(f) => f,
+        Err(err) => {
+            warn!(error = %err, "skipping malformed binance frame");
+            return Vec::new();
+        }
+    };
+
+    let raw = match frame.data {
+        Some(d) => d,
+        // Control frame (e.g. subscribe response) — nothing to aggregate.
+        None => return Vec::new(),
+    };
+
+    if raw.event != "trade" {
+        // Non-trade payload (e.g. a kline/ticker frame) — skip.
+        return Vec::new();
+    }
+
+    // Prices and quantities arrive as decimal strings; a non-numeric string is a
+    // bad payload, not a zero — skip it loudly rather than coercing to 0.0.
+    let price = match raw.price.parse::<f64>() {
+        Ok(p) => p,
+        Err(err) => {
+            warn!(price = %raw.price, error = %err, "skipping binance trade with unparseable price");
+            return Vec::new();
+        }
+    };
+    let qty = match raw.qty.parse::<f64>() {
+        Ok(q) => q,
+        Err(err) => {
+            warn!(qty = %raw.qty, error = %err, "skipping binance trade with unparseable qty");
+            return Vec::new();
+        }
+    };
+
+    // Prefer the trade id for dedup; fall back to ts+price+qty if absent.
+    // trade_id is an integer on the wire — normalize to a string key.
+    let dedup_key = match raw.trade_id {
+        Some(serde_json::Value::String(s)) => s,
+        Some(other) => other.to_string(),
+        None => format!("{}:{}:{}", raw.trade_time_ms, raw.price, raw.qty),
+    };
+
+    vec![Input {
+        sym: raw.symbol.to_uppercase(),
+        o: price,
+        h: price,
+        l: price,
+        c: price,
+        v: qty,
+        ts_ms: raw.trade_time_ms,
+        dedup_key,
+    }]
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +510,18 @@ mod tests {
         .into_bytes()
     }
 
+    /// A Binance combined-stream `@trade` frame (the verbatim wire shape the
+    /// connector publishes): the trade nested under `data`, price/qty as STRINGS,
+    /// `T` epoch-millis integer, `t` integer trade id.
+    fn binance(sym: &str, price: &str, qty: &str, trade_time_ms: i64, trade_id: i64) -> Vec<u8> {
+        format!(
+            r#"{{"stream":"{lower}@trade","data":{{"e":"trade","E":{event_ms},"s":"{sym}","t":{trade_id},"p":"{price}","q":"{qty}","T":{trade_time_ms},"m":false,"M":true}}}}"#,
+            lower = sym.to_lowercase(),
+            event_ms = trade_time_ms,
+        )
+        .into_bytes()
+    }
+
     /// Parse a single-input payload (massive, or single-trade kraken) and assert
     /// exactly one [`Input`] came back, returning it.
     fn one(inputs: Vec<Input>) -> Input {
@@ -541,6 +658,118 @@ mod tests {
         // Bad timestamp on the sole element → empty.
         assert!(parse_kraken_trade(&kraken("BTC/USD", 1.0, 1.0, "not-a-timestamp", "uuid-x"))
             .is_empty());
+    }
+
+    #[test]
+    fn parse_binance_ok() {
+        // Happy path: the trade is read from the NESTED `data` object, with the
+        // raw Binance keys s/p/q/T/t — not the kraken field names.
+        let input = one(parse_binance_trade(&binance(
+            "BTCUSDT", "67000.50", "0.125", 90_000, 3784369,
+        )));
+        assert_eq!(input.sym, "BTCUSDT"); // data.s
+        assert_eq!(input.o, 67000.50); // data.p (string)
+        assert_eq!(input.h, 67000.50);
+        assert_eq!(input.l, 67000.50);
+        assert_eq!(input.c, 67000.50);
+        assert_eq!(input.v, 0.125); // data.q (string)
+        assert_eq!(input.ts_ms, 90_000); // data.T (epoch millis integer)
+        assert_eq!(input.dedup_key, "3784369"); // data.t (integer id stringified)
+    }
+
+    #[test]
+    fn parse_binance_fan_token() {
+        // A Binance-exclusive fan token (the reason Binance is the required
+        // source) must parse exactly like any other symbol.
+        let input = one(parse_binance_trade(&binance(
+            "PSGUSDT", "2.345", "10.0", 120_000, 99,
+        )));
+        assert_eq!(input.sym, "PSGUSDT");
+        assert_eq!(input.o, 2.345);
+        assert_eq!(input.v, 10.0);
+        assert_eq!(input.dedup_key, "99");
+        assert_eq!(input.ts_ms, 120_000);
+    }
+
+    #[test]
+    fn parse_binance_string_numbers_parse() {
+        // Price/qty arrive as decimal strings on the wire; they must become f64.
+        let input = one(parse_binance_trade(&binance(
+            "ETHUSDT", "3456.78", "1.5", 60_000, 42,
+        )));
+        assert_eq!(input.o, 3456.78);
+        assert_eq!(input.v, 1.5);
+    }
+
+    #[test]
+    fn parse_binance_uppercases_symbol() {
+        // Defensive: even if `data.s` arrived lower-case, the ring key must be
+        // canonical upper-case so it lines up with the connector's subjects.
+        let raw = br#"{"stream":"btcusdt@trade","data":{"e":"trade","E":90000,"s":"btcusdt","t":7,"p":"1.0","q":"2.0","T":90000,"m":false,"M":true}}"#;
+        let input = one(parse_binance_trade(raw));
+        assert_eq!(input.sym, "BTCUSDT");
+    }
+
+    #[test]
+    fn parse_binance_malformed_is_empty() {
+        assert!(parse_binance_trade(b"not json").is_empty());
+        assert!(parse_binance_trade(b"{bad").is_empty());
+        assert!(parse_binance_trade(b"").is_empty());
+    }
+
+    #[test]
+    fn parse_binance_non_trade_frame_is_empty() {
+        // A frame whose inner event is not "trade" (e.g. a kline) yields nothing.
+        let kline = br#"{"stream":"btcusdt@kline","data":{"e":"kline","s":"BTCUSDT","p":"1.0","q":"1.0","T":100,"t":1}}"#;
+        assert!(parse_binance_trade(kline).is_empty());
+        // A control frame with no `data` payload (e.g. a subscribe response).
+        let control = br#"{"result":null,"id":1}"#;
+        assert!(parse_binance_trade(control).is_empty());
+    }
+
+    #[test]
+    fn parse_binance_unparseable_price_is_empty() {
+        // A non-numeric price string is a bad payload, not a zero — skip it.
+        let bad = br#"{"stream":"btcusdt@trade","data":{"e":"trade","E":90000,"s":"BTCUSDT","t":1,"p":"not-a-number","q":"1.0","T":90000,"m":false,"M":true}}"#;
+        assert!(parse_binance_trade(bad).is_empty());
+    }
+
+    #[test]
+    fn binance_trades_make_correct_ohlcv() {
+        // Multiple frames (each carries exactly one trade) folded into one minute.
+        let mut agg = MinuteAggregator::new();
+        // base = 60_000 → minute starting at 60_000; all three fall inside it.
+        agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "100.0", "1.0", 65_000, 1,
+        ))));
+        agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "110.0", "2.0", 85_000, 2,
+        ))));
+        let res = agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "90.0", "3.0", 105_000, 3,
+        ))));
+
+        let bar = res.current;
+        assert_eq!(bar.o, 100.0); // first trade
+        assert_eq!(bar.h, 110.0); // max
+        assert_eq!(bar.l, 90.0); // min
+        assert_eq!(bar.c, 90.0); // last trade
+        assert_eq!(bar.v, 6.0); // 1+2+3
+        assert_eq!(bar.start_ts_ms, 60_000);
+        assert_eq!(bar.end_ts_ms, 120_000);
+    }
+
+    #[test]
+    fn duplicate_binance_trade_id_does_not_double_count() {
+        // Re-delivery of the same Binance trade id (`t`) must replace, not add.
+        let mut agg = MinuteAggregator::new();
+        agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "100.0", "1.0", 65_000, 777,
+        ))));
+        let res = agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "100.0", "1.0", 65_000, 777,
+        ))));
+        assert_eq!(res.current.v, 1.0, "replayed trade id ignored");
     }
 
     #[test]

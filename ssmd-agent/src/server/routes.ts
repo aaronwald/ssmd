@@ -2386,7 +2386,7 @@ route("GET", "/v1/data/snap", async (req) => {
 
 // 1-minute OHLCV bars from Redis (populated by ssmd-bar-cache).
 // Key layout: `ohlcv_1m:{feed}:{sym}` → JSON array of the last ~60 bars, oldest→newest.
-const BAR_CACHE_FEEDS = ["massive", "kraken-spot"] as const;
+const BAR_CACHE_FEEDS = ["massive", "kraken-spot", "binance"] as const;
 const MAX_BARS = 60;
 
 route("GET", "/v1/data/ohlcv/1m", async (req, ctx) => {

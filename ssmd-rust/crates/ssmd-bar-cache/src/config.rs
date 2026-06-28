@@ -22,6 +22,11 @@ pub struct Config {
     /// JetStream stream name carrying the kraken-spot trades.
     pub kraken_stream: String,
 
+    /// JetStream subject for binance spot trades.
+    pub binance_subject: String,
+    /// JetStream stream name carrying the binance spot trades.
+    pub binance_stream: String,
+
     /// Number of 1-minute bars retained per symbol in the Redis ring.
     pub ring: usize,
     /// TTL (seconds) applied to each Redis ring key.
@@ -46,6 +51,9 @@ impl Config {
         let kraken_subject = env_or("BAR_CACHE_KRAKEN_SUBJECT", "prod.kraken-spot.json.trade.>");
         let kraken_stream = env_or("BAR_CACHE_KRAKEN_STREAM", "PROD_KRAKEN_SPOT");
 
+        let binance_subject = env_or("BAR_CACHE_BINANCE_SUBJECT", "prod.binance.spot.json.trade.>");
+        let binance_stream = env_or("BAR_CACHE_BINANCE_STREAM", "PROD_BINANCE_SPOT");
+
         let ring = parse_env("BAR_CACHE_RING", 60usize);
         let ttl_secs = parse_env("BAR_CACHE_TTL_SECS", 3700u64);
 
@@ -58,6 +66,8 @@ impl Config {
             massive_stream,
             kraken_subject,
             kraken_stream,
+            binance_subject,
+            binance_stream,
             ring,
             ttl_secs,
             listen_addr,
@@ -114,6 +124,8 @@ mod tests {
             "BAR_CACHE_MASSIVE_STREAM",
             "BAR_CACHE_KRAKEN_SUBJECT",
             "BAR_CACHE_KRAKEN_STREAM",
+            "BAR_CACHE_BINANCE_SUBJECT",
+            "BAR_CACHE_BINANCE_STREAM",
             "BAR_CACHE_RING",
             "BAR_CACHE_TTL_SECS",
             "BAR_CACHE_LISTEN_ADDR",
@@ -137,6 +149,8 @@ mod tests {
         assert_eq!(cfg.massive_stream, "PROD_MASSIVE");
         assert_eq!(cfg.kraken_subject, "prod.kraken-spot.json.trade.>");
         assert_eq!(cfg.kraken_stream, "PROD_KRAKEN_SPOT");
+        assert_eq!(cfg.binance_subject, "prod.binance.spot.json.trade.>");
+        assert_eq!(cfg.binance_stream, "PROD_BINANCE_SPOT");
         assert_eq!(cfg.ring, 60);
         assert_eq!(cfg.ttl_secs, 3700);
         assert_eq!(cfg.listen_addr, "0.0.0.0:8080");
@@ -154,6 +168,8 @@ mod tests {
         env::set_var("BAR_CACHE_MASSIVE_STREAM", "X_MASSIVE");
         env::set_var("BAR_CACHE_KRAKEN_SUBJECT", "x.trade.>");
         env::set_var("BAR_CACHE_KRAKEN_STREAM", "X_KRAKEN");
+        env::set_var("BAR_CACHE_BINANCE_SUBJECT", "x.binance.trade.>");
+        env::set_var("BAR_CACHE_BINANCE_STREAM", "X_BINANCE");
         env::set_var("BAR_CACHE_RING", "120");
         env::set_var("BAR_CACHE_TTL_SECS", "7400");
         env::set_var("BAR_CACHE_LISTEN_ADDR", "0.0.0.0:9999");
@@ -164,6 +180,8 @@ mod tests {
         assert_eq!(cfg.massive_stream, "X_MASSIVE");
         assert_eq!(cfg.kraken_subject, "x.trade.>");
         assert_eq!(cfg.kraken_stream, "X_KRAKEN");
+        assert_eq!(cfg.binance_subject, "x.binance.trade.>");
+        assert_eq!(cfg.binance_stream, "X_BINANCE");
         assert_eq!(cfg.ring, 120);
         assert_eq!(cfg.ttl_secs, 7400);
         assert_eq!(cfg.listen_addr, "0.0.0.0:9999");

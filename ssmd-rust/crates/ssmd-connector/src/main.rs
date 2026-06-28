@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use ssmd_connector_lib::{
+    binance::{BinanceConnector, BinanceNatsWriter},
     kalshi::{KalshiConfig, KalshiConnector, KalshiCredentials},
     massive::{MassiveConnector, MassiveNatsWriter},
     EnvResolver, KeyResolver, NatsWriter, Runner, ServerState, WebSocketConnector,
@@ -88,6 +89,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "massive" => {
             run_massive_connector(&feed, &env_config, health_addr, shutdown_rx).await
+        }
+        "binance" => {
+            run_binance_connector(&feed, &env_config, health_addr, shutdown_rx).await
         }
         _ => {
             run_generic_connector(&feed, &env_config, health_addr, shutdown_rx).await
@@ -313,6 +317,86 @@ async fn run_kraken_connector(
             error!("Only NATS transport is supported for Kraken connector");
             Err("Only NATS transport is supported".into())
         }
+    }
+}
+
+/// Run Binance connector for spot market data (combined `@trade` stream).
+///
+/// The symbol set is injected via the `BINANCE_SYMBOLS` env var (comma-
+/// separated, set by the Connector CR with the Phase-1 tradeable bucket) so the
+/// 158-symbol list is never hardcoded in the crate. Falls back to majors-only
+/// if unset, mirroring the Kraken connector.
+async fn run_binance_connector(
+    feed: &Feed,
+    env_config: &Environment,
+    health_addr: SocketAddr,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Parse symbols from environment or use defaults
+    let symbols: Vec<String> = std::env::var("BINANCE_SYMBOLS")
+        .map(|s| {
+            s.split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_else(|_| vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()]);
+
+    if symbols.is_empty() {
+        return Err(
+            anyhow::anyhow!("BINANCE_SYMBOLS empty — refusing to start with no subscriptions")
+                .into(),
+        );
+    }
+
+    // Extract WebSocket base URL from feed config (overrides hardcoded constant).
+    // Filter out operator placeholder URLs that indicate no feed ConfigMap exists.
+    let ws_url = feed
+        .get_latest_version()
+        .map(|v| v.endpoint.clone())
+        .filter(|url| !url.contains("MISSING_FEED_CONFIGMAP"));
+
+    info!(symbols = ?symbols, count = symbols.len(), ?ws_url, "Creating Binance connector");
+
+    let connector = BinanceConnector::with_feed_name(symbols, ws_url, feed.name.clone());
+
+    match env_config.transport.transport_type {
+        TransportType::Nats => {
+            info!(transport = "nats", "Using Binance NATS writer");
+            let transport = MiddlewareFactory::create_nats_transport_validated(env_config).await?;
+            let writer = create_binance_nats_writer(transport, env_config, feed);
+            run_with_writer(feed, connector, writer, health_addr, shutdown_rx).await
+        }
+        _ => {
+            error!("Only NATS transport is supported for Binance connector");
+            Err("Only NATS transport is supported".into())
+        }
+    }
+}
+
+/// Create BinanceNatsWriter with optional custom subject prefix.
+fn create_binance_nats_writer(
+    transport: Arc<dyn ssmd_middleware::Transport>,
+    env_config: &Environment,
+    feed: &Feed,
+) -> BinanceNatsWriter {
+    if let (Some(ref prefix), Some(ref stream)) = (
+        &env_config.transport.subject_prefix,
+        &env_config.transport.stream,
+    ) {
+        info!(
+            subject_prefix = %prefix,
+            stream = %stream,
+            "Using custom subject prefix"
+        );
+        BinanceNatsWriter::with_prefix(transport, prefix.clone(), stream.clone())
+    } else {
+        info!(
+            subject_prefix = format!("{}.{}", env_config.name, feed.name),
+            "Using default subject prefix"
+        );
+        BinanceNatsWriter::new(transport, env_config.name.as_str(), feed.name.as_str())
     }
 }
 

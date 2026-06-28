@@ -10,7 +10,7 @@ use axum::{extract::State, routing::get, Router};
 use tokio::sync::Mutex;
 use tracing::info;
 
-use agg::{parse_kraken_trade, parse_massive_1s, MinuteAggregator};
+use agg::{parse_binance_trade, parse_kraken_trade, parse_massive_1s, MinuteAggregator};
 use config::Config;
 use consumer::{run_subscription, Subscription};
 use metrics::Metrics;
@@ -36,6 +36,8 @@ async fn main() {
         massive_stream = %config.massive_stream,
         kraken_subject = %config.kraken_subject,
         kraken_stream = %config.kraken_stream,
+        binance_subject = %config.binance_subject,
+        binance_stream = %config.binance_stream,
         ring = config.ring,
         ttl_secs = config.ttl_secs,
         listen_addr = %config.listen_addr,
@@ -70,12 +72,12 @@ async fn main() {
 
     let metrics = Arc::new(Metrics::new());
 
-    // One aggregator shared by both feeds; per-symbol state is single-writer
+    // One aggregator shared by all feeds; per-symbol state is single-writer
     // behind the Mutex (see consumer.rs).
     let aggregator = Arc::new(Mutex::new(MinuteAggregator::new()));
 
-    // The two subscriptions differ only by stream/subject, parser, and feed
-    // label — this is the entirety of the dual-feed routing.
+    // The subscriptions differ only by stream/subject, parser, and feed label —
+    // this is the entirety of the multi-feed routing.
     let subscriptions = vec![
         Subscription {
             stream_name: config.massive_stream.clone(),
@@ -88,6 +90,12 @@ async fn main() {
             filter_subject: config.kraken_subject.clone(),
             feed: "kraken-spot".to_string(),
             parse: parse_kraken_trade,
+        },
+        Subscription {
+            stream_name: config.binance_stream.clone(),
+            filter_subject: config.binance_subject.clone(),
+            feed: "binance".to_string(),
+            parse: parse_binance_trade,
         },
     ];
 

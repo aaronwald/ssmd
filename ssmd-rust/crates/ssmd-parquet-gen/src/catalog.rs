@@ -44,6 +44,11 @@ struct FeedDef {
 
 const FEEDS: &[FeedDef] = &[
     FeedDef {
+        feed: "binance",
+        stream: "spot",
+        prefix: "binance",
+    },
+    FeedDef {
         feed: "kalshi",
         stream: "crypto",
         prefix: "kalshi",
@@ -233,6 +238,19 @@ mod tests {
                 .iter()
                 .any(|f| f.feed == "massive" && f.stream == "massive" && f.prefix == "massive"),
             "FEEDS must include the massive feed (massive/massive/massive)"
+        );
+    }
+
+    /// Binance spot trade parquet is generated under `binance/binance/spot/<date>/`,
+    /// mirroring the kraken-spot layout (`{prefix}/{prefix}/{stream}`). It must be
+    /// in FEEDS so the catalog (and `/v1/data/feeds`) indexes it.
+    #[test]
+    fn feeds_contains_binance() {
+        assert!(
+            FEEDS
+                .iter()
+                .any(|f| f.feed == "binance" && f.stream == "spot" && f.prefix == "binance"),
+            "FEEDS must include the binance feed (binance/binance/spot)"
         );
     }
 }
