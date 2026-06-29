@@ -45,6 +45,7 @@ export const VOLUME_UNITS: Record<string, string> = {
   "kraken-futures": "base_currency",
   "polymarket": "usd",
   "massive": "shares",
+  "binance": "base_currency",
 };
 
 /**
@@ -267,6 +268,27 @@ export function buildPriceSQL(
       FROM read_parquet('${path}')
       QUALIFY ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY ${pc.orderCol} DESC) = 1
       ORDER BY volume DESC
+    `.trim();
+  }
+
+  // Fail loud if the resolved path or ordering column is missing before we
+  // interpolate them into SQL — these come from internal config, never trust
+  // them blindly.
+  if (!path) throw new Error(`Could not resolve parquet path for feed: ${feed}`);
+  if (!pc.orderCol) throw new Error(`Missing orderCol for feed: ${feed}`);
+
+  if (feed === "binance") {
+    // Binance spot is trade-only: the latest trade per symbol is the price
+    // snapshot. price is already in dollars; qty is the base-asset quantity.
+    return `
+      SELECT
+        symbol as ticker,
+        price as last_price,
+        qty as last_qty,
+        exchange_ts_ms
+      FROM read_parquet('${path}')
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ${pc.orderCol} DESC) = 1
+      ORDER BY symbol ASC
     `.trim();
   }
 
