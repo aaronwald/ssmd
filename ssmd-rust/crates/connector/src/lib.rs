@@ -7,6 +7,7 @@
 // unavailable on older Rust toolchains used in CI Docker images.
 #![allow(clippy::manual_is_multiple_of)]
 
+pub mod binance;
 pub mod error;
 pub mod flusher;
 pub mod kalshi;

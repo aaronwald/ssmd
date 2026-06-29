@@ -1,10 +1,11 @@
 //! NATS JetStream consumer loop driving the [`MinuteAggregator`] into Redis.
 //!
-//! Two subscriptions feed one aggregator: massive 1s OHLCV aggregates and
-//! kraken-spot trades. They differ only in their wire format, so each
-//! subscription carries its own parser (`parse_massive_1s` / `parse_kraken_trade`)
-//! and feed label — that is the entirety of the per-feed routing. Everything
-//! after parsing (aggregation, Redis ring write, freshness gauge) is identical.
+//! Three subscriptions feed one aggregator: massive 1s OHLCV aggregates,
+//! kraken-spot trades, and binance-spot trades. They differ only in their wire
+//! format, so each subscription carries its own parser (`parse_massive_1s` /
+//! `parse_kraken_trade` / `parse_binance_trade`) and feed label — that is the
+//! entirety of the per-feed routing. Everything after parsing (aggregation,
+//! Redis ring write, freshness gauge) is identical.
 
 use std::sync::Arc;
 use std::time::Duration;

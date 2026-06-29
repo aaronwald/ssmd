@@ -5,6 +5,7 @@ use arrow::datatypes::Schema;
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 
+pub mod binance;
 pub mod kalshi;
 pub mod kraken;
 pub mod kraken_futures;
@@ -41,6 +42,9 @@ impl SchemaRegistry {
         let mut schemas: HashMap<String, Box<dyn MessageSchema>> = HashMap::new();
 
         match feed {
+            "binance" => {
+                schemas.insert("trade".to_string(), Box::new(binance::BinanceTradeSchema));
+            }
             "kalshi" => {
                 schemas.insert(
                     "ticker".to_string(),
@@ -125,6 +129,13 @@ impl SchemaRegistry {
 /// Detect message type from raw JSON based on feed-specific conventions.
 pub fn detect_message_type(feed: &str, json: &serde_json::Value) -> Option<String> {
     match feed {
+        "binance" => {
+            // Binance combined-stream frame:
+            // {"stream":"<sym>@trade","data":{"e":"trade",...}}.
+            // Route on the nested data.e event type. Frames without a `data`
+            // object (control frames) return None and are skipped.
+            json.get("data")?.get("e")?.as_str().map(String::from)
+        }
         "kalshi" => {
             // Kalshi uses "type" field: "ticker", "trade", "market_lifecycle_v2", etc.
             json.get("type")?.as_str().map(String::from)

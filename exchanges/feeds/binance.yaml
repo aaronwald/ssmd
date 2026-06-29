@@ -1,0 +1,38 @@
+name: binance
+display_name: Binance Spot Exchange
+type: websocket
+status: active
+versions:
+  - version: v1
+    effective_from: "2026-06-28"
+    protocol:
+      transport: wss
+      message: json
+    endpoint: wss://data-stream.binance.vision
+    auth_method: none
+
+# Message types received from this exchange.
+# Capture scope is @trade only (1-minute klines are built downstream by ssmd-bar-cache).
+#
+# IMPORTANT: `identifier_field` / `timestamp_field` are the NORMALIZED parquet column
+# names (what DQ queries via SQL), NOT the raw Binance wire keys. The connector
+# publishes raw `@trade` frames verbatim (raw keys `s`/`T`/`p`/`q`/`t`); the
+# `ssmd-schemas` binance trade schema (Phase 6) renames them to columns
+# `symbol` / `exchange_ts_ms` / `price` / `qty` / `trade_id` — exactly as the massive
+# trade schema renames raw `sym`/`t` → `symbol`/`exchange_ts_ms`. These two fields must
+# match those parquet column names.
+#
+# Binance combined-stream @trade delivers exactly ONE trade per message (the inner
+# `data` object is a single trade, not an array), so each NATS message / JSONL line
+# maps to exactly one parquet row — fanout: false (unlike Kraken Spot, whose `data[]`
+# array fans out to N rows per line → fanout: true).
+# Raw trade time `T` is epoch milliseconds → column `exchange_ts_ms`. Raw trade id `t`
+# is a per-symbol monotonic integer but is not used for gap detection here
+# (sequenced: false), matching the Kraken Spot model.
+message_types:
+  trade:
+    identifier_field: symbol
+    timestamp_field: exchange_ts_ms
+    timestamp_format: epoch_millis
+    sequenced: false
+    fanout: false  # one @trade object per combined-stream frame → one parquet row
