@@ -37,6 +37,19 @@ pub struct Bar {
     pub l: f64,
     pub c: f64,
     pub v: f64,
+    /// Number of trades that contributed to this minute. `0` for non-trade
+    /// sources (e.g. massive 1s bars), which carry no trade-level detail.
+    pub trade_count: u64,
+    /// Aggressor (taker) volume where the BUYER was the taker (buy-side
+    /// aggression). `0.0` for sources without aggressor-side data.
+    pub taker_buy_volume: f64,
+    /// Aggressor (taker) volume where the SELLER was the taker (sell-side
+    /// aggression). `0.0` for sources without aggressor-side data.
+    pub taker_sell_volume: f64,
+    /// Volume executed via market orders. Populated only for kraken-spot (v2
+    /// `ord_type == "market"`); `0.0` for binance (no order-type data) and
+    /// massive.
+    pub market_order_volume: f64,
     /// Minute-floored start (inclusive), epoch ms.
     pub start_ts_ms: i64,
     /// Exclusive end of the minute (`start_ts_ms + 60_000`), epoch ms.
@@ -61,6 +74,15 @@ pub struct Input {
     /// Key that is stable across re-deliveries of the same contribution within
     /// a minute (massive: the 1s start; kraken: the trade id).
     pub dedup_key: String,
+    /// Number of trades this input represents (1 for a single trade, 0 for a
+    /// non-trade source such as a massive 1s bar).
+    pub trades: u64,
+    /// Taker-buy volume contributed by this input (buyer was the taker).
+    pub taker_buy_v: f64,
+    /// Taker-sell volume contributed by this input (seller was the taker).
+    pub taker_sell_v: f64,
+    /// Market-order volume contributed by this input (kraken-spot only).
+    pub market_order_v: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +130,12 @@ pub fn parse_massive_1s(payload: &[u8]) -> Vec<Input> {
         ts_ms: raw.s,
         // The 1-second start uniquely identifies this contribution in a minute.
         dedup_key: raw.s.to_string(),
+        // Massive 1s bars carry no trade-level detail — honest zeros, never
+        // fabricated attribution.
+        trades: 0,
+        taker_buy_v: 0.0,
+        taker_sell_v: 0.0,
+        market_order_v: 0.0,
     }]
 }
 
@@ -134,6 +162,14 @@ struct KrakenTradeRaw {
     /// emits), so accept any JSON scalar and stringify it for the dedup key.
     #[serde(default)]
     trade_id: Option<serde_json::Value>,
+    /// Aggressor (taker) side: `"buy"` ⇒ taker_buy, `"sell"` ⇒ taker_sell,
+    /// absent/unknown ⇒ no attribution (0 on both sides). Explicitly matched so
+    /// a missing or unrecognised value never fabricates volume on either side.
+    #[serde(default)]
+    side: Option<String>,
+    /// Order type of the aggressing order; `"market"` ⇒ market-order volume.
+    #[serde(default)]
+    ord_type: Option<String>,
 }
 
 /// Parse a kraken-spot v2 trade envelope into zero or more [`Input`]s.
@@ -177,6 +213,22 @@ pub fn parse_kraken_trade(payload: &[u8]) -> Vec<Input> {
             None => format!("{ts_ms}:{}:{}", raw.price, raw.qty),
         };
 
+        // Kraken v2 `side` is the aggressor/taker side: "buy" ⇒ taker_buy,
+        // "sell" ⇒ taker_sell, absent/unknown ⇒ no attribution (0 both sides).
+        // Using two independent comparisons avoids the `else` that would
+        // fabricate sell attribution when `side` is absent.
+        let taker_buy_v = if raw.side.as_deref() == Some("buy") {
+            raw.qty
+        } else {
+            0.0
+        };
+        let taker_sell_v = if raw.side.as_deref() == Some("sell") {
+            raw.qty
+        } else {
+            0.0
+        };
+        let is_market = raw.ord_type.as_deref() == Some("market");
+
         inputs.push(Input {
             sym: raw.symbol,
             o: raw.price,
@@ -186,6 +238,10 @@ pub fn parse_kraken_trade(payload: &[u8]) -> Vec<Input> {
             v: raw.qty,
             ts_ms,
             dedup_key,
+            trades: 1,
+            taker_buy_v,
+            taker_sell_v,
+            market_order_v: if is_market { raw.qty } else { 0.0 },
         });
     }
 
@@ -235,6 +291,15 @@ struct BinanceTradeRaw {
     /// wire, so accept any JSON scalar and stringify it for the dedup key.
     #[serde(rename = "t", default)]
     trade_id: Option<serde_json::Value>,
+    /// "buyer is the maker" flag. `false` ⇒ buyer is the taker (buy-side
+    /// aggression); `true` ⇒ seller is the taker (sell-side aggression).
+    ///
+    /// Real Binance `@trade` frames always carry `m`; if the field were absent,
+    /// `serde(default)` would supply `false`, which would be counted as taker-buy.
+    /// In practice this only fires for non-trade control frames, which are already
+    /// rejected by the `e != "trade"` guard above before the field is read.
+    #[serde(rename = "m", default)]
+    buyer_is_maker: bool,
 }
 
 /// Parse a Binance combined-stream `@trade` frame into zero or one [`Input`].
@@ -291,6 +356,9 @@ pub fn parse_binance_trade(payload: &[u8]) -> Vec<Input> {
         None => format!("{}:{}:{}", raw.trade_time_ms, raw.price, raw.qty),
     };
 
+    // `m` ("buyer is maker") gives the aggressor side: buyer is the taker iff
+    // they are NOT the maker. Binance carries no order-type data → market_order_v
+    // is always 0 for this feed.
     vec![Input {
         sym: raw.symbol.to_uppercase(),
         o: price,
@@ -300,6 +368,10 @@ pub fn parse_binance_trade(payload: &[u8]) -> Vec<Input> {
         v: qty,
         ts_ms: raw.trade_time_ms,
         dedup_key,
+        trades: 1,
+        taker_buy_v: if raw.buyer_is_maker { 0.0 } else { qty },
+        taker_sell_v: if raw.buyer_is_maker { qty } else { 0.0 },
+        market_order_v: 0.0,
     }]
 }
 
@@ -317,6 +389,10 @@ struct Contribution {
     c: f64,
     v: f64,
     ts_ms: i64,
+    trades: u64,
+    taker_buy_v: f64,
+    taker_sell_v: f64,
+    market_order_v: f64,
 }
 
 /// Accumulator for one symbol's current minute.
@@ -359,6 +435,10 @@ impl SymbolState {
         let mut high = f64::MIN;
         let mut low = f64::MAX;
         let mut vol = 0.0;
+        let mut trade_count = 0u64;
+        let mut taker_buy_volume = 0.0;
+        let mut taker_sell_volume = 0.0;
+        let mut market_order_volume = 0.0;
         for c in &ordered {
             if c.h > high {
                 high = c.h;
@@ -367,6 +447,10 @@ impl SymbolState {
                 low = c.l;
             }
             vol += c.v;
+            trade_count += c.trades;
+            taker_buy_volume += c.taker_buy_v;
+            taker_sell_volume += c.taker_sell_v;
+            market_order_volume += c.market_order_v;
         }
 
         Some(Bar {
@@ -376,6 +460,10 @@ impl SymbolState {
             l: low,
             c: last.c,
             v: vol,
+            trade_count,
+            taker_buy_volume,
+            taker_sell_volume,
+            market_order_volume,
             start_ts_ms: self.minute_start,
             end_ts_ms: self.minute_start + MINUTE_MS,
         })
@@ -424,6 +512,10 @@ impl MinuteAggregator {
             c: input.c,
             v: input.v,
             ts_ms: input.ts_ms,
+            trades: input.trades,
+            taker_buy_v: input.taker_buy_v,
+            taker_sell_v: input.taker_sell_v,
+            market_order_v: input.market_order_v,
         };
 
         let mut finalized = None;
@@ -529,6 +621,79 @@ mod tests {
         inputs.into_iter().next().unwrap()
     }
 
+    /// Build an [`Input`] directly with explicit attribution fields, for tests
+    /// that exercise `to_bar` accumulation without going through a parser.
+    #[allow(clippy::too_many_arguments)]
+    fn trade_input(
+        sym: &str,
+        price: f64,
+        qty: f64,
+        ts_ms: i64,
+        dedup_key: &str,
+        trades: u64,
+        taker_buy_v: f64,
+        taker_sell_v: f64,
+        market_order_v: f64,
+    ) -> Input {
+        Input {
+            sym: sym.to_string(),
+            o: price,
+            h: price,
+            l: price,
+            c: price,
+            v: qty,
+            ts_ms,
+            dedup_key: dedup_key.to_string(),
+            trades,
+            taker_buy_v,
+            taker_sell_v,
+            market_order_v,
+        }
+    }
+
+    #[test]
+    fn to_bar_accumulates_trade_count_and_attribution() {
+        let mut agg = MinuteAggregator::new();
+        // Three trades in minute 0: a taker-buy market order, a taker-sell limit,
+        // and a taker-buy limit. v = 1+2+3 = 6.
+        agg.ingest(trade_input(
+            "BTC/USD", 100.0, 1.0, 5_000, "t1", 1, 1.0, 0.0, 1.0,
+        ));
+        agg.ingest(trade_input(
+            "BTC/USD", 110.0, 2.0, 25_000, "t2", 1, 0.0, 2.0, 0.0,
+        ));
+        let res = agg.ingest(trade_input(
+            "BTC/USD", 90.0, 3.0, 45_000, "t3", 1, 3.0, 0.0, 0.0,
+        ));
+
+        let bar = res.current;
+        assert_eq!(bar.trade_count, 3);
+        assert_eq!(bar.v, 6.0);
+        assert_eq!(bar.taker_buy_volume, 4.0); // 1 + 3
+        assert_eq!(bar.taker_sell_volume, 2.0); // 2
+        assert_eq!(bar.market_order_volume, 1.0); // 1
+    }
+
+    #[test]
+    fn massive_input_has_zero_attribution() {
+        // Massive 1s bars carry no trade-level attribution: trade_count and all
+        // aggressor/market-order volumes are honestly zero.
+        let input = one(parse_massive_1s(&massive(
+            "AAPL", 60_000, 10.0, 12.0, 9.0, 11.0, 100.0,
+        )));
+        assert_eq!(input.trades, 0);
+        assert_eq!(input.taker_buy_v, 0.0);
+        assert_eq!(input.taker_sell_v, 0.0);
+        assert_eq!(input.market_order_v, 0.0);
+
+        let mut agg = MinuteAggregator::new();
+        let res = agg.ingest(input);
+        assert_eq!(res.current.trade_count, 0);
+        assert_eq!(res.current.taker_buy_volume, 0.0);
+        assert_eq!(res.current.taker_sell_volume, 0.0);
+        assert_eq!(res.current.market_order_volume, 0.0);
+    }
+
     #[test]
     fn minute_floor_floors_to_minute() {
         assert_eq!(minute_floor(0), 0);
@@ -581,6 +746,54 @@ mod tests {
             .unwrap()
             .timestamp_millis();
         assert_eq!(input.ts_ms, expected);
+    }
+
+    #[test]
+    fn kraken_trade_attributes_side_and_ord_type() {
+        // The `kraken(...)` builder emits side:"buy", ord_type:"market". A buy
+        // taker → taker_buy_v = qty; a market order → market_order_v = qty.
+        let input = one(parse_kraken_trade(&kraken(
+            "BTC/USD",
+            50000.5,
+            0.25,
+            "2026-01-01T00:00:30.500Z",
+            "uuid-1",
+        )));
+        assert_eq!(input.trades, 1);
+        assert_eq!(input.taker_buy_v, 0.25);
+        assert_eq!(input.taker_sell_v, 0.0);
+        assert_eq!(input.market_order_v, 0.25);
+    }
+
+    #[test]
+    fn kraken_sell_limit_trade_attributes_taker_sell_no_market() {
+        // A sell-aggressor limit trade: seller is taker → taker_sell_v = qty,
+        // taker_buy_v = 0; ord_type != "market" → market_order_v = 0.
+        let raw = br#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"sell","price":100.0,"qty":2.5,"ord_type":"limit","trade_id":42,"timestamp":"2026-01-01T00:00:10Z"}]}"#;
+        let input = one(parse_kraken_trade(raw));
+        assert_eq!(input.trades, 1);
+        assert_eq!(input.taker_sell_v, 2.5);
+        assert_eq!(input.taker_buy_v, 0.0);
+        assert_eq!(input.market_order_v, 0.0);
+    }
+
+    #[test]
+    fn kraken_unknown_side_yields_no_attribution() {
+        // A trade with NO `side` key must not fabricate sell (or buy) attribution.
+        // Both taker sides must be 0; market_order_v is still populated from
+        // ord_type so that field is unaffected by the missing side.
+        let raw = br#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","price":100.0,"qty":2.0,"ord_type":"market","trade_id":99,"timestamp":"2026-01-01T00:00:10Z"}]}"#;
+        let input = one(parse_kraken_trade(raw));
+        assert_eq!(input.taker_buy_v, 0.0, "absent side must not fabricate buy");
+        assert_eq!(
+            input.taker_sell_v, 0.0,
+            "absent side must not fabricate sell"
+        );
+        assert_eq!(
+            input.market_order_v, 2.0,
+            "market attribution independent of side"
+        );
+        assert_eq!(input.trades, 1);
     }
 
     #[test]
@@ -656,8 +869,10 @@ mod tests {
     fn parse_kraken_malformed_envelope_is_empty() {
         assert!(parse_kraken_trade(b"{bad").is_empty());
         // Bad timestamp on the sole element → empty.
-        assert!(parse_kraken_trade(&kraken("BTC/USD", 1.0, 1.0, "not-a-timestamp", "uuid-x"))
-            .is_empty());
+        assert!(
+            parse_kraken_trade(&kraken("BTC/USD", 1.0, 1.0, "not-a-timestamp", "uuid-x"))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -675,6 +890,30 @@ mod tests {
         assert_eq!(input.v, 0.125); // data.q (string)
         assert_eq!(input.ts_ms, 90_000); // data.T (epoch millis integer)
         assert_eq!(input.dedup_key, "3784369"); // data.t (integer id stringified)
+    }
+
+    #[test]
+    fn binance_trade_m_false_is_taker_buy() {
+        // The `binance(...)` builder emits "m":false → buyer is NOT the maker →
+        // buyer is the taker → taker_buy_v = qty. Binance has no order-type data.
+        let input = one(parse_binance_trade(&binance(
+            "BTCUSDT", "67000.50", "0.125", 90_000, 3784369,
+        )));
+        assert_eq!(input.trades, 1);
+        assert_eq!(input.taker_buy_v, 0.125);
+        assert_eq!(input.taker_sell_v, 0.0);
+        assert_eq!(input.market_order_v, 0.0);
+    }
+
+    #[test]
+    fn binance_trade_m_true_is_taker_sell() {
+        // "m":true → buyer IS the maker → seller is the taker → taker_sell_v = qty.
+        let raw = br#"{"stream":"btcusdt@trade","data":{"e":"trade","E":90000,"s":"BTCUSDT","t":7,"p":"100.0","q":"2.0","T":90000,"m":true,"M":true}}"#;
+        let input = one(parse_binance_trade(raw));
+        assert_eq!(input.trades, 1);
+        assert_eq!(input.taker_sell_v, 2.0);
+        assert_eq!(input.taker_buy_v, 0.0);
+        assert_eq!(input.market_order_v, 0.0);
     }
 
     #[test]
@@ -786,7 +1025,9 @@ mod tests {
             let c = (i + 11) as f64;
             let h = if i == 30 { 1000.0 } else { c };
             let l = if i == 40 { 1.0 } else { o };
-            let res = agg.ingest(one(parse_massive_1s(&massive("AAPL", sec, o, h, l, c, 2.0))));
+            let res = agg.ingest(one(parse_massive_1s(&massive(
+                "AAPL", sec, o, h, l, c, 2.0,
+            ))));
             assert!(res.finalized.is_none());
             last_current = Some(res.current);
         }
@@ -861,8 +1102,8 @@ mod tests {
         assert_eq!(bar.l, 90.0); // min price
         assert_eq!(bar.c, 90.0); // last trade
         assert_eq!(bar.v, 6.0); // 1+2+3
-        // All three trades fall in the same minute, so the bar's start is that
-        // minute's floor (the 2026-01-01T00:00 minute, not epoch 0).
+                                // All three trades fall in the same minute, so the bar's start is that
+                                // minute's floor (the 2026-01-01T00:00 minute, not epoch 0).
         let minute = minute_floor(
             chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:05Z")
                 .unwrap()
@@ -874,7 +1115,9 @@ mod tests {
     #[test]
     fn duplicate_massive_second_does_not_double_count() {
         let mut agg = MinuteAggregator::new();
-        agg.ingest(one(parse_massive_1s(&massive("AAPL", 0, 1.0, 1.0, 1.0, 1.0, 5.0))));
+        agg.ingest(one(parse_massive_1s(&massive(
+            "AAPL", 0, 1.0, 1.0, 1.0, 1.0, 5.0,
+        ))));
         // Resend the same 1s start with a revised volume — must replace, not add.
         let res = agg.ingest(one(parse_massive_1s(&massive(
             "AAPL", 0, 1.0, 1.0, 1.0, 1.0, 7.0,
@@ -906,13 +1149,25 @@ mod tests {
             "dup",
         ))));
         assert_eq!(res.current.v, 1.0, "replayed trade id ignored");
+        // Dedup must also REPLACE, not re-add, for the new attribution fields.
+        // The builder emits side:"buy", qty:1.0 → taker_buy_volume == 1.0 exactly.
+        assert_eq!(
+            res.current.trade_count, 1,
+            "replayed trade must not increment count"
+        );
+        assert_eq!(
+            res.current.taker_buy_volume, 1.0,
+            "replayed trade must not double-count taker buy"
+        );
     }
 
     #[test]
     fn minute_rollover_emits_prior_minute() {
         let mut agg = MinuteAggregator::new();
         // Minute 0.
-        agg.ingest(one(parse_massive_1s(&massive("AAPL", 0, 5.0, 5.0, 5.0, 5.0, 4.0))));
+        agg.ingest(one(parse_massive_1s(&massive(
+            "AAPL", 0, 5.0, 5.0, 5.0, 5.0, 4.0,
+        ))));
         let res = agg.ingest(one(parse_massive_1s(&massive(
             "AAPL", 30_000, 6.0, 6.0, 6.0, 6.0, 2.0,
         ))));
@@ -936,6 +1191,55 @@ mod tests {
     }
 
     #[test]
+    fn minute_rollover_attribution_lands_on_finalized_bar() {
+        // Two trades in minute 0 (one buy-market, one sell-limit) then one in
+        // minute 1 to trigger the rollover. Verify the finalized minute-0 bar
+        // carries the correct attribution sums, not the minute-1 bar's sums.
+        let mut agg = MinuteAggregator::new();
+
+        // Minute 0: buy+market qty=1.0 and sell+limit qty=2.0.
+        agg.ingest(one(parse_kraken_trade(&kraken(
+            "BTC/USD",
+            100.0,
+            1.0,
+            "2026-01-01T00:00:05Z",
+            "t1",
+        ))));
+        let raw_sell = br#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"sell","price":101.0,"qty":2.0,"ord_type":"limit","trade_id":"t2","timestamp":"2026-01-01T00:00:30Z"}]}"#;
+        agg.ingest(one(parse_kraken_trade(raw_sell)));
+
+        // Minute 1: a buy+market trade that triggers finalization of minute 0.
+        let res = agg.ingest(one(parse_kraken_trade(&kraken(
+            "BTC/USD",
+            102.0,
+            5.0,
+            "2026-01-01T00:01:00Z",
+            "t3",
+        ))));
+
+        let fin = res
+            .finalized
+            .expect("minute 0 must be finalized on rollover");
+        assert_eq!(
+            fin.start_ts_ms,
+            minute_floor(
+                chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:05Z")
+                    .unwrap()
+                    .timestamp_millis(),
+            )
+        );
+        assert_eq!(fin.trade_count, 2, "minute 0 had two trades");
+        assert_eq!(fin.taker_buy_volume, 1.0, "t1 was buy-taker qty=1");
+        assert_eq!(fin.taker_sell_volume, 2.0, "t2 was sell-taker qty=2");
+        assert_eq!(fin.market_order_volume, 1.0, "t1 was market, t2 was limit");
+
+        // The new minute-1 bar should only reflect t3.
+        assert_eq!(res.current.trade_count, 1);
+        assert_eq!(res.current.taker_buy_volume, 5.0);
+        assert_eq!(res.current.market_order_volume, 5.0);
+    }
+
+    #[test]
     fn late_input_for_finalized_minute_is_dropped() {
         let mut agg = MinuteAggregator::new();
         agg.ingest(one(parse_massive_1s(&massive(
@@ -954,7 +1258,9 @@ mod tests {
     #[test]
     fn separate_symbols_are_independent() {
         let mut agg = MinuteAggregator::new();
-        agg.ingest(one(parse_massive_1s(&massive("AAPL", 0, 1.0, 1.0, 1.0, 1.0, 1.0))));
+        agg.ingest(one(parse_massive_1s(&massive(
+            "AAPL", 0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        ))));
         let res = agg.ingest(one(parse_massive_1s(&massive(
             "MSFT", 0, 2.0, 2.0, 2.0, 2.0, 5.0,
         ))));
@@ -966,7 +1272,9 @@ mod tests {
     fn flush_emits_open_bar() {
         let mut agg = MinuteAggregator::new();
         // `one()` asserts exactly one parsed input (fail-loud, like the old unwrap).
-        agg.ingest(one(parse_massive_1s(&massive("AAPL", 0, 1.0, 1.0, 1.0, 1.0, 3.0))));
+        agg.ingest(one(parse_massive_1s(&massive(
+            "AAPL", 0, 1.0, 1.0, 1.0, 1.0, 3.0,
+        ))));
         let bar = agg.flush("AAPL").expect("open bar");
         assert_eq!(bar.v, 3.0);
         // Flushed symbol is gone.

@@ -550,25 +550,28 @@ export function DataApiSections() {
           method="GET"
           path="/v1/data/ohlcv/1m"
           scope="datasets:read"
-          description="Latest 1-minute OHLCV bars from a rolling ~60-minute cache, updated continuously."
+          description="Live 1-minute OHLCV bars from a rolling ~60-minute cache, updated continuously. Includes trade counts and aggressor-side volume splits."
           queryParams={[
-            { name: "feed", description: "massive (US equities/ETFs) or kraken-spot (crypto) (required)" },
-            { name: "sym", description: "Symbol, e.g. AAPL or SPY (massive); BTC/USDT or ETH/USDT (kraken-spot) (required)" },
+            { name: "feed", description: "massive (US equities/ETFs), kraken-spot (crypto), or binance (crypto) (required)" },
+            { name: "sym", description: "Symbol: AAPL or SPY (massive); BTC/USDT or ETH/USDT (kraken-spot); BTCUSDT or ETHUSDT (binance) (required)" },
             { name: "limit", description: "Most-recent bars to return, 1–60 (default 60)" },
           ]}
           response={`{
-  "feed": "massive",
-  "sym": "AAPL",
+  "feed": "binance",
+  "sym": "BTCUSDT",
   "bars": [
     {
-      "sym": "AAPL",
-      "o": 296.4, "h": 297.75, "l": 295.25, "c": 297.1,
-      "v": 13590.99,
-      "start_ts_ms": 1782115200000,
-      "end_ts_ms": 1782115260000
+      "sym": "BTCUSDT",
+      "o": 42500.5, "h": 42750.0, "l": 42400.0, "c": 42625.3,
+      "v": 128.45,
+      "trade_count": 1205,
+      "taker_buy_volume": 72.3, "taker_sell_volume": 56.15,
+      "market_order_volume": 0.0,
+      "start_ts_ms": 1782124200000,
+      "end_ts_ms": 1782124260000
     }
   ],
-  "served_at": "2026-06-23T17:04:49.492Z"
+  "served_at": "2026-06-27T14:30:15.842Z"
 }`}
           curl={`# US equities/ETFs (massive)
 curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=massive&sym=AAPL&limit=5" \\
@@ -576,8 +579,12 @@ curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=massive&sym=AAPL&limit=5" \
 
 # Crypto (kraken-spot) — URL-encode the slash in the pair (BTC/USDT -> BTC%2FUSDT)
 curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=kraken-spot&sym=BTC%2FUSDT&limit=5" \\
+  -H "X-API-Key: $API_KEY"
+
+# Crypto (binance) — no slash in symbols
+curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT&limit=5" \\
   -H "X-API-Key: $API_KEY"`}
-          notes="Bars are ordered oldest to newest; start_ts_ms/end_ts_ms are minute boundaries in epoch ms (UTC). kraken-spot is near-real-time; massive is ~15 minutes delayed. kraken-spot symbols are pairs like BTC/USDT — URL-encode the slash as %2F. Use /v1/data/ohlcv/1m/symbols to list which symbols have bars. 404 if no bars cached for the symbol yet."
+          notes="Bars are ordered oldest to newest; start_ts_ms/end_ts_ms are minute boundaries in epoch ms (UTC). Feed timelines: kraken-spot is near-real-time; massive is ~15 minutes delayed; binance is near-real-time. Symbols: kraken-spot uses pairs like BTC/USDT (URL-encode as %2F); binance and massive use simple tickers (BTCUSDT, AAPL). v = total base-asset volume. trade_count = trades in the minute (0 for massive, which has no trade-level detail). taker_buy_volume/taker_sell_volume = aggressor volume split by side (0.0 if feed lacks aggressor data). market_order_volume = volume from market orders (populated only for kraken-spot via ord_type='market'; 0.0 for binance and massive). Use /v1/data/ohlcv/1m/symbols to list cached symbols. 404 if no bars cached for the symbol yet."
         />
         <Endpoint
           method="GET"
@@ -585,7 +592,7 @@ curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=kraken-spot&sym=BTC%2FUSDT&
           scope="datasets:read"
           description="List the symbols that currently have a 1-minute OHLCV ring cached, for a given feed."
           queryParams={[
-            { name: "feed", description: "massive (US equities/ETFs) or kraken-spot (crypto) (required)" },
+            { name: "feed", description: "massive (US equities/ETFs), kraken-spot (crypto), or binance (crypto) (required)" },
           ]}
           response={`{
   "feed": "kraken-spot",
