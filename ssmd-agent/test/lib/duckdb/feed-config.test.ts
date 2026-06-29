@@ -44,3 +44,39 @@ Deno.test("gcsParquetPath builds massive 1m glob from the nested prefix", () => 
     "s3://ssmd-data/massive/massive/massive/2026-06-20/ohlcv_1m_*.parquet",
   );
 });
+
+Deno.test("FEED_PATHS registers binance with the archiver double-nested spot prefix", () => {
+  assertEquals(FEED_PATHS["binance"], "binance/binance/spot");
+});
+
+Deno.test("VALID_DATA_FEEDS auto-includes binance via FEED_PATHS", () => {
+  assertEquals(VALID_DATA_FEEDS.includes("binance"), true);
+});
+
+Deno.test("TRADE_CONFIG binance maps to trade parquet (symbol/price/qty, no divisor)", () => {
+  const tc = TRADE_CONFIG["binance"];
+  assertEquals(tc.fileType, "trade");
+  assertEquals(tc.tickerCol, "symbol");
+  assertEquals(tc.priceCol, "price");
+  assertEquals(tc.qtyCol, "qty");
+  assertEquals(tc.priceDivisor, 1);
+});
+
+Deno.test("PRICE_CONFIG binance reads the trade file ordered by exchange_ts_ms", () => {
+  assertEquals(PRICE_CONFIG["binance"], { fileType: "trade", orderCol: "exchange_ts_ms" });
+});
+
+Deno.test("FEED_TYPES binance is trade-only (no ticker parquet)", () => {
+  assertEquals(FEED_TYPES["binance"], ["trade"]);
+});
+
+Deno.test("VOLUME_UNITS binance is base_currency", () => {
+  assertEquals(VOLUME_UNITS["binance"], "base_currency");
+});
+
+Deno.test("gcsParquetPath builds binance trade glob from the nested spot prefix", () => {
+  assertEquals(
+    gcsParquetPath("ssmd-data", "binance", "2026-06-29", "trade"),
+    "s3://ssmd-data/binance/binance/spot/2026-06-29/trade_*.parquet",
+  );
+});
