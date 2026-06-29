@@ -22,5 +22,8 @@
     "ohlcv_1s": { "version": "1.0.0" },
     "ohlcv_1m": { "version": "1.0.0" },
     "ohlcv_1d": { "version": "1.0.0" }
+  },
+  "binance": {
+    "trade": { "version": "1.0.0", "notes": "spot @trade; m/M maker flags not materialized in parquet" }
   }
 }
