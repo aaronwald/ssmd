@@ -51,7 +51,10 @@ impl Config {
         let kraken_subject = env_or("BAR_CACHE_KRAKEN_SUBJECT", "prod.kraken-spot.json.trade.>");
         let kraken_stream = env_or("BAR_CACHE_KRAKEN_STREAM", "PROD_KRAKEN_SPOT");
 
-        let binance_subject = env_or("BAR_CACHE_BINANCE_SUBJECT", "prod.binance.spot.json.trade.>");
+        let binance_subject = env_or(
+            "BAR_CACHE_BINANCE_SUBJECT",
+            "prod.binance.spot.json.trade.>",
+        );
         let binance_stream = env_or("BAR_CACHE_BINANCE_STREAM", "PROD_BINANCE_SPOT");
 
         let ring = parse_env("BAR_CACHE_RING", 60usize);
