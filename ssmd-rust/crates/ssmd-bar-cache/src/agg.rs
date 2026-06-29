@@ -162,6 +162,14 @@ struct KrakenTradeRaw {
     /// emits), so accept any JSON scalar and stringify it for the dedup key.
     #[serde(default)]
     trade_id: Option<serde_json::Value>,
+    /// Aggressor (taker) side: `"buy"` ⇒ buyer was the taker, anything else
+    /// (`"sell"`) ⇒ seller was the taker. Absent on older fixtures → no
+    /// attribution.
+    #[serde(default)]
+    side: Option<String>,
+    /// Order type of the aggressing order; `"market"` ⇒ market-order volume.
+    #[serde(default)]
+    ord_type: Option<String>,
 }
 
 /// Parse a kraken-spot v2 trade envelope into zero or more [`Input`]s.
@@ -205,6 +213,11 @@ pub fn parse_kraken_trade(payload: &[u8]) -> Vec<Input> {
             None => format!("{ts_ms}:{}:{}", raw.price, raw.qty),
         };
 
+        // Kraken v2 `side` is the aggressor/taker side; `ord_type == "market"`
+        // marks the aggressing order as a market order.
+        let buyer_is_taker = raw.side.as_deref() == Some("buy");
+        let is_market = raw.ord_type.as_deref() == Some("market");
+
         inputs.push(Input {
             sym: raw.symbol,
             o: raw.price,
@@ -215,9 +228,9 @@ pub fn parse_kraken_trade(payload: &[u8]) -> Vec<Input> {
             ts_ms,
             dedup_key,
             trades: 1,
-            taker_buy_v: 0.0,
-            taker_sell_v: 0.0,
-            market_order_v: 0.0,
+            taker_buy_v: if buyer_is_taker { raw.qty } else { 0.0 },
+            taker_sell_v: if buyer_is_taker { 0.0 } else { raw.qty },
+            market_order_v: if is_market { raw.qty } else { 0.0 },
         });
     }
 
@@ -710,6 +723,35 @@ mod tests {
             .unwrap()
             .timestamp_millis();
         assert_eq!(input.ts_ms, expected);
+    }
+
+    #[test]
+    fn kraken_trade_attributes_side_and_ord_type() {
+        // The `kraken(...)` builder emits side:"buy", ord_type:"market". A buy
+        // taker → taker_buy_v = qty; a market order → market_order_v = qty.
+        let input = one(parse_kraken_trade(&kraken(
+            "BTC/USD",
+            50000.5,
+            0.25,
+            "2026-01-01T00:00:30.500Z",
+            "uuid-1",
+        )));
+        assert_eq!(input.trades, 1);
+        assert_eq!(input.taker_buy_v, 0.25);
+        assert_eq!(input.taker_sell_v, 0.0);
+        assert_eq!(input.market_order_v, 0.25);
+    }
+
+    #[test]
+    fn kraken_sell_limit_trade_attributes_taker_sell_no_market() {
+        // A sell-aggressor limit trade: seller is taker → taker_sell_v = qty,
+        // taker_buy_v = 0; ord_type != "market" → market_order_v = 0.
+        let raw = br#"{"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"sell","price":100.0,"qty":2.5,"ord_type":"limit","trade_id":42,"timestamp":"2026-01-01T00:00:10Z"}]}"#;
+        let input = one(parse_kraken_trade(raw));
+        assert_eq!(input.trades, 1);
+        assert_eq!(input.taker_sell_v, 2.5);
+        assert_eq!(input.taker_buy_v, 0.0);
+        assert_eq!(input.market_order_v, 0.0);
     }
 
     #[test]
