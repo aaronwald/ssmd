@@ -82,6 +82,53 @@ export function DataApiSections() {
             </p>
           </div>
           <div className="border border-border rounded p-3 bg-bg">
+            <p className="font-semibold text-fg text-sm">Schemas</p>
+            <p className="text-xs text-fg-muted mt-1">
+              Message &amp; parquet schema reference (ssmd repo):{" "}
+              <a
+                href="https://github.com/aaronwald/ssmd/blob/main/docs/schemas/parquet-schemas.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-accent hover:underline"
+              >
+                Parquet schemas
+              </a>
+              ,{" "}
+              <a
+                href="https://github.com/aaronwald/ssmd/blob/main/docs/schemas/kalshi-json.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-accent hover:underline"
+              >
+                Kalshi JSON
+              </a>
+              ,{" "}
+              <a
+                href="https://github.com/aaronwald/ssmd/blob/main/docs/schemas/kraken-futures-json.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-accent hover:underline"
+              >
+                Kraken Futures JSON
+              </a>
+              ,{" "}
+              <a
+                href="https://github.com/aaronwald/ssmd/blob/main/docs/schemas/polymarket-json.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-accent hover:underline"
+              >
+                Polymarket JSON
+              </a>
+              . Current per-feed schema versions are served live at{" "}
+              <code className="font-mono text-accent">/v1/data/schema-versions</code> (see{" "}
+              <a href="#data-endpoints" className="text-accent hover:underline">
+                Data
+              </a>
+              ).
+            </p>
+          </div>
+          <div className="border border-border rounded p-3 bg-bg">
             <p className="font-semibold text-fg text-sm">Errors &amp; rate limits</p>
             <p className="text-xs text-fg-muted mt-1">
               Errors return <code className="font-mono text-accent">{`{ "error": "..." }`}</code> with
@@ -868,6 +915,15 @@ uv sync`}</pre>
               className="text-accent hover:underline"
             >
               Kraken Futures JSON
+            </a>
+            ,{" "}
+            <a
+              href="https://github.com/aaronwald/ssmd/blob/main/docs/schemas/polymarket-json.md"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent hover:underline"
+            >
+              Polymarket JSON
             </a>
             .
           </p>
