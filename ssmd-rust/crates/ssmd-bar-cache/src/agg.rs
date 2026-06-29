@@ -280,6 +280,21 @@ struct BinanceTradeRaw {
     /// wire, so accept any JSON scalar and stringify it for the dedup key.
     #[serde(rename = "t", default)]
     trade_id: Option<serde_json::Value>,
+    /// "buyer is the maker" flag. `false` ⇒ the buyer is the taker (buy-side
+    /// aggression); `true` ⇒ the seller is the taker (sell-side aggression).
+    ///
+    /// Validation: `m` is a required, always-present boolean on every Binance
+    /// `@trade` frame; `serde` deserializes it strictly as a JSON bool and will
+    /// FAIL the whole frame (→ `parse_binance_trade` returns empty, logged) if it
+    /// is a non-bool. `default` only applies if the key is entirely absent, which
+    /// real `@trade` frames never are — it exists solely so an unrelated
+    /// control/non-trade frame (already rejected upstream by the `e != "trade"`
+    /// guard) does not fail deserialization. This mirrors the established
+    /// `serde(default)` pattern on `trade_id` above and the count-and-skip parser
+    /// contract: a malformed value is skipped loudly, never coerced to a fake
+    /// aggressor side.
+    #[serde(rename = "m", default)]
+    buyer_is_maker: bool,
 }
 
 /// Parse a Binance combined-stream `@trade` frame into zero or one [`Input`].
@@ -336,6 +351,9 @@ pub fn parse_binance_trade(payload: &[u8]) -> Vec<Input> {
         None => format!("{}:{}:{}", raw.trade_time_ms, raw.price, raw.qty),
     };
 
+    // `m` ("buyer is maker") gives the aggressor side: buyer is the taker iff
+    // they are NOT the maker. Binance carries no order-type data → market_order_v
+    // is always 0 for this feed.
     vec![Input {
         sym: raw.symbol.to_uppercase(),
         o: price,
@@ -346,8 +364,8 @@ pub fn parse_binance_trade(payload: &[u8]) -> Vec<Input> {
         ts_ms: raw.trade_time_ms,
         dedup_key,
         trades: 1,
-        taker_buy_v: 0.0,
-        taker_sell_v: 0.0,
+        taker_buy_v: if raw.buyer_is_maker { 0.0 } else { qty },
+        taker_sell_v: if raw.buyer_is_maker { qty } else { 0.0 },
         market_order_v: 0.0,
     }]
 }
@@ -848,6 +866,30 @@ mod tests {
         assert_eq!(input.v, 0.125); // data.q (string)
         assert_eq!(input.ts_ms, 90_000); // data.T (epoch millis integer)
         assert_eq!(input.dedup_key, "3784369"); // data.t (integer id stringified)
+    }
+
+    #[test]
+    fn binance_trade_m_false_is_taker_buy() {
+        // The `binance(...)` builder emits "m":false → buyer is NOT the maker →
+        // buyer is the taker → taker_buy_v = qty. Binance has no order-type data.
+        let input = one(parse_binance_trade(&binance(
+            "BTCUSDT", "67000.50", "0.125", 90_000, 3784369,
+        )));
+        assert_eq!(input.trades, 1);
+        assert_eq!(input.taker_buy_v, 0.125);
+        assert_eq!(input.taker_sell_v, 0.0);
+        assert_eq!(input.market_order_v, 0.0);
+    }
+
+    #[test]
+    fn binance_trade_m_true_is_taker_sell() {
+        // "m":true → buyer IS the maker → seller is the taker → taker_sell_v = qty.
+        let raw = br#"{"stream":"btcusdt@trade","data":{"e":"trade","E":90000,"s":"BTCUSDT","t":7,"p":"100.0","q":"2.0","T":90000,"m":true,"M":true}}"#;
+        let input = one(parse_binance_trade(raw));
+        assert_eq!(input.trades, 1);
+        assert_eq!(input.taker_sell_v, 2.0);
+        assert_eq!(input.taker_buy_v, 0.0);
+        assert_eq!(input.market_order_v, 0.0);
     }
 
     #[test]
