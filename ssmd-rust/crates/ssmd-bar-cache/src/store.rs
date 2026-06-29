@@ -114,6 +114,10 @@ mod tests {
             l: 0.5,
             c: 1.5,
             v,
+            trade_count: 0,
+            taker_buy_volume: 0.0,
+            taker_sell_volume: 0.0,
+            market_order_volume: 0.0,
             start_ts_ms,
             end_ts_ms: start_ts_ms + 60_000,
         }
