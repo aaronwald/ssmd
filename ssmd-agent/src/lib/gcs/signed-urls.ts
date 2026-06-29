@@ -24,6 +24,13 @@ export const FEED_CONFIG: Record<string, FeedInfo> = {
     messageTypes: ["ticker", "trade"],
     description: "Kraken Spot — spot-market ticker & trade tick data.",
   },
+  "binance": {
+    prefix: "binance",
+    stream: "spot",
+    // Binance spot is trade-only (no ticker parquet) — see duckdb/feed-config.ts.
+    messageTypes: ["trade"],
+    description: "Binance Spot — spot-market trade tick data.",
+  },
   "polymarket": {
     prefix: "polymarket",
     stream: "markets",
