@@ -120,12 +120,33 @@ export function DataApiSections() {
               >
                 Polymarket JSON
               </a>
+              ,{" "}
+              <a
+                href="https://github.com/aaronwald/ssmd/blob/main/docs/schemas/binance-json.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-accent hover:underline"
+              >
+                Binance JSON
+              </a>
               . Current per-feed schema versions are served live at{" "}
               <code className="font-mono text-accent">/v1/data/schema-versions</code> (see{" "}
               <a href="#data-endpoints" className="text-accent hover:underline">
                 Data
               </a>
-              ).
+              ). The{" "}
+              <code className="font-mono text-accent">/v1/data/ohlcv/1m</code> bar schema is a
+              derived product (not in the parquet/schema-versions registry); it is documented
+              separately in{" "}
+              <a
+                href="https://github.com/aaronwald/ssmd/blob/main/docs/schemas/ohlcv-bars.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-accent hover:underline"
+              >
+                1m OHLCV bars
+              </a>
+              .
             </p>
           </div>
           <div className="border border-border rounded p-3 bg-bg">
