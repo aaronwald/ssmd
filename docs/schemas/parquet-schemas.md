@@ -26,6 +26,8 @@
   - [polymarket_trade](#polymarket_trade)
   - [polymarket_price_change](#polymarket_price_change)
   - [polymarket_best_bid_ask](#polymarket_best_bid_ask)
+- [Binance Spot Schemas](#binance-spot-schemas)
+  - [binance_trade](#binance_trade)
 - [Cross-Cutting Details](#cross-cutting-details)
   - [Parquet File Metadata](#parquet-file-metadata)
   - [File Naming & GCS Layout](#file-naming--gcs-layout)
@@ -55,6 +57,7 @@ The `SchemaRegistry` maps each feed to its registered message types. Detection l
 | `kraken` | `channel` + `data` | `json["channel"]` if `json["data"]` exists (skips control messages) | `ticker`, `trade` |
 | `kraken-futures` | `feed` | `json["feed"]` if no `json["event"]` (skips subscription messages) | `ticker`, `trade` |
 | `polymarket` | `event_type` | `json["event_type"]` string value | `book`, `last_trade_price`, `price_change`, `best_bid_ask` |
+| `binance` | `e` (nested under `data`) | `json["data"]["e"]` string value (combined-stream frame; control/non-trade frames skipped) | `trade` |
 
 Messages whose detected type has no registered schema are silently skipped. Messages that fail detection (e.g., heartbeats, subscription confirmations) are counted as `lines_skipped`.
 
@@ -350,6 +353,34 @@ Polymarket messages use flat JSON with `event_type` for detection. Numeric value
 **JSON fields NOT in parquet:** `event_type`
 
 **Source:** `ssmd-schemas/src/polymarket.rs:417-518`
+
+---
+
+## Binance Spot Schemas
+
+Binance Spot messages arrive as combined-stream `@trade` frames: `{"stream": "btcusdt@trade", "data": {"e": "trade", ...}}`. The trade is read from the nested `data` object; detection keys off the inner `data.e` value. Control frames (no `data`) and non-trade inner events (e.g. `kline`) are skipped. Only the `trade` schema is registered for the `binance` feed (no ticker).
+
+### binance_trade
+
+**Identity:** `schema_name = "binance_trade"`, `schema_version = "1.0.0"`, `message_type = "trade"`
+
+| # | Column | Arrow Type | Nullable | JSON Source | Notes |
+|---|--------|-----------|----------|------------|-------|
+| 0 | `symbol` | Utf8 | no | `data.s` | Uppercased |
+| 1 | `price` | Float64 | no | `data.p` | Parsed from a decimal **string** |
+| 2 | `qty` | Float64 | no | `data.q` | Parsed from a decimal **string** |
+| 3 | `exchange_ts_ms` | Int64 | no | `data.T` | Trade time, epoch milliseconds (integer) |
+| 4 | `trade_id` | Int64 | yes | `data.t` | Nullable — archived null if absent (Complete Data Archive) |
+| 5 | `_nats_seq` | UInt64 | no | pipeline | |
+| 6 | `_received_at` | Timestamp(us, UTC) | no | pipeline | |
+
+**Maker flags NOT in parquet:** The Binance `m` (buyer is maker) / `M` (best price match) flags are intentionally **not materialized** in the parquet schema — the archived trade schema carries no side/maker flag, matching the massive trade schema. The `m` flag is used by the live 1m-bar aggregator (bar-cache) for taker-side attribution, but that is the derived bar product, not the archived parquet.
+
+**Column name alignment:** Columns `symbol` and `exchange_ts_ms` must match `binance.yaml`'s `identifier_field` / `timestamp_field` so DQ SQL lines up.
+
+**JSON fields NOT in parquet:** `stream`, `E` (event time), `e` (detection field), `m`, `M`
+
+**Source:** `ssmd-schemas/src/binance.rs`
 
 ---
 
