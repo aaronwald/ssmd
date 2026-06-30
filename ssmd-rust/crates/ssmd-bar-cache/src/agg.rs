@@ -1226,6 +1226,12 @@ mod tests {
             res.current.taker_buy_volume, 1.0,
             "replayed trade must not double-count taker buy"
         );
+        // quote_volume rides the same Contribution upsert path; a replayed trade
+        // (price 100.0 × qty 1.0) must replace, not add → stays 100.0.
+        assert_eq!(
+            res.current.quote_volume, 100.0,
+            "replayed trade must not double-count quote volume"
+        );
     }
 
     #[test]
