@@ -147,6 +147,28 @@ export interface AuthInfo {
   billable: boolean;
 }
 
+/**
+ * True if a key's feed allowlist permits `feed`. A "*" entry means all feeds,
+ * mirroring how "*" works for scopes. Without this, a wildcard key 403s on every
+ * feed because `["*"].includes("binance")` is false — the bug this fixes.
+ */
+export function feedAllowed(allowedFeeds: string[], feed: string): boolean {
+  return allowedFeeds.includes("*") || allowedFeeds.includes(feed);
+}
+
+/**
+ * Resolve which of `candidates` a key may access. A "*" key gets all candidates;
+ * otherwise the candidates whose feed is in the allowlist.
+ */
+export function resolveAllowedFeeds<T>(
+  allowedFeeds: string[],
+  candidates: readonly T[],
+  feedOf: (c: T) => string,
+): T[] {
+  if (allowedFeeds.includes("*")) return [...candidates];
+  return candidates.filter((c) => allowedFeeds.includes(feedOf(c)));
+}
+
 type Handler = (req: Request, ctx: RouteContext) => Promise<Response>;
 export type ApiSurface = "public" | "internal";
 
@@ -1642,10 +1664,8 @@ route("GET", "/v1/data/catalog", async (req) => {
     return json({ error: "Catalog not available. Run parquet-gen catalog to generate." }, 503);
   }
 
-  // Filter feeds by key's allowed feeds
-  const allowedFeeds = catalog.feeds.filter((f) =>
-    auth.allowedFeeds.includes(f.feed)
-  );
+  // Filter feeds by key's allowed feeds ('*' = all feeds)
+  const allowedFeeds = resolveAllowedFeeds(auth.allowedFeeds, catalog.feeds, (f) => f.feed);
 
   if (feedParam) {
     // Single-feed detail: return dates within range
@@ -1772,8 +1792,8 @@ route("GET", "/v1/data/schemas", async (req) => {
     return json({ error: "Catalog not available. Run parquet-gen catalog to generate." }, 503);
   }
 
-  // Filter feeds by allowed feeds
-  let feeds = catalog.feeds.filter((f) => auth.allowedFeeds.includes(f.feed));
+  // Filter feeds by allowed feeds ('*' = all feeds)
+  let feeds = resolveAllowedFeeds(auth.allowedFeeds, catalog.feeds, (f) => f.feed);
   if (feedParam) {
     feeds = feeds.filter((f) => f.feed === feedParam);
   }
@@ -1810,7 +1830,7 @@ route("GET", "/v1/data/trades", async (req) => {
     return json({ error: `Invalid or missing feed. Valid: ${VALID_DATA_FEEDS.join(", ")}` }, 400);
   }
 
-  if (!auth.allowedFeeds.includes(feed)) {
+  if (!feedAllowed(auth.allowedFeeds, feed)) {
     return json({ error: `Key not authorized for feed: ${feed}` }, 403);
   }
 
@@ -1850,7 +1870,7 @@ route("GET", "/v1/data/prices", async (req) => {
     return json({ error: `Invalid or missing feed. Valid: ${VALID_DATA_FEEDS.join(", ")}` }, 400);
   }
 
-  if (!auth.allowedFeeds.includes(feed)) {
+  if (!feedAllowed(auth.allowedFeeds, feed)) {
     return json({ error: `Key not authorized for feed: ${feed}` }, 403);
   }
 
@@ -1892,7 +1912,7 @@ route("GET", "/v1/data/events", async (req, ctx) => {
     return json({ error: `Invalid or missing feed. Valid: ${VALID_DATA_FEEDS.join(", ")}` }, 400);
   }
 
-  if (!auth.allowedFeeds.includes(feed)) {
+  if (!feedAllowed(auth.allowedFeeds, feed)) {
     return json({ error: `Key not authorized for feed: ${feed}` }, 403);
   }
 
@@ -2032,7 +2052,7 @@ route("GET", "/v1/data/volume", async (req) => {
     return json({ error: `Invalid feed. Valid: ${VALID_DATA_FEEDS.join(", ")}` }, 400);
   }
 
-  if (feedParam && !auth.allowedFeeds.includes(feedParam)) {
+  if (feedParam && !feedAllowed(auth.allowedFeeds, feedParam)) {
     return json({ error: `Key not authorized for feed: ${feedParam}` }, 403);
   }
 
@@ -2051,12 +2071,13 @@ route("GET", "/v1/data/volume", async (req) => {
 
   const feeds = feedParam
     ? [feedParam]
-    : VALID_DATA_FEEDS.filter((f) => auth.allowedFeeds.includes(f));
+    : resolveAllowedFeeds(auth.allowedFeeds, VALID_DATA_FEEDS, (f) => f);
+  // resolveAllowedFeeds is defined near AuthInfo at the top of this file; '*' expands to all feeds.
 
   const feedSummaries: Record<string, unknown>[] = [];
 
   for (const feed of feeds) {
-    if (!auth.allowedFeeds.includes(feed)) continue;
+    if (!feedAllowed(auth.allowedFeeds, feed)) continue;
 
     try {
       const totalSQL = buildTotalVolumeSQL(bucket, feed, date);
@@ -2300,7 +2321,7 @@ route("GET", "/v1/data/snap", async (req) => {
     return json({ error: `Invalid or missing feed. Valid: ${VALID_DATA_FEEDS.join(", ")}` }, 400);
   }
 
-  if (!auth.allowedFeeds.includes(feed)) {
+  if (!feedAllowed(auth.allowedFeeds, feed)) {
     return json({ error: `Key not authorized for feed: ${feed}` }, 403);
   }
 
