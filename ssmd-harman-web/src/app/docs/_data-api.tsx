@@ -705,7 +705,7 @@ curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT&limit=5
 }`}
           curl={`curl "https://api.varshtat.com/v1/data/download?feed=hols&from=2026-03-09&to=2026-03-09" \\
   -H "X-API-Key: $API_KEY"`}
-          notes="Per-key feed and date-range restrictions are enforced (and clamped) server-side. Max 200 files per request — narrow the date range or filter by type if exceeded. See the DuckDB/Python examples below."
+          notes="Per-key feed and date-range restrictions are enforced (and clamped) server-side. Max 200 files per request — narrow the date range or filter by type if exceeded. hols crypto dataset includes: ohlcv-1m-ssmd.parquet (REST-sourced Kraken OHLCV) and ohlcv-1m-binance-ws.parquet (WS-sourced Binance 1m bars aggregated from trades). Both files carry base+quote volume, trade counts, and aggressor-side volume splits; binance WS has taker_buy_volume/taker_sell_volume derived from the is_buyer_maker flag (v1.1.0) and null marketorder_volume (no order-type data from Binance). See the DuckDB/Python examples below."
         />
         <Endpoint
           method="GET"
@@ -721,6 +721,9 @@ curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT&limit=5
   "kraken-spot": {
     "ticker": { "version": "1.0.0" },
     "trade": { "version": "1.0.0" }
+  },
+  "binance": {
+    "trade": { "version": "1.1.0", "notes": "spot @trade; is_buyer_maker (taker side) materialized as of 1.1.0" }
   },
   "massive": {
     "trade": { "version": "1.0.0" },
