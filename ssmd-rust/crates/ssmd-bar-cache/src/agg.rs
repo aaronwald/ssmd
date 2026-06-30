@@ -50,6 +50,9 @@ pub struct Bar {
     /// `ord_type == "market"`); `0.0` for binance (no order-type data) and
     /// massive.
     pub market_order_volume: f64,
+    /// Quote-currency volume Σ(price×qty) over the minute. `0.0` for sources
+    /// without trade-level price/qty pairing (massive 1s OHLCV).
+    pub quote_volume: f64,
     /// Minute-floored start (inclusive), epoch ms.
     pub start_ts_ms: i64,
     /// Exclusive end of the minute (`start_ts_ms + 60_000`), epoch ms.
@@ -83,6 +86,9 @@ pub struct Input {
     pub taker_sell_v: f64,
     /// Market-order volume contributed by this input (kraken-spot only).
     pub market_order_v: f64,
+    /// Quote-currency volume (price×qty) contributed by this input; `0.0` for
+    /// sources without trade-level price/qty pairing (massive 1s OHLCV).
+    pub quote_v: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +142,8 @@ pub fn parse_massive_1s(payload: &[u8]) -> Vec<Input> {
         taker_buy_v: 0.0,
         taker_sell_v: 0.0,
         market_order_v: 0.0,
+        // No per-trade price/qty pairing in a 1s OHLCV aggregate — honest zero.
+        quote_v: 0.0,
     }]
 }
 
@@ -242,6 +250,7 @@ pub fn parse_kraken_trade(payload: &[u8]) -> Vec<Input> {
             taker_buy_v,
             taker_sell_v,
             market_order_v: if is_market { raw.qty } else { 0.0 },
+            quote_v: raw.price * raw.qty,
         });
     }
 
@@ -372,6 +381,7 @@ pub fn parse_binance_trade(payload: &[u8]) -> Vec<Input> {
         taker_buy_v: if raw.buyer_is_maker { 0.0 } else { qty },
         taker_sell_v: if raw.buyer_is_maker { qty } else { 0.0 },
         market_order_v: 0.0,
+        quote_v: price * qty,
     }]
 }
 
@@ -393,6 +403,7 @@ struct Contribution {
     taker_buy_v: f64,
     taker_sell_v: f64,
     market_order_v: f64,
+    quote_v: f64,
 }
 
 /// Accumulator for one symbol's current minute.
@@ -439,6 +450,7 @@ impl SymbolState {
         let mut taker_buy_volume = 0.0;
         let mut taker_sell_volume = 0.0;
         let mut market_order_volume = 0.0;
+        let mut quote_volume = 0.0;
         for c in &ordered {
             if c.h > high {
                 high = c.h;
@@ -451,6 +463,7 @@ impl SymbolState {
             taker_buy_volume += c.taker_buy_v;
             taker_sell_volume += c.taker_sell_v;
             market_order_volume += c.market_order_v;
+            quote_volume += c.quote_v;
         }
 
         Some(Bar {
@@ -464,6 +477,7 @@ impl SymbolState {
             taker_buy_volume,
             taker_sell_volume,
             market_order_volume,
+            quote_volume,
             start_ts_ms: self.minute_start,
             end_ts_ms: self.minute_start + MINUTE_MS,
         })
@@ -516,6 +530,7 @@ impl MinuteAggregator {
             taker_buy_v: input.taker_buy_v,
             taker_sell_v: input.taker_sell_v,
             market_order_v: input.market_order_v,
+            quote_v: input.quote_v,
         };
 
         let mut finalized = None;
@@ -634,6 +649,7 @@ mod tests {
         taker_buy_v: f64,
         taker_sell_v: f64,
         market_order_v: f64,
+        quote_v: f64,
     ) -> Input {
         Input {
             sym: sym.to_string(),
@@ -648,6 +664,7 @@ mod tests {
             taker_buy_v,
             taker_sell_v,
             market_order_v,
+            quote_v,
         }
     }
 
@@ -657,13 +674,13 @@ mod tests {
         // Three trades in minute 0: a taker-buy market order, a taker-sell limit,
         // and a taker-buy limit. v = 1+2+3 = 6.
         agg.ingest(trade_input(
-            "BTC/USD", 100.0, 1.0, 5_000, "t1", 1, 1.0, 0.0, 1.0,
+            "BTC/USD", 100.0, 1.0, 5_000, "t1", 1, 1.0, 0.0, 1.0, 100.0,
         ));
         agg.ingest(trade_input(
-            "BTC/USD", 110.0, 2.0, 25_000, "t2", 1, 0.0, 2.0, 0.0,
+            "BTC/USD", 110.0, 2.0, 25_000, "t2", 1, 0.0, 2.0, 0.0, 220.0,
         ));
         let res = agg.ingest(trade_input(
-            "BTC/USD", 90.0, 3.0, 45_000, "t3", 1, 3.0, 0.0, 0.0,
+            "BTC/USD", 90.0, 3.0, 45_000, "t3", 1, 3.0, 0.0, 0.0, 270.0,
         ));
 
         let bar = res.current;
@@ -672,6 +689,56 @@ mod tests {
         assert_eq!(bar.taker_buy_volume, 4.0); // 1 + 3
         assert_eq!(bar.taker_sell_volume, 2.0); // 2
         assert_eq!(bar.market_order_volume, 1.0); // 1
+    }
+
+    #[test]
+    fn to_bar_accumulates_quote_volume() {
+        let mut agg = MinuteAggregator::new();
+        // Three trades in minute 0 with quote volumes (price×qty) 100, 220, 270.
+        // Base volume v = 1+2+3 = 6 (unchanged); quote_volume = 100+220+270 = 590.
+        agg.ingest(trade_input(
+            "BTC/USD", 100.0, 1.0, 5_000, "t1", 1, 1.0, 0.0, 1.0, 100.0,
+        ));
+        agg.ingest(trade_input(
+            "BTC/USD", 110.0, 2.0, 25_000, "t2", 1, 0.0, 2.0, 0.0, 220.0,
+        ));
+        let res = agg.ingest(trade_input(
+            "BTC/USD", 90.0, 3.0, 45_000, "t3", 1, 3.0, 0.0, 0.0, 270.0,
+        ));
+
+        assert_eq!(res.current.quote_volume, 590.0);
+        assert_eq!(res.current.v, 6.0);
+    }
+
+    #[test]
+    fn kraken_trade_sets_quote_volume() {
+        // quote_v is price×qty in quote currency: 50000.5 * 0.25 = 12500.125.
+        let input = one(parse_kraken_trade(&kraken(
+            "BTC/USD",
+            50000.5,
+            0.25,
+            "2026-01-01T00:00:30.500Z",
+            "uuid-1",
+        )));
+        assert_eq!(input.quote_v, 12500.125);
+    }
+
+    #[test]
+    fn binance_trade_sets_quote_volume() {
+        // price/qty arrive as strings; quote_v = 100.0 * 0.125 = 12.5.
+        let input = one(parse_binance_trade(&binance(
+            "BTCUSDT", "100.0", "0.125", 90_000, 1,
+        )));
+        assert_eq!(input.quote_v, 12.5);
+    }
+
+    #[test]
+    fn massive_input_has_zero_quote_volume() {
+        // Massive 1s bars have no per-trade price/qty pairing → honest zero.
+        let input = one(parse_massive_1s(&massive(
+            "AAPL", 60_000, 10.0, 12.0, 9.0, 11.0, 100.0,
+        )));
+        assert_eq!(input.quote_v, 0.0);
     }
 
     #[test]
@@ -1158,6 +1225,12 @@ mod tests {
         assert_eq!(
             res.current.taker_buy_volume, 1.0,
             "replayed trade must not double-count taker buy"
+        );
+        // quote_volume rides the same Contribution upsert path; a replayed trade
+        // (price 100.0 × qty 1.0) must replace, not add → stays 100.0.
+        assert_eq!(
+            res.current.quote_volume, 100.0,
+            "replayed trade must not double-count quote volume"
         );
     }
 

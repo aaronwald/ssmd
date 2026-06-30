@@ -635,6 +635,7 @@ export function DataApiSections() {
       "trade_count": 1205,
       "taker_buy_volume": 72.3, "taker_sell_volume": 56.15,
       "market_order_volume": 0.0,
+      "quote_volume": 5458125.0,
       "start_ts_ms": 1782124200000,
       "end_ts_ms": 1782124260000
     }
@@ -652,7 +653,7 @@ curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=kraken-spot&sym=BTC%2FUSDT&
 # Crypto (binance) — no slash in symbols
 curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT&limit=5" \\
   -H "X-API-Key: $API_KEY"`}
-          notes="Bars are ordered oldest to newest; start_ts_ms/end_ts_ms are minute boundaries in epoch ms (UTC). Feed timelines: kraken-spot is near-real-time; massive is ~15 minutes delayed; binance is near-real-time. Symbols: kraken-spot uses pairs like BTC/USDT (URL-encode as %2F); binance and massive use simple tickers (BTCUSDT, AAPL). v = total base-asset volume. trade_count = trades in the minute (0 for massive, which has no trade-level detail). taker_buy_volume/taker_sell_volume = aggressor volume split by side (0.0 if feed lacks aggressor data). market_order_volume = volume from market orders (populated only for kraken-spot via ord_type='market'; 0.0 for binance and massive). Use /v1/data/ohlcv/1m/symbols to list cached symbols. 404 if no bars cached for the symbol yet."
+          notes="Bars are ordered oldest to newest; start_ts_ms/end_ts_ms are minute boundaries in epoch ms (UTC). Feed timelines: kraken-spot is near-real-time; massive is ~15 minutes delayed; binance is near-real-time. Symbols: kraken-spot uses pairs like BTC/USDT (URL-encode as %2F); binance and massive use simple tickers (BTCUSDT, AAPL). v = base-currency volume (base asset, e.g. BTC for BTC/USD). quote_volume = quote-currency volume Σ(price×qty) (quote asset, e.g. USD for BTC/USD); 0.0 for sources without trade-level price/qty pairing (massive 1s OHLCV). trade_count = trades in the minute (0 for massive, which has no trade-level detail). taker_buy_volume/taker_sell_volume = aggressor volume split by side (0.0 if feed lacks aggressor data). market_order_volume = volume from market orders (populated only for kraken-spot via ord_type='market'; 0.0 for binance and massive). Use /v1/data/ohlcv/1m/symbols to list cached symbols. 404 if no bars cached for the symbol yet."
         />
         <Endpoint
           method="GET"

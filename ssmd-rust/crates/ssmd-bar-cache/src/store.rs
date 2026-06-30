@@ -118,6 +118,7 @@ mod tests {
             taker_buy_volume: 0.0,
             taker_sell_volume: 0.0,
             market_order_volume: 0.0,
+            quote_volume: 0.0,
             start_ts_ms,
             end_ts_ms: start_ts_ms + 60_000,
         }
