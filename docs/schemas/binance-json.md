@@ -48,7 +48,7 @@ e.g. a subscribe response) are skipped.
 
 | Feed | Stream Name | Archived? | Parquet Schema? |
 |------|-------------|-----------|-----------------|
-| `trade` | `{symbol}@trade` | Yes | `binance_trade` v1.0.0 |
+| `trade` | `{symbol}@trade` | Yes | `binance_trade` v1.1.0 |
 
 Only `trade` is consumed. Klines, tickers, and depth streams are **not** subscribed and
 are skipped if present.
@@ -105,7 +105,7 @@ Individual fill events. Each `@trade` frame represents one matched trade.
 | `data.p` | string | Yes | Trade price | **Decimal string** (e.g. `"67000.50"`) |
 | `data.q` | string | Yes | Trade quantity | **Decimal string** (base-asset units) |
 | `data.T` | number | Yes | Trade time | **Epoch milliseconds** (UTC) |
-| `data.m` | boolean | No | Buyer is the market maker | `true`/`false` |
+| `data.m` | boolean | Yes | Buyer is the market maker | `true`/`false` — required for taker-side attribution (materialized in parquet v1.1.0) |
 | `data.M` | boolean | No | Ignore (best-price-match flag) | `true`/`false` |
 
 **String-typed numerics**: `data.p` (price) and `data.q` (qty) arrive as decimal
@@ -119,8 +119,9 @@ The parquet `exchange_ts_ms` column is sourced from `data.T`.
 is still archived (with a null `trade_id`), never dropped (Complete Data Archive pillar).
 
 **Maker flags**: `data.m` is the buyer-is-maker flag (used by the live 1m-bar aggregator
-for taker-side attribution). `data.M` is a "best price match" flag that should be ignored.
-Neither flag is materialized in the parquet schema.
+for taker-side attribution). As of schema v1.1.0, `data.m` is materialized as the `is_buyer_maker`
+boolean column in parquet. `data.M` is a "best price match" flag that should be ignored and is
+not materialized.
 
 ---
 
@@ -145,7 +146,7 @@ This means:
 The archived `@trade` frame is converted to the `binance_trade` parquet schema. See
 [parquet-schemas.md#binance_trade](parquet-schemas.md#binance_trade) for the full Arrow
 column layout, including the renamed wire keys (`data.s`/`p`/`q`/`T` -> `symbol`/`price`/
-`qty`/`exchange_ts_ms`, `data.t` -> `trade_id`) and the note that the `m`/`M` maker flags
-are intentionally not materialized.
+`qty`/`exchange_ts_ms`, `data.t` -> `trade_id`, `data.m` -> `is_buyer_maker`). The `data.M`
+(best-price-match) flag is intentionally not materialized.
 
 **Source:** `ssmd-rust/crates/ssmd-schemas/src/binance.rs`
