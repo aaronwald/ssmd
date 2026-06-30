@@ -1,0 +1,15 @@
+# Secrets — never commit a real API key
+.env
+
+# Local DuckDB databases and downloaded data
+*.duckdb
+*.duckdb.wal
+data/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python envs
+.venv/
+venv/
+__pycache__/
