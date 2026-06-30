@@ -32,6 +32,7 @@ fn ts_type() -> DataType {
 //   data.q → qty            (Float64, parsed from a decimal STRING)
 //   data.T → exchange_ts_ms (Int64,   epoch millis integer — the trade time)
 //   data.t → trade_id       (Int64,   nullable — archived null if absent)
+//   data.m → is_buyer_maker (Boolean, the aggressor side — materialized as of 1.1.0)
 //
 // The column names `symbol` and `exchange_ts_ms` MUST match
 // `binance.yaml`'s `identifier_field: symbol` / `timestamp_field:
@@ -41,10 +42,12 @@ fn ts_type() -> DataType {
 // columns are appended. Like massive, a row missing only the optional id
 // (`t`) is archived with a null `trade_id` rather than dropped (Complete Data
 // Archive pillar); a row missing a required field (s/p/q/T) or carrying an
-// unparseable price/qty is skipped and logged. The Binance `m`/`M` maker flags
-// are intentionally not materialized — the plan's locked schema contract is
-// the five fields above, matching the bar-cache parser and the massive trade
-// schema (which likewise carries no side/maker flag).
+// unparseable price/qty is skipped and logged. As of schema 1.1.0 the Binance
+// `m` flag ("is the buyer the market maker") is materialized as the
+// `is_buyer_maker` column so the taker (aggressor) side survives archival and
+// the HOLS 1m aggregate can compute a taker buy/sell split. `m` is therefore a
+// required field — a trade frame missing it is malformed and skipped loudly,
+// not coerced. The `M` ("best price match") flag is still not materialized.
 
 pub struct BinanceTradeSchema;
 
@@ -56,6 +59,7 @@ impl BinanceTradeSchema {
             Field::new("qty", DataType::Float64, false),
             Field::new("exchange_ts_ms", DataType::Int64, false),
             Field::new("trade_id", DataType::Int64, true),
+            Field::new("is_buyer_maker", DataType::Boolean, false),
             Field::new("_nats_seq", DataType::UInt64, false),
             Field::new("_received_at", ts_type(), false),
         ])
@@ -68,7 +72,7 @@ impl MessageSchema for BinanceTradeSchema {
     }
 
     fn schema_version(&self) -> &str {
-        "1.0.0"
+        "1.1.0"
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -85,12 +89,13 @@ impl MessageSchema for BinanceTradeSchema {
         let mut qty = Float64Builder::new();
         let mut exchange_ts_ms = Int64Builder::new();
         let mut trade_id = Int64Builder::new();
+        let mut is_buyer_maker = BooleanBuilder::new();
         let mut nats_seq = UInt64Builder::new();
         let mut received_at = TimestampMicrosecondBuilder::new();
 
         for (data, seq, recv_at) in messages {
-            let json: serde_json::Value = serde_json::from_slice(data)
-                .map_err(|e| ArrowError::JsonError(e.to_string()))?;
+            let json: serde_json::Value =
+                serde_json::from_slice(data).map_err(|e| ArrowError::JsonError(e.to_string()))?;
 
             // The trade lives under the nested `data` object of the combined
             // stream frame. A frame without `data` is a control frame
@@ -167,6 +172,16 @@ impl MessageSchema for BinanceTradeSchema {
             if tid.is_none() {
                 error!("binance trade: missing t (trade id), archiving with null trade_id");
             }
+            // `m` ("is the buyer the market maker") gives the aggressor side and is
+            // required for the taker split (schema 1.1.0). A trade frame without it is
+            // malformed — skip loudly rather than coerce.
+            let maker = match inner.get("m").and_then(|v| v.as_bool()) {
+                Some(v) => v,
+                None => {
+                    error!("binance trade: missing m (is_buyer_maker), skipping");
+                    continue;
+                }
+            };
 
             symbol.append_value(sym.to_uppercase());
             price.append_value(p);
@@ -176,6 +191,7 @@ impl MessageSchema for BinanceTradeSchema {
                 Some(v) => trade_id.append_value(v),
                 None => trade_id.append_null(),
             };
+            is_buyer_maker.append_value(maker);
             nats_seq.append_value(*seq);
             received_at.append_value(*recv_at);
         }
@@ -188,6 +204,7 @@ impl MessageSchema for BinanceTradeSchema {
                 Arc::new(qty.finish()),
                 Arc::new(exchange_ts_ms.finish()),
                 Arc::new(trade_id.finish()),
+                Arc::new(is_buyer_maker.finish()),
                 Arc::new(nats_seq.finish()),
                 Arc::new(received_at.finish().with_timezone("UTC")),
             ],
@@ -214,8 +231,13 @@ mod tests {
         let s = BinanceTradeSchema;
         assert_eq!(s.schema_name(), "binance_trade");
         assert_eq!(s.message_type(), "trade");
-        assert_eq!(s.schema_version(), "1.0.0");
-        let names: Vec<_> = s.schema().fields().iter().map(|f| f.name().clone()).collect();
+        assert_eq!(s.schema_version(), "1.1.0");
+        let names: Vec<_> = s
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
         // Column names DQ depends on must be present and exactly named.
         for f in [
             "symbol",
@@ -223,12 +245,13 @@ mod tests {
             "qty",
             "exchange_ts_ms",
             "trade_id",
+            "is_buyer_maker",
             "_nats_seq",
             "_received_at",
         ] {
             assert!(names.contains(&f.to_string()), "missing {f}");
         }
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 8);
     }
 
     #[test]
@@ -241,9 +264,12 @@ mod tests {
         assert_eq!(by_name("qty").data_type(), &DataType::Float64);
         assert_eq!(by_name("exchange_ts_ms").data_type(), &DataType::Int64);
         assert_eq!(by_name("trade_id").data_type(), &DataType::Int64);
+        assert_eq!(by_name("is_buyer_maker").data_type(), &DataType::Boolean);
         // exchange_ts_ms is the DQ timestamp field — must be non-null.
         assert!(!by_name("exchange_ts_ms").is_nullable());
         assert!(!by_name("symbol").is_nullable());
+        // is_buyer_maker is a required taker-side field (1.1.0) — non-null.
+        assert!(!by_name("is_buyer_maker").is_nullable());
         // trade_id is optional metadata — nullable.
         assert!(by_name("trade_id").is_nullable());
     }
@@ -255,28 +281,63 @@ mod tests {
         let batch = schema.parse_batch(&[(json, 42, 9999)]).unwrap();
 
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 7);
+        assert_eq!(batch.num_columns(), 8);
 
-        let sym = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let sym = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(sym.value(0), "BTCUSDT");
 
-        let price = batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
+        let price = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
         assert_eq!(price.value(0), 67000.50);
 
-        let qty = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+        let qty = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
         assert_eq!(qty.value(0), 0.0125);
 
-        let ts = batch.column(3).as_any().downcast_ref::<Int64Array>().unwrap();
+        let ts = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
         assert_eq!(ts.value(0), 1718658000123);
 
-        let tid = batch.column(4).as_any().downcast_ref::<Int64Array>().unwrap();
+        let tid = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
         assert!(tid.is_valid(0));
         assert_eq!(tid.value(0), 88123456);
 
-        let nats = batch.column(5).as_any().downcast_ref::<UInt64Array>().unwrap();
+        let maker = batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert!(!maker.value(0));
+
+        let nats = batch
+            .column(6)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
         assert_eq!(nats.value(0), 42);
 
-        let recv = batch.column(6).as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
+        let recv = batch
+            .column(7)
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
         assert_eq!(recv.value(0), 9999);
     }
 
@@ -287,9 +348,17 @@ mod tests {
         let json = frame("PSGUSDT", "2.345", "10.0", 777, 1718658002000);
         let batch = schema.parse_batch(&[(json, 7, 1234)]).unwrap();
         assert_eq!(batch.num_rows(), 1);
-        let sym = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let sym = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(sym.value(0), "PSGUSDT");
-        let price = batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
+        let price = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
         assert_eq!(price.value(0), 2.345);
     }
 
@@ -301,9 +370,17 @@ mod tests {
         let json = frame("ETHUSDT", "3000", "2", 1, 90000);
         let batch = schema.parse_batch(&[(json, 1, 1000)]).unwrap();
         assert_eq!(batch.num_rows(), 1);
-        let price = batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
+        let price = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
         assert_eq!(price.value(0), 3000.0);
-        let qty = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+        let qty = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
         assert_eq!(qty.value(0), 2.0);
     }
 
@@ -314,7 +391,11 @@ mod tests {
         let raw = br#"{"stream":"btcusdt@trade","data":{"e":"trade","E":90000,"s":"btcusdt","t":7,"p":"1.0","q":"2.0","T":90000,"m":false,"M":true}}"#;
         let batch = schema.parse_batch(&[(raw.to_vec(), 1, 1000)]).unwrap();
         assert_eq!(batch.num_rows(), 1);
-        let sym = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let sym = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(sym.value(0), "BTCUSDT");
     }
 
@@ -325,7 +406,7 @@ mod tests {
         let kline = br#"{"stream":"btcusdt@kline_1m","data":{"e":"kline","s":"BTCUSDT","k":{}}}"#;
         let batch = schema.parse_batch(&[(kline.to_vec(), 1, 1000)]).unwrap();
         assert_eq!(batch.num_rows(), 0);
-        assert_eq!(batch.num_columns(), 7);
+        assert_eq!(batch.num_columns(), 8);
     }
 
     /// A control frame without a `data` object is skipped.
@@ -357,7 +438,11 @@ mod tests {
             .parse_batch(&[(bad.to_vec(), 1, 1000), (good, 2, 2000)])
             .unwrap();
         assert_eq!(batch.num_rows(), 1, "bad-price row skipped, good row kept");
-        let sym = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let sym = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(sym.value(0), "ETHUSDT");
     }
 
@@ -372,7 +457,11 @@ mod tests {
             .parse_batch(&[(no_id.to_vec(), 10, 1000), (with_id, 11, 2000)])
             .unwrap();
         assert_eq!(batch.num_rows(), 2, "trade missing t must not be dropped");
-        let tid = batch.column(4).as_any().downcast_ref::<Int64Array>().unwrap();
+        let tid = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
         assert!(tid.is_null(0), "trade_id null when t absent");
         assert!(tid.is_valid(1));
         assert_eq!(tid.value(1), 555);
@@ -383,7 +472,7 @@ mod tests {
         let schema = BinanceTradeSchema;
         let batch = schema.parse_batch(&[]).unwrap();
         assert_eq!(batch.num_rows(), 0);
-        assert_eq!(batch.num_columns(), 7);
+        assert_eq!(batch.num_columns(), 8);
     }
 
     #[test]
@@ -395,12 +484,67 @@ mod tests {
             .parse_batch(&[(m1, 10, 1000), (m2, 11, 2000)])
             .unwrap();
         assert_eq!(batch.num_rows(), 2);
-        let sym = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let sym = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(sym.value(0), "BTCUSDT");
         assert_eq!(sym.value(1), "PSGUSDT");
-        let nats = batch.column(5).as_any().downcast_ref::<UInt64Array>().unwrap();
+        let nats = batch
+            .column(6)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
         assert_eq!(nats.value(0), 10);
         assert_eq!(nats.value(1), 11);
+    }
+
+    #[test]
+    fn trade_materializes_maker_flag() {
+        let schema = BinanceTradeSchema;
+        // m:true  -> buyer is maker (taker sells)
+        let maker_true = br#"{"stream":"btcusdt@trade","data":{"e":"trade","E":1,"s":"BTCUSDT","t":1,"p":"100.0","q":"1.0","T":1,"m":true,"M":true}}"#;
+        // m:false -> buyer is taker (taker buys)
+        let maker_false = br#"{"stream":"ethusdt@trade","data":{"e":"trade","E":2,"s":"ETHUSDT","t":2,"p":"200.0","q":"2.0","T":2,"m":false,"M":true}}"#;
+        let batch = schema
+            .parse_batch(&[
+                (maker_true.to_vec(), 1, 1000),
+                (maker_false.to_vec(), 2, 2000),
+            ])
+            .unwrap();
+        assert_eq!(batch.num_rows(), 2);
+        let maker = batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert!(maker.value(0), "m:true archived as is_buyer_maker=true");
+        assert!(!maker.value(1), "m:false archived as is_buyer_maker=false");
+    }
+
+    #[test]
+    fn trade_missing_maker_flag_skipped() {
+        // `m` is a required taker-side field for the 1.1.0 contract: a trade frame
+        // without it is malformed — skip with a log, do not coerce.
+        let schema = BinanceTradeSchema;
+        let no_m = br#"{"stream":"btcusdt@trade","data":{"e":"trade","E":1,"s":"BTCUSDT","t":1,"p":"100.0","q":"1.0","T":1,"M":true}}"#;
+        let good = frame("ETHUSDT", "200.0", "2.0", 5, 5);
+        let batch = schema
+            .parse_batch(&[(no_m.to_vec(), 1, 1000), (good, 2, 2000)])
+            .unwrap();
+        assert_eq!(batch.num_rows(), 1, "frame missing m is skipped");
+        let sym = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(sym.value(0), "ETHUSDT");
+    }
+
+    #[test]
+    fn trade_schema_version_is_1_1_0() {
+        assert_eq!(BinanceTradeSchema.schema_version(), "1.1.0");
     }
 
     // ── registry + detect wiring ──────────────────────────────────────────────
@@ -415,25 +559,23 @@ mod tests {
 
     #[test]
     fn detect_binance_trade_frame() {
-        let json: serde_json::Value = serde_json::from_slice(&frame(
-            "BTCUSDT", "1.0", "1.0", 1, 1,
-        ))
-        .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&frame("BTCUSDT", "1.0", "1.0", 1, 1)).unwrap();
         assert_eq!(detect_message_type("binance", &json), Some("trade".into()));
     }
 
     #[test]
     fn detect_binance_control_frame_skipped() {
-        let json: serde_json::Value =
-            serde_json::from_str(r#"{"result":null,"id":1}"#).unwrap();
+        let json: serde_json::Value = serde_json::from_str(r#"{"result":null,"id":1}"#).unwrap();
         assert_eq!(detect_message_type("binance", &json), None);
     }
 
     #[test]
     fn detect_binance_non_trade_frame() {
-        let json: serde_json::Value =
-            serde_json::from_str(r#"{"stream":"btcusdt@kline_1m","data":{"e":"kline","s":"BTCUSDT"}}"#)
-                .unwrap();
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"stream":"btcusdt@kline_1m","data":{"e":"kline","s":"BTCUSDT"}}"#,
+        )
+        .unwrap();
         // Detects "kline" — not in the registry, so it is dropped downstream.
         assert_eq!(detect_message_type("binance", &json), Some("kline".into()));
         let reg = SchemaRegistry::for_feed("binance");

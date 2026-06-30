@@ -31,6 +31,10 @@ export type { Hols1mWindow, HolsGenerateMode } from "./hols-window.ts";
 // (no DuckDB import) so they can be unit-tested without --allow-ffi.
 import { buildMassiveDailySQL, massiveDailyGcsPath } from "./hols-massive.ts";
 export { buildMassiveDailySQL, massiveDailyGcsPath };
+// Pure helpers for the binance WS daily 1m aggregate live in a dependency-free
+// module (no DuckDB import) so they can be unit-tested without --allow-ffi.
+import { binanceWsDailyGcsPath, buildBinanceAggregateSQL } from "./hols-binance-agg.ts";
+export { binanceWsDailyGcsPath, buildBinanceAggregateSQL };
 
 // --- Kraken Spot REST OHLC ---
 const KRAKEN_SPOT_OHLC_URL = "https://api.kraken.com/0/public/OHLC";
@@ -103,7 +107,7 @@ export async function handleHols(
       console.error(`Unknown hols subcommand: ${subcommand ?? "(none)"}`);
       console.log("Usage:");
       console.log("  ssmd hols generate   [--date YYYY-MM-DD] [--days N] [--source kraken|binance] [--interval 1|5] [--mode daily|intraday] [--trailing-minutes N] [--dry-run]");
-      console.log("  ssmd hols aggregate  [--date YYYY-MM-DD] [--days N] [--source kraken|massive] [--dry-run]  # Aggregated WS trade data (kraken) or daily equity OHLCV (massive)");
+      console.log("  ssmd hols aggregate  [--date YYYY-MM-DD] [--days N] [--source kraken|binance|massive] [--dry-run]  # WS trade aggregation (kraken/binance) or daily equity OHLCV (massive)");
       console.log("  ssmd hols reference  [--date YYYY-MM-DD] [--dry-run]             # Tickers reference CSV");
       Deno.exit(1);
   }
@@ -653,6 +657,10 @@ export async function runHolsAggregate(
   const source = (flags.source as string) ?? "kraken";
   if (source === "massive") {
     await runHolsAggregateMassive(flags);
+    return;
+  }
+  if (source === "binance") {
+    await runHolsAggregateBinance(flags);
     return;
   }
 
@@ -1259,4 +1267,159 @@ async function aggregateMassive1mToDaily(
   const symbolCount = rows.length > 0 ? Number(rows[0][1]) : 0;
 
   return { rowCount, symbolCount };
+}
+
+// ============================================================
+// Job 2c: Aggregate archived binance Spot WS trades into a daily 1m OHLCV file
+//   ssmd hols aggregate --source binance [--date YYYY-MM-DD] [--days N] [--dry-run]
+// ============================================================
+
+/**
+ * Download archived binance Spot trade parquet from GCS for the date range.
+ * GCS layout (archiver double-nested): binance/binance/spot/YYYY-MM-DD/trade_HH00.parquet
+ * Mirrors downloadSpotTrades: per-day errors are logged (one bad day must not
+ * abort a multi-day backfill); a total of zero files returns null so the caller
+ * fails loudly.
+ */
+async function downloadBinanceTrades(
+  startDate: Date,
+  endDate: Date,
+): Promise<string | null> {
+  const localDir = "/tmp/binance-trades";
+  try { await Deno.mkdir(localDir, { recursive: true }); } catch { /* exists */ }
+
+  const storage = new Storage();
+  const bucket = storage.bucket(GCS_BUCKET);
+  let fileCount = 0;
+
+  const current = new Date(startDate);
+  const end = new Date(endDate);
+  end.setUTCDate(end.getUTCDate() + 1);
+
+  while (current < end) {
+    const dateStr = current.toISOString().slice(0, 10);
+    const prefix = `binance/binance/spot/${dateStr}/`;
+    try {
+      const [files] = await bucket.getFiles({ prefix });
+      for (const file of files) {
+        const filename = file.name.split("/").pop() ?? "";
+        if (!filename.startsWith("trade_") || !filename.endsWith(".parquet")) continue;
+        const localPath = `${localDir}/${dateStr}-${filename}`;
+        await file.download({ destination: localPath });
+        fileCount++;
+      }
+    } catch (e) {
+      console.log(`[hols:aggregate:binance] trade download for ${dateStr}: ${(e as Error).message}`);
+    }
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+
+  if (fileCount === 0) {
+    console.log("[hols:aggregate:binance] No binance trade parquet files found in GCS");
+    return null;
+  }
+  console.log(`[hols:aggregate:binance] Downloaded ${fileCount} binance trade parquet files to ${localDir}`);
+  return localDir;
+}
+
+export async function aggregateBinanceTradesToOhlcv(
+  tradesDir: string,
+  parquetPath: string,
+  startDate: Date,
+  endDate: Date,
+): Promise<{ rowCount: number; pairCount: number }> {
+  const instance = await DuckDBInstance.create();
+  const conn = await instance.connect();
+  const inputGlob = `${tradesDir}/*.parquet`;
+  const startStr = startDate.toISOString().slice(0, 10);
+  const endStr = endDate.toISOString().slice(0, 10);
+  await conn.run(buildBinanceAggregateSQL(inputGlob, parquetPath, startStr, endStr));
+  const result = await conn.run(`
+    SELECT COUNT(*) as cnt, COUNT(DISTINCT symbol) as pairs
+    FROM read_parquet('${parquetPath}')
+  `);
+  const rows = await result.getRows();
+  const rowCount = rows.length > 0 ? Number(rows[0][0]) : 0;
+  const pairCount = rows.length > 0 ? Number(rows[0][1]) : 0;
+  return { rowCount, pairCount };
+}
+
+export async function runHolsAggregateBinance(
+  flags: Record<string, unknown>,
+): Promise<void> {
+  const startTime = Date.now();
+  const dryRun = !!flags["dry-run"];
+  const { startDate, endDate, startDateStr, endDateStr, lookbackDays } = parseDateRange(flags);
+
+  console.log(`[hols:aggregate:binance] WS trade aggregation for ${startDateStr} to ${endDateStr} (${lookbackDays} days) dry-run=${dryRun}`);
+
+  // 1. Download binance trade parquet files from GCS. Zero files → null → fail
+  //    loudly (do NOT write/upload a stub for an empty source).
+  const tradesDir = await downloadBinanceTrades(startDate, endDate);
+  if (!tradesDir) {
+    console.error("[hols:aggregate:binance] No binance trade parquet files found in GCS. Exiting.");
+    Deno.exit(1);
+  }
+
+  // 2. Aggregate trades into 1-minute OHLCV bars via DuckDB
+  const parquetPath = `/tmp/hols-binance-ws-${endDateStr}.parquet`;
+  const { rowCount, pairCount } = await aggregateBinanceTradesToOhlcv(tradesDir, parquetPath, startDate, endDate);
+
+  // Output assertion: confirm the COPY actually produced a non-empty file before
+  // we trust the row count (mirror the massive path's guard).
+  let parquetStat: Deno.FileInfo;
+  try {
+    parquetStat = await Deno.stat(parquetPath);
+  } catch (e) {
+    console.error(`[hols:aggregate:binance] Aggregation did not write a parquet at ${parquetPath}: ${(e as Error).message}. Aborting.`);
+    try { await Deno.remove(tradesDir, { recursive: true }); } catch { /* best-effort */ }
+    Deno.exit(1);
+  }
+  if (!parquetStat.isFile || (parquetStat.size ?? 0) === 0) {
+    console.error(`[hols:aggregate:binance] Aggregation did not write a non-empty parquet at ${parquetPath}. Aborting.`);
+    try { await Deno.remove(tradesDir, { recursive: true }); } catch { /* best-effort */ }
+    Deno.exit(1);
+  }
+  const fileSizeKB = Math.round((parquetStat.size ?? 0) / 1024);
+  console.log(`[hols:aggregate:binance] Parquet written: ${parquetPath} (${fileSizeKB} KB, ${rowCount} rows, ${pairCount} pairs)`);
+
+  if (rowCount === 0) {
+    // Source files existed but produced no rows — a real data problem, not an
+    // empty day. Fail loudly and do not upload an empty file.
+    console.error("[hols:aggregate:binance] Source parquet present but aggregation produced 0 rows. Aborting (not uploading empty file).");
+    try { await Deno.remove(parquetPath); } catch { /* best-effort */ }
+    try { await Deno.remove(tradesDir, { recursive: true }); } catch { /* best-effort */ }
+    Deno.exit(1);
+  }
+
+  // 3. Upload to GCS (flat hols daily layout — distinct -binance-ws suffix)
+  const gcsPath = binanceWsDailyGcsPath(endDateStr);
+  if (dryRun) {
+    console.log(`[hols:aggregate:binance] DRY RUN: would upload to gs://${GCS_BUCKET}/${gcsPath}`);
+  } else {
+    await uploadToGCS(parquetPath, gcsPath);
+    console.log(`[hols:aggregate:binance] Uploaded to gs://${GCS_BUCKET}/${gcsPath}`);
+  }
+
+  // 4. Send email report (reuses HOLS_EMAIL_ON_FAILURE_ONLY gate inside sendReport)
+  const durationSec = Math.round((Date.now() - startTime) / 1000);
+  if (!dryRun) {
+    await sendReport({
+      job: "aggregate",
+      jobLabel: "Binance WS Trade Aggregate",
+      dateStr: `${startDateStr} to ${endDateStr}`,
+      symbolCount: pairCount,
+      successCount: pairCount,
+      failCount: 0,
+      totalRows: rowCount,
+      fileSizeKB,
+      durationSec,
+      failures: [],
+    });
+  }
+
+  // 5. Cleanup /tmp
+  try { await Deno.remove(parquetPath); } catch { /* best-effort */ }
+  try { await Deno.remove(tradesDir, { recursive: true }); } catch { /* best-effort */ }
+  console.log(`[hols:aggregate:binance] Done in ${Math.round((Date.now() - startTime) / 1000)}s`);
 }
