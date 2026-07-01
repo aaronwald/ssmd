@@ -35,6 +35,9 @@ export { buildMassiveDailySQL, massiveDailyGcsPath };
 // module (no DuckDB import) so they can be unit-tested without --allow-ffi.
 import { binanceWsDailyGcsPath, buildBinanceAggregateSQL } from "./hols-binance-agg.ts";
 export { binanceWsDailyGcsPath, buildBinanceAggregateSQL };
+// Bounds DuckDB's buffer pool below the container cgroup limit + spills to /tmp
+// (otherwise DuckDB sizes from host RAM and gets OOM-killed on full-day aggregates).
+import { configureDuckDBLimits } from "./hols-duckdb.ts";
 
 // --- Kraken Spot REST OHLC ---
 const KRAKEN_SPOT_OHLC_URL = "https://api.kraken.com/0/public/OHLC";
@@ -1330,6 +1333,9 @@ export async function aggregateBinanceTradesToOhlcv(
 ): Promise<{ rowCount: number; pairCount: number }> {
   const instance = await DuckDBInstance.create();
   const conn = await instance.connect();
+  // Bound RAM + spill to /tmp BEFORE the heavy aggregate so DuckDB respects the
+  // container limit instead of the host's RAM (prevents cgroup OOM-kill).
+  await configureDuckDBLimits(conn);
   const inputGlob = `${tradesDir}/*.parquet`;
   const startStr = startDate.toISOString().slice(0, 10);
   const endStr = endDate.toISOString().slice(0, 10);
