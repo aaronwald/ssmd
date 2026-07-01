@@ -79,6 +79,43 @@ export function perTickerGaps(
   return out;
 }
 
+/** Pre-aggregated per-symbol row as returned by the binance-1m GROUP BY query. */
+export type TickerAggregateRow = {
+  symbol: string;
+  bars: number; // total bar rows (incl. duplicate timestamps)
+  presentSlots: number; // DISTINCT minute-slot timestamps
+  minUnix: number;
+  maxUnix: number;
+};
+
+/**
+ * Per-symbol bar/gap info from pre-aggregated rows — the SQL-pushdown equivalent
+ * of perTickerGaps. gaps = max(0, expectedSlots - presentSlots),
+ * expectedSlots = floor((max-min)/SLOT_SECONDS)+1. Skips rows with a missing
+ * symbol or non-finite bounds (degrades, never NaN).
+ */
+export function gapsFromAggregateRows(
+  rows: ReadonlyArray<TickerAggregateRow>,
+): Record<string, TickerGapInfo> {
+  const out: Record<string, TickerGapInfo> = {};
+  for (const r of rows) {
+    if (!r || typeof r.symbol !== "string" || r.symbol.length === 0) continue;
+    const min = Number(r.minUnix);
+    const max = Number(r.maxUnix);
+    const present = Number(r.presentSlots);
+    if (!Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(present)) {
+      continue;
+    }
+    const expectedSlots = Math.floor((max - min) / SLOT_SECONDS) + 1;
+    const bars = Number(r.bars);
+    out[r.symbol] = {
+      bars: Number.isFinite(bars) ? bars : 0,
+      gaps: Math.max(0, expectedSlots - present),
+    };
+  }
+  return out;
+}
+
 /** Result of a coverage short-check. */
 export type CoverageDecision = {
   /** The bar count the worst-covered symbol was compared against. */
