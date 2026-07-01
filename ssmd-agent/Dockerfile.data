@@ -9,6 +9,13 @@ COPY --from=deno_bin /deno /usr/local/bin/deno
 
 WORKDIR /app
 
+# Cache deps into a shared DENO_DIR owned by the runtime user (uid 1000).
+# Without this, `deno cache` runs as root and writes to /root/.cache/deno, which
+# USER deno cannot read at runtime — so every pod cold-downloads all deps. On the
+# CronJobs that means a slow download blows activeDeadlineSeconds (DeadlineExceeded),
+# which is what killed the binance WS aggregate for 2026-06-30.
+ENV DENO_DIR=/deno-dir
+
 # Copy only necessary files for the server
 COPY deno.json deno.lock ./
 COPY src/server/ ./src/server/
@@ -16,8 +23,9 @@ COPY src/lib/ ./src/lib/
 COPY src/config.ts ./src/config.ts
 COPY src/cli/ ./src/cli/
 
-# Cache dependencies (server + CLI for CronJob use)
-RUN deno cache src/server/main.ts src/cli/main.ts
+# Cache dependencies (server + CLI for CronJob use) into DENO_DIR, then hand the
+# populated cache to the runtime user so `deno run` reads it instead of downloading.
+RUN deno cache src/server/main.ts src/cli/main.ts && chown -R deno:deno /deno-dir
 
 # Pre-install DuckDB httpfs extension (DuckDB's internal downloader hangs in K8s).
 # Version must match @duckdb/node-api in deno.json (currently 1.4.4).
