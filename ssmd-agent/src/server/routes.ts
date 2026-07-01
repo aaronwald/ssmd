@@ -4280,24 +4280,83 @@ route("GET", "/v1/hols/binance-ws-rest-compare", async (req, _ctx) => {
     return json({ error: "date must be YYYY-MM-DD format" }, 400);
   }
 
+  // Optional `symbols` filter (CSV, e.g. BTCUSDT,ETHUSDT,SOLUSDT). When present,
+  // only those tickers are computed/returned (keeps the payload tiny so the
+  // pipeline-worker's 64KB HTTP cap never truncates). Tokens interpolate into SQL,
+  // so each is strictly validated (^[A-Z0-9]+$) — reject anything else with 400.
+  const symbolsParam = url.searchParams.get("symbols");
+  let restSymbolFilter = ""; // rest CTE WHERE fragment (empty = full universe)
+  let wsSymbolFilter = ""; // ws CTE extra AND fragment (ws already has WHERE tradecount>0)
+  if (symbolsParam !== null) {
+    const tokens = symbolsParam
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => s.length > 0);
+    if (tokens.length === 0) {
+      return json({ error: "symbols must be a non-empty comma-separated list" }, 400);
+    }
+    for (const tok of tokens) {
+      if (!/^[A-Z0-9]+$/.test(tok)) {
+        return json({ error: `invalid symbol '${tok}' — only A-Z and 0-9 are allowed` }, 400);
+      }
+    }
+    // Build the IN-list from the validated tokens only (never raw input).
+    const inList = tokens.map((t) => `'${t}'`).join(", ");
+    restSymbolFilter = `WHERE hols_ticker IN (${inList})`;
+    wsSymbolFilter = `AND hols_ticker IN (${inList})`;
+  }
+
   const bucket = Deno.env.get("GCS_BUCKET");
   if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
 
   const restPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-1m-binance.parquet`;
   const wsPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-1m-binance-ws.parquet`;
 
+  // A missing input parquet (e.g. the WS aggregate CronJob failed) must SURFACE as
+  // an alert via the gate, not fail the run silently. Probe each file cheaply first
+  // and return HTTP 200 with a `file_missing` flag instead of a 500 (which the
+  // HTTP stage would treat as a hard failure, skipping the code+email stages).
+  // Mirrors the /v1/gcs/check 404 detection above.
+  const isMissingErr = (msg: string) =>
+    msg.includes("404") || msg.includes("Not Found") ||
+    msg.includes("No files found") || msg.includes("does not exist");
+  const probeExists = async (path: string): Promise<boolean> => {
+    try {
+      await duckdbQuery(`SELECT 1 FROM read_parquet('${path}') LIMIT 1`);
+      return true;
+    } catch (err) {
+      if (isMissingErr((err as Error).message)) return false;
+      throw err; // genuine unexpected error → bubble to the 500 handler below
+    }
+  };
+
   try {
+    const restExists = await probeExists(restPath);
+    const wsExists = await probeExists(wsPath);
+    if (!restExists || !wsExists) {
+      const fileMissing = !restExists && !wsExists ? "both" : !wsExists ? "ws" : "rest";
+      return json({
+        date,
+        file_missing: fileMissing,
+        ticker_count: { total: 0, both: 0, rest_only: 0, ws_only: 0 },
+        tickers: [],
+        rest_only: [],
+        ws_only: [],
+      });
+    }
+
     // Single round-trip: inner-join matched minutes for close/volume drift, then
     // FULL OUTER JOIN the per-ticker daily rollups for coverage classification.
     const result = await duckdbQuery(`
       WITH rest AS (
         SELECT hols_ticker, date, close, volume, tradecount
         FROM read_parquet('${restPath}')
+        ${restSymbolFilter}
       ),
       ws AS (
         SELECT hols_ticker, date, close, volume_from, tradecount
         FROM read_parquet('${wsPath}')
-        WHERE tradecount > 0
+        WHERE tradecount > 0 ${wsSymbolFilter}
       ),
       matched AS (
         SELECT
