@@ -76,8 +76,7 @@ import {
   decidePartialCoverage,
   DEFAULT_PARTIAL_EXPECTED_BARS,
   FULL_DAY_BARS,
-  perTickerGaps,
-  type TickerBarRow,
+  gapsFromAggregateRows,
 } from "./hols-validate.ts";
 import {
   buildTradeSQL,
@@ -3997,21 +3996,32 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         ) GROUP BY dt
       ) ORDER BY dt
     `);
-    // Per-ticker bars + interior 60s gaps. Pull (symbol, unix-second) pairs via
-    // DuckDB (the heavy scan stays in the engine) and let the pure helper count
-    // missing slots per symbol. The helper itself validates each row (skips
-    // non-finite unix, ignores missing symbols via Map keying) and tolerates an
-    // empty input, so a malformed/empty result degrades to {} rather than NaN.
-    const perTickerRows = await duckdbQuery(`
-      SELECT hols_ticker AS symbol, CAST(epoch(date) AS BIGINT) AS unix
+    // Per-ticker bars + interior 60s gaps. Push the aggregation into DuckDB with
+    // a single GROUP BY (count, DISTINCT-slot count, min/max epoch) instead of
+    // streaming every row into Deno, then map the pre-aggregated rows through the
+    // pure helper. The helper validates each row (skips missing symbols and
+    // non-finite bounds) and tolerates an empty input, so a malformed/empty
+    // result degrades to {} rather than NaN.
+    const perTickerAgg = await duckdbQuery(`
+      SELECT
+        hols_ticker AS symbol,
+        count(*) AS bars,
+        count(DISTINCT CAST(epoch(date) AS BIGINT)) AS present_slots,
+        CAST(epoch(min(date)) AS BIGINT) AS min_unix,
+        CAST(epoch(max(date)) AS BIGINT) AS max_unix
       FROM read_parquet('${binance1mPath}')
+      GROUP BY hols_ticker
     `);
-    const rawPerTicker = Array.isArray(perTickerRows.rows) ? perTickerRows.rows : [];
-    const perTicker = perTickerGaps(
-      rawPerTicker
+    const perTicker = gapsFromAggregateRows(
+      (Array.isArray(perTickerAgg.rows) ? perTickerAgg.rows : [])
         .filter((r): r is Record<string, unknown> => r != null && typeof r === "object")
-        .map((r) => ({ symbol: String((r as Record<string, unknown>).symbol ?? ""), unix: Number((r as Record<string, unknown>).unix) }))
-        .filter((r) => r.symbol.length > 0 && Number.isFinite(r.unix)) as TickerBarRow[],
+        .map((r) => ({
+          symbol: String((r as Record<string, unknown>).symbol ?? ""),
+          bars: Number((r as Record<string, unknown>).bars),
+          presentSlots: Number((r as Record<string, unknown>).present_slots),
+          minUnix: Number((r as Record<string, unknown>).min_unix),
+          maxUnix: Number((r as Record<string, unknown>).max_unix),
+        })),
     );
 
     // Partial-day-aware coverage decision. minBarsPerTicker is the worst-covered
