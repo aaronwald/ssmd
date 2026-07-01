@@ -3796,10 +3796,7 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
 
   const results: Record<string, unknown> = { date };
 
-  // REST 5-min bars validation. Wrapped in an async section fn so it can run
-  // concurrently via Promise.all below; keeps its own try/catch so a failure
-  // resolves to {exists:false} instead of rejecting the whole Promise.all.
-  const restSection = async (): Promise<unknown> => {
+  // REST 5-min bars validation
   try {
     const restResult = await duckdbQuery(`
       SELECT
@@ -3843,14 +3840,12 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         ) GROUP BY dt
       ) ORDER BY dt
     `);
-    return { exists: true, expected_bars_per_ticker_per_day: 288, ...restResult.rows[0], daily_breakdown: restDaily.rows };
+    results.rest = { exists: true, expected_bars_per_ticker_per_day: 288, ...restResult.rows[0], daily_breakdown: restDaily.rows };
   } catch (err) {
-    return { exists: false, error: (err as Error).message };
+    results.rest = { exists: false, error: (err as Error).message };
   }
-  };
 
-  // WS 1-min aggregation validation. Async section fn (see restSection).
-  const wsSection = async (): Promise<unknown> => {
+  // WS 1-min aggregation validation
   try {
     const wsResult = await duckdbQuery(`
       SELECT
@@ -3894,14 +3889,12 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         ) GROUP BY dt
       ) ORDER BY dt
     `);
-    return { exists: true, expected_bars_per_ticker_per_day: 1440, ...wsResult.rows[0], daily_breakdown: wsDaily.rows };
+    results.ws = { exists: true, expected_bars_per_ticker_per_day: 1440, ...wsResult.rows[0], daily_breakdown: wsDaily.rows };
   } catch (err) {
-    return { exists: false, error: (err as Error).message };
+    results.ws = { exists: false, error: (err as Error).message };
   }
-  };
 
-  // Binance 5-min bars validation. Async section fn (see restSection).
-  const binance5mSection = async (): Promise<unknown> => {
+  // Binance 5-min bars validation
   try {
     const binance5mResult = await duckdbQuery(`
       SELECT
@@ -3949,14 +3942,12 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
         ) GROUP BY dt
       ) ORDER BY dt
     `);
-    return { exists: true, expected_bars_per_ticker_per_day: 288, ...binance5mResult.rows[0], daily_breakdown: binance5mDaily.rows };
+    results.binance_5m = { exists: true, expected_bars_per_ticker_per_day: 288, ...binance5mResult.rows[0], daily_breakdown: binance5mDaily.rows };
   } catch (err) {
-    return { exists: false, error: (err as Error).message };
+    results.binance_5m = { exists: false, error: (err as Error).message };
   }
-  };
 
-  // Binance 1-min bars validation. Async section fn (see restSection).
-  const binance1mSection = async (): Promise<unknown> => {
+  // Binance 1-min bars validation
   try {
     const binance1mResult = await duckdbQuery(`
       SELECT
@@ -4047,7 +4038,7 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
       expectedBars,
     });
 
-    return {
+    results.binance_1m = {
       exists: true,
       expected_bars_per_ticker_per_day: 1440,
       partial,
@@ -4058,20 +4049,8 @@ route("GET", "/v1/hols/validate", async (req, _ctx) => {
       per_ticker: perTicker,
     };
   } catch (err) {
-    return { exists: false, error: (err as Error).message };
+    results.binance_1m = { exists: false, error: (err as Error).message };
   }
-  };
-
-  // Run the four independent feed sections concurrently. Each section fn
-  // owns its try/catch and always resolves to an object, so one feed failing
-  // still yields {exists:false} for that feed without rejecting Promise.all.
-  const [restRes, wsRes, binance5mRes, binance1mRes] = await Promise.all([
-    restSection(), wsSection(), binance5mSection(), binance1mSection(),
-  ]);
-  results.rest = restRes;
-  results.ws = wsRes;
-  results.binance_5m = binance5mRes;
-  results.binance_1m = binance1mRes;
 
   // Day-boundary contiguity: last bar of date-1's binance 1m file must be
   // exactly 60s before the first bar of `date`'s file, for a representative
