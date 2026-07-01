@@ -4260,6 +4260,117 @@ route("GET", "/v1/hols/volume-compare", async (req, _ctx) => {
   }
 }, true, "admin:read", "internal");
 
+// HOLS binance WS-vs-REST 1m reconciliation: per-ticker close + volume drift.
+// Joins the binance WS 1m aggregate (ohlcv-1m-binance-ws.parquet) against
+// Binance REST 1m klines (ohlcv-1m-binance.parquet) on (hols_ticker, date).
+//
+// ⚠️ Volume columns are SWAPPED between the two files:
+//   - REST file: `volume` = base, `volume_from` = quote (hols.ts:460-461).
+//   - WS file:   `volume` = quote (qty*price), `volume_from` = base (qty)
+//                (hols-binance-agg.ts:62-63).
+//   Base-vs-base comparison is therefore WS `volume_from` vs REST `volume`
+//   (same as the kraken volume-compare precedent above).
+// The WS aggregate forward-fills zero-trade minutes, so the WS side is
+// filtered to `tradecount > 0` to keep ffilled bars out of the diffs.
+route("GET", "/v1/hols/binance-ws-rest-compare", async (req, _ctx) => {
+  const url = new URL(req.url);
+  const date = url.searchParams.get("date") ?? new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(date)) {
+    return json({ error: "date must be YYYY-MM-DD format" }, 400);
+  }
+
+  const bucket = Deno.env.get("GCS_BUCKET");
+  if (!bucket) return json({ error: "GCS_BUCKET not configured" }, 503);
+
+  const restPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-1m-binance.parquet`;
+  const wsPath = `s3://${bucket}/hols/crypto/daily/${date}/ohlcv-1m-binance-ws.parquet`;
+
+  try {
+    // Single round-trip: inner-join matched minutes for close/volume drift, then
+    // FULL OUTER JOIN the per-ticker daily rollups for coverage classification.
+    const result = await duckdbQuery(`
+      WITH rest AS (
+        SELECT hols_ticker, date, close, volume, tradecount
+        FROM read_parquet('${restPath}')
+      ),
+      ws AS (
+        SELECT hols_ticker, date, close, volume_from, tradecount
+        FROM read_parquet('${wsPath}')
+        WHERE tradecount > 0
+      ),
+      matched AS (
+        SELECT
+          r.hols_ticker AS hols_ticker,
+          ABS(w.close - r.close) / NULLIF(r.close, 0) AS close_pct,
+          ABS(w.volume_from - r.volume) / NULLIF(r.volume, 0) AS volume_pct,
+          w.volume_from AS ws_volume_base,
+          r.volume AS rest_volume_base,
+          w.tradecount AS ws_tradecount,
+          r.tradecount AS rest_tradecount
+        FROM rest r
+        JOIN ws w ON r.hols_ticker = w.hols_ticker AND r.date = w.date
+      ),
+      metrics AS (
+        SELECT
+          hols_ticker,
+          COUNT(*) AS minutes_matched,
+          ROUND(QUANTILE_CONT(close_pct, 0.99), 6) AS close_p99_pct,
+          ROUND(MAX(close_pct), 6) AS close_max_pct,
+          ROUND(MEDIAN(volume_pct), 6) AS volume_median_pct,
+          CASE WHEN SUM(rest_volume_base) > 0
+            THEN ROUND(SUM(ws_volume_base) / SUM(rest_volume_base), 6)
+            ELSE NULL END AS volume_ratio,
+          CASE WHEN SUM(rest_tradecount) > 0
+            THEN ROUND(SUM(ws_tradecount)::DOUBLE / SUM(rest_tradecount)::DOUBLE, 6)
+            ELSE NULL END AS tradecount_ratio
+        FROM matched
+        GROUP BY hols_ticker
+      ),
+      rest_daily AS (SELECT hols_ticker FROM rest GROUP BY hols_ticker),
+      ws_daily AS (SELECT hols_ticker FROM ws GROUP BY hols_ticker),
+      coverage AS (
+        SELECT
+          COALESCE(rd.hols_ticker, wd.hols_ticker) AS ticker,
+          CASE
+            WHEN rd.hols_ticker IS NULL THEN 'ws_only'
+            WHEN wd.hols_ticker IS NULL THEN 'rest_only'
+            ELSE 'both'
+          END AS coverage
+        FROM rest_daily rd
+        FULL OUTER JOIN ws_daily wd ON rd.hols_ticker = wd.hols_ticker
+      )
+      SELECT
+        c.ticker AS ticker,
+        c.coverage AS coverage,
+        m.minutes_matched,
+        m.close_p99_pct,
+        m.close_max_pct,
+        m.volume_median_pct,
+        m.volume_ratio,
+        m.tradecount_ratio
+      FROM coverage c
+      LEFT JOIN metrics m ON c.ticker = m.hols_ticker
+      ORDER BY c.ticker
+    `);
+
+    const tickers = result.rows;
+    const both = tickers.filter((t: Record<string, unknown>) => t.coverage === "both");
+    const restOnly = tickers.filter((t: Record<string, unknown>) => t.coverage === "rest_only");
+    const wsOnly = tickers.filter((t: Record<string, unknown>) => t.coverage === "ws_only");
+
+    return json({
+      date,
+      ticker_count: { total: tickers.length, both: both.length, rest_only: restOnly.length, ws_only: wsOnly.length },
+      tickers,
+      rest_only: restOnly.map((t: Record<string, unknown>) => t.ticker),
+      ws_only: wsOnly.map((t: Record<string, unknown>) => t.ticker),
+    });
+  } catch (err) {
+    return json({ error: (err as Error).message, date }, 500);
+  }
+}, true, "admin:read", "internal");
+
 // EDC: Changelog fetch endpoint (used by EDC pipeline)
 const EDC_CHANGELOG_URLS: Record<string, string> = {
   kalshi: "https://docs.kalshi.com/changelog",
