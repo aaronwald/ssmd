@@ -24,12 +24,62 @@ interface PanelRow {
   closeMs: number;
 }
 
+const MONTHS: Readonly<Record<string, number>> = {
+  JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
+  JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11,
+};
+
+/** Offset (ms) of a timezone from UTC at a given instant. Positive = ahead of UTC. */
+function tzOffsetMs(utcMs: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(new Date(utcMs));
+  const get = (t: string): number => Number(parts.find((p) => p.type === t)?.value);
+  const asUTC = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour") % 24, get("minute"), get("second"));
+  return Number.isNaN(asUTC) ? 0 : asUTC - utcMs;
+}
+
+/**
+ * Derive a 15M window's close time from its event ticker when the DB strike_date
+ * is missing. Kalshi names each window by its close time in US/Eastern, e.g.
+ * `KXBTC15M-26JUN170800` closes 08:00 America/New_York. DST-aware (offset is
+ * resolved for the window's own date). Returns ms epoch, or null if the ticker
+ * doesn't match the expected shape.
+ */
+function closeMsFromTicker(ticker: string): number | null {
+  const m = /-(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})$/.exec(ticker);
+  if (!m) return null;
+  const [, yy, mon, dd, hh, mi] = m;
+  const month = MONTHS[mon];
+  if (month === undefined) return null;
+  const year = 2000 + Number(yy);
+  const day = Number(dd);
+  const hour = Number(hh);
+  const minute = Number(mi);
+  if (day < 1 || day > 31 || hour > 23 || minute > 59) return null;
+  // Interpret HH:MM as America/New_York wall-clock, convert to a UTC instant.
+  const naiveUtc = Date.UTC(year, month, day, hour, minute);
+  if (Number.isNaN(naiveUtc)) return null;
+  return naiveUtc - tzOffsetMs(naiveUtc, "America/New_York");
+}
+
 /** Best available close time for an event (ms epoch), or null. */
 function eventCloseMs(e: MonitorEvent): number | null {
   const s = e.strike_date ?? e.expected_expiration_time ?? null;
-  if (!s) return null;
-  const t = new Date(s).getTime();
-  return Number.isNaN(t) ? null : t;
+  if (s) {
+    const t = new Date(s).getTime();
+    if (!Number.isNaN(t)) return t;
+  }
+  // DB strike_date can lag for a just-opened 15M window; fall back to the ticker
+  // so the live row isn't hidden during the minutes it's actually tradeable.
+  return e.ticker ? closeMsFromTicker(e.ticker) : null;
 }
 
 /** KXBTC15M -> BTC */
@@ -57,10 +107,14 @@ async function fetch15mRows(): Promise<PanelRow[]> {
   );
 
   const now = Date.now();
+  // "active" is the steady state; "open" is the brief transient a window sits in
+  // after Kalshi opens it but before secmaster maps it to active. Accept both so
+  // the live row isn't hidden during that lag.
+  const isLiveStatus = (status?: string): boolean => status === "active" || status === "open";
   const liveEvents = withEvents
     .map(({ series, events }) => {
       const live = events
-        .filter((e) => e?.status === "active")
+        .filter((e) => isLiveStatus(e?.status))
         .map((e) => ({ e, t: eventCloseMs(e) }))
         .filter((x): x is { e: MonitorEvent; t: number } => x.t != null && x.t > now)
         .sort((a, b) => a.t - b.t)[0];
