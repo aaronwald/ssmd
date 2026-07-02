@@ -3,7 +3,7 @@ module github.com/aaronwald/ssmd/ssmd-operators
 go 1.26.0
 
 require (
-	github.com/onsi/ginkgo/v2 v2.29.0
+	github.com/onsi/ginkgo/v2 v2.32.0
 	github.com/onsi/gomega v1.42.1
 	k8s.io/api v0.36.2
 	k8s.io/apimachinery v0.36.2
