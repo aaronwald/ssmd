@@ -8,6 +8,8 @@ import { getEnvContext } from "../utils/env-context.ts";
 import { getRawSql, closeDb } from "../../lib/db/mod.ts";
 import { connect as natsConnect, type NatsConnection } from "npm:nats";
 import nodemailer from "nodemailer";
+import { Storage } from "@google-cloud/storage";
+import { type GcsFileInfo, parseGcsFileInfo } from "./health-gcs.ts";
 
 // --- DQ Active Window ---
 // Kalshi markets are quiet from 3-4am EST (08:00-09:00 UTC).
@@ -85,17 +87,17 @@ export function connectorRedIssues(
 
 // --- GCS Utility Functions ---
 
-interface GcsFileInfo {
-  path: string;
-  name: string;
-  sizeBytes: number;
-  msgType: string;
-  time: string; // HHMM
-}
-
 /**
- * List files in a GCS path with sizes using gcloud storage ls -l.
- * Returns parsed file info including size, msg_type, and time slot.
+ * List files in a GCS path with sizes using the @google-cloud/storage Node
+ * client (Workload Identity — the job runs as the ssmd-data-ts KSA). Replaces
+ * the previous `gcloud storage ls` shell-out, which required the gcloud CLI
+ * (absent from the data-ts image) and silently disabled Phase 2 in prod.
+ *
+ * Validates inputs and fails loud on an unset bucket/prefix. A GCS auth/network
+ * error is re-thrown WITH context (not swallowed) so the Phase-2 caller sees a
+ * real failure instead of an empty result masquerading as "no data".
+ * `parseGcsFileInfo` skips non-data objects (manifest.json etc.) and coerces a
+ * missing/invalid size to 0.
  */
 async function listGcsFilesWithInfo(
   bucket: string,
@@ -104,53 +106,27 @@ async function listGcsFilesWithInfo(
   date: string,
   ext: string = "parquet",
 ): Promise<GcsFileInfo[]> {
-  const gsPath = `gs://${bucket}/${prefix}/${stream}/${date}/`;
-  const cmd = new Deno.Command("gcloud", {
-    args: ["storage", "ls", "-l", gsPath],
-    stdout: "piped",
-    stderr: "piped",
-  });
-
-  const output = await cmd.output();
-  if (!output.success) {
-    const err = new TextDecoder().decode(output.stderr);
-    if (err.includes("CommandException") || err.includes("NOT_FOUND") || err.includes("matched no objects")) {
-      return [];
-    }
-    // Non-fatal: log and return empty
-    console.error(`  WARN: gcloud ls failed for ${gsPath}: ${err.slice(0, 200)}`);
-    return [];
+  if (!bucket?.trim()) throw new Error("listGcsFilesWithInfo: bucket is required");
+  if (!prefix?.trim() || !stream?.trim() || !date?.trim()) {
+    throw new Error(`listGcsFilesWithInfo: prefix/stream/date required (got ${prefix}/${stream}/${date})`);
   }
-
-  const text = new TextDecoder().decode(output.stdout);
+  const gcsPrefix = `${prefix}/${stream}/${date}/`;
+  const storage = new Storage();
+  let objects: Array<{ name: string; metadata?: { size?: string | number } }>;
+  try {
+    // getFiles returns [] for a non-existent prefix; auth/network errors throw.
+    [objects] = await storage.bucket(bucket).getFiles({ prefix: gcsPrefix });
+  } catch (e) {
+    throw new Error(`GCS getFiles failed for gs://${bucket}/${gcsPrefix}: ${(e as Error).message}`);
+  }
   const files: GcsFileInfo[] = [];
-
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("TOTAL:")) continue;
-
-    // gcloud storage ls -l format: "  SIZE  DATE  gs://path"
-    // Example: "  12345  2026-02-12T14:00:00Z  gs://ssmd-data/kalshi/crypto/2026-02-12/ticker_1400.parquet"
-    const match = trimmed.match(/^\s*(\d+)\s+\S+\s+(gs:\/\/.+)$/);
-    if (!match) continue;
-
-    const fullPath = match[2];
-    const sizeBytes = parseInt(match[1], 10);
-    const fileName = fullPath.split("/").pop() ?? "";
-
-    if (!fileName.endsWith(`.${ext}`)) continue;
-
-    // Parse msg_type and time from filename: {msg_type}_{HHMM}.{ext}
-    const baseName = fileName.replace(`.${ext}`, "");
-    const lastUnderscore = baseName.lastIndexOf("_");
-    if (lastUnderscore === -1) continue;
-
-    const msgType = baseName.substring(0, lastUnderscore);
-    const time = baseName.substring(lastUnderscore + 1);
-
-    files.push({ path: fullPath, name: fileName, sizeBytes, msgType, time });
+  for (const obj of objects) {
+    const name = (obj.name ?? "").split("/").pop() ?? "";
+    const rawSize = Number(obj.metadata?.size ?? 0);
+    const sizeBytes = Number.isFinite(rawSize) && rawSize >= 0 ? rawSize : 0;
+    const parsed = parseGcsFileInfo(name, sizeBytes, ext);
+    if (parsed) files.push({ ...parsed, path: `gs://${bucket}/${obj.name}` });
   }
-
   return files;
 }
 
@@ -1307,17 +1283,12 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     const parquetScores: Record<string, { score: number; details: Record<string, unknown> }> = {};
     const slaScores: Record<string, { score: number; details: Record<string, unknown> }> = {};
 
-    // Check if gcloud is available before running GCS checks
-    let gcloudAvailable = true;
+    // Run Phase 2 GCS scans via the @google-cloud/storage Node client (no gcloud
+    // CLI needed; the job runs as the ssmd-data-ts KSA with GCS Workload Identity).
+    // A real GCS failure downgrades to Phase-1-only but is logged LOUDLY — never
+    // a silent skip that hides a data-quality regression from the grade.
+    let phase2Failed = false;
     try {
-      const check = new Deno.Command("gcloud", { args: ["--version"], stdout: "piped", stderr: "piped" });
-      const checkOut = await check.output();
-      if (!checkOut.success) gcloudAvailable = false;
-    } catch {
-      gcloudAvailable = false;
-    }
-
-    if (gcloudAvailable) {
       for (const feedConfig of GCS_FEEDS) {
         if (!jsonOutput) console.log(`  Scanning GCS: ${feedConfig.prefix}/${feedConfig.stream}...`);
         const [comp, pq, sla] = await Promise.all([
@@ -1329,8 +1300,9 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
         parquetScores[feedConfig.feed] = pq;
         slaScores[feedConfig.feed] = sla;
       }
-    } else if (!jsonOutput) {
-      console.warn("WARN: gcloud not available, skipping completeness/parquet/SLA checks");
+    } catch (e) {
+      phase2Failed = true;
+      console.error(`ERROR: Phase 2 GCS scoring failed (composite falls back to Phase 1): ${(e as Error).message}`);
     }
 
     // Aggregate Phase 2 scores (average across feeds)
@@ -1344,7 +1316,7 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
 
     // Composite score with Phase 2 dimensions
     // Phase 1 weights reduced to make room for Phase 2
-    const hasPhase2 = gcloudAvailable && Object.keys(completenessScores).length > 0;
+    const hasPhase2 = !phase2Failed && Object.keys(completenessScores).length > 0;
     let composite: number;
     if (hasPhase2) {
       // The average across all live connectors carries the Phase 1 connector weight.
@@ -1547,9 +1519,9 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
           console.log(`    - ${issue}`);
         }
       }
-      if (!gcloudAvailable) {
+      if (phase2Failed) {
         console.log();
-        console.log("  (gcloud unavailable — Phase 2 metrics skipped)");
+        console.log("  (Phase 2 GCS scoring failed — composite fell back to Phase 1; see error above)");
       }
     }
 
