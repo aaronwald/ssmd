@@ -31,12 +31,57 @@ interface GcsFeedConfig {
   natsStream: string;
 }
 
-// Kalshi-crypto-only mode: kraken (#8) and sports/games (#12) feeds were
-// decommissioned. Their NATS streams (PROD_KRAKEN_*, PROD_KALSHI_SPORTS) are
-// idle leftovers, so we no longer score them — they only produced false RED.
+// Phase 2 (completeness/parquet/SLA) GCS scans. Kept kalshi-crypto-only for now
+// (per-feed GCS layout/parquet schemas differ); expanding this is a follow-up.
 const GCS_FEEDS: GcsFeedConfig[] = [
   { feed: "kalshi-crypto", prefix: "kalshi", stream: "crypto", natsStream: "PROD_KALSHI_CRYPTO" },
 ];
+
+// Live connector NATS streams scored in the "Connector Health" section. Every
+// active connector belongs here. `archiveFeed` maps to the /v1/data/freshness
+// feed name used by the false-RED cross-check: a connector whose stream is
+// momentarily empty (e.g. a quiet 15M window) is NOT marked down while its GCS
+// archive is still fresh — only a stale archive REDs it.
+interface ConnectorFeedConfig {
+  feed: string;
+  natsStream: string;
+  archiveFeed: string;
+}
+const CONNECTOR_FEEDS: ConnectorFeedConfig[] = [
+  { feed: "kalshi-crypto", natsStream: "PROD_KALSHI_CRYPTO", archiveFeed: "kalshi" },
+  { feed: "binance", natsStream: "PROD_BINANCE_SPOT", archiveFeed: "binance" },
+  { feed: "kraken-spot", natsStream: "PROD_KRAKEN_SPOT", archiveFeed: "kraken-spot" },
+  { feed: "massive", natsStream: "PROD_MASSIVE", archiveFeed: "massive" },
+];
+
+/** Per-feed GCS archive freshness, keyed by the /v1/data/freshness feed name. */
+export interface ArchiveFreshness {
+  ageHours: number | null;
+  stale: boolean;
+}
+
+/**
+ * Decide which connectors are genuinely DOWN (hard RED). A connector only REDs
+ * when its NATS stream scored 0 AND its GCS archive is stale/missing — an empty
+ * stream while the archive is fresh is a normal quiet window, not an outage.
+ * Pure + exported for unit testing.
+ */
+export function connectorRedIssues(
+  connectors: { feed: string; score: number; archiveFeed: string }[],
+  freshnessMap: Record<string, ArchiveFreshness>,
+): string[] {
+  const issues: string[] = [];
+  for (const c of connectors) {
+    if (c.score !== 0) continue;
+    const fresh = freshnessMap[c.archiveFeed];
+    const archiveStale = !fresh || fresh.stale;
+    if (archiveStale) {
+      const age = fresh?.ageHours != null ? `${fresh.ageHours.toFixed(1)}h` : "missing";
+      issues.push(`${c.feed} connector down: 0 score and archive ${age}`);
+    }
+  }
+  return issues;
+}
 
 // --- GCS Utility Functions ---
 
@@ -840,6 +885,50 @@ async function scoreConnectorFeed(
 
 const ARCHIVE_FEEDS = ["kalshi"];
 
+/**
+ * Fetch per-feed GCS archive freshness from data-ts /v1/data/freshness, keyed by
+ * feed name. Used by the connector false-RED cross-check. On any failure every
+ * requested feed is reported stale (fail-safe: unknown archive state still REDs
+ * a dead-stream connector rather than silently hiding a real outage).
+ */
+async function fetchArchiveFreshness(feeds: string[]): Promise<Record<string, ArchiveFreshness>> {
+  const apiUrl = Deno.env.get("SSMD_API_URL") || "http://ssmd-data-ts-internal.ssmd.svc.cluster.local:8081";
+  const apiKey = Deno.env.get("SSMD_API_KEY") || "";
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["X-API-Key"] = apiKey;
+
+  const staleAll = (): Record<string, ArchiveFreshness> =>
+    Object.fromEntries(feeds.map((f) => [f, { ageHours: null, stale: true }]));
+
+  try {
+    const res = await fetch(`${apiUrl}/v1/data/freshness`, { headers });
+    if (!res.ok) {
+      console.error(`Freshness API returned ${res.status}`);
+      return staleAll();
+    }
+    const data = await res.json();
+    const feedResults = (data.feeds ?? []) as Array<
+      { feed: string; status?: string; age_hours?: number; stale?: boolean }
+    >;
+    const map: Record<string, ArchiveFreshness> = {};
+    for (const feed of feeds) {
+      const entry = feedResults.find((f) => f.feed === feed);
+      if (!entry || entry.status === "no_data" || entry.status === "error") {
+        map[feed] = { ageHours: null, stale: true };
+        continue;
+      }
+      const ageHours = entry.age_hours ?? null;
+      // Fresh within one rotation cycle (8h) — mirrors scoreArchiveSync.
+      const stale = entry.stale ?? (ageHours == null || ageHours >= 8);
+      map[feed] = { ageHours: ageHours == null ? null : Math.round(ageHours * 10) / 10, stale };
+    }
+    return map;
+  } catch (err) {
+    console.error(`Failed to fetch archive freshness: ${err}`);
+    return staleAll();
+  }
+}
+
 async function scoreArchiveSync(): Promise<{ score: number; details: Record<string, unknown> }> {
   // Check GCS archive freshness via data-ts /v1/data/freshness endpoint.
   // Stale threshold: 7h (set by the endpoint). We score based on age_hours.
@@ -1186,12 +1275,30 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
   const sql = getRawSql();
 
   try {
-    // Phase 1: Score connector feeds in parallel.
-    // Kalshi-crypto-only mode — kraken (#8) and sports (#12) feeds decommissioned.
-    const [kalshi, archive] = await Promise.all([
-      scoreConnectorFeed("kalshi-crypto", "PROD_KALSHI_CRYPTO", nc),
+    // Phase 1: Score every live connector feed + archive sync in parallel, plus
+    // per-feed archive freshness for the false-RED cross-check. scoreConnectorFeed
+    // and fetchArchiveFreshness catch their own errors and never reject, so a
+    // single dead stream degrades to score 0 rather than failing the whole report.
+    const [connectorResults, archive, freshnessMap] = await Promise.all([
+      Promise.all(CONNECTOR_FEEDS.map((c) => scoreConnectorFeed(c.feed, c.natsStream, nc))),
       scoreArchiveSync(),
+      fetchArchiveFreshness(CONNECTOR_FEEDS.map((c) => c.archiveFeed)),
     ]);
+    // Promise.all preserves order + length; assert it to fail loud if that ever
+    // changes, and coerce any non-finite score to 0 before use.
+    if (connectorResults.length !== CONNECTOR_FEEDS.length) {
+      throw new Error(
+        `connector scoring returned ${connectorResults.length} results, expected ${CONNECTOR_FEEDS.length}`,
+      );
+    }
+    const connectors = CONNECTOR_FEEDS.map((c, i) => {
+      const r = connectorResults[i];
+      const score = Number.isFinite(r?.score) ? r.score : 0;
+      return { ...c, score, details: r?.details ?? { feed: c.feed } };
+    });
+    const connectorAvg = connectors.length > 0
+      ? Math.round(connectors.reduce((s, c) => s + c.score, 0) / connectors.length)
+      : 0;
 
     // Phase 2: Score completeness, parquet quality, and SLA per GCS feed
     // These use gcloud CLI so run sequentially per feed to avoid rate limits,
@@ -1240,9 +1347,9 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     const hasPhase2 = gcloudAvailable && Object.keys(completenessScores).length > 0;
     let composite: number;
     if (hasPhase2) {
-      // Single connector (kalshi-crypto) now carries the Phase 1 connector weight.
+      // The average across all live connectors carries the Phase 1 connector weight.
       composite = Math.round(
-        kalshi.score * 0.50 +
+        connectorAvg * 0.50 +
         archive.score * 0.10 +
         completenessAvg * 0.20 +
         parquetAvg * 0.10 +
@@ -1251,15 +1358,22 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     } else {
       // Fallback to Phase 1 weights when gcloud not available
       composite = Math.round(
-        kalshi.score * 0.70 +
+        connectorAvg * 0.70 +
         archive.score * 0.30
       );
     }
 
-    // Check hard RED overrides
+    // Check hard RED overrides. A connector only REDs when its stream is dead AND
+    // its GCS archive is stale — an empty stream during a quiet window (e.g. the
+    // sparse 15M crypto feed between windows) is not an outage while the archive
+    // is fresh. connectorRedIssues is pure and always returns an array; assert it
+    // to fail loud if that contract ever breaks.
     const issues: string[] = [];
-    if (!kalshi.details.streamHasData) issues.push("Kalshi stream has no data");
-    if (kalshi.score === 0) issues.push("Kalshi connector score is zero");
+    const redIssues = connectorRedIssues(connectors, freshnessMap);
+    if (!Array.isArray(redIssues)) {
+      throw new Error("connectorRedIssues did not return an array");
+    }
+    issues.push(...redIssues);
     if (archive.score === 0) issues.push("No DQ scores found — GCS archive may not be syncing");
 
     // Phase 2 RED overrides
@@ -1281,7 +1395,12 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     const report: DailyReport = {
       date: today,
       feeds: {
-        "kalshi-crypto": { score: kalshi.score, ...kalshi.details },
+        ...Object.fromEntries(
+          connectors.map((c) => {
+            const score = Number.isFinite(c?.score) ? c.score : 0;
+            return [c.feed, { score, ...(c.details ?? {}) }];
+          }),
+        ),
         "archive-sync": { score: archive.score, ...archive.details },
         ...(hasPhase2 ? {
           "completeness": { score: completenessAvg, ...Object.fromEntries(
@@ -1313,7 +1432,7 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
         expectedMessages?: number;
         actualMessages?: number;
       }[] = [
-        { feed: "kalshi-crypto", score: kalshi.score, details: kalshi.details },
+        ...connectors.map((c) => ({ feed: c.feed, score: c.score, details: c.details })),
         { feed: "archive-sync", score: archive.score, details: archive.details },
       ];
 
@@ -1383,8 +1502,15 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
 
       // Phase 1: Connector health
       console.log("  Connector Health:");
-      const k = kalshi.details;
-      console.log(`    Kalshi Crypto:    ${String(kalshi.score).padStart(3)}/100 (${fmtNum(k.messageCount as number)} msgs, fresh: ${k.freshnessScore ?? 0})`);
+      for (const c of connectors) {
+        const d = (c.details ?? {}) as Record<string, unknown>;
+        const fresh = freshnessMap[c.archiveFeed];
+        const archNote = fresh?.stale === false ? " [archive fresh]" : "";
+        const msgs = fmtNum(typeof d.messageCount === "number" ? d.messageCount : null);
+        console.log(
+          `    ${c.feed.padEnd(16)} ${String(c.score).padStart(3)}/100 (${msgs} msgs, fresh: ${d.freshnessScore ?? 0})${archNote}`,
+        );
+      }
       const archDetails = archive.details as Record<string, { score: number; lastScoreAge: number | null }>;
       const archParts = Object.entries(archDetails)
         .map(([n, d]) => `${n}: ${d.lastScoreAge != null ? d.lastScoreAge + "h" : "never"}`)
