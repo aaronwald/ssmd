@@ -35,8 +35,10 @@ interface GcsFeedConfig {
 
 // Phase 2 (completeness/parquet/SLA) GCS scans. Kept kalshi-crypto-only for now
 // (per-feed GCS layout/parquet schemas differ); expanding this is a follow-up.
+// NOTE: the archiver double-nests kalshi under gs://ssmd-data/kalshi/kalshi/crypto/,
+// so prefix is "kalshi/kalshi" (not "kalshi"). Path = {prefix}/{stream}/{date}/.
 const GCS_FEEDS: GcsFeedConfig[] = [
-  { feed: "kalshi-crypto", prefix: "kalshi", stream: "crypto", natsStream: "PROD_KALSHI_CRYPTO" },
+  { feed: "kalshi-crypto", prefix: "kalshi/kalshi", stream: "crypto", natsStream: "PROD_KALSHI_CRYPTO" },
 ];
 
 // Live connector NATS streams scored in the "Connector Health" section. Every
