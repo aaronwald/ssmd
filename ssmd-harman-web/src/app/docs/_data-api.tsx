@@ -68,17 +68,15 @@ export function DataApiSections() {
             <p className="text-xs text-fg-muted mt-1">
               Raw-archive catalog feeds (<code className="font-mono text-accent">/v1/data/feeds</code>):{" "}
               <code className="font-mono text-accent">kalshi</code> (crypto markets),{" "}
-              <code className="font-mono text-accent">kraken-spot</code> (crypto),{" "}
-              <code className="font-mono text-accent">massive</code> (US equities, ~15-min delayed), and{" "}
+              <code className="font-mono text-accent">kraken-spot</code> (crypto), and{" "}
               <code className="font-mono text-accent">kraken-futures</code> (archived — decommissioned
               2026-06-03, historical data only). The derived{" "}
               <code className="font-mono text-accent">hols</code> daily crypto OHLCV dataset is not in
               that catalog — fetch it via{" "}
               <code className="font-mono text-accent">/v1/data/download?feed=hols</code>. DuckDB query
               endpoints (trades/prices/events/volume/freshness/snap) accept{" "}
-              <code className="font-mono text-accent">kalshi</code>,{" "}
-              <code className="font-mono text-accent">kraken-spot</code>,{" "}
-              <code className="font-mono text-accent">massive</code> only.
+              <code className="font-mono text-accent">kalshi</code> and{" "}
+              <code className="font-mono text-accent">kraken-spot</code> only.
             </p>
           </div>
           <div className="border border-border rounded p-3 bg-bg">
@@ -261,7 +259,7 @@ export function DataApiSections() {
           description="Cross-feed lookup by identifier (Kalshi tickers, Kraken pair_ids, Polymarket condition/token IDs)."
           queryParams={[
             { name: "ids", description: "Comma-separated IDs, max 100 (required)" },
-            { name: "feed", description: "Optional feed hint: kalshi, kraken-futures, kraken-spot, polymarket, massive" },
+            { name: "feed", description: "Optional feed hint: kalshi, kraken-futures, kraken-spot, polymarket" },
           ]}
           response={`{
   "markets": [
@@ -418,7 +416,7 @@ export function DataApiSections() {
           method="GET"
           path="/v1/data/feeds"
           scope="datasets:read"
-          description="List available raw-archive data feeds with date coverage and row counts (from the GCS catalog). Returns kalshi, kraken-futures, kraken-spot, and massive. The derived hols daily-OHLCV dataset is not a catalog feed — fetch it via /v1/data/download?feed=hols."
+          description="List available raw-archive data feeds with date coverage and row counts (from the GCS catalog). Returns kalshi, kraken-futures, and kraken-spot. The derived hols daily-OHLCV dataset is not a catalog feed — fetch it via /v1/data/download?feed=hols."
           response={`{
   "feeds": [
     {
@@ -463,7 +461,7 @@ export function DataApiSections() {
           scope="datasets:read"
           description="Per-ticker trade summary for a feed/date (DuckDB over GCS parquet)."
           queryParams={[
-            { name: "feed", description: "kalshi, kraken-spot, or massive (required)" },
+            { name: "feed", description: "kalshi or kraken-spot (required)" },
             { name: "date", description: "YYYY-MM-DD (default today)" },
             { name: "limit", description: "1–1000 (default 20)" },
           ]}
@@ -490,7 +488,7 @@ export function DataApiSections() {
           scope="datasets:read"
           description="Latest ticker price snapshot per market for a feed/date."
           queryParams={[
-            { name: "feed", description: "kalshi, kraken-spot, or massive (required)" },
+            { name: "feed", description: "kalshi or kraken-spot (required)" },
             { name: "date", description: "YYYY-MM-DD (default today)" },
             { name: "hour", description: "Optional HHMM (e.g. 1400)" },
           ]}
@@ -547,7 +545,7 @@ export function DataApiSections() {
           scope="datasets:read"
           description="Daily volume summary. Omit feed for all authorized feeds, or pass one."
           queryParams={[
-            { name: "feed", description: "Optional: kalshi, kraken-spot, or massive" },
+            { name: "feed", description: "Optional: kalshi or kraken-spot" },
             { name: "date", description: "YYYY-MM-DD (default today)" },
           ]}
           response={`{
@@ -597,7 +595,7 @@ export function DataApiSections() {
           scope="datasets:read"
           description="Live price snapshots from Redis (ssmd-snap)."
           queryParams={[
-            { name: "feed", description: "kalshi, kraken-spot, or massive (required)" },
+            { name: "feed", description: "kalshi or kraken-spot (required)" },
             { name: "tickers", description: "Optional comma-separated list (max 500); omit to scan up to 500" },
           ]}
           response={`{
@@ -620,8 +618,8 @@ export function DataApiSections() {
           scope="datasets:read"
           description="Live 1-minute OHLCV bars from a rolling ~60-minute cache, updated continuously. Includes trade counts and aggressor-side volume splits."
           queryParams={[
-            { name: "feed", description: "massive (US equities/ETFs), kraken-spot (crypto), or binance (crypto) (required)" },
-            { name: "sym", description: "Symbol: AAPL or SPY (massive); BTC/USDT or ETH/USDT (kraken-spot); BTCUSDT or ETHUSDT (binance) (required)" },
+            { name: "feed", description: "kraken-spot (crypto) or binance (crypto) (required)" },
+            { name: "sym", description: "Symbol: BTC/USDT or ETH/USDT (kraken-spot); BTCUSDT or ETHUSDT (binance) (required)" },
             { name: "limit", description: "Most-recent bars to return, 1–60 (default 60)" },
           ]}
           response={`{
@@ -642,18 +640,14 @@ export function DataApiSections() {
   ],
   "served_at": "2026-06-27T14:30:15.842Z"
 }`}
-          curl={`# US equities/ETFs (massive)
-curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=massive&sym=AAPL&limit=5" \\
-  -H "X-API-Key: $API_KEY"
-
-# Crypto (kraken-spot) — URL-encode the slash in the pair (BTC/USDT -> BTC%2FUSDT)
+          curl={`# Crypto (kraken-spot) — URL-encode the slash in the pair (BTC/USDT -> BTC%2FUSDT)
 curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=kraken-spot&sym=BTC%2FUSDT&limit=5" \\
   -H "X-API-Key: $API_KEY"
 
 # Crypto (binance) — no slash in symbols
 curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT&limit=5" \\
   -H "X-API-Key: $API_KEY"`}
-          notes="Bars are ordered oldest to newest; start_ts_ms/end_ts_ms are minute boundaries in epoch ms (UTC). Feed timelines: kraken-spot is near-real-time; massive is ~15 minutes delayed; binance is near-real-time. Symbols: kraken-spot uses pairs like BTC/USDT (URL-encode as %2F); binance and massive use simple tickers (BTCUSDT, AAPL). v = base-currency volume (base asset, e.g. BTC for BTC/USD). quote_volume = quote-currency volume Σ(price×qty) (quote asset, e.g. USD for BTC/USD); 0.0 for sources without trade-level price/qty pairing (massive 1s OHLCV). trade_count = trades in the minute (0 for massive, which has no trade-level detail). taker_buy_volume/taker_sell_volume = aggressor volume split by side (0.0 if feed lacks aggressor data). market_order_volume = volume from market orders (populated only for kraken-spot via ord_type='market'; 0.0 for binance and massive). Use /v1/data/ohlcv/1m/symbols to list cached symbols. 404 if no bars cached for the symbol yet."
+          notes="Bars are ordered oldest to newest; start_ts_ms/end_ts_ms are minute boundaries in epoch ms (UTC). Feed timelines: kraken-spot and binance are near-real-time. Symbols: kraken-spot uses pairs like BTC/USDT (URL-encode as %2F); binance uses simple tickers (BTCUSDT). v = base-currency volume (base asset, e.g. BTC for BTC/USD). quote_volume = quote-currency volume Σ(price×qty) (quote asset, e.g. USD for BTC/USD); 0.0 for binance. trade_count = trades in the minute. taker_buy_volume/taker_sell_volume = aggressor volume split by side (0.0 if feed lacks aggressor data). market_order_volume = volume from market orders (populated only for kraken-spot via ord_type='market'; 0.0 for binance). Use /v1/data/ohlcv/1m/symbols to list cached symbols. 404 if no bars cached for the symbol yet."
         />
         <Endpoint
           method="GET"
@@ -661,7 +655,7 @@ curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT&limit=5
           scope="datasets:read"
           description="List the symbols that currently have a 1-minute OHLCV ring cached, for a given feed."
           queryParams={[
-            { name: "feed", description: "massive (US equities/ETFs), kraken-spot (crypto), or binance (crypto) (required)" },
+            { name: "feed", description: "kraken-spot (crypto) or binance (crypto) (required)" },
           ]}
           response={`{
   "feed": "kraken-spot",
@@ -679,7 +673,7 @@ curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT&limit=5
           scope="datasets:read"
           description="Generate short-lived signed URLs for archived Parquet files on GCS. Use the returned signedUrl directly with curl, DuckDB, or pandas — no auth needed on the URL itself."
           queryParams={[
-            { name: "feed", description: "kalshi, kraken-futures, kraken-spot, hols, or massive (required)" },
+            { name: "feed", description: "kalshi, kraken-futures, kraken-spot, or hols (required)" },
             { name: "from", description: "Start date, YYYY-MM-DD (required)" },
             { name: "to", description: "End date, YYYY-MM-DD — max 7-day range (required)" },
             { name: "type", description: "Filter by message type, e.g. trade, ticker, ohlcv (optional)" },
@@ -724,12 +718,6 @@ curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT&limit=5
   },
   "binance": {
     "trade": { "version": "1.1.0", "notes": "spot @trade; is_buyer_maker (taker side) materialized as of 1.1.0" }
-  },
-  "massive": {
-    "trade": { "version": "1.0.0" },
-    "quote": { "version": "1.0.0" },
-    "ohlcv_1s": { "version": "1.0.0" },
-    "ohlcv_1m": { "version": "1.0.0" }
   }
 }`}
           curl={`curl "https://api.varshtat.com/v1/data/schema-versions" \\
@@ -743,7 +731,7 @@ curl "https://api.varshtat.com/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT&limit=5
           response={`{
   "email": "user@example.com",
   "scopes": ["datasets:read"],
-  "allowedFeeds": ["hols", "massive"]
+  "allowedFeeds": ["hols"]
 }`}
           curl={`curl "https://api.varshtat.com/v1/data/whoami" \\
   -H "X-API-Key: $API_KEY"`}
