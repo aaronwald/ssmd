@@ -12,11 +12,6 @@ pub struct Config {
     /// Redis server URL (required).
     pub redis_url: String,
 
-    /// JetStream subject for massive 1s OHLCV aggregates.
-    pub massive_subject: String,
-    /// JetStream stream name carrying the massive aggregates.
-    pub massive_stream: String,
-
     /// JetStream subject for kraken-spot trades.
     pub kraken_subject: String,
     /// JetStream stream name carrying the kraken-spot trades.
@@ -45,9 +40,6 @@ impl Config {
         let nats_url = require_env("NATS_URL");
         let redis_url = require_env("REDIS_URL");
 
-        let massive_subject = env_or("BAR_CACHE_MASSIVE_SUBJECT", "prod.massive.json.ohlcv_1s.>");
-        let massive_stream = env_or("BAR_CACHE_MASSIVE_STREAM", "PROD_MASSIVE");
-
         let kraken_subject = env_or("BAR_CACHE_KRAKEN_SUBJECT", "prod.kraken-spot.json.trade.>");
         let kraken_stream = env_or("BAR_CACHE_KRAKEN_STREAM", "PROD_KRAKEN_SPOT");
 
@@ -65,8 +57,6 @@ impl Config {
         Config {
             nats_url,
             redis_url,
-            massive_subject,
-            massive_stream,
             kraken_subject,
             kraken_stream,
             binance_subject,
@@ -123,8 +113,6 @@ mod tests {
         for key in [
             "NATS_URL",
             "REDIS_URL",
-            "BAR_CACHE_MASSIVE_SUBJECT",
-            "BAR_CACHE_MASSIVE_STREAM",
             "BAR_CACHE_KRAKEN_SUBJECT",
             "BAR_CACHE_KRAKEN_STREAM",
             "BAR_CACHE_BINANCE_SUBJECT",
@@ -148,8 +136,6 @@ mod tests {
 
         assert_eq!(cfg.nats_url, "nats://localhost:4222");
         assert_eq!(cfg.redis_url, "redis://localhost:6379");
-        assert_eq!(cfg.massive_subject, "prod.massive.json.ohlcv_1s.>");
-        assert_eq!(cfg.massive_stream, "PROD_MASSIVE");
         assert_eq!(cfg.kraken_subject, "prod.kraken-spot.json.trade.>");
         assert_eq!(cfg.kraken_stream, "PROD_KRAKEN_SPOT");
         assert_eq!(cfg.binance_subject, "prod.binance.spot.json.trade.>");
@@ -167,8 +153,6 @@ mod tests {
         clear_all();
         env::set_var("NATS_URL", "nats://nats:4222");
         env::set_var("REDIS_URL", "redis://redis:6379");
-        env::set_var("BAR_CACHE_MASSIVE_SUBJECT", "x.ohlcv.>");
-        env::set_var("BAR_CACHE_MASSIVE_STREAM", "X_MASSIVE");
         env::set_var("BAR_CACHE_KRAKEN_SUBJECT", "x.trade.>");
         env::set_var("BAR_CACHE_KRAKEN_STREAM", "X_KRAKEN");
         env::set_var("BAR_CACHE_BINANCE_SUBJECT", "x.binance.trade.>");
@@ -179,8 +163,6 @@ mod tests {
 
         let cfg = Config::from_env();
 
-        assert_eq!(cfg.massive_subject, "x.ohlcv.>");
-        assert_eq!(cfg.massive_stream, "X_MASSIVE");
         assert_eq!(cfg.kraken_subject, "x.trade.>");
         assert_eq!(cfg.kraken_stream, "X_KRAKEN");
         assert_eq!(cfg.binance_subject, "x.binance.trade.>");

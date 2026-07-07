@@ -44,7 +44,6 @@ export const VOLUME_UNITS: Record<string, string> = {
   "kalshi": "contracts",
   "kraken-futures": "base_currency",
   "polymarket": "usd",
-  "massive": "shares",
   "binance": "base_currency",
 };
 

@@ -191,20 +191,20 @@ function bar(startMs: number, close: number) {
 
 Deno.test("GET /v1/data/ohlcv/1m returns bars and served_at for a seeded key", async () => {
   const bars = [bar(1_000, 10), bar(61_000, 11), bar(121_000, 12)];
-  const router = createBarCacheRouter(["massive"], {
-    "ohlcv_1m:massive:AAPL": JSON.stringify(bars),
+  const router = createBarCacheRouter(["binance"], {
+    "ohlcv_1m:binance:BTCUSDT": JSON.stringify(bars),
   });
 
   const req = new Request(
-    "http://localhost/v1/data/ohlcv/1m?feed=massive&sym=AAPL",
+    "http://localhost/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT",
     { headers: { "X-API-Key": "test_pref.secret" } },
   );
   const res = await router(req);
 
   assertEquals(res.status, 200);
   const body = await res.json();
-  assertEquals(body.feed, "massive");
-  assertEquals(body.sym, "AAPL");
+  assertEquals(body.feed, "binance");
+  assertEquals(body.sym, "BTCUSDT");
   assertEquals(body.bars.length, 3);
   assertEquals(body.bars[0].c, 10);
   assertEquals(body.bars[2].c, 12);
@@ -215,12 +215,12 @@ Deno.test("GET /v1/data/ohlcv/1m returns bars and served_at for a seeded key", a
 
 Deno.test("GET /v1/data/ohlcv/1m clamps to the last `limit` bars", async () => {
   const bars = [bar(1_000, 10), bar(61_000, 11), bar(121_000, 12)];
-  const router = createBarCacheRouter(["massive"], {
-    "ohlcv_1m:massive:AAPL": JSON.stringify(bars),
+  const router = createBarCacheRouter(["binance"], {
+    "ohlcv_1m:binance:BTCUSDT": JSON.stringify(bars),
   });
 
   const req = new Request(
-    "http://localhost/v1/data/ohlcv/1m?feed=massive&sym=AAPL&limit=2",
+    "http://localhost/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT&limit=2",
     { headers: { "X-API-Key": "test_pref.secret" } },
   );
   const res = await router(req);
@@ -251,10 +251,10 @@ Deno.test("GET /v1/data/ohlcv/1m caps limit above 60 at 60", async () => {
 });
 
 Deno.test("GET /v1/data/ohlcv/1m returns 404 when key is missing", async () => {
-  const router = createBarCacheRouter(["massive"], {});
+  const router = createBarCacheRouter(["binance"], {});
 
   const req = new Request(
-    "http://localhost/v1/data/ohlcv/1m?feed=massive&sym=NOPE",
+    "http://localhost/v1/data/ohlcv/1m?feed=binance&sym=NOPE",
     { headers: { "X-API-Key": "test_pref.secret" } },
   );
   const res = await router(req);
@@ -275,15 +275,15 @@ Deno.test("GET /v1/data/ohlcv/1m returns 400 for an invalid feed", async () => {
 
   assertEquals(res.status, 400);
   const body = await res.json();
-  assertEquals(body.error.includes("massive"), true);
+  assertEquals(body.error.includes("binance"), true);
   assertEquals(body.error.includes("kraken-spot"), true);
 });
 
 Deno.test("GET /v1/data/ohlcv/1m returns 400 when sym is missing", async () => {
-  const router = createBarCacheRouter(["massive"], {});
+  const router = createBarCacheRouter(["binance"], {});
 
   const req = new Request(
-    "http://localhost/v1/data/ohlcv/1m?feed=massive",
+    "http://localhost/v1/data/ohlcv/1m?feed=binance",
     { headers: { "X-API-Key": "test_pref.secret" } },
   );
   const res = await router(req);
@@ -295,27 +295,27 @@ Deno.test("GET /v1/data/ohlcv/1m returns 400 when sym is missing", async () => {
 
 Deno.test("GET /v1/data/ohlcv/1m returns 403 when feed is not authorized", async () => {
   const router = createBarCacheRouter(["kraken-spot"], {
-    "ohlcv_1m:massive:AAPL": JSON.stringify([bar(1_000, 10)]),
+    "ohlcv_1m:binance:BTCUSDT": JSON.stringify([bar(1_000, 10)]),
   });
 
   const req = new Request(
-    "http://localhost/v1/data/ohlcv/1m?feed=massive&sym=AAPL",
+    "http://localhost/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT",
     { headers: { "X-API-Key": "test_pref.secret" } },
   );
   const res = await router(req);
 
   assertEquals(res.status, 403);
   const body = await res.json();
-  assertEquals(body.error, "Key not authorized for feed: massive");
+  assertEquals(body.error, "Key not authorized for feed: binance");
 });
 
 Deno.test("GET /v1/data/ohlcv/1m allows wildcard feed access", async () => {
   const router = createBarCacheRouter(["*"], {
-    "ohlcv_1m:massive:AAPL": JSON.stringify([bar(1_000, 10)]),
+    "ohlcv_1m:binance:BTCUSDT": JSON.stringify([bar(1_000, 10)]),
   });
 
   const req = new Request(
-    "http://localhost/v1/data/ohlcv/1m?feed=massive&sym=AAPL",
+    "http://localhost/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT",
     { headers: { "X-API-Key": "test_pref.secret" } },
   );
   const res = await router(req);
@@ -326,7 +326,7 @@ Deno.test("GET /v1/data/ohlcv/1m allows wildcard feed access", async () => {
 Deno.test("GET /v1/data/ohlcv/1m returns 401 without API key", async () => {
   const router = createTestRouter();
   const req = new Request(
-    "http://localhost/v1/data/ohlcv/1m?feed=massive&sym=AAPL",
+    "http://localhost/v1/data/ohlcv/1m?feed=binance&sym=BTCUSDT",
   );
   const res = await router(req);
   assertEquals(res.status, 401);
@@ -366,12 +366,12 @@ Deno.test("GET /v1/data/ohlcv/1m/symbols returns 400 for an invalid feed", async
 
   assertEquals(res.status, 400);
   const body = await res.json();
-  assertEquals(body.error.includes("massive"), true);
+  assertEquals(body.error.includes("binance"), true);
   assertEquals(body.error.includes("kraken-spot"), true);
 });
 
 Deno.test("GET /v1/data/ohlcv/1m/symbols returns 403 when feed is not authorized", async () => {
-  const router = createBarCacheRouter(["massive"], {
+  const router = createBarCacheRouter(["binance"], {
     "ohlcv_1m:kraken-spot:BTC/USD": "[]",
   });
 
@@ -448,68 +448,16 @@ async function withStubbedFetch(
   }
 }
 
-Deno.test("GET /v1/internal/ohlcv-rest-bars polygon maps results to normalized bars", async () => {
-  const polygonBody = {
-    results: [
-      { t: 1_700_000_000_000, o: 1, h: 2, l: 0.5, c: 1.5, v: 100 },
-      { t: 1_700_000_060_000, o: 1.5, h: 2.5, l: 1, c: 2, v: 200 },
-    ],
-  };
-  await withStubbedFetch(
-    (input) => {
-      const u = input.toString();
-      assertEquals(u.includes("api.polygon.io"), true);
-      assertEquals(u.includes("/AAPL/"), true);
-      return Promise.resolve(
-        new Response(JSON.stringify(polygonBody), { status: 200 }),
-      );
-    },
-    async () => {
-      const router = createRestBarsRouter();
-      const req = new Request(
-        "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=2023-11-14",
-        { headers: { "X-API-Key": "test_pref.secret" } },
-      );
-      // Ensure MASSIVE_API_KEY is set so the route does not 500.
-      Deno.env.set("MASSIVE_API_KEY", "test-massive-key");
-      const res = await router(req);
-      assertEquals(res.status, 200);
-      const body = await res.json();
-      assertEquals(body.sym, "AAPL");
-      assertEquals(body.bars.length, 2);
-      assertEquals(body.bars[0], {
-        o: 1,
-        h: 2,
-        l: 0.5,
-        c: 1.5,
-        v: 100,
-        start_ts_ms: 1_700_000_000_000,
-      });
-      assertEquals(body.bars[1].start_ts_ms, 1_700_000_060_000);
-    },
+Deno.test("GET /v1/internal/ohlcv-rest-bars rejects the removed polygon source", async () => {
+  const router = createRestBarsRouter();
+  const req = new Request(
+    "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=2023-11-14",
+    { headers: { "X-API-Key": "test_pref.secret" } },
   );
-});
-
-Deno.test("GET /v1/internal/ohlcv-rest-bars polygon returns empty bars when results missing", async () => {
-  await withStubbedFetch(
-    () =>
-      Promise.resolve(
-        new Response(JSON.stringify({ status: "OK" }), { status: 200 }),
-      ),
-    async () => {
-      const router = createRestBarsRouter();
-      Deno.env.set("MASSIVE_API_KEY", "test-massive-key");
-      const req = new Request(
-        "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=2023-11-14",
-        { headers: { "X-API-Key": "test_pref.secret" } },
-      );
-      const res = await router(req);
-      assertEquals(res.status, 200);
-      const body = await res.json();
-      assertEquals(body.sym, "AAPL");
-      assertEquals(body.bars, []);
-    },
-  );
+  const res = await router(req);
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assertEquals(body.error.includes("source"), true);
 });
 
 Deno.test("GET /v1/internal/ohlcv-rest-bars kraken maps candle arrays, coercing strings and seconds", async () => {
@@ -595,7 +543,7 @@ Deno.test("GET /v1/internal/ohlcv-rest-bars returns 400 for unknown source", asy
 Deno.test("GET /v1/internal/ohlcv-rest-bars returns 400 when sym is missing", async () => {
   const router = createRestBarsRouter();
   const req = new Request(
-    "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&date=2023-11-14",
+    "http://localhost/v1/internal/ohlcv-rest-bars?source=kraken",
     { headers: { "X-API-Key": "test_pref.secret" } },
   );
   const res = await router(req);
@@ -604,58 +552,37 @@ Deno.test("GET /v1/internal/ohlcv-rest-bars returns 400 when sym is missing", as
   assertEquals(body.error.includes("sym"), true);
 });
 
-Deno.test("GET /v1/internal/ohlcv-rest-bars returns 400 when polygon date is missing", async () => {
-  const router = createRestBarsRouter();
-  const req = new Request(
-    "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL",
-    { headers: { "X-API-Key": "test_pref.secret" } },
-  );
-  const res = await router(req);
-  assertEquals(res.status, 400);
-  const body = await res.json();
-  assertEquals(body.error.includes("date"), true);
-});
-
-Deno.test("GET /v1/internal/ohlcv-rest-bars returns 400 when date is malformed", async () => {
-  const router = createRestBarsRouter();
-  const req = new Request(
-    "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=11-14-2023",
-    { headers: { "X-API-Key": "test_pref.secret" } },
-  );
-  const res = await router(req);
-  assertEquals(res.status, 400);
-  const body = await res.json();
-  assertEquals(body.error.includes("date"), true);
-});
-
 Deno.test("GET /v1/internal/ohlcv-rest-bars returns 401 without API key", async () => {
   const router = createTestRouter();
   const req = new Request(
-    "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=2023-11-14",
+    "http://localhost/v1/internal/ohlcv-rest-bars?source=kraken&sym=XBTUSD",
   );
   const res = await router(req);
   assertEquals(res.status, 401);
 });
 
 Deno.test("GET /v1/internal/ohlcv-rest-bars returns only the most recent `limit` bars (default 120)", async () => {
-  // 200 minute bars; default limit (120) must return the newest 120, in order.
-  const results = Array.from({ length: 200 }, (_, i) => ({
-    t: 1_700_000_000_000 + i * 60_000,
-    o: i,
-    h: i,
-    l: i,
-    c: i,
-    v: i + 1,
-  }));
+  // 200 kraken minute candles; default limit (120) must return the newest 120,
+  // in order. Kraken candle: [time(s), o, h, l, c, vwap, volume, count].
+  const candles = Array.from({ length: 200 }, (_, i) => [
+    String(1_700_000_000 + i * 60),
+    String(i),
+    String(i),
+    String(i),
+    String(i),
+    String(i),
+    String(i + 1),
+    5,
+  ]);
+  const krakenBody = { error: [], result: { XXBTZUSD: candles, last: 1 } };
   await withStubbedFetch(
-    () => Promise.resolve(new Response(JSON.stringify({ results }), { status: 200 })),
+    () => Promise.resolve(new Response(JSON.stringify(krakenBody), { status: 200 })),
     async () => {
       const router = createRestBarsRouter();
-      Deno.env.set("MASSIVE_API_KEY", "test-massive-key");
 
       const dfltRes = await router(
         new Request(
-          "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=2023-11-14",
+          "http://localhost/v1/internal/ohlcv-rest-bars?source=kraken&sym=XBTUSD",
           { headers: { "X-API-Key": "test_pref.secret" } },
         ),
       );
@@ -665,13 +592,13 @@ Deno.test("GET /v1/internal/ohlcv-rest-bars returns only the most recent `limit`
       assertEquals(dflt.bars.length, 120);
       assertEquals(
         dflt.bars[dflt.bars.length - 1].start_ts_ms,
-        1_700_000_000_000 + 199 * 60_000,
+        (1_700_000_000 + 199 * 60) * 1000,
       );
-      assertEquals(dflt.bars[0].start_ts_ms, 1_700_000_000_000 + 80 * 60_000);
+      assertEquals(dflt.bars[0].start_ts_ms, (1_700_000_000 + 80 * 60) * 1000);
 
       const fiveRes = await router(
         new Request(
-          "http://localhost/v1/internal/ohlcv-rest-bars?source=polygon&sym=AAPL&date=2023-11-14&limit=5",
+          "http://localhost/v1/internal/ohlcv-rest-bars?source=kraken&sym=XBTUSD&limit=5",
           { headers: { "X-API-Key": "test_pref.secret" } },
         ),
       );
@@ -679,7 +606,7 @@ Deno.test("GET /v1/internal/ohlcv-rest-bars returns only the most recent `limit`
       const five = await fiveRes.json();
       assertEquals(Array.isArray(five.bars), true);
       assertEquals(five.bars.length, 5);
-      assertEquals(five.bars[0].start_ts_ms, 1_700_000_000_000 + 195 * 60_000);
+      assertEquals(five.bars[0].start_ts_ms, (1_700_000_000 + 195 * 60) * 1000);
     },
   );
 });

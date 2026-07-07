@@ -7,7 +7,6 @@
 export const FEED_PATHS: Record<string, string> = {
   "kalshi": "kalshi/kalshi/crypto",
   "kraken-spot": "kraken-spot/kraken-spot/spot",
-  "massive": "massive/massive/massive",
   "binance": "binance/binance/spot",
 };
 
@@ -37,16 +36,6 @@ export const TRADE_CONFIG: Record<string, TradeConfig> = {
     qtyCol: "qty",
     priceDivisor: 1,
   },
-  "massive": {
-    // Massive has no raw trade feed in parquet; the 1m OHLCV bars are the
-    // closest queryable surface. close is the bar close price, volume the
-    // bar share volume; prices are already in dollars (no divisor).
-    fileType: "ohlcv_1m",
-    tickerCol: "symbol",
-    priceCol: "close",
-    qtyCol: "volume",
-    priceDivisor: 1,
-  },
   "binance": {
     // Binance spot is trade-only (no ticker parquet). price is already in
     // dollars (no divisor); qty is the base-asset trade quantity.
@@ -62,7 +51,6 @@ export const TRADE_CONFIG: Record<string, TradeConfig> = {
 export const PRICE_CONFIG: Record<string, { fileType: string; orderCol: string }> = {
   "kalshi": { fileType: "ticker", orderCol: "ts" },
   "kraken-spot": { fileType: "ticker", orderCol: "_received_at" },
-  "massive": { fileType: "ohlcv_1m", orderCol: "start_ts_ms" },
   // Binance has no ticker parquet; the latest trade is the price snapshot.
   "binance": { fileType: "trade", orderCol: "exchange_ts_ms" },
 };
@@ -71,7 +59,6 @@ export const PRICE_CONFIG: Record<string, { fileType: string; orderCol: string }
 export const FEED_TYPES: Record<string, string[]> = {
   "kalshi": ["trade", "ticker"],
   "kraken-spot": ["trade", "ticker"],
-  "massive": ["ohlcv_1s", "ohlcv_1m"],
   "binance": ["trade"],
 };
 

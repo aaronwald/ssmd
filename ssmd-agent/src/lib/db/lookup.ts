@@ -25,7 +25,7 @@ export interface LookupResult {
   openInterest: number | null;
 }
 
-const VALID_FEEDS = ["kalshi", "kraken-futures", "kraken-spot", "polymarket", "massive"];
+const VALID_FEEDS = ["kalshi", "kraken-futures", "kraken-spot", "polymarket"];
 
 /**
  * Lookup markets across feeds by ID.

@@ -45,19 +45,6 @@ export const FEED_CONFIG: Record<string, FeedInfo> = {
     flat: true,
     description: "Crypto OHLCV bars — 1-minute & 5-minute candlesticks (open/high/low/close/volume) from Binance & Kraken, daily Parquet. (v14 model inputs.)",
   },
-  "massive": {
-    prefix: "massive",
-    stream: "massive",
-    messageTypes: ["ohlcv_1s", "ohlcv_1m", "ohlcv_1d"],
-    // Raw 1s/1m bars use the archiver double-nested layout. The archiver's third
-    // path segment is the feed name (not a category), so the real prefix is
-    // massive/massive/massive/{date}/{type}_{HHMM}.parquet.
-    // The daily aggregate (ohlcv_1d) is written by `hols aggregate --source massive`
-    // to a flat path (massive/equities/daily/{date}/ohlcv-1d-massive.parquet).
-    flatMessageTypes: ["ohlcv_1d"],
-    flatStream: "equities/daily",
-    description: "Massive (Polygon.io) US equities OHLCV bars — 1-second & 1-minute raw bars plus a daily (1d) aggregate.",
-  },
 };
 
 export interface FeedInfo {
@@ -115,7 +102,7 @@ export function scanLayout(config: FeedInfo, flat: boolean): boolean {
 
 /**
  * Parse a parquet/csv basename into its message type and time-slot ("hour").
- * Flat layout files have no time-slot suffix (e.g. "ohlcv-1d-massive"); their
+ * Flat layout files have no time-slot suffix (e.g. "ohlcv-1m-binance-ws"); their
  * type is the whole basename and the hour is the date. Nested archiver files
  * are "{type}_{HHMM}". Returns null for nested files without an underscore so
  * malformed names are skipped (preserves prior behavior).
@@ -183,8 +170,8 @@ export async function listParquetFiles(
   const from = new Date(dateFrom);
   const to = new Date(dateTo);
 
-  // A feed may mix layouts (e.g. massive: raw 1s/1m bars use the archiver
-  // double-nested layout, the daily ohlcv_1d aggregate is flat). When a msgType
+  // A feed may mix layouts (raw ticks use the archiver double-nested layout while
+  // a daily aggregate is flat). When a msgType
   // is requested, scan only the layout that type uses; otherwise scan whichever
   // layouts the feed actually populates. The two layouts live under distinct
   // prefixes, so no dedupe is needed. gcsDirPrefix/parseFileType (defined above)

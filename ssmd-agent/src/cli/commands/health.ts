@@ -55,7 +55,6 @@ const CONNECTOR_FEEDS: ConnectorFeedConfig[] = [
   { feed: "kalshi-crypto", natsStream: "PROD_KALSHI_CRYPTO", archiveFeed: "kalshi" },
   { feed: "binance", natsStream: "PROD_BINANCE_SPOT", archiveFeed: "binance" },
   { feed: "kraken-spot", natsStream: "PROD_KRAKEN_SPOT", archiveFeed: "kraken-spot" },
-  { feed: "massive", natsStream: "PROD_MASSIVE", archiveFeed: "massive" },
 ];
 
 /** Per-feed GCS archive freshness, keyed by the /v1/data/freshness feed name. */
