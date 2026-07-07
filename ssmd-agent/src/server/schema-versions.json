@@ -16,13 +16,6 @@
     "ticker": { "version": "1.0.0" },
     "trade": { "version": "1.0.0" }
   },
-  "massive": {
-    "trade": { "version": "1.0.0" },
-    "quote": { "version": "1.0.0" },
-    "ohlcv_1s": { "version": "1.0.0" },
-    "ohlcv_1m": { "version": "1.0.0" },
-    "ohlcv_1d": { "version": "1.0.0" }
-  },
   "binance": {
     "trade": { "version": "1.1.0", "notes": "spot @trade; is_buyer_maker (taker side) materialized as of 1.1.0" }
   }

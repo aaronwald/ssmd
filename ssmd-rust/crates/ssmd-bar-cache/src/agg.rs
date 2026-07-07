@@ -1,15 +1,13 @@
 //! Pure, side-effect-free 1-minute OHLCV aggregation.
 //!
-//! Inputs arrive as massive 1-second OHLCV aggregates, kraken-spot trades, or
-//! binance spot trades. All are normalized into [`Input`] and folded into a
-//! per-symbol current-minute [`Bar`] by [`MinuteAggregator`]. The aggregator is
-//! deterministic and does no I/O — Redis/NATS wiring lives in the binary.
+//! Inputs arrive as kraken-spot trades or binance spot trades. Both are
+//! normalized into [`Input`] and folded into a per-symbol current-minute
+//! [`Bar`] by [`MinuteAggregator`]. The aggregator is deterministic and does no
+//! I/O — Redis/NATS wiring lives in the binary.
 //!
 //! ## Idempotency
 //! Re-delivery is expected. Each [`Input`] carries a `dedup_key` that is unique
 //! within a minute for a given source contribution:
-//! - massive 1s bars: keyed by their 1-second start (`s`), so a resent second
-//!   replaces (not re-adds) its OHLCV — volume never double-counts.
 //! - kraken trades: keyed by `trade_id`, so a replayed trade is ignored.
 //! - binance trades: keyed by the Binance trade id (`t`), same as kraken.
 
@@ -38,7 +36,7 @@ pub struct Bar {
     pub c: f64,
     pub v: f64,
     /// Number of trades that contributed to this minute. `0` for non-trade
-    /// sources (e.g. massive 1s bars), which carry no trade-level detail.
+    /// sources, which carry no trade-level detail.
     pub trade_count: u64,
     /// Aggressor (taker) volume where the BUYER was the taker (buy-side
     /// aggression). `0.0` for sources without aggressor-side data.
@@ -47,11 +45,10 @@ pub struct Bar {
     /// aggression). `0.0` for sources without aggressor-side data.
     pub taker_sell_volume: f64,
     /// Volume executed via market orders. Populated only for kraken-spot (v2
-    /// `ord_type == "market"`); `0.0` for binance (no order-type data) and
-    /// massive.
+    /// `ord_type == "market"`); `0.0` for binance (no order-type data).
     pub market_order_volume: f64,
     /// Quote-currency volume Σ(price×qty) over the minute. `0.0` for sources
-    /// without trade-level price/qty pairing (massive 1s OHLCV).
+    /// without trade-level price/qty pairing.
     pub quote_volume: f64,
     /// Minute-floored start (inclusive), epoch ms.
     pub start_ts_ms: i64,
@@ -61,8 +58,7 @@ pub struct Bar {
 
 /// A normalized aggregation input derived from a source message.
 ///
-/// For massive 1s bars `o/h/l/c` are the second's own OHLC and `v` is its
-/// volume. For kraken trades `o == h == l == c == price` and `v == qty`.
+/// For kraken and binance trades `o == h == l == c == price` and `v == qty`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Input {
     pub sym: String,
@@ -75,10 +71,10 @@ pub struct Input {
     /// and the within-minute ordering.
     pub ts_ms: i64,
     /// Key that is stable across re-deliveries of the same contribution within
-    /// a minute (massive: the 1s start; kraken: the trade id).
+    /// a minute (kraken/binance: the trade id).
     pub dedup_key: String,
     /// Number of trades this input represents (1 for a single trade, 0 for a
-    /// non-trade source such as a massive 1s bar).
+    /// non-trade source).
     pub trades: u64,
     /// Taker-buy volume contributed by this input (buyer was the taker).
     pub taker_buy_v: f64,
@@ -87,65 +83,13 @@ pub struct Input {
     /// Market-order volume contributed by this input (kraken-spot only).
     pub market_order_v: f64,
     /// Quote-currency volume (price×qty) contributed by this input; `0.0` for
-    /// sources without trade-level price/qty pairing (massive 1s OHLCV).
+    /// sources without trade-level price/qty pairing.
     pub quote_v: f64,
 }
 
 // ---------------------------------------------------------------------------
 // Parsers
 // ---------------------------------------------------------------------------
-
-/// Raw massive 1-second OHLCV aggregate (`ev:"A"`).
-#[derive(Debug, Deserialize)]
-struct MassiveRaw {
-    sym: String,
-    o: f64,
-    h: f64,
-    l: f64,
-    c: f64,
-    v: f64,
-    /// Window start, epoch ms.
-    s: i64,
-    /// Window end, epoch ms.
-    #[allow(dead_code)]
-    e: i64,
-}
-
-/// Parse a massive 1s OHLCV aggregate payload into zero or one [`Input`].
-///
-/// Returns an empty `Vec` (logging a warning) on malformed JSON or missing
-/// fields, rather than panicking — a bad message must never take down the
-/// consumer. The `Vec` return mirrors [`parse_kraken_trade`] so both feeds share
-/// one parser contract; massive payloads are always a single flat object.
-pub fn parse_massive_1s(payload: &[u8]) -> Vec<Input> {
-    let raw: MassiveRaw = match serde_json::from_slice(payload) {
-        Ok(r) => r,
-        Err(err) => {
-            warn!(error = %err, "skipping malformed massive 1s aggregate");
-            return Vec::new();
-        }
-    };
-
-    vec![Input {
-        sym: raw.sym,
-        o: raw.o,
-        h: raw.h,
-        l: raw.l,
-        c: raw.c,
-        v: raw.v,
-        ts_ms: raw.s,
-        // The 1-second start uniquely identifies this contribution in a minute.
-        dedup_key: raw.s.to_string(),
-        // Massive 1s bars carry no trade-level detail — honest zeros, never
-        // fabricated attribution.
-        trades: 0,
-        taker_buy_v: 0.0,
-        taker_sell_v: 0.0,
-        market_order_v: 0.0,
-        // No per-trade price/qty pairing in a 1s OHLCV aggregate — honest zero.
-        quote_v: 0.0,
-    }]
-}
 
 /// The kraken-spot v2 envelope: a `channel`/`type` header wrapping a `data[]`
 /// array. Only `channel == "trade"` carries trades; other channels (heartbeat,
@@ -584,14 +528,6 @@ impl MinuteAggregator {
 mod tests {
     use super::*;
 
-    fn massive(sym: &str, sec_start_ms: i64, o: f64, h: f64, l: f64, c: f64, v: f64) -> Vec<u8> {
-        format!(
-            r#"{{"ev":"A","sym":"{sym}","o":{o},"h":{h},"l":{l},"c":{c},"v":{v},"vw":{c},"s":{sec_start_ms},"e":{}}}"#,
-            sec_start_ms + 1000
-        )
-        .into_bytes()
-    }
-
     /// A kraken v2 `trade` envelope wrapping a single trade in `data[]`.
     fn kraken(sym: &str, price: f64, qty: f64, ts: &str, trade_id: &str) -> Vec<u8> {
         format!(
@@ -629,8 +565,8 @@ mod tests {
         .into_bytes()
     }
 
-    /// Parse a single-input payload (massive, or single-trade kraken) and assert
-    /// exactly one [`Input`] came back, returning it.
+    /// Parse a single-input payload (a single-trade kraken or binance frame) and
+    /// assert exactly one [`Input`] came back, returning it.
     fn one(inputs: Vec<Input>) -> Input {
         assert_eq!(inputs.len(), 1, "expected exactly one input");
         inputs.into_iter().next().unwrap()
@@ -733,63 +669,12 @@ mod tests {
     }
 
     #[test]
-    fn massive_input_has_zero_quote_volume() {
-        // Massive 1s bars have no per-trade price/qty pairing → honest zero.
-        let input = one(parse_massive_1s(&massive(
-            "AAPL", 60_000, 10.0, 12.0, 9.0, 11.0, 100.0,
-        )));
-        assert_eq!(input.quote_v, 0.0);
-    }
-
-    #[test]
-    fn massive_input_has_zero_attribution() {
-        // Massive 1s bars carry no trade-level attribution: trade_count and all
-        // aggressor/market-order volumes are honestly zero.
-        let input = one(parse_massive_1s(&massive(
-            "AAPL", 60_000, 10.0, 12.0, 9.0, 11.0, 100.0,
-        )));
-        assert_eq!(input.trades, 0);
-        assert_eq!(input.taker_buy_v, 0.0);
-        assert_eq!(input.taker_sell_v, 0.0);
-        assert_eq!(input.market_order_v, 0.0);
-
-        let mut agg = MinuteAggregator::new();
-        let res = agg.ingest(input);
-        assert_eq!(res.current.trade_count, 0);
-        assert_eq!(res.current.taker_buy_volume, 0.0);
-        assert_eq!(res.current.taker_sell_volume, 0.0);
-        assert_eq!(res.current.market_order_volume, 0.0);
-    }
-
-    #[test]
     fn minute_floor_floors_to_minute() {
         assert_eq!(minute_floor(0), 0);
         assert_eq!(minute_floor(59_999), 0);
         assert_eq!(minute_floor(60_000), 60_000);
         assert_eq!(minute_floor(60_001), 60_000);
         assert_eq!(minute_floor(125_500), 120_000);
-    }
-
-    #[test]
-    fn parse_massive_ok() {
-        let input = one(parse_massive_1s(&massive(
-            "AAPL", 60_000, 10.0, 12.0, 9.0, 11.0, 100.0,
-        )));
-        assert_eq!(input.sym, "AAPL");
-        assert_eq!(input.o, 10.0);
-        assert_eq!(input.h, 12.0);
-        assert_eq!(input.l, 9.0);
-        assert_eq!(input.c, 11.0);
-        assert_eq!(input.v, 100.0);
-        assert_eq!(input.ts_ms, 60_000);
-        assert_eq!(input.dedup_key, "60000");
-    }
-
-    #[test]
-    fn parse_massive_malformed_is_empty() {
-        assert!(parse_massive_1s(b"not json").is_empty());
-        // Missing required fields.
-        assert!(parse_massive_1s(br#"{"sym":"AAPL"}"#).is_empty());
     }
 
     #[test]
@@ -1079,30 +964,38 @@ mod tests {
     }
 
     #[test]
-    fn sixty_massive_bars_make_one_minute_bar() {
+    fn sixty_trades_make_one_minute_bar() {
         let mut agg = MinuteAggregator::new();
         let mut last_current: Option<Bar> = None;
 
-        // 60 one-second bars in minute starting at 0. Open walks 10..=69,
-        // close walks 11..=70, high peaks at 1000 in the middle, low bottoms
-        // at 1 once.
+        // 60 trades in minute starting at 0. Price walks 10..=69, with a high
+        // spike (1000) in the middle and a low dip (1) once; qty is 2.0 each.
+        // Each trade carries a distinct id and an in-minute timestamp so all
+        // fold into the single minute-0 bar.
         for i in 0..60i64 {
-            let sec = i * 1000;
-            let o = (i + 10) as f64;
-            let c = (i + 11) as f64;
-            let h = if i == 30 { 1000.0 } else { c };
-            let l = if i == 40 { 1.0 } else { o };
-            let res = agg.ingest(one(parse_massive_1s(&massive(
-                "AAPL", sec, o, h, l, c, 2.0,
+            let ts = i * 900; // 0..=53_100, all inside the [0, 60_000) minute
+            let price = if i == 30 {
+                1000.0
+            } else if i == 40 {
+                1.0
+            } else {
+                (i + 10) as f64
+            };
+            let res = agg.ingest(one(parse_binance_trade(&binance(
+                "BTCUSDT",
+                &price.to_string(),
+                "2.0",
+                ts,
+                i,
             ))));
             assert!(res.finalized.is_none());
             last_current = Some(res.current);
         }
 
         let bar = last_current.unwrap();
-        assert_eq!(bar.sym, "AAPL");
-        assert_eq!(bar.o, 10.0); // first second's open
-        assert_eq!(bar.c, 70.0); // last second's close
+        assert_eq!(bar.sym, "BTCUSDT");
+        assert_eq!(bar.o, 10.0); // first trade's price
+        assert_eq!(bar.c, 69.0); // last trade's price (i = 59 → 69)
         assert_eq!(bar.h, 1000.0); // running max
         assert_eq!(bar.l, 1.0); // running min
         assert_eq!(bar.v, 120.0); // 60 * 2.0
@@ -1180,22 +1073,22 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_massive_second_does_not_double_count() {
+    fn duplicate_trade_id_replaces_not_adds() {
         let mut agg = MinuteAggregator::new();
-        agg.ingest(one(parse_massive_1s(&massive(
-            "AAPL", 0, 1.0, 1.0, 1.0, 1.0, 5.0,
+        agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "1.0", "5.0", 0, 1,
         ))));
-        // Resend the same 1s start with a revised volume — must replace, not add.
-        let res = agg.ingest(one(parse_massive_1s(&massive(
-            "AAPL", 0, 1.0, 1.0, 1.0, 1.0, 7.0,
+        // Resend the same trade id with a revised qty — must replace, not add.
+        let res = agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "1.0", "7.0", 0, 1,
         ))));
-        assert_eq!(res.current.v, 7.0, "resent second replaces, not adds");
+        assert_eq!(res.current.v, 7.0, "resent id replaces, not adds");
 
-        // Add a distinct second.
-        let res2 = agg.ingest(one(parse_massive_1s(&massive(
-            "AAPL", 1000, 1.0, 1.0, 1.0, 1.0, 3.0,
+        // A distinct trade id adds on top.
+        let res2 = agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "1.0", "3.0", 1000, 2,
         ))));
-        assert_eq!(res2.current.v, 10.0, "7 (latest of sec0) + 3 (sec1)");
+        assert_eq!(res2.current.v, 10.0, "7 (latest of id 1) + 3 (id 2)");
     }
 
     #[test]
@@ -1238,17 +1131,17 @@ mod tests {
     fn minute_rollover_emits_prior_minute() {
         let mut agg = MinuteAggregator::new();
         // Minute 0.
-        agg.ingest(one(parse_massive_1s(&massive(
-            "AAPL", 0, 5.0, 5.0, 5.0, 5.0, 4.0,
+        agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "5.0", "4.0", 0, 1,
         ))));
-        let res = agg.ingest(one(parse_massive_1s(&massive(
-            "AAPL", 30_000, 6.0, 6.0, 6.0, 6.0, 2.0,
+        let res = agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "6.0", "2.0", 30_000, 2,
         ))));
         assert!(res.finalized.is_none(), "still minute 0");
 
         // First input in minute 1 finalizes minute 0.
-        let res = agg.ingest(one(parse_massive_1s(&massive(
-            "AAPL", 60_000, 7.0, 7.0, 7.0, 7.0, 1.0,
+        let res = agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "7.0", "1.0", 60_000, 3,
         ))));
         let finalized = res.finalized.expect("minute 0 should finalize");
         assert_eq!(finalized.start_ts_ms, 0);
@@ -1315,12 +1208,12 @@ mod tests {
     #[test]
     fn late_input_for_finalized_minute_is_dropped() {
         let mut agg = MinuteAggregator::new();
-        agg.ingest(one(parse_massive_1s(&massive(
-            "AAPL", 60_000, 7.0, 7.0, 7.0, 7.0, 1.0,
+        agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "7.0", "1.0", 60_000, 1,
         ))));
         // A straggler from minute 0 arrives after we moved to minute 1.
-        let res = agg.ingest(one(parse_massive_1s(&massive(
-            "AAPL", 0, 5.0, 5.0, 5.0, 5.0, 9.0,
+        let res = agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "5.0", "9.0", 0, 2,
         ))));
         assert!(res.finalized.is_none());
         // Current stays the minute-1 bar, unaffected by the straggler.
@@ -1331,13 +1224,13 @@ mod tests {
     #[test]
     fn separate_symbols_are_independent() {
         let mut agg = MinuteAggregator::new();
-        agg.ingest(one(parse_massive_1s(&massive(
-            "AAPL", 0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "1.0", "1.0", 0, 1,
         ))));
-        let res = agg.ingest(one(parse_massive_1s(&massive(
-            "MSFT", 0, 2.0, 2.0, 2.0, 2.0, 5.0,
+        let res = agg.ingest(one(parse_binance_trade(&binance(
+            "ETHUSDT", "2.0", "5.0", 0, 2,
         ))));
-        assert_eq!(res.current.sym, "MSFT");
+        assert_eq!(res.current.sym, "ETHUSDT");
         assert_eq!(res.current.v, 5.0);
     }
 
@@ -1345,12 +1238,12 @@ mod tests {
     fn flush_emits_open_bar() {
         let mut agg = MinuteAggregator::new();
         // `one()` asserts exactly one parsed input (fail-loud, like the old unwrap).
-        agg.ingest(one(parse_massive_1s(&massive(
-            "AAPL", 0, 1.0, 1.0, 1.0, 1.0, 3.0,
+        agg.ingest(one(parse_binance_trade(&binance(
+            "BTCUSDT", "1.0", "3.0", 0, 1,
         ))));
-        let bar = agg.flush("AAPL").expect("open bar");
+        let bar = agg.flush("BTCUSDT").expect("open bar");
         assert_eq!(bar.v, 3.0);
         // Flushed symbol is gone.
-        assert!(agg.flush("AAPL").is_none());
+        assert!(agg.flush("BTCUSDT").is_none());
     }
 }

@@ -1,11 +1,10 @@
 //! NATS JetStream consumer loop driving the [`MinuteAggregator`] into Redis.
 //!
-//! Three subscriptions feed one aggregator: massive 1s OHLCV aggregates,
-//! kraken-spot trades, and binance-spot trades. They differ only in their wire
-//! format, so each subscription carries its own parser (`parse_massive_1s` /
-//! `parse_kraken_trade` / `parse_binance_trade`) and feed label — that is the
-//! entirety of the per-feed routing. Everything after parsing (aggregation,
-//! Redis ring write, freshness gauge) is identical.
+//! Two subscriptions feed one aggregator: kraken-spot trades and binance-spot
+//! trades. They differ only in their wire format, so each subscription carries
+//! its own parser (`parse_kraken_trade` / `parse_binance_trade`) and feed label
+//! — that is the entirety of the per-feed routing. Everything after parsing
+//! (aggregation, Redis ring write, freshness gauge) is identical.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,8 +20,8 @@ use crate::store::upsert_bar;
 
 /// Parser for a subscription's wire format → zero or more normalized [`Input`]s.
 ///
-/// Massive 1s aggregates yield 0 or 1 input per message; the kraken-spot v2
-/// trade envelope wraps a `data[]` array and yields 0..N.
+/// A binance frame yields 0 or 1 input per message; the kraken-spot v2 trade
+/// envelope wraps a `data[]` array and yields 0..N.
 type Parser = fn(&[u8]) -> Vec<Input>;
 
 /// A single JetStream subscription: which stream/subject to read, how to parse
@@ -158,7 +157,7 @@ async fn run_inner(
 
         // Route by the subscription's own parser. One message yields zero or
         // more inputs (a kraken envelope carries a `data[]` array of trades; a
-        // massive aggregate is a single object). An empty result is a parse
+        // binance frame is a single object). An empty result is a parse
         // "miss": either a malformed payload (the parser logged) or a non-trade
         // kraken control frame (heartbeat/ticker/ack). Count it and move on —
         // never crash the consumer over one payload.

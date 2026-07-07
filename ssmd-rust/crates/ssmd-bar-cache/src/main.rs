@@ -10,7 +10,7 @@ use axum::{extract::State, routing::get, Router};
 use tokio::sync::Mutex;
 use tracing::info;
 
-use agg::{parse_binance_trade, parse_kraken_trade, parse_massive_1s, MinuteAggregator};
+use agg::{parse_binance_trade, parse_kraken_trade, MinuteAggregator};
 use config::Config;
 use consumer::{run_subscription, Subscription};
 use metrics::Metrics;
@@ -32,8 +32,6 @@ async fn main() {
     info!(
         nats_url = %config.nats_url,
         redis_url = %config.redis_url,
-        massive_subject = %config.massive_subject,
-        massive_stream = %config.massive_stream,
         kraken_subject = %config.kraken_subject,
         kraken_stream = %config.kraken_stream,
         binance_subject = %config.binance_subject,
@@ -79,12 +77,6 @@ async fn main() {
     // The subscriptions differ only by stream/subject, parser, and feed label —
     // this is the entirety of the multi-feed routing.
     let subscriptions = vec![
-        Subscription {
-            stream_name: config.massive_stream.clone(),
-            filter_subject: config.massive_subject.clone(),
-            feed: "massive".to_string(),
-            parse: parse_massive_1s,
-        },
         Subscription {
             stream_name: config.kraken_stream.clone(),
             filter_subject: config.kraken_subject.clone(),

@@ -3,7 +3,7 @@
  *
  * Kept out of hols.ts so the GCS path builder and the aggregation SQL can be
  * unit-tested without the DuckDB native binding (--allow-ffi). Mirrors
- * hols-massive.ts / hols-window.ts.
+ * hols-window.ts.
  *
  * Differs from the kraken aggregate (aggregateTradesToOhlcv in hols.ts):
  *   - timestamp column is `exchange_ts_ms` (Int64 epoch-millis), not a TIMESTAMP
@@ -15,7 +15,7 @@
  * SECURITY NOTE: inputGlob / parquetPath are trusted, internally-built /tmp
  * literals (never user input), and DuckDB COPY/read_parquet file paths must be
  * SQL literals (not bindable) — so they are interpolated exactly as the sibling
- * aggregate jobs do (see hols-massive.ts). Output existence / non-empty / row
+ * aggregate jobs do. Output existence / non-empty / row
  * count verification is the orchestrator's job (runHolsAggregateBinance in
  * hols.ts), which fails loud (Deno.exit(1)) on a zero-row result.
  */

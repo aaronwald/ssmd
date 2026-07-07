@@ -32,7 +32,7 @@ Deno.test("connectorRedIssues: score > 0 → never RED regardless of archive", (
 
 Deno.test("connectorRedIssues: score 0 + missing freshness entry → RED (archive missing)", () => {
   const issues = connectorRedIssues(
-    [{ feed: "massive", score: 0, archiveFeed: "massive" }],
+    [{ feed: "kraken-spot", score: 0, archiveFeed: "kraken-spot" }],
     {}, // no freshness data → treat as stale/missing
   );
   assertEquals(issues.length, 1);

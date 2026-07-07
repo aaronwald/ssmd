@@ -2406,7 +2406,7 @@ route("GET", "/v1/data/snap", async (req) => {
 
 // 1-minute OHLCV bars from Redis (populated by ssmd-bar-cache).
 // Key layout: `ohlcv_1m:{feed}:{sym}` → JSON array of the last ~60 bars, oldest→newest.
-const BAR_CACHE_FEEDS = ["massive", "kraken-spot", "binance"] as const;
+const BAR_CACHE_FEEDS = ["kraken-spot", "binance"] as const;
 const MAX_BARS = 60;
 
 route("GET", "/v1/data/ohlcv/1m", async (req, ctx) => {
@@ -4549,20 +4549,12 @@ route("GET", "/v1/internal/ohlcv-rest-bars", async (req, _ctx) => {
   const url = new URL(req.url);
   const source = url.searchParams.get("source");
   const sym = url.searchParams.get("sym");
-  const date = url.searchParams.get("date");
 
-  if (source !== "polygon" && source !== "kraken") {
-    return json({ error: "source must be one of: polygon, kraken" }, 400);
+  if (source !== "kraken") {
+    return json({ error: "source must be one of: kraken" }, 400);
   }
   if (!sym) {
     return json({ error: "sym query parameter is required" }, 400);
-  }
-  // date is required for polygon (it is the range day); optional for kraken.
-  if (source === "polygon" && !date) {
-    return json({ error: "date query parameter is required for polygon (YYYY-MM-DD)" }, 400);
-  }
-  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return json({ error: "date must be YYYY-MM-DD format" }, 400);
   }
 
   // Return only the most recent `limit` bars (default 120). The validation
@@ -4579,49 +4571,6 @@ route("GET", "/v1/internal/ohlcv-rest-bars", async (req, _ctx) => {
       return json({ error: "limit must be a positive integer" }, 400);
     }
     limit = Math.min(parsed, MAX_REST_BARS);
-  }
-
-  if (source === "polygon") {
-    // Validate the key is present and non-empty before using it (empty string
-    // is falsy, so this also rejects ""). Guarantees a non-empty Bearer token.
-    const apiKey = Deno.env.get("MASSIVE_API_KEY");
-    if (!apiKey) {
-      return json({ error: "MASSIVE_API_KEY not configured" }, 500);
-    }
-    const polyUrl = `https://api.polygon.io/v2/aggs/ticker/${encodeURIComponent(sym)}/range/1/minute/${date}/${date}` +
-      `?adjusted=true&sort=asc&limit=50000`;
-    let data: { results?: Array<{ t: number; o: number; h: number; l: number; c: number; v: number }> };
-    try {
-      // Key as a Bearer header (not in the URL) so it can never leak into an
-      // error/response that echoes the request URL.
-      const resp = await fetch(polyUrl, {
-        signal: AbortSignal.timeout(30_000),
-        headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
-      });
-      if (!resp.ok) {
-        return json({ error: `Polygon fetch failed: ${resp.status} ${resp.statusText}` }, 502);
-      }
-      data = await resp.json();
-    } catch (e) {
-      return json({ error: `Polygon fetch error: ${e instanceof Error ? e.message : String(e)}` }, 502);
-    }
-
-    // Missing/empty results (e.g. non-trading day) → empty bars, not an error.
-    if (!data.results || data.results.length === 0) {
-      return json({ sym, bars: [] });
-    }
-    const bars: NormalizedBar[] = data.results
-      .map((r) => ({
-        o: r.o,
-        h: r.h,
-        l: r.l,
-        c: r.c,
-        v: r.v,
-        start_ts_ms: r.t,
-      }))
-      .filter(isFiniteBar);
-    bars.sort((a, b) => a.start_ts_ms - b.start_ts_ms);
-    return json({ sym, bars: bars.slice(-limit) });
   }
 
   // source === "kraken"

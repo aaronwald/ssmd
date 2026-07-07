@@ -130,7 +130,7 @@ mod tests {
             ring_key("kraken-spot", "BTC/USD"),
             "ohlcv_1m:kraken-spot:BTC/USD"
         );
-        assert_eq!(ring_key("massive", "AAPL"), "ohlcv_1m:massive:AAPL");
+        assert_eq!(ring_key("binance", "BTCUSDT"), "ohlcv_1m:binance:BTCUSDT");
     }
 
     #[test]
