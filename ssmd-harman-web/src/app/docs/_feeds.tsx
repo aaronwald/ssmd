@@ -11,7 +11,6 @@ import { Section, TypeTable } from "./_components";
 //   - Kalshi:           docs/schemas/kalshi-json.md + docs/schemas/parquet-schemas.md
 //   - Kraken Spot:      docs/schemas/parquet-schemas.md (Kraken Spot Schemas)
 //   - Kraken Futures:   docs/schemas/kraken-futures-json.md + parquet-schemas.md
-//   - Massive (Polygon): ssmd-agent hols-massive.ts / routes.ts OHLCV bar shape
 //   - HOLS:             ssmd-agent hols.ts NdjsonRow / daily aggregate columns
 //   - Polymarket:       docs/schemas/polymarket-json.md + parquet-schemas.md
 // Schema versions come from ssmd-agent/src/server/schema-versions.json and the
@@ -249,45 +248,6 @@ export function FeedsProtocolsSections() {
         ]}
         docHref={`${SCHEMA_DOC_BASE}/kraken-futures-json.md`}
         docLabel="kraken-futures-json.md"
-      />
-
-      {/* ===================================================================== */}
-      {/* MASSIVE (POLYGON.IO) */}
-      {/* ===================================================================== */}
-      <FeedBlock
-        name="massive"
-        transport="Polygon.io aggregates (AM bars over WebSocket)"
-        description="US-equities OHLCV bars from Polygon.io. Raw 1-second and 1-minute bars are archived directly; the daily (1d) bar is a derived aggregate (one row per symbol/day). The live feed is ~15 minutes delayed."
-        messageTypes={[
-          {
-            name: "ohlcv_1s / ohlcv_1m",
-            version: "1.0.0",
-            note: "Polygon emits multiple cumulative snapshots per minute; the final bar per (symbol, start_ts_ms) is the canonical one.",
-            fields: [
-              { value: "symbol: Utf8", description: "Equity/ETF symbol, e.g. AAPL, SPY" },
-              { value: "open / high / low / close: Float64", description: "Bar OHLC prices" },
-              { value: "volume: Float64", description: "Bar volume (whole-share)" },
-              { value: "vwap: Float64", description: "Volume-weighted average price" },
-              { value: "start_ts_ms / end_ts_ms: Int64", description: "Bar boundaries in epoch milliseconds (UTC)" },
-            ],
-          },
-          {
-            name: "ohlcv_1d",
-            version: "1.0.0",
-            note: "Daily aggregate written by `hols aggregate --source massive` (flat layout).",
-            fields: [
-              { value: "symbol: Utf8", description: "Equity/ETF symbol" },
-              { value: "date: Date", description: "Trading day (UTC)" },
-              { value: "open / high / low / close: Float64", description: "Daily OHLC" },
-              { value: "volume: Float64", description: "Daily volume (sum of final 1m bars)" },
-              { value: "vwap: Float64", description: "Volume-weighted daily VWAP" },
-              { value: "bar_count: Int64", description: "Number of 1m bars aggregated" },
-              { value: "first_bar_ts_ms / last_bar_ts_ms: Int64", description: "First/last contributing bar (epoch ms)" },
-            ],
-          },
-        ]}
-        docHref={`${SCHEMA_DOC_BASE}/parquet-schemas.md`}
-        docLabel="parquet-schemas.md"
       />
 
       {/* ===================================================================== */}
