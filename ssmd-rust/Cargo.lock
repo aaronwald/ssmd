@@ -794,12 +794,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "capnpc"
-version = "0.25.3"
+name = "capnp"
+version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fca02be865c8c5a78bfc24b9819006ab6b59bef238467203928e26459557af93"
+checksum = "58ddce707ad9fb2ae92770523cd0e17a0cf34e79b66a9ca4db2dd993535fe718"
 dependencies = [
- "capnp",
+ "embedded-io",
+]
+
+[[package]]
+name = "capnpc"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13aea06b902f885cb0313b11e900e96cd57fef775e9e601a96e14e1d655f3cd3"
+dependencies = [
+ "capnp 0.26.2",
 ]
 
 [[package]]
@@ -4213,7 +4222,7 @@ dependencies = [
  "base64 0.22.1",
  "bytemuck",
  "bytes",
- "capnp",
+ "capnp 0.25.3",
  "chrono",
  "futures-util",
  "lasso",
@@ -4402,7 +4411,7 @@ dependencies = [
 name = "ssmd-schema"
 version = "0.1.0"
 dependencies = [
- "capnp",
+ "capnp 0.25.3",
  "capnpc",
 ]
 
