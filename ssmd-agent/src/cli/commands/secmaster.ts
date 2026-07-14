@@ -58,6 +58,37 @@ export interface SyncOptions {
   minCloseTs?: number;
   /** Relative filter: only sync markets closing within N days ago (converted to minCloseTs at runtime) */
   minCloseDaysAgo?: number;
+  /**
+   * Number of pages to fetch in the pre-open discovery pass (no status filter).
+   * Kalshi returns events future-first, so page 1 holds only the furthest-future
+   * pre-created events; near-future windows land on later pages. Series that
+   * pre-create many future events (e.g. *15M, which roll every 15 minutes) need
+   * a higher value so the near-future live windows are not dropped. Default 1
+   * preserves the original single-page behavior for normal series.
+   */
+  preOpenPages?: number;
+}
+
+/** Upper bound on pre-open pages, so a bad flag value can never trigger a full-history crawl. */
+const MAX_PRE_OPEN_PAGES = 50;
+
+/**
+ * Validate and clamp the pre-open page count. Invalid input (undefined, NaN,
+ * non-positive, non-integer) falls back to 1 — the original single-page behavior —
+ * rather than silently fetching nothing or crawling unbounded history.
+ */
+export function normalizePreOpenPages(value: number | undefined, ticker: string): number {
+  if (value === undefined) return 1;
+  if (!Number.isFinite(value) || value < 1) {
+    console.log(`[PreOpen] Invalid pre-open-pages=${value} for ${ticker}, defaulting to 1`);
+    return 1;
+  }
+  const pages = Math.floor(value);
+  if (pages > MAX_PRE_OPEN_PAGES) {
+    console.log(`[PreOpen] Clamping pre-open-pages=${pages} to ${MAX_PRE_OPEN_PAGES} for ${ticker}`);
+    return MAX_PRE_OPEN_PAGES;
+  }
+  return pages;
 }
 
 /**
@@ -369,11 +400,19 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
           }
         }
 
-        // Pre-open discovery pass — first page only, no status filter.
+        // Pre-open discovery pass — no status filter.
         // Catches events Kalshi has created but not yet opened for trading
         // (e.g., hourly KXBTCD events created hours before open_time).
-        // Newest events appear first, so pre-created future events are on page 1.
+        // Kalshi returns events future-first, so page 1 holds only the
+        // furthest-future pre-created events; for series that pre-create many
+        // future events (e.g. *15M, which roll every 15 minutes) the near-future
+        // live windows land on later pages. preOpenPages controls how deep we
+        // page so those windows are not silently dropped. Default 1 preserves
+        // the original single-page behavior for normal series.
+        const preOpenPages = normalizePreOpenPages(options.preOpenPages, s.ticker);
+        let preOpenPage = 0;
         for await (const batch of client.fetchEventsBySeries(s.ticker)) {
+          preOpenPage++;
           result.events.fetched += batch.events.length;
           result.markets.fetched += batch.markets.length;
           if (!options.dryRun) {
@@ -385,7 +424,7 @@ export async function runSeriesBasedSync(options: SyncOptions = {}): Promise<Syn
               result.markets.upserted += marketResult.total;
             }
           }
-          break; // First page only
+          if (preOpenPage >= preOpenPages) break;
         }
         // Success - reset consecutive error counter
         consecutiveErrors = 0;
@@ -773,6 +812,7 @@ export async function handleSecmaster(
         tags: tags.length > 0 ? tags : undefined,
         minVolume: flags["min-volume"] ? Number(flags["min-volume"]) : undefined,
         minCloseDaysAgo: flags["min-close-days-ago"] ? Number(flags["min-close-days-ago"]) : undefined,
+        preOpenPages: flags["pre-open-pages"] ? Number(flags["pre-open-pages"]) : undefined,
       };
 
       if (options.eventsOnly && options.marketsOnly) {
@@ -855,6 +895,7 @@ export async function handleSecmaster(
       console.log("  --tag=X          Filter to specific tags (with --by-series)");
       console.log("  --min-volume=N   Only sync series with volume >= N");
       console.log("  --min-close-days-ago=N  Only sync markets closing within N days");
+      console.log("  --pre-open-pages=N  Pages to scan for pre-created future events (default 1; use higher for *15M)");
       console.log("  --active-only    Only sync active/open records (legacy mode)");
       console.log("  --events-only    Only sync events");
       console.log("  --markets-only   Only sync markets");
