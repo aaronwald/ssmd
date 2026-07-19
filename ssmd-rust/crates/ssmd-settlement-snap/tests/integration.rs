@@ -15,6 +15,11 @@
 #[path = "../src/symbology.rs"]
 mod symbology;
 
+// `lifecycle::settlement_value` deserialization reuses `crate::price`, so the
+// price module must be declared at this crate root for that path to resolve.
+#[path = "../src/price.rs"]
+mod price;
+
 #[path = "../src/lifecycle.rs"]
 mod lifecycle;
 
