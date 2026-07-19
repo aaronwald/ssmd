@@ -131,6 +131,24 @@ mod tests {
     }
 
     #[test]
+    fn result_resolves_from_additional_metadata_real_shape() {
+        // Realistic `determined` event where the outcome lives under
+        // `additional_metadata.result` (no top-level `result`), with settled_ts.
+        let json = r#"{
+            "type": "market_lifecycle_v2",
+            "msg": {
+                "market_ticker": "KXBTC15M-26JUL191145-45",
+                "event_type": "determined",
+                "additional_metadata": {"result": "yes"},
+                "settled_ts": 1784475902
+            }
+        }"#;
+        let msg = parse(json.as_bytes()).expect("should parse");
+        assert_eq!(msg.result(), Some("yes".to_string()));
+        assert_eq!(msg.settled_ts, Some(1784475902));
+    }
+
+    #[test]
     fn empty_top_level_result_falls_back() {
         let json = r#"{
             "type": "market_lifecycle_v2",
