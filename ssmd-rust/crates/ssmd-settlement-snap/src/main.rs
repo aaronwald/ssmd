@@ -13,6 +13,7 @@ mod consumer;
 mod gcs;
 mod lifecycle;
 mod metrics;
+mod price;
 mod reconcile;
 mod record;
 mod symbology;

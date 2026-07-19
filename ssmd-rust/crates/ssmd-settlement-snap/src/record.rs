@@ -76,6 +76,12 @@ pub struct SettlementRecord {
     pub final_open_interest: Option<i64>,
     pub final_ticker_ts: Option<i64>,
     /// `determination_ts*1000 − final_ticker_ts*1000` (feature staleness).
+    /// NOTE: `final_ticker_ts` is the timestamp of the newest ticker OBSERVATION.
+    /// Because `LastTickMap::merge_update` preserves a prior non-null price field
+    /// when a later partial tick omits it, an individual price field can be older
+    /// than `snap_age_ms` implies — treat this as the age of the most-recently
+    /// updated field (a lower bound on any single field's staleness), not a
+    /// guarantee that every field is this fresh.
     pub snap_age_ms: Option<i64>,
     pub snap_source: SnapSource,
     pub nats_lifecycle_seq: i64,

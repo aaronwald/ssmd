@@ -43,12 +43,13 @@ pub struct MarketRow {
     pub close_ts: Option<i64>,
 }
 
-/// Convert a NUMERIC dollar string (e.g. "0.9700") to integer cents (97).
-/// Returns `None` for absent/unparseable values — never panics on bad data.
-pub fn dollars_to_cents(dollars: Option<&str>) -> Option<i64> {
-    let s = dollars?;
-    let v: f64 = s.trim().parse().ok()?;
-    Some((v * 100.0).round() as i64)
+/// Convert an optional NUMERIC dollar string (e.g. "0.9700") to clamped integer
+/// cents (97). Delegates to the shared, defensive [`crate::price::dollars_to_cents`]
+/// so the reconcile path shares ONE converter with the live ticker path — the
+/// same finite guard and `[0, 100]` clamp apply. Returns `None` for
+/// absent/unparseable/non-finite values; never panics or persists out-of-domain.
+fn dollars_to_cents(dollars: Option<&str>) -> Option<i64> {
+    dollars.and_then(crate::price::dollars_to_cents)
 }
 
 /// Parse an RFC3339 timestamptz text value to epoch seconds.
@@ -81,8 +82,11 @@ pub fn record_from_row(row: &MarketRow, now_ms: i64) -> SettlementRecord {
         no_bid: dollars_to_cents(row.no_bid_dollars.as_deref()),
         no_ask: dollars_to_cents(row.no_ask_dollars.as_deref()),
         last_price: dollars_to_cents(row.last_price_dollars.as_deref()),
-        volume: row.volume,
-        open_interest: row.open_interest,
+        // Volume / open interest can't be negative — floor at 0, mirroring the
+        // live ticker path (`price::fp_to_i64`). A bad negative DB value never
+        // persists.
+        volume: row.volume.map(|v| v.max(0)),
+        open_interest: row.open_interest.map(|v| v.max(0)),
         ts: row.close_ts.unwrap_or(0),
     };
 
@@ -208,6 +212,49 @@ mod tests {
         assert_eq!(dollars_to_cents(None), None);
         assert_eq!(dollars_to_cents(Some("")), None);
         assert_eq!(dollars_to_cents(Some("not-a-number")), None);
+    }
+
+    #[test]
+    fn dollars_to_cents_clamps_out_of_domain_and_rejects_non_finite() {
+        // Now delegates to the shared clamped converter: a bad secmaster row can
+        // never produce an out-of-domain immutable settlement object.
+        assert_eq!(dollars_to_cents(Some("-0.5000")), Some(0)); // negative -> 0
+        assert_eq!(dollars_to_cents(Some("2.5000")), Some(100)); // > $1 -> 100
+        assert_eq!(dollars_to_cents(Some("9e99")), Some(100)); // absurd -> 100
+        assert_eq!(dollars_to_cents(Some("inf")), None); // non-finite -> None
+        assert_eq!(dollars_to_cents(Some("nan")), None);
+        assert_eq!(dollars_to_cents(Some("")), None);
+    }
+
+    #[test]
+    fn record_from_row_clamps_out_of_domain_secmaster_prices() {
+        let mut row = sample_row();
+        row.yes_bid_dollars = Some("-0.5000".to_string()); // negative
+        row.yes_ask_dollars = Some("2.5000".to_string()); // > $1.00
+        row.last_price_dollars = Some("9e99".to_string()); // absurd magnitude
+        row.no_bid_dollars = Some("inf".to_string()); // non-finite
+        row.volume = Some(-1000); // impossible negative count
+        row.open_interest = Some(-5);
+        let rec = record_from_row(&row, 0);
+        assert_eq!(rec.final_yes_bid, Some(0)); // clamped low
+        assert_eq!(rec.final_yes_ask, Some(100)); // clamped high
+        assert_eq!(rec.final_last, Some(100)); // clamped high
+        assert_eq!(rec.final_no_bid, None); // non-finite dropped
+        assert_eq!(rec.final_volume, Some(0)); // floored at 0
+        assert_eq!(rec.final_open_interest, Some(0));
+        // Every present price cent stays within the valid Kalshi domain.
+        for v in [
+            rec.final_yes_bid,
+            rec.final_yes_ask,
+            rec.final_no_bid,
+            rec.final_no_ask,
+            rec.final_last,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!((0..=100).contains(&v), "price cent {v} out of range");
+        }
     }
 
     #[test]

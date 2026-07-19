@@ -57,33 +57,6 @@ impl Progress {
     }
 }
 
-/// Convert a fractional-dollar string like `"0.9990"` to native Kalshi cents,
-/// rounding to the nearest cent, then clamping to the valid Kalshi price domain
-/// `[0, 100]`. Defensive: a non-numeric or non-finite string yields `None` so
-/// one malformed field never poisons the whole tick (or panics on untrusted
-/// exchange bytes). The clamp bounds every price cent, rejecting absurd values
-/// (e.g. `"9e99"` → `i64::MAX`) into the boundary instead of storing garbage —
-/// this also keeps the NO-side complement (`100 - yes`) overflow-proof.
-fn dollars_to_cents(s: &str) -> Option<i64> {
-    let dollars: f64 = s.trim().parse().ok()?;
-    if !dollars.is_finite() {
-        return None;
-    }
-    Some(((dollars * 100.0).round() as i64).clamp(0, 100))
-}
-
-/// Convert a fixed-point string like `"2233487.48"` to a rounded integer count
-/// (volume / open interest), clamped to non-negative. Defensive like
-/// [`dollars_to_cents`]: malformed or non-finite input yields `None`, never a
-/// panic. No upper bound — volume / open interest are legitimately large.
-fn fp_to_i64(s: &str) -> Option<i64> {
-    let val: f64 = s.trim().parse().ok()?;
-    if !val.is_finite() {
-        return None;
-    }
-    Some((val.round() as i64).max(0))
-}
-
 /// Parse a ticker NATS payload (the `{type, sid, msg:{...}}` envelope or a flat
 /// ticker object) into `(market_ticker, LastTick)`. Pure and unit-testable.
 ///
@@ -104,14 +77,18 @@ pub fn parse_ticker(payload: &[u8]) -> Option<(String, LastTick)> {
 
     // Legacy integer field (old wire) — absent on the new dollar/fp wire.
     let as_i64 = |key: &str| obj.get(key).and_then(|x| x.as_i64());
-    // New fractional-dollar string field → cents.
+    // New fractional-dollar string field → clamped cents (shared converter).
     let dollars = |key: &str| {
         obj.get(key)
             .and_then(|x| x.as_str())
-            .and_then(dollars_to_cents)
+            .and_then(crate::price::dollars_to_cents)
     };
-    // New fixed-point string field → rounded integer.
-    let fp = |key: &str| obj.get(key).and_then(|x| x.as_str()).and_then(fp_to_i64);
+    // New fixed-point string field → rounded, non-negative integer.
+    let fp = |key: &str| {
+        obj.get(key)
+            .and_then(|x| x.as_str())
+            .and_then(crate::price::fp_to_i64)
+    };
 
     // `ts` may arrive as an integer epoch-seconds or, defensively, a string.
     let ts = obj.get("ts").and_then(|x| {
@@ -124,7 +101,7 @@ pub fn parse_ticker(payload: &[u8]) -> Option<(String, LastTick)> {
     // path, but the legacy-int fallback (`as_i64`) is unclamped — a malformed or
     // negative legacy value would otherwise flow into the complement `100 - yes`
     // and persist an out-of-domain (>100) NO price, which is worse than null.
-    let clamp_price = |c: i64| c.clamp(0, 100);
+    let clamp_price = crate::price::clamp_price_cents;
     // Prefer the new `*_dollars` string; fall back to the legacy int; then clamp.
     let yes_bid = dollars("yes_bid_dollars")
         .or_else(|| as_i64("yes_bid"))
@@ -242,7 +219,10 @@ async fn run_ticker_inner(js: &Context, ticker_subject: &str, map: &LastTickMap)
         };
 
         if let Some((ticker, tick)) = parse_ticker(&msg.payload) {
-            map.update(ticker, tick);
+            // Merge (not overwrite): a partial/degraded tick near settlement must
+            // NOT null out a previously complete snap. New non-null fields win;
+            // absent fields keep the prior value.
+            map.merge_update(ticker, tick);
         }
         // AckPolicy::None — nothing to ack.
     }
