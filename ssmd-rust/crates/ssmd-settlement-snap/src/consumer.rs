@@ -57,12 +57,42 @@ impl Progress {
     }
 }
 
+/// Convert a fractional-dollar string like `"0.9990"` to native Kalshi cents,
+/// rounding to the nearest cent, then clamping to the valid Kalshi price domain
+/// `[0, 100]`. Defensive: a non-numeric or non-finite string yields `None` so
+/// one malformed field never poisons the whole tick (or panics on untrusted
+/// exchange bytes). The clamp bounds every price cent, rejecting absurd values
+/// (e.g. `"9e99"` → `i64::MAX`) into the boundary instead of storing garbage —
+/// this also keeps the NO-side complement (`100 - yes`) overflow-proof.
+fn dollars_to_cents(s: &str) -> Option<i64> {
+    let dollars: f64 = s.trim().parse().ok()?;
+    if !dollars.is_finite() {
+        return None;
+    }
+    Some(((dollars * 100.0).round() as i64).clamp(0, 100))
+}
+
+/// Convert a fixed-point string like `"2233487.48"` to a rounded integer count
+/// (volume / open interest), clamped to non-negative. Defensive like
+/// [`dollars_to_cents`]: malformed or non-finite input yields `None`, never a
+/// panic. No upper bound — volume / open interest are legitimately large.
+fn fp_to_i64(s: &str) -> Option<i64> {
+    let val: f64 = s.trim().parse().ok()?;
+    if !val.is_finite() {
+        return None;
+    }
+    Some((val.round() as i64).max(0))
+}
+
 /// Parse a ticker NATS payload (the `{type, sid, msg:{...}}` envelope or a flat
 /// ticker object) into `(market_ticker, LastTick)`. Pure and unit-testable.
 ///
-/// Mirrors the connector `TickerData` shape: prices are native cents, `ts` is a
-/// Unix epoch-seconds integer (the connector serializes the `DateTime<Utc>` via
-/// its `.timestamp()`), `last_price` accepts the `price` alias.
+/// The Kalshi crypto ticker feed migrated to a fractional dollar/fp string
+/// format (`price_dollars`, `yes_bid_dollars`, `volume_fp`, ...). We prefer the
+/// new string fields, converting to native Kalshi cents, and fall back to the
+/// legacy integer names (`yes_bid`, `price`, `volume`, ...) so either wire shape
+/// parses. `LastTick` fields stay native cents; `ts` is a Unix epoch-seconds
+/// integer (the connector serializes `DateTime<Utc>` via `.timestamp()`).
 pub fn parse_ticker(payload: &[u8]) -> Option<(String, LastTick)> {
     let v: serde_json::Value = serde_json::from_slice(payload).ok()?;
     // Unwrap the connector envelope `{ "msg": { ... } }` if present; otherwise
@@ -72,7 +102,16 @@ pub fn parse_ticker(payload: &[u8]) -> Option<(String, LastTick)> {
 
     let market_ticker = obj.get("market_ticker")?.as_str()?.to_string();
 
+    // Legacy integer field (old wire) — absent on the new dollar/fp wire.
     let as_i64 = |key: &str| obj.get(key).and_then(|x| x.as_i64());
+    // New fractional-dollar string field → cents.
+    let dollars = |key: &str| {
+        obj.get(key)
+            .and_then(|x| x.as_str())
+            .and_then(dollars_to_cents)
+    };
+    // New fixed-point string field → rounded integer.
+    let fp = |key: &str| obj.get(key).and_then(|x| x.as_str()).and_then(fp_to_i64);
 
     // `ts` may arrive as an integer epoch-seconds or, defensively, a string.
     let ts = obj.get("ts").and_then(|x| {
@@ -80,14 +119,34 @@ pub fn parse_ticker(payload: &[u8]) -> Option<(String, LastTick)> {
             .or_else(|| x.as_str().and_then(|s| s.parse().ok()))
     })?;
 
+    // Prefer the new `*_dollars`/`*_fp` strings; fall back to the legacy ints.
+    let yes_bid = dollars("yes_bid_dollars").or_else(|| as_i64("yes_bid"));
+    let yes_ask = dollars("yes_ask_dollars").or_else(|| as_i64("yes_ask"));
+
+    // The new wire does NOT carry no_bid/no_ask. For a binary market the NO side
+    // is the complement of the YES side: no_bid = 100 - yes_ask, no_ask =
+    // 100 - yes_bid. Prefer a legacy explicit value if present, else derive from
+    // the complement only when the corresponding YES side is known.
+    // `saturating_sub` is belt-and-suspenders: `dollars_to_cents` already clamps
+    // yes_bid/yes_ask to [0, 100], but a legacy integer field is unclamped, so
+    // guard against overflow either way.
+    let no_bid = as_i64("no_bid").or_else(|| yes_ask.map(|a| 100i64.saturating_sub(a)));
+    let no_ask = as_i64("no_ask").or_else(|| yes_bid.map(|b| 100i64.saturating_sub(b)));
+
+    let last_price = dollars("price_dollars")
+        .or_else(|| as_i64("last_price"))
+        .or_else(|| as_i64("price"));
+    let volume = fp("volume_fp").or_else(|| as_i64("volume"));
+    let open_interest = fp("open_interest_fp").or_else(|| as_i64("open_interest"));
+
     let tick = LastTick {
-        yes_bid: as_i64("yes_bid"),
-        yes_ask: as_i64("yes_ask"),
-        no_bid: as_i64("no_bid"),
-        no_ask: as_i64("no_ask"),
-        last_price: as_i64("last_price").or_else(|| as_i64("price")),
-        volume: as_i64("volume"),
-        open_interest: as_i64("open_interest"),
+        yes_bid,
+        yes_ask,
+        no_bid,
+        no_ask,
+        last_price,
+        volume,
+        open_interest,
         ts,
     };
     Some((market_ticker, tick))
@@ -364,7 +423,11 @@ async fn ack(msg: &async_nats::jetstream::Message) -> Result<()> {
 }
 
 /// Render the default global Prometheus registry as text for `GET /metrics`.
-async fn metrics_handler() -> (axum::http::StatusCode, [(&'static str, &'static str); 1], String) {
+async fn metrics_handler() -> (
+    axum::http::StatusCode,
+    [(&'static str, &'static str); 1],
+    String,
+) {
     match metrics::encode_metrics() {
         Ok(body) => (
             axum::http::StatusCode::OK,
@@ -508,6 +571,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_ticker_new_fractional_dollar_format() {
+        // REAL captured live 15M crypto ticker `msg` body (new fractional
+        // dollar/fp string format), wrapped in the connector envelope.
+        let payload = br#"{"type":"ticker","sid":1,"msg":{"dollar_open_interest":309350,"dollar_volume":1116743,"last_trade_size_fp":"0.11","market_id":"e8117a18-7e83-40b4-b2e8-116a8fd494f0","market_ticker":"KXBTC15M-26JUL191145-45","open_interest_fp":"618700.14","price_dollars":"0.9990","time":"2026-07-19T15:45:00.544125Z","ts":1784475900,"ts_ms":1784475900544,"volume_fp":"2233487.48","yes_ask_dollars":"1.0000","yes_ask_size_fp":"0.00","yes_bid_dollars":"0.0000","yes_bid_size_fp":"0.00"}}"#;
+        let (ticker, tick) = parse_ticker(payload).expect("should parse new format");
+        assert_eq!(ticker, "KXBTC15M-26JUL191145-45");
+        assert_eq!(tick.yes_bid, Some(0)); // "0.0000" -> 0
+        assert_eq!(tick.yes_ask, Some(100)); // "1.0000" -> 100
+        assert_eq!(tick.no_bid, Some(0)); // 100 - yes_ask (100)
+        assert_eq!(tick.no_ask, Some(100)); // 100 - yes_bid (0)
+        assert_eq!(tick.last_price, Some(100)); // "0.9990" -> 99.9 -> round 100
+        assert_eq!(tick.volume, Some(2233487)); // "2233487.48" -> round
+        assert_eq!(tick.open_interest, Some(618700)); // "618700.14" -> round
+        assert_eq!(tick.ts, 1784475900);
+    }
+
+    #[test]
+    fn parse_ticker_malicious_huge_dollars_do_not_overflow() {
+        // Absurd dollar strings must NOT panic (in debug this is where the
+        // unclamped `100 - i64::MIN` complement used to overflow) and must yield
+        // in-range price cents. yes_ask "-1e300" clamps to 0 -> no_bid = 100;
+        // yes_bid "9e99" clamps to 100 -> no_ask = 0.
+        let payload = br#"{"msg":{"market_ticker":"KXBTC15M-1-15","yes_ask_dollars":"-1e300","yes_bid_dollars":"9e99","price_dollars":"5e120","ts":1784475900}}"#;
+        let (_, tick) = parse_ticker(payload).expect("should parse without panic");
+        assert_eq!(tick.yes_ask, Some(0)); // clamped low
+        assert_eq!(tick.yes_bid, Some(100)); // clamped high
+        assert_eq!(tick.no_bid, Some(100)); // 100 - yes_ask(0)
+        assert_eq!(tick.no_ask, Some(0)); // 100 - yes_bid(100)
+        assert_eq!(tick.last_price, Some(100)); // clamped high
+                                                // Every price cent stays within the valid Kalshi domain.
+        for v in [
+            tick.yes_bid,
+            tick.yes_ask,
+            tick.no_bid,
+            tick.no_ask,
+            tick.last_price,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!((0..=100).contains(&v), "price cent {v} out of range");
+        }
+    }
+
+    #[test]
     fn parse_ticker_prefers_last_price_over_price() {
         let payload =
             br#"{"msg":{"market_ticker":"KXBTC15M-1-15","last_price":50,"price":99,"ts":1}}"#;
@@ -553,12 +661,31 @@ mod tests {
 
     #[test]
     fn parse_snap_value_reuses_ticker_parse() {
-        // ssmd-snap stores the same envelope with an injected _snap_at.
-        let payload = br#"{"type":"ticker","sid":1,"_snap_at":1717424100000,"msg":{"market_ticker":"KXBTC15M-1-15","yes_bid":90,"price":91,"ts":1717424100}}"#;
+        // ssmd-snap stores the same envelope with an injected `_snap_at`. This
+        // is the new fractional dollar/fp wire, proving the Redis path too.
+        let payload = br#"{"type":"ticker","sid":1,"_snap_at":1784475900544,"msg":{"market_ticker":"KXBTC15M-26JUL191145-45","price_dollars":"0.9990","yes_bid_dollars":"0.0000","yes_ask_dollars":"1.0000","volume_fp":"2233487.48","open_interest_fp":"618700.14","ts":1784475900}}"#;
         let tick = parse_snap_value(payload).expect("should parse snap");
-        assert_eq!(tick.yes_bid, Some(90));
-        assert_eq!(tick.last_price, Some(91));
-        assert_eq!(tick.ts, 1717424100);
+        assert_eq!(tick.yes_bid, Some(0));
+        assert_eq!(tick.yes_ask, Some(100));
+        assert_eq!(tick.no_bid, Some(0)); // 100 - yes_ask
+        assert_eq!(tick.no_ask, Some(100)); // 100 - yes_bid
+        assert_eq!(tick.last_price, Some(100));
+        assert_eq!(tick.volume, Some(2233487));
+        assert_eq!(tick.open_interest, Some(618700));
+        assert_eq!(tick.ts, 1784475900);
+    }
+
+    #[test]
+    fn parse_ticker_malformed_dollar_field_is_none_not_panic() {
+        // A garbage dollar/fp string makes THAT field None; ticker + ts still
+        // parse. Never panic on untrusted exchange bytes.
+        let payload = br#"{"msg":{"market_ticker":"KXBTC15M-1-15","price_dollars":"NaNnope","volume_fp":"","yes_bid_dollars":"0.5000","ts":1784475900}}"#;
+        let (ticker, tick) = parse_ticker(payload).expect("should still parse");
+        assert_eq!(ticker, "KXBTC15M-1-15");
+        assert_eq!(tick.last_price, None); // malformed price_dollars
+        assert_eq!(tick.volume, None); // empty volume_fp
+        assert_eq!(tick.yes_bid, Some(50)); // "0.5000" -> 50
+        assert_eq!(tick.ts, 1784475900);
     }
 
     #[tokio::test]
