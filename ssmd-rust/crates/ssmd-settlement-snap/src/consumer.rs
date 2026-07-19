@@ -119,25 +119,42 @@ pub fn parse_ticker(payload: &[u8]) -> Option<(String, LastTick)> {
             .or_else(|| x.as_str().and_then(|s| s.parse().ok()))
     })?;
 
-    // Prefer the new `*_dollars`/`*_fp` strings; fall back to the legacy ints.
-    let yes_bid = dollars("yes_bid_dollars").or_else(|| as_i64("yes_bid"));
-    let yes_ask = dollars("yes_ask_dollars").or_else(|| as_i64("yes_ask"));
+    // Normalize EVERY price cent into the valid Kalshi domain [0, 100],
+    // regardless of source. `dollars_to_cents` already clamps the new string
+    // path, but the legacy-int fallback (`as_i64`) is unclamped — a malformed or
+    // negative legacy value would otherwise flow into the complement `100 - yes`
+    // and persist an out-of-domain (>100) NO price, which is worse than null.
+    let clamp_price = |c: i64| c.clamp(0, 100);
+    // Prefer the new `*_dollars` string; fall back to the legacy int; then clamp.
+    let yes_bid = dollars("yes_bid_dollars")
+        .or_else(|| as_i64("yes_bid"))
+        .map(clamp_price);
+    let yes_ask = dollars("yes_ask_dollars")
+        .or_else(|| as_i64("yes_ask"))
+        .map(clamp_price);
 
     // The new wire does NOT carry no_bid/no_ask. For a binary market the NO side
     // is the complement of the YES side: no_bid = 100 - yes_ask, no_ask =
-    // 100 - yes_bid. Prefer a legacy explicit value if present, else derive from
-    // the complement only when the corresponding YES side is known.
-    // `saturating_sub` is belt-and-suspenders: `dollars_to_cents` already clamps
-    // yes_bid/yes_ask to [0, 100], but a legacy integer field is unclamped, so
-    // guard against overflow either way.
-    let no_bid = as_i64("no_bid").or_else(|| yes_ask.map(|a| 100i64.saturating_sub(a)));
-    let no_ask = as_i64("no_ask").or_else(|| yes_bid.map(|b| 100i64.saturating_sub(b)));
+    // 100 - yes_bid. Prefer a legacy explicit value if present (clamped), else
+    // derive from the complement only when the corresponding YES side is known.
+    // `saturating_sub` is belt-and-suspenders: the yes side is already clamped to
+    // [0, 100], so the complement is provably in [0, 100].
+    let no_bid = as_i64("no_bid")
+        .map(clamp_price)
+        .or_else(|| yes_ask.map(|a| 100i64.saturating_sub(a)));
+    let no_ask = as_i64("no_ask")
+        .map(clamp_price)
+        .or_else(|| yes_bid.map(|b| 100i64.saturating_sub(b)));
 
     let last_price = dollars("price_dollars")
         .or_else(|| as_i64("last_price"))
-        .or_else(|| as_i64("price"));
-    let volume = fp("volume_fp").or_else(|| as_i64("volume"));
-    let open_interest = fp("open_interest_fp").or_else(|| as_i64("open_interest"));
+        .or_else(|| as_i64("price"))
+        .map(clamp_price);
+    // Volume / open interest: clamp the legacy-int fallback non-negative too (the
+    // new fp path already does this via `fp_to_i64`). No upper bound.
+    let volume = fp("volume_fp").or_else(|| as_i64("volume").map(|v| v.max(0)));
+    let open_interest =
+        fp("open_interest_fp").or_else(|| as_i64("open_interest").map(|v| v.max(0)));
 
     let tick = LastTick {
         yes_bid,
@@ -601,6 +618,52 @@ mod tests {
         assert_eq!(tick.no_ask, Some(0)); // 100 - yes_bid(100)
         assert_eq!(tick.last_price, Some(100)); // clamped high
                                                 // Every price cent stays within the valid Kalshi domain.
+        for v in [
+            tick.yes_bid,
+            tick.yes_ask,
+            tick.no_bid,
+            tick.no_ask,
+            tick.last_price,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!((0..=100).contains(&v), "price cent {v} out of range");
+        }
+    }
+
+    #[test]
+    fn parse_ticker_legacy_negative_yes_ask_clamps_and_complement_in_range() {
+        // Legacy integer wire (no *_dollars, no explicit no_*). A negative
+        // yes_ask must clamp to 0 -> no_bid = 100 (in range), never persist a
+        // >100 or negative NO price.
+        let payload = br#"{"msg":{"market_ticker":"KXBTC15M-1-15","yes_ask":-50,"ts":1784475900}}"#;
+        let (_, tick) = parse_ticker(payload).expect("should parse");
+        assert_eq!(tick.yes_ask, Some(0)); // -50 clamped to 0
+        assert_eq!(tick.no_bid, Some(100)); // 100 - 0
+        assert_in_range(&tick);
+    }
+
+    #[test]
+    fn parse_ticker_legacy_negative_yes_bid_clamps_and_complement_in_range() {
+        let payload = br#"{"msg":{"market_ticker":"KXBTC15M-1-15","yes_bid":-50,"ts":1784475900}}"#;
+        let (_, tick) = parse_ticker(payload).expect("should parse");
+        assert_eq!(tick.yes_bid, Some(0)); // -50 clamped to 0
+        assert_eq!(tick.no_ask, Some(100)); // 100 - 0
+        assert_in_range(&tick);
+    }
+
+    #[test]
+    fn parse_ticker_legacy_oversized_yes_bid_clamps_and_complement_in_range() {
+        let payload = br#"{"msg":{"market_ticker":"KXBTC15M-1-15","yes_bid":150,"ts":1784475900}}"#;
+        let (_, tick) = parse_ticker(payload).expect("should parse");
+        assert_eq!(tick.yes_bid, Some(100)); // 150 clamped to 100
+        assert_eq!(tick.no_ask, Some(0)); // 100 - 100
+        assert_in_range(&tick);
+    }
+
+    /// Assert every present price cent is within the valid Kalshi domain [0,100].
+    fn assert_in_range(tick: &LastTick) {
         for v in [
             tick.yes_bid,
             tick.yes_ask,
