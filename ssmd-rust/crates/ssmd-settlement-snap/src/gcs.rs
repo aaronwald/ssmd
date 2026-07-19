@@ -23,12 +23,14 @@ pub enum WriteOutcome {
 
 /// Build the immutable object path for a settled record:
 /// `settled/kalshi/crypto/{settle_date}/{coin}/{market_ticker}.json`
-/// where `settle_date` is the UTC date of `determination_ts`. When
-/// `determination_ts` is absent the date partitions under `unknown-date` so
+/// where `settle_date` is the UTC date of `determination_ts`, falling back to
+/// `settled_ts` when a `settled`-only trigger carries no `determination_ts`.
+/// Only when BOTH are absent does the date partition under `unknown-date`, so
 /// the record is never silently dropped and is easy to spot in a LIST.
 pub fn object_path(rec: &SettlementRecord) -> String {
     let settle_date = rec
         .determination_ts
+        .or(rec.settled_ts)
         .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
         .map(|dt| dt.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| "unknown-date".to_string());
@@ -102,6 +104,7 @@ mod tests {
             close_ts: Some(1780496100),
             // 2026-06-03 14:15:05 UTC
             determination_ts: Some(1780496105),
+            settled_ts: None,
             nats_lifecycle_seq: 1,
         };
         let tick = LastTick {
@@ -127,9 +130,23 @@ mod tests {
     }
 
     #[test]
-    fn object_path_handles_missing_determination_ts() {
+    fn object_path_falls_back_to_settled_ts_date() {
+        // A `settled`-only trigger has no determination_ts but carries settled_ts;
+        // the partition date must come from settled_ts, NOT `unknown-date`.
         let mut rec = record();
         rec.determination_ts = None;
+        rec.settled_ts = Some(1780496105); // 2026-06-03 14:15:05 UTC
+        assert_eq!(
+            object_path(&rec),
+            "settled/kalshi/crypto/2026-06-03/BTC/KXBTC15M-26JUN031400-15.json"
+        );
+    }
+
+    #[test]
+    fn object_path_unknown_date_only_when_both_ts_absent() {
+        let mut rec = record();
+        rec.determination_ts = None;
+        rec.settled_ts = None;
         assert_eq!(
             object_path(&rec),
             "settled/kalshi/crypto/unknown-date/BTC/KXBTC15M-26JUN031400-15.json"

@@ -73,6 +73,9 @@ pub fn record_from_row(row: &MarketRow, now_ms: i64) -> SettlementRecord {
         // markets has no determination_ts; close_time is the best available
         // partition key for the backfill (flagged via snap_source = Secmaster).
         determination_ts: row.close_ts,
+        // No settled_ts in the reconcile backfill; determination_ts (= close_ts)
+        // already provides the partition date.
+        settled_ts: None,
         nats_lifecycle_seq: -1,
     };
 

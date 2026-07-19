@@ -37,6 +37,10 @@ pub struct SettlementTrigger {
     pub settlement_value: Option<i64>,
     pub close_ts: Option<i64>,
     pub determination_ts: Option<i64>,
+    /// Settlement timestamp from the `settled` event. Used only as a fallback
+    /// partition date when `determination_ts` is absent (a `settled`-only
+    /// trigger); it does not override the record's faithful `determination_ts`.
+    pub settled_ts: Option<i64>,
     pub nats_lifecycle_seq: i64,
 }
 
@@ -50,6 +54,7 @@ impl SettlementTrigger {
             settlement_value: msg.settlement_value,
             close_ts: msg.close_ts,
             determination_ts: msg.determination_ts,
+            settled_ts: msg.settled_ts,
             nats_lifecycle_seq,
         }
     }
@@ -67,6 +72,11 @@ pub struct SettlementRecord {
     pub settlement_value: Option<i64>,
     pub close_ts: Option<i64>,
     pub determination_ts: Option<i64>,
+    /// Settlement timestamp, carried for the GCS date-partition fallback only
+    /// (used when `determination_ts` is absent). Not part of the serialized
+    /// training schema — the record's `determination_ts` stays faithful.
+    #[serde(skip)]
+    pub settled_ts: Option<i64>,
     pub final_yes_bid: Option<i64>,
     pub final_yes_ask: Option<i64>,
     pub final_no_bid: Option<i64>,
@@ -122,6 +132,7 @@ impl SettlementRecord {
             settlement_value: trigger.settlement_value,
             close_ts: trigger.close_ts,
             determination_ts: trigger.determination_ts,
+            settled_ts: trigger.settled_ts,
             final_yes_bid: last_tick.as_ref().and_then(|t| t.yes_bid),
             final_yes_ask: last_tick.as_ref().and_then(|t| t.yes_ask),
             final_no_bid: last_tick.as_ref().and_then(|t| t.no_bid),
@@ -166,6 +177,7 @@ mod tests {
             settlement_value: Some(100),
             close_ts: Some(1717424100),
             determination_ts: Some(1717424105),
+            settled_ts: Some(1717424160),
             nats_lifecycle_seq: 7,
         }
     }
