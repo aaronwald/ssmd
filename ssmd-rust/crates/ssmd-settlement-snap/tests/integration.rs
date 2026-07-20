@@ -29,6 +29,11 @@ mod ticker;
 #[path = "../src/record.rs"]
 mod record;
 
+// `gcs` increments a dedicated corrupt-object metric, so the metrics module must
+// be declared at this crate root for that path to resolve.
+#[path = "../src/metrics.rs"]
+mod metrics;
+
 #[path = "../src/gcs.rs"]
 mod gcs;
 
@@ -103,8 +108,11 @@ async fn determined_event_writes_one_correct_object() {
 
     let record = build_record(DETERMINED_JSON.as_bytes(), &map).expect("should build record");
 
-    // Write the record.
-    let outcome = writer.write_if_absent(&record).await.expect("write ok");
+    // Write the record via the fidelity-ranked path the consumer now uses.
+    let outcome = writer
+        .write_if_higher_fidelity(&record)
+        .await
+        .expect("write ok");
     assert_eq!(outcome, WriteOutcome::Written);
 
     // Exactly one object at the expected path.
@@ -145,12 +153,18 @@ async fn second_write_is_idempotent_no_duplicate() {
     let record = build_record(DETERMINED_JSON.as_bytes(), &map).expect("should build record");
 
     assert_eq!(
-        writer.write_if_absent(&record).await.expect("first write"),
+        writer
+            .write_if_higher_fidelity(&record)
+            .await
+            .expect("first write"),
         WriteOutcome::Written
     );
-    // Redelivery / restart → same path, conditional-create returns Exists.
+    // Redelivery / restart → same Memory record, same rank → no-op Exists.
     assert_eq!(
-        writer.write_if_absent(&record).await.expect("second write"),
+        writer
+            .write_if_higher_fidelity(&record)
+            .await
+            .expect("second write"),
         WriteOutcome::Exists
     );
 

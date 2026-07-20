@@ -160,8 +160,13 @@ pub async fn run(pool: &Pool, gcs: &Arc<GcsWriter>) -> Result<u64> {
         };
 
         let record = record_from_row(&market_row, now_ms);
-        match gcs.write_if_absent(&record).await {
-            Ok(WriteOutcome::Written) => written += 1,
+        // Reconcile writes `Secmaster` (rank 1) records. Fidelity-ranked write
+        // therefore only ever creates an object when absent, or replaces a
+        // `Missing` (rank 0) null-price placeholder — it can NEVER downgrade a
+        // `Memory`/`Redis` snap (the rank check in `write_if_higher_fidelity`
+        // guarantees it). Count both `Written` and `Replaced` as written.
+        match gcs.write_if_higher_fidelity(&record).await {
+            Ok(WriteOutcome::Written | WriteOutcome::Replaced) => written += 1,
             Ok(WriteOutcome::Exists) => {}
             Err(e) => {
                 // A single backfill write failure is logged and skipped — the

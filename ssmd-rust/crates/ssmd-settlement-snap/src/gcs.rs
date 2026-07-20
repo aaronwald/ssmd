@@ -8,8 +8,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use object_store::gcp::GoogleCloudStorageBuilder;
-use object_store::{ObjectStore, PutMode, PutOptions, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 
+use crate::metrics;
 use crate::record::SettlementRecord;
 
 /// Outcome of a conditional write.
@@ -19,6 +20,9 @@ pub enum WriteOutcome {
     Written,
     /// The object already existed; this call was a no-op (idempotent).
     Exists,
+    /// A lower-fidelity null-price object existed and was replaced by this
+    /// higher-fidelity record (fidelity-ranked conditional update).
+    Replaced,
 }
 
 /// Build the immutable object path for a settled record:
@@ -65,27 +69,116 @@ impl GcsWriter {
         Self { store }
     }
 
-    /// Write the record as an immutable JSON object iff one does not already
-    /// exist at its path. Returns [`WriteOutcome::Written`] on create and
-    /// [`WriteOutcome::Exists`] when the object was already present. Any other
-    /// store error propagates (caller must NOT ack the lifecycle message on a
-    /// non-precondition error — retry/crash per the crash-cascade policy).
-    pub async fn write_if_absent(&self, rec: &SettlementRecord) -> Result<WriteOutcome> {
+    /// Write the record, replacing an existing object ONLY when this record is
+    /// strictly higher fidelity (`snap_source.rank()`) than the stored one, the
+    /// stored object carries null prices (a `Missing`/reconcile placeholder), AND
+    /// this record actually carries prices (a genuine upgrade).
+    ///
+    /// This closes the "first-writer-wins freezes a bad object" gap in the
+    /// immutable archive without ever downgrading a good snap:
+    /// - Absent → [`WriteOutcome::Written`] via `PutMode::Create` (no read on the
+    ///   common first-write path).
+    /// - Existing, and `rec` outranks it AND existing has null prices AND `rec`
+    ///   has real prices → an atomic conditional [`PutMode::Update`] (etag/version
+    ///   guarded for race safety) → [`WriteOutcome::Replaced`].
+    /// - Otherwise (equal/lower rank, existing already has real prices, or `rec`
+    ///   itself carries only null prices) → [`WriteOutcome::Exists`] (idempotent
+    ///   no-op, never a downgrade, never a needless rewrite).
+    ///
+    /// Safety / robustness:
+    /// - If the existing object fails to deserialize (corrupt or foreign), it is
+    ///   NOT clobbered — a warning is logged, the dedicated
+    ///   `ssmd_settlement_corrupt_existing_total` metric is incremented (so DQ can
+    ///   alert on the archive gap), and [`WriteOutcome::Exists`] is returned.
+    /// - If the conditional update loses a race (precondition failure), the
+    ///   object is re-read ONCE and the decision re-made; a second conflict
+    ///   returns [`WriteOutcome::Exists`] (no clobber, no unbounded retry).
+    /// - Any other store error propagates as `Err` (caller must NOT ack —
+    ///   crash-cascade policy).
+    pub async fn write_if_higher_fidelity(&self, rec: &SettlementRecord) -> Result<WriteOutcome> {
         let path = object_store::path::Path::from(object_path(rec));
         let body = serde_json::to_vec(rec)?;
-        let opts = PutOptions {
+
+        // Fast path: conditional create. The overwhelmingly common first write
+        // succeeds here with no read.
+        let create_opts = PutOptions {
             mode: PutMode::Create,
             ..Default::default()
         };
         match self
             .store
-            .put_opts(&path, PutPayload::from(body), opts)
+            .put_opts(&path, PutPayload::from(body.clone()), create_opts)
             .await
         {
-            Ok(_) => Ok(WriteOutcome::Written),
-            Err(object_store::Error::AlreadyExists { .. }) => Ok(WriteOutcome::Exists),
-            Err(e) => Err(e.into()),
+            Ok(_) => return Ok(WriteOutcome::Written),
+            Err(object_store::Error::AlreadyExists { .. }) => {}
+            Err(e) => return Err(e.into()),
         }
+
+        // Object exists. Read → decide → conditionally replace, bounded to two
+        // attempts (initial + one re-read on a lost race).
+        for _ in 0..2 {
+            let existing = match self.store.get(&path).await {
+                Ok(res) => res,
+                // Raced with a delete between our create-fail and this get. Do not
+                // recreate/clobber; treat as a no-op.
+                Err(object_store::Error::NotFound { .. }) => return Ok(WriteOutcome::Exists),
+                Err(e) => return Err(e.into()),
+            };
+            let version = UpdateVersion {
+                e_tag: existing.meta.e_tag.clone(),
+                version: existing.meta.version.clone(),
+            };
+            let bytes = existing.bytes().await?;
+            let existing_rec: SettlementRecord = match serde_json::from_slice(&bytes) {
+                Ok(r) => r,
+                Err(e) => {
+                    // Corrupt or foreign object: never clobber, never panic. Emit
+                    // a dedicated metric so DQ can alert on the archive gap — the
+                    // incoming record is acked and dropped here, otherwise masked
+                    // as a normal `exists` no-op.
+                    metrics::inc_corrupt_existing(&rec.coin);
+                    tracing::warn!(
+                        path = %path,
+                        error = %e,
+                        "existing settlement object failed to deserialize; leaving it untouched"
+                    );
+                    return Ok(WriteOutcome::Exists);
+                }
+            };
+
+            // Replace only when this is a genuine price upgrade: strictly higher
+            // fidelity source, the existing object carries null prices, AND the
+            // incoming record actually carries prices. The last clause prevents a
+            // null Secmaster record from needlessly rewriting a null Missing
+            // object (rank-higher but no new information).
+            let should_replace = rec.snap_source.rank() > existing_rec.snap_source.rank()
+                && existing_rec.has_null_snap_prices()
+                && !rec.has_null_snap_prices();
+            if !should_replace {
+                return Ok(WriteOutcome::Exists);
+            }
+
+            let update_opts = PutOptions {
+                mode: PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(body.clone()), update_opts)
+                .await
+            {
+                Ok(_) => return Ok(WriteOutcome::Replaced),
+                // Lost the race (someone wrote between our get and put). Re-read
+                // once and re-decide; the loop bound guarantees no clobber-storm.
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        // Two consecutive precondition failures — a persistent race. Do not
+        // clobber; report a no-op.
+        Ok(WriteOutcome::Exists)
     }
 }
 
@@ -151,5 +244,234 @@ mod tests {
             object_path(&rec),
             "settled/kalshi/crypto/unknown-date/BTC/KXBTC15M-26JUN031400-15.json"
         );
+    }
+
+    // --- fidelity-ranked conditional-replace tests ---
+
+    fn trigger() -> SettlementTrigger {
+        SettlementTrigger {
+            market_ticker: "KXBTC15M-26JUN031400-15".to_string(),
+            event_ticker: Some("KXBTC15M-26JUN031400".to_string()),
+            result: Some("yes".to_string()),
+            settlement_value: Some(100),
+            close_ts: Some(1780496100),
+            determination_ts: Some(1780496105),
+            settled_ts: None,
+            nats_lifecycle_seq: 1,
+        }
+    }
+
+    fn real_tick() -> LastTick {
+        LastTick {
+            yes_bid: Some(96),
+            yes_ask: Some(98),
+            no_bid: Some(2),
+            no_ask: Some(4),
+            last_price: Some(97),
+            volume: Some(1000),
+            open_interest: Some(500),
+            ts: 1780496100,
+        }
+    }
+
+    /// Build a record at the SAME object path with a given snap source and
+    /// either real (non-null) or null price fields.
+    fn rec_with(source: SnapSource, real_prices: bool) -> SettlementRecord {
+        let tick = if real_prices { Some(real_tick()) } else { None };
+        SettlementRecord::build_with_source(&trigger(), tick, source, 1780496106000)
+    }
+
+    fn writer() -> (GcsWriter, Arc<object_store::memory::InMemory>) {
+        let store = Arc::new(object_store::memory::InMemory::new());
+        (GcsWriter::with_store(store.clone()), store)
+    }
+
+    async fn read_back(
+        store: &Arc<object_store::memory::InMemory>,
+        path: &str,
+    ) -> SettlementRecord {
+        let p = object_store::path::Path::from(path);
+        let bytes = store.get(&p).await.unwrap().bytes().await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn writes_when_absent() {
+        let (w, _store) = writer();
+        let out = w
+            .write_if_higher_fidelity(&rec_with(SnapSource::Secmaster, false))
+            .await
+            .unwrap();
+        assert_eq!(out, WriteOutcome::Written);
+    }
+
+    #[tokio::test]
+    async fn replaces_null_secmaster_with_memory() {
+        let (w, store) = writer();
+        let path = object_path(&rec_with(SnapSource::Secmaster, false));
+
+        let first = w
+            .write_if_higher_fidelity(&rec_with(SnapSource::Secmaster, false))
+            .await
+            .unwrap();
+        assert_eq!(first, WriteOutcome::Written);
+
+        let second = w
+            .write_if_higher_fidelity(&rec_with(SnapSource::Memory, true))
+            .await
+            .unwrap();
+        assert_eq!(second, WriteOutcome::Replaced);
+
+        let back = read_back(&store, &path).await;
+        assert_eq!(back.snap_source, SnapSource::Memory);
+        assert_eq!(back.final_last, Some(97));
+        assert!(!back.has_null_snap_prices());
+    }
+
+    #[tokio::test]
+    async fn replaces_null_missing_with_memory() {
+        let (w, store) = writer();
+        let path = object_path(&rec_with(SnapSource::Missing, false));
+
+        w.write_if_higher_fidelity(&rec_with(SnapSource::Missing, false))
+            .await
+            .unwrap();
+        let out = w
+            .write_if_higher_fidelity(&rec_with(SnapSource::Memory, true))
+            .await
+            .unwrap();
+        assert_eq!(out, WriteOutcome::Replaced);
+
+        let back = read_back(&store, &path).await;
+        assert_eq!(back.snap_source, SnapSource::Memory);
+        assert!(!back.has_null_snap_prices());
+    }
+
+    #[tokio::test]
+    async fn never_downgrades_memory_with_secmaster() {
+        let (w, store) = writer();
+        let path = object_path(&rec_with(SnapSource::Memory, true));
+
+        w.write_if_higher_fidelity(&rec_with(SnapSource::Memory, true))
+            .await
+            .unwrap();
+        let out = w
+            .write_if_higher_fidelity(&rec_with(SnapSource::Secmaster, false))
+            .await
+            .unwrap();
+        assert_eq!(out, WriteOutcome::Exists);
+
+        let back = read_back(&store, &path).await;
+        assert_eq!(back.snap_source, SnapSource::Memory);
+        assert!(!back.has_null_snap_prices());
+    }
+
+    #[tokio::test]
+    async fn memory_then_memory_is_idempotent_noop() {
+        let (w, store) = writer();
+        let path = object_path(&rec_with(SnapSource::Memory, true));
+
+        w.write_if_higher_fidelity(&rec_with(SnapSource::Memory, true))
+            .await
+            .unwrap();
+        let out = w
+            .write_if_higher_fidelity(&rec_with(SnapSource::Memory, true))
+            .await
+            .unwrap();
+        // Same rank -> not strictly greater -> no-op.
+        assert_eq!(out, WriteOutcome::Exists);
+
+        let back = read_back(&store, &path).await;
+        assert_eq!(back.snap_source, SnapSource::Memory);
+    }
+
+    #[tokio::test]
+    async fn does_not_replace_non_null_secmaster() {
+        // Guard: only null-price objects may be replaced. A Secmaster object that
+        // carries real prices must NOT be overwritten even by higher-rank Memory.
+        let (w, store) = writer();
+        let path = object_path(&rec_with(SnapSource::Secmaster, true));
+
+        w.write_if_higher_fidelity(&rec_with(SnapSource::Secmaster, true))
+            .await
+            .unwrap();
+        let out = w
+            .write_if_higher_fidelity(&rec_with(SnapSource::Memory, true))
+            .await
+            .unwrap();
+        assert_eq!(out, WriteOutcome::Exists);
+
+        let back = read_back(&store, &path).await;
+        assert_eq!(back.snap_source, SnapSource::Secmaster);
+    }
+
+    #[tokio::test]
+    async fn does_not_replace_null_missing_with_null_secmaster() {
+        // A higher-rank record that ALSO carries only null prices is not a genuine
+        // upgrade: replacing a null Missing object with a null Secmaster object
+        // adds no information and must be a no-op.
+        let (w, store) = writer();
+        let path = object_path(&rec_with(SnapSource::Missing, false));
+
+        w.write_if_higher_fidelity(&rec_with(SnapSource::Missing, false))
+            .await
+            .unwrap();
+        let out = w
+            .write_if_higher_fidelity(&rec_with(SnapSource::Secmaster, false))
+            .await
+            .unwrap();
+        assert_eq!(out, WriteOutcome::Exists);
+
+        // The original Missing placeholder is untouched (not needlessly rewritten).
+        let back = read_back(&store, &path).await;
+        assert_eq!(back.snap_source, SnapSource::Missing);
+        assert!(back.has_null_snap_prices());
+    }
+
+    #[tokio::test]
+    async fn replaces_null_missing_with_real_memory_still_works() {
+        // The genuine-upgrade path still replaces: null Missing → Memory carrying
+        // real prices.
+        let (w, store) = writer();
+        let path = object_path(&rec_with(SnapSource::Missing, false));
+
+        w.write_if_higher_fidelity(&rec_with(SnapSource::Missing, false))
+            .await
+            .unwrap();
+        let out = w
+            .write_if_higher_fidelity(&rec_with(SnapSource::Memory, true))
+            .await
+            .unwrap();
+        assert_eq!(out, WriteOutcome::Replaced);
+
+        let back = read_back(&store, &path).await;
+        assert_eq!(back.snap_source, SnapSource::Memory);
+        assert!(!back.has_null_snap_prices());
+    }
+
+    #[tokio::test]
+    async fn corrupt_existing_object_is_not_clobbered() {
+        let (w, store) = writer();
+        let rec = rec_with(SnapSource::Memory, true);
+        let path = object_store::path::Path::from(object_path(&rec));
+
+        // Seed a corrupt (non-JSON) object at the path.
+        store
+            .put(&path, PutPayload::from(b"not-json{{{".to_vec()))
+            .await
+            .unwrap();
+
+        let out = w.write_if_higher_fidelity(&rec).await.unwrap();
+        assert_eq!(out, WriteOutcome::Exists);
+
+        // Corrupt bytes remain untouched (no clobber).
+        let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+        assert_eq!(&bytes[..], b"not-json{{{");
+
+        // The corrupt-object path emitted the dedicated alertable metric (labelled
+        // by the incoming record's coin), rather than a silent `exists` no-op.
+        let output = crate::metrics::encode_metrics().expect("encode metrics");
+        assert!(output.contains("ssmd_settlement_corrupt_existing_total"));
+        assert!(output.contains("coin=\"BTC\""));
     }
 }
