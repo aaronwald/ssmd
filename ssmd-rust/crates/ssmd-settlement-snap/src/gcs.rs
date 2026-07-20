@@ -388,6 +388,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replaces_secmaster_with_null_prices_but_volume() {
+        // Codex HIGH regression: a Secmaster object with null bid/ask/last PRICES
+        // but non-null volume / open_interest is still price-less, so a later
+        // Memory record with real prices MUST replace it (volume/OI are counts,
+        // not prices, and must not freeze the upgrade path).
+        let (w, store) = writer();
+        let path = object_path(&rec_with(SnapSource::Secmaster, false));
+
+        let mut existing = rec_with(SnapSource::Secmaster, false);
+        existing.final_volume = Some(1234);
+        existing.final_open_interest = Some(567);
+        assert!(existing.has_null_snap_prices());
+        w.write_if_higher_fidelity(&existing).await.unwrap();
+
+        let out = w
+            .write_if_higher_fidelity(&rec_with(SnapSource::Memory, true))
+            .await
+            .unwrap();
+        assert_eq!(out, WriteOutcome::Replaced);
+
+        let back = read_back(&store, &path).await;
+        assert_eq!(back.snap_source, SnapSource::Memory);
+        assert_eq!(back.final_last, Some(97));
+    }
+
+    #[tokio::test]
     async fn replaces_null_missing_with_memory() {
         let (w, store) = writer();
         let path = object_path(&rec_with(SnapSource::Missing, false));

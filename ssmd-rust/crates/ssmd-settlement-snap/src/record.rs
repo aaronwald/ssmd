@@ -178,21 +178,23 @@ impl SettlementRecord {
         rec
     }
 
-    /// True when ALL snap price fields (`final_yes_bid`, `final_yes_ask`,
-    /// `final_no_bid`, `final_no_ask`, `final_last`, `final_volume`,
-    /// `final_open_interest`) are `None` — i.e. a `Missing`/degraded object with
-    /// no usable final tick. Used to gate fidelity-ranked replacement: only such
-    /// null-price objects may be replaced by a higher-fidelity write. If ANY
-    /// price field is populated the object is considered to carry real prices and
-    /// is never overwritten.
+    /// True when ALL snap PRICE fields (`final_yes_bid`, `final_yes_ask`,
+    /// `final_no_bid`, `final_no_ask`, `final_last`) are `None` — a degraded
+    /// object carrying no usable price. Used to gate fidelity-ranked
+    /// replacement: only such null-price objects may be replaced by a
+    /// higher-fidelity write.
+    ///
+    /// `final_volume` / `final_open_interest` are deliberately EXCLUDED — they
+    /// are contract counts, not prices. A `Secmaster` reconcile object can carry
+    /// volume / open interest from the `markets` row while every actual price is
+    /// null; that object is still price-less and MUST remain replaceable by a
+    /// later `Memory` record with real prices.
     pub fn has_null_snap_prices(&self) -> bool {
         self.final_yes_bid.is_none()
             && self.final_yes_ask.is_none()
             && self.final_no_bid.is_none()
             && self.final_no_ask.is_none()
             && self.final_last.is_none()
-            && self.final_volume.is_none()
-            && self.final_open_interest.is_none()
     }
 
     /// Produce a copy of `self` (the higher-fidelity incoming record, carrying
@@ -394,13 +396,23 @@ mod tests {
     }
 
     #[test]
-    fn has_null_snap_prices_false_when_only_one_price_field_present() {
-        // Even a single non-null price field makes the object non-degraded, so it
-        // must not be eligible for fidelity replacement. `final_open_interest` is
-        // one of the fields the check was widened to cover.
+    fn has_null_snap_prices_false_when_a_price_field_present() {
+        // A single non-null PRICE field makes the object non-degraded, so it must
+        // not be eligible for fidelity replacement.
         let mut rec = SettlementRecord::build(&trigger(Some("no")), None, 1717424106000);
-        rec.final_open_interest = Some(500);
+        rec.final_yes_bid = Some(48);
         assert!(!rec.has_null_snap_prices());
+    }
+
+    #[test]
+    fn has_null_snap_prices_true_when_only_volume_or_oi_present() {
+        // Volume / open interest are contract COUNTS, not prices. A Secmaster
+        // object with null prices but non-null volume/OI is still price-less and
+        // MUST stay replaceable by a later Memory record (codex HIGH regression).
+        let mut rec = SettlementRecord::build(&trigger(Some("no")), None, 1717424106000);
+        rec.final_volume = Some(1000);
+        rec.final_open_interest = Some(500);
+        assert!(rec.has_null_snap_prices());
     }
 
     #[test]
