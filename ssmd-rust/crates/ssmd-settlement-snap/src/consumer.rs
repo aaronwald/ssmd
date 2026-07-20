@@ -39,6 +39,8 @@ const PROGRESS_EVERY: u64 = 100;
 pub struct Progress {
     pub processed: AtomicU64,
     pub written: AtomicU64,
+    /// Higher-fidelity writes that replaced a pre-existing null-price object.
+    pub replaced: AtomicU64,
     pub exists: AtomicU64,
     pub redis_fallback: AtomicU64,
     pub missing: AtomicU64,
@@ -49,6 +51,7 @@ impl Progress {
         tracing::info!(
             processed = self.processed.load(Ordering::Relaxed),
             written = self.written.load(Ordering::Relaxed),
+            replaced = self.replaced.load(Ordering::Relaxed),
             exists = self.exists.load(Ordering::Relaxed),
             redis_fallback = self.redis_fallback.load(Ordering::Relaxed),
             missing = self.missing.load(Ordering::Relaxed),
@@ -352,13 +355,22 @@ async fn run_lifecycle(
         let (tick, source) = resolve_final_tick(&lc.market_ticker, &map, redis.as_ref()).await;
         let record = SettlementRecord::build_with_source(&trigger, tick, source, now_ms());
 
-        match gcs.write_if_absent(&record).await {
+        // Fidelity-ranked write: creates when absent, and REPLACES a
+        // pre-existing lower-fidelity null-price object (e.g. a `Missing` or
+        // reconcile placeholder) with this higher-fidelity snap. Never
+        // downgrades. `Written` and `Replaced` are both durable writes → ack;
+        // `Exists` is an idempotent no-op → ack; only `Err` skips the ack.
+        match gcs.write_if_higher_fidelity(&record).await {
             Ok(outcome) => {
                 consecutive_gcs_errors = 0;
                 let outcome_label = match outcome {
                     WriteOutcome::Written => {
                         progress.written.fetch_add(1, Ordering::Relaxed);
                         metrics::OUTCOME_WRITTEN
+                    }
+                    WriteOutcome::Replaced => {
+                        progress.replaced.fetch_add(1, Ordering::Relaxed);
+                        metrics::OUTCOME_REPLACED
                     }
                     WriteOutcome::Exists => {
                         progress.exists.fetch_add(1, Ordering::Relaxed);

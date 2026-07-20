@@ -2,7 +2,7 @@
 //! and its builder. Schema matches design spec §4. Prices stay in native
 //! Kalshi cents; the model layer converts.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::lifecycle::LifecycleMsg;
 use crate::symbology::{coin_of, series_of};
@@ -13,7 +13,7 @@ pub const SCHEMA_VERSION: i64 = 1;
 
 /// Provenance / quality of the final snap fields. Drives feature-quality
 /// filtering in the model layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SnapSource {
     /// In-process last-tick map (best fidelity, race-free).
@@ -24,6 +24,21 @@ pub enum SnapSource {
     Secmaster,
     /// No final tick available anywhere; snap fields are null.
     Missing,
+}
+
+impl SnapSource {
+    /// Fidelity rank — higher is better. Drives fidelity-ranked conditional
+    /// replacement in the GCS writer: a record may replace an existing object
+    /// only when its source rank is strictly greater (and the existing object
+    /// carries null prices). Order: `Memory > Redis > Secmaster > Missing`.
+    pub fn rank(&self) -> u8 {
+        match self {
+            SnapSource::Memory => 3,
+            SnapSource::Redis => 2,
+            SnapSource::Secmaster => 1,
+            SnapSource::Missing => 0,
+        }
+    }
 }
 
 /// Lifecycle-derived trigger fields, decoupled from NATS so `build` is pure
@@ -61,7 +76,7 @@ impl SettlementTrigger {
 }
 
 /// The labeled training row. Field order/names match spec §4 exactly.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettlementRecord {
     pub market_ticker: String,
     pub series_ticker: String,
@@ -161,6 +176,54 @@ impl SettlementRecord {
         let mut rec = Self::build(trigger, last_tick, now_ms);
         rec.snap_source = snap_source;
         rec
+    }
+
+    /// True when ALL snap PRICE fields (`final_yes_bid`, `final_yes_ask`,
+    /// `final_no_bid`, `final_no_ask`, `final_last`) are `None` — a degraded
+    /// object carrying no usable price. Used to gate fidelity-ranked
+    /// replacement: only such null-price objects may be replaced by a
+    /// higher-fidelity write.
+    ///
+    /// `final_volume` / `final_open_interest` are deliberately EXCLUDED — they
+    /// are contract counts, not prices. A `Secmaster` reconcile object can carry
+    /// volume / open interest from the `markets` row while every actual price is
+    /// null; that object is still price-less and MUST remain replaceable by a
+    /// later `Memory` record with real prices.
+    pub fn has_null_snap_prices(&self) -> bool {
+        self.final_yes_bid.is_none()
+            && self.final_yes_ask.is_none()
+            && self.final_no_bid.is_none()
+            && self.final_no_ask.is_none()
+            && self.final_last.is_none()
+    }
+
+    /// Produce a copy of `self` (the higher-fidelity incoming record, carrying
+    /// real snap prices) that PRESERVES every label / lifecycle field the
+    /// incoming record lacks but the `existing` object already has.
+    ///
+    /// A fidelity replace writes the whole object, so a `Memory` record built
+    /// from a `settled` event (no `result` / `determination_ts` /
+    /// `settlement_value`) must NOT regress those non-null labels — set by an
+    /// earlier `determined` event — back to null while it upgrades the prices.
+    /// Snap fields (prices, `snap_source`, `final_ticker_ts`, `captured_at`,
+    /// `nats_lifecycle_seq`) stay the incoming record's; `snap_age_ms` is
+    /// recomputed against the preserved `determination_ts`.
+    pub fn merged_preserving_labels(&self, existing: &SettlementRecord) -> SettlementRecord {
+        let mut merged = self.clone();
+        merged.result = merged.result.or_else(|| existing.result.clone());
+        merged.settlement_value = merged.settlement_value.or(existing.settlement_value);
+        merged.close_ts = merged.close_ts.or(existing.close_ts);
+        merged.determination_ts = merged.determination_ts.or(existing.determination_ts);
+        merged.event_ticker = merged
+            .event_ticker
+            .or_else(|| existing.event_ticker.clone());
+        merged.settled_ts = merged.settled_ts.or(existing.settled_ts);
+        // Recompute feature staleness against the (possibly preserved) determination_ts.
+        merged.snap_age_ms = match (merged.determination_ts, merged.final_ticker_ts) {
+            (Some(det), Some(tick_ts)) => Some((det - tick_ts) * 1000),
+            _ => None,
+        };
+        merged
     }
 }
 
@@ -302,5 +365,71 @@ mod tests {
             1717424106000,
         );
         assert_eq!(rec.snap_source, SnapSource::Secmaster);
+    }
+
+    #[test]
+    fn snap_source_rank_orders_by_fidelity() {
+        assert_eq!(SnapSource::Memory.rank(), 3);
+        assert_eq!(SnapSource::Redis.rank(), 2);
+        assert_eq!(SnapSource::Secmaster.rank(), 1);
+        assert_eq!(SnapSource::Missing.rank(), 0);
+        // Strict ordering: Memory > Redis > Secmaster > Missing.
+        assert!(SnapSource::Memory.rank() > SnapSource::Redis.rank());
+        assert!(SnapSource::Redis.rank() > SnapSource::Secmaster.rank());
+        assert!(SnapSource::Secmaster.rank() > SnapSource::Missing.rank());
+    }
+
+    #[test]
+    fn has_null_snap_prices_true_when_missing_tick() {
+        let rec = SettlementRecord::build(&trigger(Some("no")), None, 1717424106000);
+        assert!(rec.has_null_snap_prices());
+    }
+
+    #[test]
+    fn has_null_snap_prices_false_when_tick_present() {
+        let rec = SettlementRecord::build(
+            &trigger(Some("yes")),
+            Some(tick(97, 1000, 1717424100)),
+            1717424106000,
+        );
+        assert!(!rec.has_null_snap_prices());
+    }
+
+    #[test]
+    fn has_null_snap_prices_false_when_a_price_field_present() {
+        // A single non-null PRICE field makes the object non-degraded, so it must
+        // not be eligible for fidelity replacement.
+        let mut rec = SettlementRecord::build(&trigger(Some("no")), None, 1717424106000);
+        rec.final_yes_bid = Some(48);
+        assert!(!rec.has_null_snap_prices());
+    }
+
+    #[test]
+    fn has_null_snap_prices_true_when_only_volume_or_oi_present() {
+        // Volume / open interest are contract COUNTS, not prices. A Secmaster
+        // object with null prices but non-null volume/OI is still price-less and
+        // MUST stay replaceable by a later Memory record (codex HIGH regression).
+        let mut rec = SettlementRecord::build(&trigger(Some("no")), None, 1717424106000);
+        rec.final_volume = Some(1000);
+        rec.final_open_interest = Some(500);
+        assert!(rec.has_null_snap_prices());
+    }
+
+    #[test]
+    fn record_roundtrips_through_json() {
+        let rec = SettlementRecord::build_with_source(
+            &trigger(Some("yes")),
+            Some(tick(97, 1000, 1717424100)),
+            SnapSource::Memory,
+            1717424106000,
+        );
+        let bytes = serde_json::to_vec(&rec).unwrap();
+        let back: SettlementRecord = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back.snap_source, SnapSource::Memory);
+        assert_eq!(back.market_ticker, rec.market_ticker);
+        assert_eq!(back.final_last, Some(97));
+        assert!(!back.has_null_snap_prices());
+        // settled_ts is #[serde(skip)] — it defaults to None on deserialize.
+        assert_eq!(back.settled_ts, None);
     }
 }
