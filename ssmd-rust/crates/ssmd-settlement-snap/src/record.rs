@@ -194,6 +194,35 @@ impl SettlementRecord {
             && self.final_volume.is_none()
             && self.final_open_interest.is_none()
     }
+
+    /// Produce a copy of `self` (the higher-fidelity incoming record, carrying
+    /// real snap prices) that PRESERVES every label / lifecycle field the
+    /// incoming record lacks but the `existing` object already has.
+    ///
+    /// A fidelity replace writes the whole object, so a `Memory` record built
+    /// from a `settled` event (no `result` / `determination_ts` /
+    /// `settlement_value`) must NOT regress those non-null labels — set by an
+    /// earlier `determined` event — back to null while it upgrades the prices.
+    /// Snap fields (prices, `snap_source`, `final_ticker_ts`, `captured_at`,
+    /// `nats_lifecycle_seq`) stay the incoming record's; `snap_age_ms` is
+    /// recomputed against the preserved `determination_ts`.
+    pub fn merged_preserving_labels(&self, existing: &SettlementRecord) -> SettlementRecord {
+        let mut merged = self.clone();
+        merged.result = merged.result.or_else(|| existing.result.clone());
+        merged.settlement_value = merged.settlement_value.or(existing.settlement_value);
+        merged.close_ts = merged.close_ts.or(existing.close_ts);
+        merged.determination_ts = merged.determination_ts.or(existing.determination_ts);
+        merged.event_ticker = merged
+            .event_ticker
+            .or_else(|| existing.event_ticker.clone());
+        merged.settled_ts = merged.settled_ts.or(existing.settled_ts);
+        // Recompute feature staleness against the (possibly preserved) determination_ts.
+        merged.snap_age_ms = match (merged.determination_ts, merged.final_ticker_ts) {
+            (Some(det), Some(tick_ts)) => Some((det - tick_ts) * 1000),
+            _ => None,
+        };
+        merged
+    }
 }
 
 #[cfg(test)]

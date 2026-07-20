@@ -159,13 +159,21 @@ impl GcsWriter {
                 return Ok(WriteOutcome::Exists);
             }
 
+            // Preserve any label field the incoming record lacks — a `Memory`
+            // record built from a `settled` event carries no result /
+            // settlement_value / determination_ts, and a whole-object write would
+            // otherwise regress those non-null labels (set by the earlier
+            // `determined` event) to null. Merge upgrades the prices while keeping
+            // the labels.
+            let merged = rec.merged_preserving_labels(&existing_rec);
+            let merged_body = serde_json::to_vec(&merged)?;
             let update_opts = PutOptions {
                 mode: PutMode::Update(version),
                 ..Default::default()
             };
             match self
                 .store
-                .put_opts(&path, PutPayload::from(body.clone()), update_opts)
+                .put_opts(&path, PutPayload::from(merged_body), update_opts)
                 .await
             {
                 Ok(_) => return Ok(WriteOutcome::Replaced),
@@ -326,6 +334,57 @@ mod tests {
         assert_eq!(back.snap_source, SnapSource::Memory);
         assert_eq!(back.final_last, Some(97));
         assert!(!back.has_null_snap_prices());
+    }
+
+    #[tokio::test]
+    async fn replace_from_settled_preserves_determined_labels() {
+        // Codex HIGH regression: a `determined` event with no in-memory tick
+        // writes a Missing object that STILL carries result / settlement_value /
+        // determination_ts. A later `settled` event (no labels) that now has a
+        // Memory tick must upgrade the PRICES without regressing those labels to
+        // null (a whole-object write would otherwise clobber the label).
+        let (w, store) = writer();
+        let path = object_path(&rec_with(SnapSource::Missing, false));
+
+        // Existing: Missing, null prices, but WITH determined labels.
+        let existing = rec_with(SnapSource::Missing, false);
+        assert_eq!(existing.result.as_deref(), Some("yes"));
+        assert!(existing.has_null_snap_prices());
+        w.write_if_higher_fidelity(&existing).await.unwrap();
+
+        // Incoming: Memory (real prices) built from a `settled`-only trigger — NO
+        // result / settlement_value / determination_ts.
+        let settled_trigger = SettlementTrigger {
+            market_ticker: "KXBTC15M-26JUN031400-15".to_string(),
+            event_ticker: None,
+            result: None,
+            settlement_value: None,
+            close_ts: None,
+            determination_ts: None,
+            settled_ts: Some(1780496105), // same date → same object path
+            nats_lifecycle_seq: 2,
+        };
+        let incoming = SettlementRecord::build_with_source(
+            &settled_trigger,
+            Some(real_tick()),
+            SnapSource::Memory,
+            1780496110000,
+        );
+        assert!(incoming.result.is_none());
+
+        let out = w.write_if_higher_fidelity(&incoming).await.unwrap();
+        assert_eq!(out, WriteOutcome::Replaced);
+
+        let back = read_back(&store, &path).await;
+        // Prices upgraded to the Memory tick ...
+        assert_eq!(back.snap_source, SnapSource::Memory);
+        assert_eq!(back.final_last, Some(97));
+        assert!(!back.has_null_snap_prices());
+        // ... AND the determined labels are preserved, not regressed to null.
+        assert_eq!(back.result.as_deref(), Some("yes"));
+        assert_eq!(back.settlement_value, Some(100));
+        assert_eq!(back.determination_ts, Some(1780496105));
+        assert_eq!(back.event_ticker.as_deref(), Some("KXBTC15M-26JUN031400"));
     }
 
     #[tokio::test]
