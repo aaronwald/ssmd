@@ -124,6 +124,44 @@ Deno.test("retryDelayMs honors Retry-After, caps at 30s, exponential otherwise",
   assertEquals(retryDelayMs(net, 1), 2000); // 1000 * 2^1 (existing behavior)
 });
 
+Deno.test("symbol needing encoding is URL-encoded in the request", async () => {
+  let capturedUrl = "";
+  const fn = (input: URL | Request | string, _init?: RequestInit): Promise<Response> => {
+    capturedUrl = String(input);
+    return Promise.resolve(new Response(JSON.stringify([CANDLE]), { status: 200 }));
+  };
+  const res = await fetchKlinesPage("A&B", "1m", 0, 60000, { fetchFn: fn, sleepFn: stubSleep });
+  assert(res.ok);
+  assertStringIncludes(capturedUrl, "symbol=A%26B");
+});
+
+Deno.test("200 with non-array JSON body is retried then reported as http-error", async () => {
+  const { fn, callCount } = stubFetch([
+    () => new Response('{"code":0}', { status: 200 }),
+    () => new Response('{"code":0}', { status: 200 }),
+    () => new Response('{"code":0}', { status: 200 }),
+  ]);
+  const res = await fetchKlinesPage("VETUSDT", "1m", 0, 60000, { fetchFn: fn, sleepFn: stubSleep });
+  assert(!res.ok);
+  assertEquals(res.failure.kind, "http-error");
+  assertEquals(res.failure.status, 200);
+  assertEquals(res.failure.detail, "non-array response body");
+  assertEquals(res.failure.attempts, 3);
+  assertEquals(callCount(), 3);
+});
+
+Deno.test("400 body with newlines/control chars is sanitized in detail", async () => {
+  const { fn } = stubFetch([
+    () => new Response('{"msg":"bad\nsymbol\x1b[31m"}', { status: 400 }),
+  ]);
+  const res = await fetchKlinesPage("BOGUSUSDT", "1m", 0, 60000, { fetchFn: fn, sleepFn: stubSleep });
+  assert(!res.ok);
+  assertEquals(res.failure.kind, "invalid-symbol");
+  const detail = res.failure.detail ?? "";
+  assert(!detail.includes("\n"));
+  assert(!detail.includes("\x1b"));
+});
+
 Deno.test("formatKlinesError names the cause and status", () => {
   assertEquals(
     formatKlinesError("VETUSDT", { kind: "geo-blocked", status: 451, attempts: 1 }),

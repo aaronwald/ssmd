@@ -76,10 +76,16 @@ export async function fetchKlinesPage(
 ): Promise<KlinesPageResult> {
   const fetchFn = opts.fetchFn ?? fetch;
   const sleepFn = opts.sleepFn ?? realSleep;
-  const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const maxRetries = Math.max(1, opts.maxRetries ?? DEFAULT_MAX_RETRIES);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const url =
-    `${BINANCE_KLINES_URL}?symbol=${symbol}&interval=${intervalStr}&startTime=${startTimeMs}&endTime=${endTimeMs}&limit=${BINANCE_CANDLES_PER_REQUEST}`;
+  const params = new URLSearchParams({
+    symbol,
+    interval: intervalStr,
+    startTime: String(startTimeMs),
+    endTime: String(endTimeMs),
+    limit: String(BINANCE_CANDLES_PER_REQUEST),
+  });
+  const url = `${BINANCE_KLINES_URL}?${params}`;
 
   let last: KlinesFailure = { kind: "network", attempts: 0 };
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -90,7 +96,17 @@ export async function fetchKlinesPage(
         headers: { Accept: "application/json" },
       });
       if (resp.ok) {
-        return { ok: true, candles: await resp.json() as unknown[][] };
+        const parsed = await resp.json();
+        if (!Array.isArray(parsed)) {
+          last = {
+            kind: "http-error",
+            status: 200,
+            attempts: attempt + 1,
+            detail: "non-array response body",
+          };
+          continue;
+        }
+        return { ok: true, candles: parsed as unknown[][] };
       }
       if (resp.status === 451) {
         await resp.body?.cancel();
@@ -100,7 +116,12 @@ export async function fetchKlinesPage(
         const body = await resp.text().catch(() => "");
         return {
           ok: false,
-          failure: { kind: "invalid-symbol", status: 400, attempts: attempt + 1, detail: body.slice(0, 200) },
+          failure: {
+            kind: "invalid-symbol",
+            status: 400,
+            attempts: attempt + 1,
+            detail: body.replace(/[\r\n\x00-\x1f\x7f]/g, " ").slice(0, 200),
+          },
         };
       }
       if (resp.status === 429 || resp.status === 418) {
