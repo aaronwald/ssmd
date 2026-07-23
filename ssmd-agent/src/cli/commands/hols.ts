@@ -30,6 +30,7 @@ export type { Hols1mWindow, HolsGenerateMode } from "./hols-window.ts";
 // Pure helpers for the binance WS daily 1m aggregate live in a dependency-free
 // module (no DuckDB import) so they can be unit-tested without --allow-ffi.
 import { binanceWsDailyGcsPath, buildBinanceAggregateSQL } from "./hols-binance-agg.ts";
+import { fetchKlinesPage, formatKlinesError } from "./hols-binance-klines.ts";
 export { binanceWsDailyGcsPath, buildBinanceAggregateSQL };
 // Bounds DuckDB's buffer pool below the container cgroup limit + spills to /tmp
 // (otherwise DuckDB sizes from host RAM and gets OOM-killed on full-day aggregates).
@@ -51,8 +52,7 @@ const DEFAULT_INTERVAL = 5;
 const CANDLES_PER_REQUEST = 720; // Kraken max per OHLC response
 const GCS_BUCKET = "ssmd-data";
 
-// --- Binance Spot REST Klines ---
-const BINANCE_KLINES_URL = "https://data-api.binance.vision/api/v3/klines";
+// --- Binance Spot REST Klines --- (endpoint constant lives in hols-binance-klines.ts)
 const BINANCE_CONCURRENCY = 5;
 const BINANCE_RATE_LIMIT_MS = 100;
 const BINANCE_CANDLES_PER_REQUEST = 1000;
@@ -432,9 +432,11 @@ async function fetchBinanceKlinesWithPagination(
   let rowCount = 0;
   const holsTicker = `${base}${quote}`;
 
+  const intervalStr = interval === 1 ? "1m" : `${interval}m`;
   while (startTime < endMs) {
-    const candles = await fetchBinanceKlinesPage(symbol, interval, startTime, endMs);
-    if (candles === null) return { pair: symbol, base, rowCount: 0, error: `Failed for ${symbol} (possible geo-block or ${MAX_RETRIES} retries exhausted)` };
+    const page = await fetchKlinesPage(symbol, intervalStr, startTime, endMs);
+    if (!page.ok) return { pair: symbol, base, rowCount: 0, error: formatKlinesError(symbol, page.failure) };
+    const candles = page.candles;
     if (candles.length === 0) break;
 
     for (const c of candles) {
@@ -478,35 +480,9 @@ async function fetchBinanceKlinesWithPagination(
   return { pair: symbol, base, rowCount };
 }
 
-async function fetchBinanceKlinesPage(
-  symbol: string,
-  interval: number,
-  startTimeMs: number,
-  endTimeMs: number,
-): Promise<unknown[][] | null> {
-  const intervalStr = interval === 1 ? "1m" : `${interval}m`;
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    if (attempt > 0) await sleep(1000 * Math.pow(2, attempt));
-    try {
-      const url = `${BINANCE_KLINES_URL}?symbol=${symbol}&interval=${intervalStr}&startTime=${startTimeMs}&endTime=${endTimeMs}&limit=${BINANCE_CANDLES_PER_REQUEST}`;
-      const resp = await fetch(url, {
-        signal: AbortSignal.timeout(API_TIMEOUT_MS),
-        headers: { Accept: "application/json" },
-      });
-      if (!resp.ok) {
-        if (resp.status === 451) {
-          // Geo-blocked - fatal, don't retry
-          return null;
-        }
-        continue;
-      }
-      return await resp.json() as unknown[][];
-    } catch {
-      // retry
-    }
-  }
-  return null;
-}
+// Binance klines page fetching lives in ./hols-binance-klines.ts: classified
+// failures (451 geo-block / 400 invalid-symbol / 429+418 rate-limit with
+// Retry-After backoff / transient), validated response bodies, unit-tested.
 
 // --- Spot OHLC fetch ---
 
