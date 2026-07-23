@@ -4,7 +4,8 @@
 // same pattern as hols-binance-agg.ts. fetchFn/sleepFn are injectable for tests.
 
 const BINANCE_KLINES_URL = "https://data-api.binance.vision/api/v3/klines";
-const BINANCE_CANDLES_PER_REQUEST = 1000;
+// Exported so callers' short-page pagination break stays coupled to the request limit.
+export const BINANCE_CANDLES_PER_REQUEST = 1000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TIMEOUT_MS = 15000;
 const RETRY_AFTER_CAP_MS = 30000;

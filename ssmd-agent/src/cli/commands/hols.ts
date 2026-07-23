@@ -30,7 +30,7 @@ export type { Hols1mWindow, HolsGenerateMode } from "./hols-window.ts";
 // Pure helpers for the binance WS daily 1m aggregate live in a dependency-free
 // module (no DuckDB import) so they can be unit-tested without --allow-ffi.
 import { binanceWsDailyGcsPath, buildBinanceAggregateSQL } from "./hols-binance-agg.ts";
-import { fetchKlinesPage, formatKlinesError } from "./hols-binance-klines.ts";
+import { BINANCE_CANDLES_PER_REQUEST, fetchKlinesPage, formatKlinesError } from "./hols-binance-klines.ts";
 export { binanceWsDailyGcsPath, buildBinanceAggregateSQL };
 // Bounds DuckDB's buffer pool below the container cgroup limit + spills to /tmp
 // (otherwise DuckDB sizes from host RAM and gets OOM-killed on full-day aggregates).
@@ -52,10 +52,9 @@ const DEFAULT_INTERVAL = 5;
 const CANDLES_PER_REQUEST = 720; // Kraken max per OHLC response
 const GCS_BUCKET = "ssmd-data";
 
-// --- Binance Spot REST Klines --- (endpoint constant lives in hols-binance-klines.ts)
+// --- Binance Spot REST Klines --- (endpoint + page-size constants live in hols-binance-klines.ts)
 const BINANCE_CONCURRENCY = 5;
 const BINANCE_RATE_LIMIT_MS = 100;
-const BINANCE_CANDLES_PER_REQUEST = 1000;
 
 interface NdjsonRow {
   symbol: string;
