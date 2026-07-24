@@ -154,6 +154,7 @@ export {
   getLifecycleStats,
   oldestLifecycleDate,
   deleteLifecycleEventsForDate,
+  countLifecycleEventsForDate,
 } from "./lifecycle.ts";
 
 // Pair operations
