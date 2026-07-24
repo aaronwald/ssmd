@@ -54,5 +54,10 @@ export function manifestCoversLifecycle(m: ParquetManifest | null): boolean {
   if (dropped > 0) return false;
   if ((t.lines_json_error ?? 0) > 0) return false;
   if ((t.lines_type_unknown ?? 0) > 0) return false;
+  // A lifecycle line the parquet-gen couldn't match to a schema was NOT archived, even
+  // though records_written may be >0 for other lines — same partial-archive class, so any
+  // lines_no_schema entry blocks the delete.
+  const noSchema = Object.values(t.lines_no_schema ?? {}).reduce((a, b) => a + (b ?? 0), 0);
+  if (noSchema > 0) return false;
   return true;
 }

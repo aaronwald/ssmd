@@ -86,3 +86,13 @@ Deno.test("manifestCoversLifecycle: stream-level parse errors block coverage", (
     false,
   );
 });
+
+Deno.test("manifestCoversLifecycle: any lines_no_schema entry blocks coverage", () => {
+  assertEquals(
+    manifestCoversLifecycle(manifest({
+      records_written: { [LIFECYCLE_MESSAGE_TYPE]: 1000 },
+      lines_no_schema: { market_lifecycle_v2: 7 },
+    })),
+    false,
+  );
+});
