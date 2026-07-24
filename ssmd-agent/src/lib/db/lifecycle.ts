@@ -155,12 +155,18 @@ export async function deleteLifecycleEventsForDate(
 ): Promise<number> {
   // Delete path: reject any malformed date before it reaches SQL.
   assertIsoDate(date);
+  // Anchor both bounds to UTC midnight with an explicit +00 offset so the window is
+  // exactly [date 00:00Z, date+1day 00:00Z) regardless of the DB session TimeZone.
+  // (A bare `${date}::date` cast would resolve to midnight in the session zone, drifting
+  // the boundary off UTC and risking deletion of an adjacent, unarchived UTC day.)
+  // received_at stays a raw column reference so idx_mle_received is still used.
+  const dayStartUtc = sql`(${date} || ' 00:00:00+00')::timestamptz`;
   const deleted = await db
     .delete(marketLifecycleEvents)
     .where(
       and(
-        gte(marketLifecycleEvents.receivedAt, sql`${date}::date`),
-        lt(marketLifecycleEvents.receivedAt, sql`(${date}::date + interval '1 day')`),
+        gte(marketLifecycleEvents.receivedAt, dayStartUtc),
+        lt(marketLifecycleEvents.receivedAt, sql`${dayStartUtc} + interval '1 day'`),
       ),
     )
     .returning({ id: marketLifecycleEvents.id });
