@@ -169,6 +169,12 @@ export async function run(args: string[]): Promise<void> {
       break;
     }
 
+    case "retention": {
+      const { handleRetention } = await import("./retention.ts");
+      await handleRetention(subcommand, flags);
+      break;
+    }
+
     case "funding-rate-consumer": {
       const { runFundingRateConsumer } = await import("./funding-rate-consumer.ts");
       await runFundingRateConsumer(args.slice(1));
