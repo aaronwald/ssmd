@@ -160,13 +160,18 @@ export async function deleteLifecycleEventsForDate(
   // (A bare `${date}::date` cast would resolve to midnight in the session zone, drifting
   // the boundary off UTC and risking deletion of an adjacent, unarchived UTC day.)
   // received_at stays a raw column reference so idx_mle_received is still used.
+  //
+  // The upper bound adds `interval '24 hours'` (a FIXED duration), NOT `interval '1 day'`
+  // (calendar arithmetic evaluated in the session zone, which is 23h/25h across a DST
+  // transition and would over/under-delete by an hour on DST days). A UTC day is always
+  // exactly 24h, so 24 hours after UTC-midnight is exactly the next UTC-midnight.
   const dayStartUtc = sql`(${date} || ' 00:00:00+00')::timestamptz`;
   const deleted = await db
     .delete(marketLifecycleEvents)
     .where(
       and(
         gte(marketLifecycleEvents.receivedAt, dayStartUtc),
-        lt(marketLifecycleEvents.receivedAt, sql`${dayStartUtc} + interval '1 day'`),
+        lt(marketLifecycleEvents.receivedAt, sql`${dayStartUtc} + interval '24 hours'`),
       ),
     )
     .returning({ id: marketLifecycleEvents.id });
