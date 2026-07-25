@@ -40,6 +40,7 @@ Deno.test("resolveScanDate crosses a year boundary", () => {
 
 Deno.test("resolveScanDate uses UTC, not local time", () => {
   assertEquals(resolveScanDate(new Date("2026-07-25T00:30:00Z")), "2026-07-24");
+  assertEquals(resolveScanDate(new Date("2026-07-25T23:30:00Z")), "2026-07-24");
 });
 
 Deno.test("resolveScanDate honours a valid override verbatim", () => {
@@ -50,4 +51,17 @@ Deno.test("resolveScanDate rejects a malformed override", () => {
   assertThrows(() => resolveScanDate(new Date("2026-07-25T08:30:00Z"), "07/25/2026"));
   assertThrows(() => resolveScanDate(new Date("2026-07-25T08:30:00Z"), "2026-13-01"));
   assertThrows(() => resolveScanDate(new Date("2026-07-25T08:30:00Z"), "not-a-date"));
+  assertThrows(() => resolveScanDate(new Date("2026-07-25T08:30:00Z"), "2026-02-30"));
+  assertThrows(() => resolveScanDate(new Date("2026-07-25T08:30:00Z"), "2026-04-31"));
+  assertThrows(() => resolveScanDate(new Date("2026-07-25T08:30:00Z"), "2026-02-29")); // non-leap
+});
+
+Deno.test("resolveScanDate accepts a real leap day", () => {
+  assertEquals(resolveScanDate(new Date("2026-07-25T08:30:00Z"), "2024-02-29"), "2024-02-29");
+});
+
+Deno.test("resolveScanDate does not mutate the injected now", () => {
+  const now = new Date("2026-07-25T08:30:00Z");
+  resolveScanDate(now);
+  assertEquals(now.toISOString(), "2026-07-25T08:30:00.000Z");
 });
