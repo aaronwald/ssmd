@@ -1770,6 +1770,8 @@ export function printHealthHelp(): void {
   console.log();
   console.log("OPTIONS (daily):");
   console.log("  --json              Output structured JSON to stdout");
+  console.log("  --date YYYY-MM-DD   Phase 2 (GCS) scan date. Defaults to the previous UTC day,");
+  console.log("                      because completeness/parquet/sla use whole-day denominators.");
   console.log();
   console.log("OPTIONS (trades):");
   console.log("  --ticker TICKER     Market ticker (required)");

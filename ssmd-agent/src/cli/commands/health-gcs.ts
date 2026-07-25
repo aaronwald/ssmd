@@ -12,7 +12,7 @@ export interface GcsFileInfo {
   sizeBytes: number;
   /** Message type = base name before the last underscore, e.g. "ticker". */
   msgType: string;
-  /** 15-minute slot HHMM = base name after the last underscore, e.g. "1400". */
+  /** Hourly slot HHMM = base name after the last underscore, e.g. "1400". */
   time: string;
 }
 
@@ -45,10 +45,12 @@ export function parseGcsFileInfo(
 /**
  * Resolve the UTC date that Phase 2 (GCS) scoring should scan.
  *
- * Phase 2's denominators are whole-day constants (DQ_ACTIVE_HOURS = 23,
- * expectedSlots = 92), so they are only valid against a COMPLETE day. The health
- * CronJob runs at 08:30 UTC, so scanning "today" caps uptime at ~39% and coverage
- * at ~37% before any real data problem. Default to the previous UTC day.
+ * Phase 2's denominators are whole-day constants (DQ_ACTIVE_HOURS = 24,
+ * expectedSlots = 24, one hourly parquet file per hour), so they are only valid
+ * against a COMPLETE day. The health CronJob runs at 08:30 UTC, so scanning
+ * "today" caps both uptime and coverage at roughly 33% (only ~8 of 24 hourly
+ * slots have landed by 08:30 UTC) before any real data problem. Default to the
+ * previous UTC day.
  *
  * @param now Current time (injected so this stays pure and testable).
  * @param override Optional explicit `YYYY-MM-DD` (the `--date` flag).
