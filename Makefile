@@ -52,7 +52,7 @@ cli-check:
 	cd ssmd-agent && deno task check
 
 cli-test:
-	cd ssmd-agent && deno test --allow-read --allow-write --allow-net --allow-env test/
+	cd ssmd-agent && deno test --allow-read --allow-write --allow-net --allow-env test/ src/
 
 # Worker targets
 worker-check:

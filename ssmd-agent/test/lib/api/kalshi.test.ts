@@ -19,7 +19,7 @@ Deno.test("parseSeriesVolume defaults to 0 on missing/invalid input", () => {
 });
 
 Deno.test("KalshiClient constructs with production URL", () => {
-  const client = new KalshiClient({ apiKey: "test-key" });
+  const client = new KalshiClient({});
 
   // Can't directly access baseUrl, but we can verify it doesn't throw
   assertEquals(typeof client.fetchAllEvents, "function");
@@ -27,14 +27,13 @@ Deno.test("KalshiClient constructs with production URL", () => {
 });
 
 Deno.test("KalshiClient constructs with demo URL", () => {
-  const client = new KalshiClient({ apiKey: "test-key", demo: true });
+  const client = new KalshiClient({ demo: true });
 
   assertEquals(typeof client.fetchAllEvents, "function");
 });
 
 Deno.test("KalshiClient accepts custom rate limit options", () => {
   const client = new KalshiClient({
-    apiKey: "test-key",
     minDelayMs: 500,
     maxRetries: 5,
   });

@@ -9,14 +9,27 @@ import { getRawSql, closeDb } from "../../lib/db/mod.ts";
 import { connect as natsConnect, type NatsConnection } from "npm:nats";
 import nodemailer from "nodemailer";
 import { Storage } from "@google-cloud/storage";
-import { type GcsFileInfo, parseGcsFileInfo } from "./health-gcs.ts";
+import { type GcsFileInfo, parseGcsFileInfo, resolveScanDate } from "./health-gcs.ts";
 
 // --- DQ Active Window ---
-// Kalshi markets are quiet from 3-4am EST (08:00-09:00 UTC).
-// DQ scoring uses a 23-hour active window: 4am-3am EST (09:00-08:00 UTC).
-const DQ_START_HOUR_UTC = 9;  // 4am EST — window opens
-const DQ_END_HOUR_UTC = 8;    // 3am EST — window closes
-const DQ_ACTIVE_HOURS = 23;   // 24 - 1 quiet hour
+// Legacy "quiet hour" markers, retained for reference only. Production parquet
+// carries data in every hour, so DQ scoring no longer excludes a window.
+const DQ_START_HOUR_UTC = 9;  // 4am EST
+const DQ_END_HOUR_UTC = 8;    // 3am EST
+
+/** Parquet lands hourly (ticker_0000 … ticker_2300), NOT every 15 minutes. */
+export const DQ_SLOT_MINUTES = 60;
+/** Every hour carries data in production — there is no quiet hour. */
+export const DQ_ACTIVE_HOURS = 24;
+
+/** Clamp a computed dimension score into the reportable [0,100] range. */
+export function clampScore(n: number): number {
+  // Math.max/Math.min PROPAGATE NaN, so an unguarded NaN reaches the numeric SQL
+  // bind, Postgres rejects the row, and the whole day's DQ record is lost via the
+  // caller's catch. Infinities are safe (they clamp to 100 / 0) — only NaN is not.
+  if (Number.isNaN(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
 
 // --- GCS Feed Configuration ---
 
@@ -132,7 +145,7 @@ async function listGcsFilesWithInfo(
 }
 
 /**
- * Get the set of unique 15-minute time slots covered by files.
+ * Get the set of unique time slots covered by files.
  * Returns a Set of HHMM strings.
  */
 function getTimeSlots(files: GcsFileInfo[]): Set<string> {
@@ -140,12 +153,13 @@ function getTimeSlots(files: GcsFileInfo[]): Set<string> {
 }
 
 /**
- * Generate all expected 15-minute time slots for a 24-hour day.
+ * Generate all expected parquet time slots for a 24-hour day, stepping by
+ * DQ_SLOT_MINUTES (hourly in production: 0000, 0100, … 2300).
  */
-function allExpectedSlots(): string[] {
+export function allExpectedSlots(): string[] {
   const slots: string[] = [];
   for (let h = 0; h < 24; h++) {
-    for (let m = 0; m < 60; m += 15) {
+    for (let m = 0; m < 60; m += DQ_SLOT_MINUTES) {
       slots.push(`${String(h).padStart(2, "0")}${String(m).padStart(2, "0")}`);
     }
   }
@@ -156,7 +170,7 @@ function allExpectedSlots(): string[] {
  * Find gaps (missing time slots) in the file set.
  * Returns contiguous gap ranges with start/end times and duration.
  */
-function findGaps(
+export function findGaps(
   files: GcsFileInfo[],
 ): { start: string; end: string; durationMinutes: number }[] {
   const expected = allExpectedSlots();
@@ -175,7 +189,7 @@ function findGaps(
         gaps.push({
           start: `${gapStart.slice(0, 2)}:${gapStart.slice(2)}`,
           end: `${slot.slice(0, 2)}:${slot.slice(2)}`,
-          durationMinutes: gapCount * 15,
+          durationMinutes: gapCount * DQ_SLOT_MINUTES,
         });
         gapStart = null;
         gapCount = 0;
@@ -187,7 +201,7 @@ function findGaps(
     gaps.push({
       start: `${gapStart.slice(0, 2)}:${gapStart.slice(2)}`,
       end: "24:00",
-      durationMinutes: gapCount * 15,
+      durationMinutes: gapCount * DQ_SLOT_MINUTES,
     });
   }
 
@@ -204,6 +218,8 @@ interface HealthFlags {
   exchange?: string; // "kalshi" | "kraken"
   detailed?: boolean;
   json?: boolean;
+  /** Phase 2 GCS scan date override, YYYY-MM-DD. Defaults to the previous UTC day. */
+  date?: string;
 }
 
 interface NatsTrade {
@@ -965,9 +981,18 @@ async function scoreArchiveSync(): Promise<{ score: number; details: Record<stri
 
 // --- Completeness scoring ---
 
+/**
+ * Score completeness for `date` (the COMPLETE UTC day scanned in GCS).
+ *
+ * `runDate` is the day this check runs on — `dq_daily_scores` rows are keyed by
+ * the RUN date (`check_date`), not the scanned date, so the 7-day baseline window
+ * must be anchored on `runDate`. Anchoring it on `date` (= runDate - 1) would
+ * select T-8..T-2 and drop the freshest sample. The GCS listing still uses `date`.
+ */
 async function scoreCompleteness(
   feedConfig: GcsFeedConfig,
   date: string,
+  runDate: string,
   sql: ReturnType<typeof getRawSql>,
   nc: NatsConnection,
 ): Promise<{ score: number; details: Record<string, unknown> }> {
@@ -989,8 +1014,8 @@ async function scoreCompleteness(
       SELECT ROUND(AVG(actual_messages))::int as avg_msgs
       FROM dq_daily_scores
       WHERE feed = ${feedConfig.feed}
-        AND check_date >= (${date}::date - INTERVAL '7 days')
-        AND check_date < ${date}::date
+        AND check_date >= (${runDate}::date - INTERVAL '7 days')
+        AND check_date < ${runDate}::date
         AND actual_messages IS NOT NULL
         AND actual_messages > 0
     ` as AvgRow[];
@@ -1004,8 +1029,8 @@ async function scoreCompleteness(
   const gaps = findGaps(files);
   const totalGapMinutes = gaps.reduce((sum, g) => sum + g.durationMinutes, 0);
 
-  // 4. Calculate file coverage (% of expected 15-min slots in active window)
-  const expectedSlots = DQ_ACTIVE_HOURS * 4; // 92 slots (23h × 4 per hour)
+  // 4. Calculate file coverage (% of expected parquet slots in active window)
+  const expectedSlots = DQ_ACTIVE_HOURS * (60 / DQ_SLOT_MINUTES); // 24 hourly slots
   const presentSlots = getTimeSlots(files).size;
   const coveragePct = expectedSlots > 0 ? Math.round((presentSlots / expectedSlots) * 10000) / 100 : 0;
 
@@ -1040,7 +1065,7 @@ async function scoreCompleteness(
     { name: "file_coverage", weight: 0.30, value: coverageScore },
   ];
 
-  const score = Math.round(checks.reduce((s, c) => s + c.value * c.weight, 0));
+  const score = clampScore(checks.reduce((s, c) => s + c.value * c.weight, 0));
 
   return {
     score,
@@ -1135,7 +1160,7 @@ async function scoreParquetQuality(
     { name: "consistency", weight: 0.30, value: consistencyScore },
   ];
 
-  const score = Math.round(checks.reduce((s, c) => s + c.value * c.weight, 0));
+  const score = clampScore(checks.reduce((s, c) => s + c.value * c.weight, 0));
 
   return {
     score,
@@ -1205,7 +1230,7 @@ async function scoreSLA(
   }
 
   // Uptime score
-  const uptimeScore = Math.round(uptimePct);
+  const uptimeScore = clampScore(uptimePct);
 
   // Freshness score
   let freshnessScore: number;
@@ -1220,7 +1245,7 @@ async function scoreSLA(
     { name: "freshness", weight: 0.40, value: freshnessScore },
   ];
 
-  const score = Math.round(checks.reduce((s, c) => s + c.value * c.weight, 0));
+  const score = clampScore(checks.reduce((s, c) => s + c.value * c.weight, 0));
 
   return {
     score,
@@ -1237,6 +1262,12 @@ async function scoreSLA(
 async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
   const jsonOutput = flags.json === true;
   const today = new Date().toISOString().slice(0, 10);
+  // Phase 2 (GCS) scores a COMPLETE UTC day — its denominators are whole-day
+  // constants. Phase 1 (connector/NATS freshness) stays real-time on `today`.
+  const scanDate = resolveScanDate(new Date(), flags.date);
+  // An explicit --date is an operator backfill: score and PRINT the requested
+  // day, but never persist it as today's record and never email that grade.
+  const isBackfill = flags.date !== undefined;
   const natsUrl = getNatsUrl();
 
   // Connect to NATS
@@ -1293,9 +1324,9 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       for (const feedConfig of GCS_FEEDS) {
         if (!jsonOutput) console.log(`  Scanning GCS: ${feedConfig.prefix}/${feedConfig.stream}...`);
         const [comp, pq, sla] = await Promise.all([
-          scoreCompleteness(feedConfig, today, sql, nc),
-          scoreParquetQuality(feedConfig, today, sql),
-          scoreSLA(feedConfig, today),
+          scoreCompleteness(feedConfig, scanDate, today, sql, nc),
+          scoreParquetQuality(feedConfig, scanDate, sql),
+          scoreSLA(feedConfig, scanDate),
         ]);
         completenessScores[feedConfig.feed] = comp;
         parquetScores[feedConfig.feed] = pq;
@@ -1430,13 +1461,17 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
 
         // Also persist aggregate Phase 2 scores
         feedEntries.push(
-          { feed: "completeness", score: completenessAvg, details: completenessScores },
-          { feed: "parquet-quality", score: parquetAvg, details: parquetScores },
-          { feed: "sla", score: slaAvg, details: slaScores },
+          { feed: "completeness", score: completenessAvg, details: { scored_date: scanDate, ...completenessScores } },
+          { feed: "parquet-quality", score: parquetAvg, details: { scored_date: scanDate, ...parquetScores } },
+          { feed: "sla", score: slaAvg, details: { scored_date: scanDate, ...slaScores } },
         );
       }
 
-      for (const entry of feedEntries) {
+      // --date backfills are READ-ONLY: dq_daily_scores rows are keyed
+      // ${today}::date, so writing a scanned older day's scores here would
+      // overwrite today's record. Persist nothing (the report still prints).
+      const rowsToPersist = isBackfill ? [] : feedEntries;
+      for (const entry of rowsToPersist) {
         await sql`
           INSERT INTO dq_daily_scores (
             check_date, feed, score, composite_score, details,
@@ -1471,6 +1506,7 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     } else {
       console.log();
       console.log(`Health Report: ${grade} (${composite}/100) — ${today}`);
+      console.log(`  (GCS dimensions scored over complete day ${scanDate})`);
       console.log("=".repeat(60));
 
       // Phase 1: Connector health
@@ -1526,8 +1562,16 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       }
     }
 
-    // Send email report
-    await sendHealthEmail(report);
+    // Send email report. A --date run must never email another day's grade as
+    // if it were today's, so it stays read-only: printed above, nothing sent.
+    if (isBackfill) {
+      const note = "  (--date set: read-only run — scores not persisted, no email sent)";
+      // stderr under --json so machine-readable stdout stays valid JSON
+      if (jsonOutput) console.error(note);
+      else console.log(note);
+    } else {
+      await sendHealthEmail(report);
+    }
   } finally {
     await nc.close();
     await closeDb();
@@ -1745,6 +1789,8 @@ export function printHealthHelp(): void {
   console.log();
   console.log("OPTIONS (daily):");
   console.log("  --json              Output structured JSON to stdout");
+  console.log("  --date YYYY-MM-DD   Phase 2 (GCS) scan date. Defaults to the previous UTC day,");
+  console.log("                      because completeness/parquet/sla use whole-day denominators.");
   console.log();
   console.log("OPTIONS (trades):");
   console.log("  --ticker TICKER     Market ticker (required)");
