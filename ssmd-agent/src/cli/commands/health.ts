@@ -9,7 +9,7 @@ import { getRawSql, closeDb } from "../../lib/db/mod.ts";
 import { connect as natsConnect, type NatsConnection } from "npm:nats";
 import nodemailer from "nodemailer";
 import { Storage } from "@google-cloud/storage";
-import { type GcsFileInfo, parseGcsFileInfo } from "./health-gcs.ts";
+import { type GcsFileInfo, parseGcsFileInfo, resolveScanDate } from "./health-gcs.ts";
 
 // --- DQ Active Window ---
 // Kalshi markets are quiet from 3-4am EST (08:00-09:00 UTC).
@@ -204,6 +204,8 @@ interface HealthFlags {
   exchange?: string; // "kalshi" | "kraken"
   detailed?: boolean;
   json?: boolean;
+  /** Phase 2 GCS scan date override, YYYY-MM-DD. Defaults to the previous UTC day. */
+  date?: string;
 }
 
 interface NatsTrade {
@@ -1237,6 +1239,9 @@ async function scoreSLA(
 async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
   const jsonOutput = flags.json === true;
   const today = new Date().toISOString().slice(0, 10);
+  // Phase 2 (GCS) scores a COMPLETE UTC day — its denominators are whole-day
+  // constants. Phase 1 (connector/NATS freshness) stays real-time on `today`.
+  const scanDate = resolveScanDate(new Date(), flags.date);
   const natsUrl = getNatsUrl();
 
   // Connect to NATS
@@ -1293,9 +1298,9 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       for (const feedConfig of GCS_FEEDS) {
         if (!jsonOutput) console.log(`  Scanning GCS: ${feedConfig.prefix}/${feedConfig.stream}...`);
         const [comp, pq, sla] = await Promise.all([
-          scoreCompleteness(feedConfig, today, sql, nc),
-          scoreParquetQuality(feedConfig, today, sql),
-          scoreSLA(feedConfig, today),
+          scoreCompleteness(feedConfig, scanDate, sql, nc),
+          scoreParquetQuality(feedConfig, scanDate, sql),
+          scoreSLA(feedConfig, scanDate),
         ]);
         completenessScores[feedConfig.feed] = comp;
         parquetScores[feedConfig.feed] = pq;
@@ -1430,9 +1435,9 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
 
         // Also persist aggregate Phase 2 scores
         feedEntries.push(
-          { feed: "completeness", score: completenessAvg, details: completenessScores },
-          { feed: "parquet-quality", score: parquetAvg, details: parquetScores },
-          { feed: "sla", score: slaAvg, details: slaScores },
+          { feed: "completeness", score: completenessAvg, details: { scored_date: scanDate, ...completenessScores } },
+          { feed: "parquet-quality", score: parquetAvg, details: { scored_date: scanDate, ...parquetScores } },
+          { feed: "sla", score: slaAvg, details: { scored_date: scanDate, ...slaScores } },
         );
       }
 
@@ -1471,6 +1476,7 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
     } else {
       console.log();
       console.log(`Health Report: ${grade} (${composite}/100) — ${today}`);
+      console.log(`  (GCS dimensions scored over complete day ${scanDate})`);
       console.log("=".repeat(60));
 
       // Phase 1: Connector health
