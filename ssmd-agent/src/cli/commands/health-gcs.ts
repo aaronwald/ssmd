@@ -41,3 +41,31 @@ export function parseGcsFileInfo(
     time,
   };
 }
+
+/**
+ * Resolve the UTC date that Phase 2 (GCS) scoring should scan.
+ *
+ * Phase 2's denominators are whole-day constants (DQ_ACTIVE_HOURS = 23,
+ * expectedSlots = 92), so they are only valid against a COMPLETE day. The health
+ * CronJob runs at 08:30 UTC, so scanning "today" caps uptime at ~39% and coverage
+ * at ~37% before any real data problem. Default to the previous UTC day.
+ *
+ * @param now Current time (injected so this stays pure and testable).
+ * @param override Optional explicit `YYYY-MM-DD` (the `--date` flag).
+ * @throws Error when `override` is not a real `YYYY-MM-DD` calendar date.
+ */
+export function resolveScanDate(now: Date, override?: string): string {
+  if (override !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(override)) {
+      throw new Error(`--date must be YYYY-MM-DD, got: ${override}`);
+    }
+    const parsed = new Date(`${override}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== override) {
+      throw new Error(`--date is not a valid calendar date: ${override}`);
+    }
+    return override;
+  }
+  const prev = new Date(now.getTime());
+  prev.setUTCDate(prev.getUTCDate() - 1);
+  return prev.toISOString().slice(0, 10);
+}
