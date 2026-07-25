@@ -24,6 +24,10 @@ export const DQ_ACTIVE_HOURS = 24;
 
 /** Clamp a computed dimension score into the reportable [0,100] range. */
 export function clampScore(n: number): number {
+  // Math.max/Math.min PROPAGATE NaN, so an unguarded NaN reaches the numeric SQL
+  // bind, Postgres rejects the row, and the whole day's DQ record is lost via the
+  // caller's catch. Infinities are safe (they clamp to 100 / 0) — only NaN is not.
+  if (Number.isNaN(n)) return 0;
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
@@ -1261,6 +1265,9 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
   // Phase 2 (GCS) scores a COMPLETE UTC day — its denominators are whole-day
   // constants. Phase 1 (connector/NATS freshness) stays real-time on `today`.
   const scanDate = resolveScanDate(new Date(), flags.date);
+  // An explicit --date is an operator backfill: score and PRINT the requested
+  // day, but never persist it as today's record and never email that grade.
+  const isBackfill = flags.date !== undefined;
   const natsUrl = getNatsUrl();
 
   // Connect to NATS
@@ -1460,7 +1467,11 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
         );
       }
 
-      for (const entry of feedEntries) {
+      // --date backfills are READ-ONLY: dq_daily_scores rows are keyed
+      // ${today}::date, so writing a scanned older day's scores here would
+      // overwrite today's record. Persist nothing (the report still prints).
+      const rowsToPersist = isBackfill ? [] : feedEntries;
+      for (const entry of rowsToPersist) {
         await sql`
           INSERT INTO dq_daily_scores (
             check_date, feed, score, composite_score, details,
@@ -1551,8 +1562,16 @@ async function runDailyHealthCheck(flags: HealthFlags): Promise<void> {
       }
     }
 
-    // Send email report
-    await sendHealthEmail(report);
+    // Send email report. A --date run must never email another day's grade as
+    // if it were today's, so it stays read-only: printed above, nothing sent.
+    if (isBackfill) {
+      const note = "  (--date set: read-only run — scores not persisted, no email sent)";
+      // stderr under --json so machine-readable stdout stays valid JSON
+      if (jsonOutput) console.error(note);
+      else console.log(note);
+    } else {
+      await sendHealthEmail(report);
+    }
   } finally {
     await nc.close();
     await closeDb();

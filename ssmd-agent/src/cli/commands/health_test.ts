@@ -93,3 +93,9 @@ Deno.test("clampScore bounds scores into [0,100]", () => {
   assertEquals(clampScore(-5), 0);
   assertEquals(clampScore(87.4), 87);
 });
+
+Deno.test("clampScore treats non-finite input as 0 rather than propagating NaN", () => {
+  assertEquals(clampScore(NaN), 0);
+  assertEquals(clampScore(Infinity), 100);
+  assertEquals(clampScore(-Infinity), 0);
+});
