@@ -6,7 +6,7 @@
     "db:new": "dbmate -d ./migrations new",
     "cli": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run --allow-sys src/cli/main.ts",
     "server": "deno run --allow-net --allow-env --allow-sys src/server/main.ts",
-    "check": "deno check src/cli/main.ts src/server/main.ts src/cli/commands/status.ts",
+    "check": "deno check src/cli/main.ts src/server/main.ts src/cli/commands/status.ts src/cli/warm-cache.ts",
     "test": "deno test --allow-read --allow-write --allow-net --allow-env --allow-ffi --allow-sys --allow-run test/ src/",
     "test:src": "deno test --allow-read --allow-write --allow-net --allow-env --allow-ffi --allow-sys --allow-run src/"
   },
