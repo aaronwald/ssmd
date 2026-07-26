@@ -23,9 +23,23 @@ COPY src/lib/ ./src/lib/
 COPY src/config.ts ./src/config.ts
 COPY src/cli/ ./src/cli/
 
-# Cache dependencies (server + CLI for CronJob use) into DENO_DIR, then hand the
-# populated cache to the runtime user so `deno run` reads it instead of downloading.
-RUN deno cache src/server/main.ts src/cli/main.ts && chown -R deno:deno /deno-dir
+# Cache dependencies (server + CLI for CronJob use) into DENO_DIR.
+RUN deno cache src/server/main.ts src/cli/main.ts
+
+# `deno cache` bakes only the statically-resolvable graph. The npm *runtime*
+# graph — drizzle-orm's optional peer drivers, platform native bindings
+# (@duckdb/node-bindings-*, @google-cloud/storage) and nats' lazy nkeys.js — is
+# materialised by the module loader on first execution. Measured on a clean
+# DENO_DIR: `deno cache` fetched 250 packages and the first `deno run` then
+# fetched 138 MORE from registry.npmjs.org, on every pod start. Executing the
+# warm entrypoint once here bakes that graph so no pod resolves deps at runtime.
+# If this step cannot reach npm the build fails here, which is the point — the
+# alternative is every CronJob pod discovering it at 01:15 UTC.
+RUN deno run --no-lock --allow-net --allow-env --allow-read --allow-write=/tmp --allow-ffi --allow-sys src/cli/warm-cache.ts
+
+# Hand the populated cache to the runtime user so `deno run` reads it instead of
+# downloading. Must be the last step that touches DENO_DIR.
+RUN chown -R deno:deno /deno-dir
 
 # Pre-install DuckDB httpfs extension (DuckDB's internal downloader hangs in K8s).
 # Version must match @duckdb/node-api in deno.json (currently 1.4.4).
