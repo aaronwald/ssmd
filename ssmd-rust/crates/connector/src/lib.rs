@@ -13,6 +13,7 @@ pub mod flusher;
 pub mod kalshi;
 pub mod kraken;
 pub mod kraken_futures;
+pub mod liveness;
 pub mod massive;
 pub mod message;
 pub mod polymarket;
@@ -41,7 +42,7 @@ pub use resolver::EnvResolver;
 pub use ring_buffer::{RingBuffer, RING_SIZE, RING_SLOTS, SLOT_SIZE};
 pub use runner::Runner;
 pub use secmaster::{SecmasterClient, SecmasterError};
-pub use server::{create_router, run_server, ServerState};
+pub use server::{create_router, run_server, HealthThresholds, ServerState};
 pub use traits::{Connector, KeyResolver, Writer};
 pub use websocket::WebSocketConnector;
 

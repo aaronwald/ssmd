@@ -16,7 +16,8 @@ use ssmd_connector_lib::{
     binance::{BinanceConnector, BinanceNatsWriter},
     kalshi::{KalshiConfig, KalshiConnector, KalshiCredentials},
     massive::{MassiveConnector, MassiveNatsWriter},
-    EnvResolver, KeyResolver, NatsWriter, Runner, ServerState, WebSocketConnector,
+    EnvResolver, HealthThresholds, KeyResolver, NatsWriter, Runner, ServerState,
+    WebSocketConnector,
 };
 use ssmd_metadata::{Environment, Feed, FeedType, KeyType, TransportType};
 use ssmd_middleware::MiddlewareFactory;
@@ -680,8 +681,20 @@ fn create_nats_writer(
     }
 }
 
-/// Staleness threshold in seconds - if no messages for this long, health check fails
-const STALE_THRESHOLD_SECS: u64 = 300; // 5 minutes
+/// Default staleness threshold in seconds for the /health liveness probe.
+/// Overridable with HEALTH_STALE_THRESHOLD_SECS. If neither market data nor a
+/// WebSocket pong is seen for this long, /health reports stale (503).
+const DEFAULT_HEALTH_STALE_THRESHOLD_SECS: u64 = 300; // 5 minutes
+
+/// Default staleness threshold in seconds for the /ready readiness probe.
+/// Overridable with READY_STALE_THRESHOLD_SECS. Readiness is data only: no pong
+/// can suppress it, because a feed whose socket is fine but which is publishing
+/// nothing serves nothing useful.
+///
+/// Deliberately a separate knob from the liveness threshold above. Raising the
+/// liveness threshold to stop a sparse feed from tripping the kubelet probe must
+/// not also switch off the data-stale signal.
+const DEFAULT_READY_STALE_THRESHOLD_SECS: u64 = 300; // 5 minutes
 
 /// Run connector with a specific writer implementation
 async fn run_with_writer<C, W>(
@@ -700,13 +713,46 @@ where
     // Use activity handle (tracks WebSocket ping/pong + data messages) for health checks
     // This prevents false staleness during quiet market periods when pings are succeeding
     let activity_handle = runner.activity_handle();
+    // Data handle: the clock every /health verdict is computed from. Distinct from
+    // the activity handle above, which a control frame resets — a ceiling reading
+    // that could be held open indefinitely by a peer that acks our subscriptions
+    // and publishes nothing.
+    let data_handle = runner.data_handle();
+    // Pong handle: lets /health tell a quiet market on a healthy socket (do not
+    // restart) from a hung socket (restart). Zero for connectors without pongs.
+    let pong_handle = runner.pong_handle();
+
+    // Both thresholds are range-checked (30..=3600) and fall back to the default
+    // with a warning when a supplied value is refused. Unvalidated, 0 means a
+    // permanent 503 and a restart loop, and u64::MAX means the probe can never
+    // fail, which disables the liveness check entirely.
+    let health_stale_threshold_secs = ssmd_connector_lib::liveness::threshold_from_env(
+        "HEALTH_STALE_THRESHOLD_SECS",
+        DEFAULT_HEALTH_STALE_THRESHOLD_SECS,
+    );
+    let ready_stale_threshold_secs = ssmd_connector_lib::liveness::threshold_from_env(
+        "READY_STALE_THRESHOLD_SECS",
+        DEFAULT_READY_STALE_THRESHOLD_SECS,
+    );
+    // Absolute ceiling on the data age. Unlike the thresholds above, no pong can
+    // suppress it, so it is the only /health signal the exchange does not control.
+    let health_max_data_age_secs = ssmd_connector_lib::liveness::threshold_from_env(
+        "HEALTH_MAX_DATA_AGE_SECS",
+        ssmd_connector_lib::liveness::DEFAULT_MAX_DATA_AGE_SECS,
+    );
 
     // Start health server with staleness tracking
     let server_state = ServerState::with_last_message(
         &feed.name,
         Arc::clone(&connected_handle),
         Arc::clone(&activity_handle),
-        STALE_THRESHOLD_SECS,
+        Arc::clone(&data_handle),
+        Arc::clone(&pong_handle),
+        HealthThresholds {
+            stale_secs: health_stale_threshold_secs,
+            ready_secs: ready_stale_threshold_secs,
+            max_data_age_secs: health_max_data_age_secs,
+        },
     );
     let health_handle = tokio::spawn(async move {
         if let Err(e) = ssmd_connector_lib::run_server(health_addr, server_state).await {
@@ -720,7 +766,13 @@ where
         }
         std::process::exit(1);
     });
-    info!(addr = %health_addr, stale_threshold_secs = STALE_THRESHOLD_SECS, "Health server started");
+    info!(
+        addr = %health_addr,
+        stale_threshold_secs = health_stale_threshold_secs,
+        ready_threshold_secs = ready_stale_threshold_secs,
+        max_data_age_secs = health_max_data_age_secs,
+        "Health server started"
+    );
 
     // Run the connector
     match runner.run(shutdown_rx).await {

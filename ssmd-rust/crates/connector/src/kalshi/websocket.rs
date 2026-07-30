@@ -6,7 +6,7 @@ use crate::kalshi::auth::{AuthError, KalshiCredentials};
 use crate::kalshi::messages::{WsCommand, WsMessage, WsParams};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -143,6 +143,11 @@ pub struct KalshiWebSocket {
     /// the server replies to our Ping. Shared with the connector loop so the
     /// staleness check can verify the remote end is actually alive.
     pong_tracker: Arc<AtomicU64>,
+    /// Optional connector-wide mirror of `pong_tracker`, set by the connector so
+    /// the outer watchdog and /health can see pong liveness without reaching into
+    /// a shard task. Each shard keeps its own `pong_tracker` for the per-shard
+    /// check, so shard-level detection granularity is unaffected.
+    shared_pong_tracker: Option<Arc<AtomicU64>>,
 }
 
 impl KalshiWebSocket {
@@ -220,6 +225,7 @@ impl KalshiWebSocket {
             subscribed_markets: HashSet::new(),
             sid_tracker: SidTracker::new(),
             pong_tracker: Arc::new(AtomicU64::new(0)),
+            shared_pong_tracker: None,
         })
     }
 
@@ -687,6 +693,16 @@ impl KalshiWebSocket {
         Arc::clone(&self.pong_tracker)
     }
 
+    /// Attach a connector-wide pong tracker that mirrors this shard pong tracker.
+    ///
+    /// The shard-local tracker returned by [`pong_tracker`](Self::pong_tracker) is
+    /// unaffected: it keeps recording only this shard pongs, so the per-shard
+    /// staleness check still detects a single hung shard. The shared tracker is the
+    /// most recent pong across all shards and feeds the outer watchdog and /health.
+    pub fn set_shared_pong_tracker(&mut self, shared: Arc<AtomicU64>) {
+        self.shared_pong_tracker = Some(shared);
+    }
+
     /// Update pong tracker with current epoch time.
     /// Panics if system clock is before UNIX_EPOCH — broken system time is unrecoverable.
     fn update_pong_tracker(&self) {
@@ -695,7 +711,7 @@ impl KalshiWebSocket {
             .duration_since(UNIX_EPOCH)
             .expect("system clock before UNIX_EPOCH — cannot track connection liveness")
             .as_secs();
-        self.pong_tracker.store(now, Ordering::SeqCst);
+        crate::liveness::record_pong(&self.pong_tracker, self.shared_pong_tracker.as_deref(), now);
     }
 
     /// Close the connection gracefully
