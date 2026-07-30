@@ -71,6 +71,23 @@ pub struct KalshiConnector {
     rx: Option<mpsc::Receiver<TimestampedMsg>>,
     /// Last WebSocket activity timestamp (epoch seconds) - updated ONLY on received data/pong, never on ping send
     last_ws_activity_epoch_secs: Arc<AtomicU64>,
+    /// Last timestamp (epoch seconds) at which a message was actually forwarded
+    /// downstream, across ALL shards. Stamped once when a shard receiver starts and
+    /// then only by [`record_frame`] on frames that are forwarded.
+    ///
+    /// Separate from `last_ws_activity_epoch_secs` on purpose, and the difference is
+    /// the whole point of the absolute ceiling. The activity clock is reset by any
+    /// parseable frame, including the subscribe and unsubscribe acks this connector
+    /// generates on every 15-minute rollover — roughly a 900s cadence against an
+    /// 1800s ceiling. A ceiling reading it could be held open forever by a peer that
+    /// acks our subscriptions and publishes nothing, which is precisely the outage
+    /// the ceiling exists to end. See `crate::liveness`.
+    last_data_epoch_secs: Arc<AtomicU64>,
+    /// Last WebSocket pong timestamp (epoch seconds) across ALL shards, 0 until the
+    /// first pong. Owned here rather than inside a shard task so the outer watchdog
+    /// and /health can tell "quiet market, healthy socket" from "hung socket".
+    /// Each shard also keeps its own tracker for the per-shard staleness check.
+    last_pong_epoch_secs: Arc<AtomicU64>,
     /// Background tasks (shard receivers, CDC consumer, shard manager).
     /// Monitored by the runner — any exit or panic triggers a crash instead of silent data loss.
     task_set: Option<JoinSet<()>>,
@@ -137,6 +154,98 @@ macro_rules! handle_shard_cmd {
     };
 }
 
+/// The two liveness clocks a shard receiver stamps.
+///
+/// Passed as a pair so the distinction stays in front of whoever touches them.
+/// They answer different questions and are not interchangeable: `activity` says the
+/// socket is responding at all and is reset by any frame, while `data` says the feed
+/// is actually producing and is reset only by frames we forward. Which one a check
+/// reads decides whether a peer that acks our subscriptions and publishes nothing
+/// can suppress it.
+struct ShardClocks {
+    /// Any received frame. Feeds the per-shard 90s check and the shard metrics.
+    activity: Arc<AtomicU64>,
+    /// Forwarded messages only. Feeds the absolute data-age ceiling.
+    data: Arc<AtomicU64>,
+}
+
+/// Current wall clock in epoch seconds.
+fn now_epoch_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before UNIX_EPOCH")
+        .as_secs()
+}
+
+/// Count a received frame, stamp the data clock if it carries data, and report
+/// whether it must be forwarded downstream.
+///
+/// The classification and the stamping live together, and outside the `select!`
+/// loop, for one reason: the absolute data-age ceiling in `crate::liveness` is only
+/// a backstop against a peer that answers control frames while publishing nothing
+/// if the clock it reads is stamped by exactly the frames this function forwards.
+/// Splitting the two apart is what let the ceiling read "any parseable frame age"
+/// instead of data age, and a test can only pin that down by driving this path.
+///
+/// Frames that are counted and dropped — subscribe/unsubscribe acks, `ok`, `error`,
+/// unrecognised types — must leave `data_tracker` untouched. This connector
+/// resubscribes on every 15-minute contract rollover, so those acks arrive
+/// throughout a data drought on a cadence well inside the ceiling.
+fn record_frame(
+    msg: &WsMessage,
+    metrics: &ShardMetrics,
+    data_tracker: &AtomicU64,
+    now_epoch: u64,
+) -> bool {
+    let should_forward = match msg {
+        WsMessage::Ticker { .. } => {
+            metrics.inc_ticker();
+            true
+        }
+        WsMessage::Trade { .. } => {
+            metrics.inc_trade();
+            true
+        }
+        WsMessage::OrderbookSnapshot { .. } | WsMessage::OrderbookDelta { .. } => {
+            metrics.inc_orderbook();
+            true
+        }
+        WsMessage::MarketLifecycleV2 { .. } => {
+            metrics.inc_lifecycle();
+            true
+        }
+        WsMessage::EventLifecycle { .. } => {
+            metrics.inc_event_lifecycle();
+            true
+        }
+        WsMessage::Subscribed { .. } => {
+            metrics.inc_message("subscribed");
+            false
+        }
+        WsMessage::Ok { .. } => {
+            metrics.inc_message("ok");
+            false
+        }
+        WsMessage::Unsubscribed { .. } => {
+            metrics.inc_message("unsubscribed");
+            false
+        }
+        WsMessage::Error { .. } => {
+            metrics.inc_message("error");
+            false
+        }
+        WsMessage::Unknown => {
+            metrics.inc_message("unknown");
+            false
+        }
+    };
+    if should_forward {
+        crate::liveness::record_data(data_tracker, now_epoch);
+    }
+    should_forward
+}
+
 impl KalshiConnector {
     /// Create a new Kalshi connector
     pub fn new(credentials: KalshiCredentials, use_demo: bool, ws_url: Option<String>) -> Self {
@@ -153,6 +262,8 @@ impl KalshiConnector {
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
+            last_data_epoch_secs: Arc::new(AtomicU64::new(0)),
+            last_pong_epoch_secs: Arc::new(AtomicU64::new(0)),
             task_set: None,
         }
     }
@@ -186,6 +297,8 @@ impl KalshiConnector {
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
+            last_data_epoch_secs: Arc::new(AtomicU64::new(0)),
+            last_pong_epoch_secs: Arc::new(AtomicU64::new(0)),
             task_set: None,
         }
     }
@@ -220,6 +333,8 @@ impl KalshiConnector {
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
+            last_data_epoch_secs: Arc::new(AtomicU64::new(0)),
+            last_pong_epoch_secs: Arc::new(AtomicU64::new(0)),
             task_set: None,
         }
     }
@@ -247,6 +362,8 @@ impl KalshiConnector {
             tx: Some(tx),
             rx: Some(rx),
             last_ws_activity_epoch_secs: Arc::new(AtomicU64::new(0)),
+            last_data_epoch_secs: Arc::new(AtomicU64::new(0)),
+            last_pong_epoch_secs: Arc::new(AtomicU64::new(0)),
             task_set: None,
         }
     }
@@ -405,19 +522,23 @@ impl KalshiConnector {
         task_set: &mut JoinSet<()>,
         mut ws: KalshiWebSocket,
         tx: mpsc::Sender<TimestampedMsg>,
-        activity_tracker: Arc<AtomicU64>,
+        clocks: ShardClocks,
         shard_id: usize,
         shard_metrics: ShardMetrics,
         mut cmd_rx: Option<mpsc::Receiver<ShardCommand>>,
     ) {
+        let ShardClocks {
+            activity: activity_tracker,
+            data: data_tracker,
+        } = clocks;
         // Helper to update activity timestamp and metrics.
         // Called ONLY when recv_raw returns data to the caller (not on ping send).
+        // Deliberately any-frame: this clock feeds the per-shard 90s check, whose
+        // job is to catch a socket that has stopped responding at all. The
+        // data-only clock the ceiling needs is data_tracker, stamped in
+        // record_frame.
         fn update_activity(tracker: &AtomicU64, metrics: &ShardMetrics, idle_secs: f64) {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock before UNIX_EPOCH")
-                .as_secs();
+            let now = now_epoch_secs();
             tracker.store(now, Ordering::SeqCst);
             metrics.set_last_activity(now as f64);
             metrics.set_idle_seconds(idle_secs);
@@ -440,10 +561,14 @@ impl KalshiConnector {
             /// If no data or pong received for this long, the connection is dead.
             /// Must be > PING_INTERVAL_SECS to allow at least one ping/pong round-trip.
             const DEFAULT_RECV_STALENESS_SECS: u64 = 90;
-            let recv_staleness_secs: u64 = std::env::var("RECV_STALENESS_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(DEFAULT_RECV_STALENESS_SECS);
+            // Range-checked like every other staleness threshold. Unvalidated, 0
+            // made stale_secs >= 0 true on the first ping tick and turned this into
+            // a permanent crashloop, and u64::MAX disabled the fast detector that
+            // the whole-connector ceiling is designed to sit behind.
+            let recv_staleness_secs = crate::liveness::threshold_from_env(
+                "RECV_STALENESS_SECS",
+                DEFAULT_RECV_STALENESS_SECS,
+            );
 
             let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -460,6 +585,13 @@ impl KalshiConnector {
 
             // Initialize activity tracker with current time
             update_activity(&activity_tracker, &shard_metrics, 0.0);
+            // Start the data clock at connect, not at the first forwarded message.
+            // Left at 0 it would read as "uninitialized" and suppress the ceiling
+            // entirely, so a shard that subscribes and then receives nothing but
+            // acks forever would never be caught — the exact case the ceiling is
+            // for. Starting it here means the ceiling measures silence from the
+            // moment the socket came up.
+            crate::liveness::record_data(&data_tracker, now_epoch_secs());
 
             loop {
                 tokio::select! {
@@ -586,49 +718,12 @@ impl KalshiConnector {
 
                                 message_count += 1;
                                 trace!(shard_id, message_count, msg_type = %msg.type_str(), "WS recv");
-                                // Record metrics and determine if we should forward
-                                let should_forward = match &msg {
-                                    WsMessage::Ticker { .. } => {
-                                        shard_metrics.inc_ticker();
-                                        true
-                                    }
-                                    WsMessage::Trade { .. } => {
-                                        shard_metrics.inc_trade();
-                                        true
-                                    }
-                                    WsMessage::OrderbookSnapshot { .. } | WsMessage::OrderbookDelta { .. } => {
-                                        shard_metrics.inc_orderbook();
-                                        true
-                                    }
-                                    WsMessage::MarketLifecycleV2 { .. } => {
-                                        shard_metrics.inc_lifecycle();
-                                        true
-                                    }
-                                    WsMessage::EventLifecycle { .. } => {
-                                        shard_metrics.inc_event_lifecycle();
-                                        true
-                                    }
-                                    WsMessage::Subscribed { .. } => {
-                                        shard_metrics.inc_message("subscribed");
-                                        false
-                                    }
-                                    WsMessage::Ok { .. } => {
-                                        shard_metrics.inc_message("ok");
-                                        false
-                                    }
-                                    WsMessage::Unsubscribed { .. } => {
-                                        shard_metrics.inc_message("unsubscribed");
-                                        false
-                                    }
-                                    WsMessage::Error { .. } => {
-                                        shard_metrics.inc_message("error");
-                                        false
-                                    }
-                                    WsMessage::Unknown => {
-                                        shard_metrics.inc_message("unknown");
-                                        false
-                                    }
-                                };
+                                // Counts the frame, and stamps the data clock only if
+                                // the frame is one we forward. Control frames leave
+                                // that clock alone so they cannot hold the ceiling
+                                // open during a data drought.
+                                let should_forward =
+                                    record_frame(&msg, &shard_metrics, &data_tracker, now_epoch_secs());
 
                                 if !should_forward {
                                     continue;
@@ -649,6 +744,12 @@ impl KalshiConnector {
                             Err(WebSocketError::ParseFailed { error, raw_json }) => {
                                 shard_metrics.inc_parse_error();
                                 warn!(shard_id, error = %error, "Parse failed, forwarding raw JSON to NATS");
+                                // A frame we could not parse is still archived, so it
+                                // is data by the only definition the ceiling cares
+                                // about: something reached NATS. Stamping the clock
+                                // here keeps the ceiling from firing on a feed whose
+                                // payloads changed shape but is otherwise healthy.
+                                crate::liveness::record_data(&data_tracker, now_epoch_secs());
                                 // Still forward the raw JSON to NATS — don't lose data
                                 let mut forwarded = raw_json.into_bytes();
                                 if forwarded.last() == Some(&b'}') {
@@ -713,6 +814,13 @@ impl Connector for KalshiConnector {
 
         // Clone activity tracker for the spawned tasks
         let activity_tracker = Arc::clone(&self.last_ws_activity_epoch_secs);
+        // Connector-wide data clock: stamped only by frames the shards forward, so
+        // the absolute ceiling in crate::liveness measures data age rather than
+        // "any parseable frame" age.
+        let data_tracker = Arc::clone(&self.last_data_epoch_secs);
+        // Connector-wide pong mirror handed to every shard socket below, so pong
+        // liveness survives outside the shard tasks (outer watchdog, /health).
+        let pong_tracker = Arc::clone(&self.last_pong_epoch_secs);
 
         // JoinSet to track all background tasks — runner monitors for exits/panics
         let mut task_set = JoinSet::new();
@@ -810,6 +918,7 @@ impl Connector for KalshiConnector {
                         .map_err(|e| ConnectorError::ConnectionFailed(format!(
                             "shard {} connection: {}", shard_id, e
                         )))?;
+                    ws.set_shared_pong_tracker(Arc::clone(&pong_tracker));
 
                     // Only subscribe if shard has initial markets (headroom shards start empty)
                     if !shard_tickers.is_empty() {
@@ -848,7 +957,10 @@ impl Connector for KalshiConnector {
                         &mut task_set,
                         ws,
                         tx.clone(),
-                        Arc::clone(&activity_tracker),
+                        ShardClocks {
+                            activity: Arc::clone(&activity_tracker),
+                            data: Arc::clone(&data_tracker),
+                        },
                         shard_id,
                         shard_metrics,
                         cmd_rx,
@@ -934,11 +1046,23 @@ impl Connector for KalshiConnector {
                 let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo, self.ws_url.as_deref())
                     .await
                     .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
+                ws.set_shared_pong_tracker(Arc::clone(&pong_tracker));
 
                 self.subscribe_global(&mut ws).await?;
                 let shard_metrics = connector_metrics.for_shard(0);
                 shard_metrics.init(&["ticker", "trade", "orderbook", "lifecycle", "event_lifecycle"]);
-                Self::spawn_receiver_task(&mut task_set, ws, tx, activity_tracker, 0, shard_metrics, None);
+                Self::spawn_receiver_task(
+                    &mut task_set,
+                    ws,
+                    tx,
+                    ShardClocks {
+                        activity: activity_tracker,
+                        data: data_tracker,
+                    },
+                    0,
+                    shard_metrics,
+                    None,
+                );
             }
         } else if let Some(ref lifecycle) = self.lifecycle_config {
             if lifecycle.enabled {
@@ -950,11 +1074,23 @@ impl Connector for KalshiConnector {
                 let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo, self.ws_url.as_deref())
                     .await
                     .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
+                ws.set_shared_pong_tracker(Arc::clone(&pong_tracker));
 
                 self.subscribe_lifecycle_only(&mut ws).await?;
                 let shard_metrics = connector_metrics.for_shard(0);
                 shard_metrics.init(&["lifecycle", "event_lifecycle"]);
-                Self::spawn_receiver_task(&mut task_set, ws, tx, activity_tracker, 0, shard_metrics, None);
+                Self::spawn_receiver_task(
+                    &mut task_set,
+                    ws,
+                    tx,
+                    ShardClocks {
+                        activity: activity_tracker,
+                        data: data_tracker,
+                    },
+                    0,
+                    shard_metrics,
+                    None,
+                );
             } else {
                 return Err(ConnectorError::ConnectionFailed(
                     "Lifecycle config present but disabled".to_string()
@@ -969,11 +1105,23 @@ impl Connector for KalshiConnector {
             let mut ws = KalshiWebSocket::connect(&self.credentials, self.use_demo, self.ws_url.as_deref())
                 .await
                 .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
+            ws.set_shared_pong_tracker(Arc::clone(&pong_tracker));
 
             self.subscribe_global(&mut ws).await?;
             let shard_metrics = connector_metrics.for_shard(0);
             shard_metrics.init(&["ticker", "trade", "orderbook", "lifecycle", "event_lifecycle"]);
-            Self::spawn_receiver_task(&mut task_set, ws, tx, activity_tracker, 0, shard_metrics, None);
+            Self::spawn_receiver_task(
+                    &mut task_set,
+                    ws,
+                    tx,
+                    ShardClocks {
+                        activity: activity_tracker,
+                        data: data_tracker,
+                    },
+                    0,
+                    shard_metrics,
+                    None,
+                );
         }
 
         self.task_set = Some(task_set);
@@ -994,6 +1142,14 @@ impl Connector for KalshiConnector {
         Some(Arc::clone(&self.last_ws_activity_epoch_secs))
     }
 
+    fn data_handle(&self) -> Option<Arc<AtomicU64>> {
+        Some(Arc::clone(&self.last_data_epoch_secs))
+    }
+
+    fn pong_handle(&self) -> Option<Arc<AtomicU64>> {
+        Some(Arc::clone(&self.last_pong_epoch_secs))
+    }
+
     fn tasks(&mut self) -> Option<JoinSet<()>> {
         self.task_set.take()
     }
@@ -1012,6 +1168,258 @@ mod tests {
         let pem = key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).expect("failed to encode");
 
         KalshiCredentials::new("test-api-key".to_string(), pem.as_str())
+    }
+
+    /// The literal DEFAULT_RECV_STALENESS_SECS from the receive loop, kept in sync
+    /// by the assertion below.
+    const RECV_DEFAULT: u64 = 90;
+
+    #[test]
+    fn recv_staleness_env_is_range_checked() {
+        use crate::liveness::{resolve_threshold_secs, MAX_THRESHOLD_SECS, MIN_THRESHOLD_SECS};
+
+        assert!(
+            (MIN_THRESHOLD_SECS..=MAX_THRESHOLD_SECS).contains(&RECV_DEFAULT),
+            "the built-in default must itself be in range"
+        );
+
+        // 0 made "stale_secs >= recv_staleness_secs" true on the very first ping
+        // tick, so the shard called process::exit(1) roughly 30s after every start:
+        // a permanent crashloop, and each restart resubscribes hundreds of markets.
+        assert_eq!(
+            resolve_threshold_secs(Some("0"), RECV_DEFAULT).secs,
+            MIN_THRESHOLD_SECS
+        );
+        // u64::MAX disabled the per-shard fast detector outright, which is the layer
+        // the whole-connector ceiling is designed to sit behind.
+        assert_eq!(
+            resolve_threshold_secs(Some(&u64::MAX.to_string()), RECV_DEFAULT).secs,
+            MAX_THRESHOLD_SECS
+        );
+        // Garbage keeps the built-in default, exactly as before.
+        assert_eq!(
+            resolve_threshold_secs(Some("not-a-number"), RECV_DEFAULT).secs,
+            RECV_DEFAULT
+        );
+        // The value deployed in prod (connector-lifecycle.yaml) still passes through.
+        assert_eq!(
+            resolve_threshold_secs(Some("3600"), RECV_DEFAULT).secs,
+            3_600
+        );
+    }
+
+    #[test]
+    fn recv_staleness_env_reads_through_threshold_from_env() {
+        // Pins the wiring, not just the policy: the receive loop must go through the
+        // validating reader rather than parse().ok().
+        std::env::set_var("RECV_STALENESS_SECS", "0");
+        assert_eq!(
+            crate::liveness::threshold_from_env("RECV_STALENESS_SECS", RECV_DEFAULT),
+            crate::liveness::MIN_THRESHOLD_SECS
+        );
+        std::env::remove_var("RECV_STALENESS_SECS");
+        assert_eq!(
+            crate::liveness::threshold_from_env("RECV_STALENESS_SECS", RECV_DEFAULT),
+            RECV_DEFAULT
+        );
+    }
+
+    #[test]
+    fn test_pong_handle_is_shared_and_stable() {
+        let credentials = create_test_credentials().unwrap();
+        let connector = KalshiConnector::new(credentials, true, None);
+
+        let first = connector.pong_handle().expect("kalshi tracks pongs");
+        let second = connector.pong_handle().expect("kalshi tracks pongs");
+
+        // Same underlying counter every time, so the watchdog and /health observe
+        // the shard pongs rather than a private copy.
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.load(Ordering::SeqCst), 0, "no pong before connect");
+
+        first.store(1_234, Ordering::SeqCst);
+        assert_eq!(
+            connector.pong_handle().unwrap().load(Ordering::SeqCst),
+            1_234
+        );
+    }
+
+    /// Real wire payloads, parsed the same way the receive loop parses them, so the
+    /// test cannot drift from what the exchange actually sends.
+    fn parse(raw: &str) -> WsMessage {
+        serde_json::from_str(raw).expect("fixture must parse")
+    }
+
+    fn test_metrics() -> ShardMetrics {
+        ConnectorMetrics::new("kalshi", "test-record-frame").for_shard(0)
+    }
+
+    /// Frames Kalshi sends that carry no market data. Every one of them is counted
+    /// and dropped by the receive loop.
+    fn control_frames() -> Vec<(&'static str, WsMessage)> {
+        vec![
+            (
+                "subscribed",
+                parse(r#"{"type":"subscribed","id":1,"msg":{"channel":"ticker","sid":7}}"#),
+            ),
+            (
+                "ok",
+                parse(
+                    r#"{"type":"ok","id":2,"sid":7,"seq":1,"market_tickers":["KXBTCD-25JUL30-B1"]}"#,
+                ),
+            ),
+            ("unsubscribed", parse(r#"{"type":"unsubscribed","id":3}"#)),
+            (
+                "error",
+                parse(r#"{"type":"error","id":4,"msg":{"code":6,"msg":"already subscribed"}}"#),
+            ),
+            ("unknown", parse(r#"{"type":"some_future_frame"}"#)),
+        ]
+    }
+
+    fn data_frames() -> Vec<(&'static str, WsMessage)> {
+        vec![
+            (
+                "ticker",
+                parse(
+                    r#"{"type":"ticker","msg":{"market_ticker":"KXBTCD-25JUL30-B1","yes_bid":40,"yes_ask":42,"ts":1753900000}}"#,
+                ),
+            ),
+            (
+                "trade",
+                parse(
+                    r#"{"type":"trade","msg":{"market_ticker":"KXBTCD-25JUL30-B1","count":3,"side":"yes","ts":1753900000}}"#,
+                ),
+            ),
+            (
+                "market_lifecycle_v2",
+                parse(
+                    r#"{"type":"market_lifecycle_v2","sid":9,"msg":{"market_ticker":"KXBTCD-25JUL30-B1","event_type":"activated"}}"#,
+                ),
+            ),
+        ]
+    }
+
+    #[test]
+    fn control_frames_are_dropped_and_leave_the_data_clock_alone() {
+        // THE regression guard. The absolute ceiling reads the data clock, and the
+        // claim that a peer cannot suppress it holds only if control frames never
+        // touch that clock. They used to: the loop stamped its clock on every
+        // successful recv_raw, before deciding whether to forward anything.
+        //
+        // Testing evaluate_staleness with a data_age_secs argument cannot catch
+        // that — it starts after the number is produced. This drives the code that
+        // produces it.
+        let metrics = test_metrics();
+        let stamped_at = 1_000_u64;
+        for (name, msg) in control_frames() {
+            let clock = AtomicU64::new(stamped_at);
+            let forwarded = record_frame(&msg, &metrics, &clock, stamped_at + 5_000);
+            assert!(
+                !forwarded,
+                "{name} carries no data and must not be forwarded"
+            );
+            assert_eq!(
+                clock.load(Ordering::SeqCst),
+                stamped_at,
+                "{name} must not vouch for data freshness"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stream_of_control_frames_cannot_hold_the_ceiling_open() {
+        // End to end over the two pieces that matter: drive the classifier with the
+        // resubscribe traffic this connector generates on every 15-minute rollover,
+        // then ask the shared rule what it makes of the resulting clock. Production
+        // logs from the 3.5h outage show exactly this — subscribe and unsubscribe
+        // batches throughout, zero market data — so the ceiling has to fire here.
+        let metrics = test_metrics();
+        let connected_at = 1_000_u64;
+        let clock = AtomicU64::new(connected_at);
+
+        // Four rollovers, 900s apart: 3600s of acks and not one data frame.
+        let mut now = connected_at;
+        for _ in 0..4 {
+            now += 900;
+            for (_, msg) in control_frames() {
+                record_frame(&msg, &metrics, &clock, now);
+            }
+        }
+
+        assert_eq!(
+            clock.load(Ordering::SeqCst),
+            connected_at,
+            "3600s of acks moved the data clock by nothing"
+        );
+
+        let data_age_secs = crate::liveness::data_age_signal(clock.load(Ordering::SeqCst), now)
+            .age_secs()
+            .expect("the clock was started at connect");
+        let verdict = crate::liveness::evaluate_staleness(
+            data_age_secs,
+            Some(1), // the peer is answering our pings the whole time
+            300,
+            crate::liveness::DEFAULT_MAX_DATA_AGE_SECS,
+            crate::liveness::ThresholdBound::Inclusive,
+        );
+        assert!(
+            verdict.ceiling_breached,
+            "the ceiling is what has to end this"
+        );
+        assert!(verdict.stale);
+    }
+
+    #[test]
+    fn data_frames_stamp_the_data_clock() {
+        // The other half: the ceiling must not fire on a feed that IS publishing.
+        let metrics = test_metrics();
+        for (name, msg) in data_frames() {
+            let clock = AtomicU64::new(1_000);
+            let forwarded = record_frame(&msg, &metrics, &clock, 6_000);
+            assert!(forwarded, "{name} is data and must be forwarded");
+            assert_eq!(
+                clock.load(Ordering::SeqCst),
+                6_000,
+                "{name} refreshes the clock"
+            );
+        }
+    }
+
+    #[test]
+    fn the_data_clock_never_steps_backwards_between_shards() {
+        // Shards share one connector-wide clock. A frame recorded slightly late must
+        // not pull the clock back and buy extra silence.
+        let metrics = test_metrics();
+        let clock = AtomicU64::new(0);
+        let (_, msg) = data_frames().remove(0);
+
+        record_frame(&msg, &metrics, &clock, 2_000);
+        record_frame(&msg, &metrics, &clock, 1_000);
+
+        assert_eq!(clock.load(Ordering::SeqCst), 2_000);
+    }
+
+    #[test]
+    fn test_data_handle_is_shared_stable_and_distinct_from_activity() {
+        let credentials = create_test_credentials().unwrap();
+        let connector = KalshiConnector::new(credentials, true, None);
+
+        let data = connector
+            .data_handle()
+            .expect("kalshi tracks forwarded data");
+        let activity = connector.activity_handle().expect("kalshi tracks activity");
+
+        assert!(
+            !Arc::ptr_eq(&data, &activity),
+            "one clock for both would put the ceiling back on any-frame age"
+        );
+        assert!(Arc::ptr_eq(&data, &connector.data_handle().unwrap()));
+        assert_eq!(
+            data.load(Ordering::SeqCst),
+            0,
+            "uninitialized until a shard receiver starts"
+        );
     }
 
     #[test]
