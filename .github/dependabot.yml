@@ -61,6 +61,50 @@ updates:
       - "dependencies"
       - "docker"
 
+  # npm - ssmd-harman-web (Next.js OMS UI)
+  #
+  # `cooldown` is Dependabot's release-age gate. It is the same policy as the
+  # `min-release-age=7` in this directory's .npmrc, applied on the other side of the
+  # fence: .npmrc gates versions we resolve by hand, cooldown gates versions
+  # Dependabot proposes. Without it, Dependabot would happily open a PR for a package
+  # published minutes ago and route around the .npmrc entirely.
+  #
+  # Security updates bypass cooldown by design — a known-exploited CVE should not wait
+  # a week. Note Dependabot's own built-in default is only 3 days.
+  - package-ecosystem: "npm"
+    directory: "/ssmd-harman-web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "npm"
+
+  # npm - ssmd-worker (Temporal worker)
+  - package-ecosystem: "npm"
+    directory: "/ssmd-worker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "npm"
+
+  # No entry for ssmd-agent / ssmd-pipeline-worker: Dependabot has no Deno ecosystem
+  # and does not read deno.json. Those two are covered only by the
+  # "minimumDependencyAge": "P7D" gate in their own deno.json, which applies when a
+  # human re-resolves the lockfile. Their npm: specifiers get no automated update PRs.
+
   # Cargo - Rust workspace
   - package-ecosystem: "cargo"
     directory: "/ssmd-rust"
