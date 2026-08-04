@@ -22,6 +22,16 @@ pub struct CdcEvent {
 /// PostgreSQL L2 fallback handles evicted entries.
 const EVENT_SERIES_CACHE_CAP: usize = 10_000;
 
+/// How long the CDC stream may be idle before an arriving event is worth warning about.
+///
+/// This is a stall signal, not a schedule restatement: it must sit above the longest
+/// gap a *healthy* deployment produces. Where CDC traffic is cron-driven rather than
+/// continuous (pair/series sync plus lifecycle retention), observed healthy gaps run
+/// up to ~6h, so an hour-scale threshold logs on every quiet period and teaches the
+/// reader to ignore the warning. 8h clears the widest healthy gap with margin while
+/// still catching a genuinely dead consumer inside a day.
+const CDC_IDLE_WARN: Duration = Duration::from_secs(8 * 60 * 60);
+
 /// Lookup cache for event_ticker -> series_ticker mapping
 /// Uses LRU cache as L1 (bounded), PostgreSQL as L2 fallback
 pub struct EventSeriesLookup {
@@ -150,12 +160,13 @@ impl CdcConsumer {
         let mut gaps_detected: u64 = 0;
 
         while let Some(msg) = self.stream.next().await {
-            // Warn if no events for more than 1 hour (potential stall)
+            // Warn if the stream was idle long enough to suggest a stall (see CDC_IDLE_WARN)
             let elapsed = last_event_time.elapsed();
-            if elapsed > Duration::from_secs(3600) {
+            if elapsed > CDC_IDLE_WARN {
                 tracing::warn!(
                     elapsed_secs = elapsed.as_secs(),
-                    "No CDC events received for extended period (>1hr)"
+                    threshold_secs = CDC_IDLE_WARN.as_secs(),
+                    "No CDC events received for extended period"
                 );
             }
             last_event_time = Instant::now();
