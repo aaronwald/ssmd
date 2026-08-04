@@ -9,7 +9,7 @@
     "dev": "ts-node src/worker.ts"
   },
   "dependencies": {
-    "@temporalio/worker": "^1.14.1",
+    "@temporalio/worker": "^1.21.1",
     "nodemailer": "^8.0.1"
   },
   "devDependencies": {
