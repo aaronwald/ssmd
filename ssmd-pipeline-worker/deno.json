@@ -4,6 +4,7 @@
     "test": "deno test --allow-net --allow-env --allow-read src/",
     "check": "deno check src/main.ts"
   },
+  "minimumDependencyAge": "P7D",
   "imports": {
     "postgres": "npm:postgres@^3.4.4",
     "drizzle-orm": "npm:drizzle-orm@^0.38.0",
