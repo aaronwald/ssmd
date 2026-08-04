@@ -10,6 +10,7 @@
     "test": "deno test --allow-read --allow-write --allow-net --allow-env --allow-ffi --allow-sys --allow-run test/ src/",
     "test:src": "deno test --allow-read --allow-write --allow-net --allow-env --allow-ffi --allow-sys --allow-run src/"
   },
+  "minimumDependencyAge": "P7D",
   "imports": {
     "nats": "npm:nats@^2.29.3",
     "zod": "npm:zod@^3.23",
