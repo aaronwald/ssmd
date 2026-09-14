@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@temporalio/worker": "^1.14.1",
-    "nodemailer": "^8.0.1"
+    "nodemailer": "^10.0.1"
   },
   "devDependencies": {
     "@types/node": "^25.2.0",
